@@ -161,7 +161,7 @@ class StateEngine:
                 run.suspended_state,
                 reason="paused run has no valid suspended state",
             )
-        if run.suspension_kind not in (None, SuspensionKind.PAUSE):
+        if run.suspension_kind is not SuspensionKind.PAUSE:
             raise InvalidTransition(
                 run.state,
                 run.suspended_state,
@@ -220,7 +220,7 @@ class StateEngine:
                 target,
                 reason="intervention has no suspended state",
             )
-        if run.suspension_kind not in (None, SuspensionKind.INTERVENTION):
+        if run.suspension_kind is not SuspensionKind.INTERVENTION:
             raise InvalidTransition(
                 run.state,
                 target,

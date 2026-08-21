@@ -104,6 +104,36 @@ EXPECTED_LEGAL_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     RunState.CANCELLED: frozenset(),
 }
 
+PAUSEABLE_STATES = (
+    RunState.CREATED,
+    RunState.PLANNING,
+    RunState.AWAITING_PLAN_APPROVAL,
+    RunState.PREPARING_WORKTREE,
+    RunState.IMPLEMENTING,
+    RunState.VALIDATING,
+    RunState.REVIEWING,
+    RunState.REMEDIATING,
+    RunState.AWAITING_PR_APPROVAL,
+    RunState.PUBLISHING_PR,
+    RunState.MONITORING_PR,
+    RunState.AWAITING_HUMAN_INTERVENTION,
+    RunState.AWAITING_MERGE_APPROVAL,
+    RunState.MERGING,
+)
+
+INTERVENTION_SOURCES = (
+    RunState.PLANNING,
+    RunState.PREPARING_WORKTREE,
+    RunState.IMPLEMENTING,
+    RunState.VALIDATING,
+    RunState.REVIEWING,
+    RunState.REMEDIATING,
+    RunState.PUBLISHING_PR,
+    RunState.MONITORING_PR,
+    RunState.AWAITING_MERGE_APPROVAL,
+    RunState.MERGING,
+)
+
 
 def new_run() -> RunSnapshot:
     return RunSnapshot(id=uuid4(), project_id=uuid4(), task_id=uuid4())
@@ -196,6 +226,18 @@ def test_pause_rejects_terminal_runs(state: RunState) -> None:
         StateEngine().pause(run)
 
 
+@pytest.mark.parametrize("state", PAUSEABLE_STATES)
+def test_pause_succeeds_for_every_allowed_nonterminal_state(state: RunState) -> None:
+    run = RunSnapshot(id=uuid4(), project_id=uuid4(), task_id=uuid4(), state=state)
+
+    paused = StateEngine().pause(run)
+
+    assert paused.state is RunState.PAUSED
+    assert paused.suspended_state is state
+    assert paused.suspension_kind is SuspensionKind.PAUSE
+    assert paused.version == run.version + 1
+
+
 def test_pause_rejects_an_already_paused_run() -> None:
     paused = RunSnapshot(
         id=uuid4(),
@@ -244,6 +286,20 @@ def test_intervene_preserves_the_active_state_for_operator_resolution() -> None:
 
     assert intervened.state is RunState.AWAITING_HUMAN_INTERVENTION
     assert intervened.suspended_state is RunState.PLANNING
+    assert intervened.suspension_kind is SuspensionKind.INTERVENTION
+    assert intervened.version == run.version + 1
+
+
+@pytest.mark.parametrize("source", INTERVENTION_SOURCES)
+def test_intervene_succeeds_for_every_source_with_an_intervention_edge(
+    source: RunState,
+) -> None:
+    run = RunSnapshot(id=uuid4(), project_id=uuid4(), task_id=uuid4(), state=source)
+
+    intervened = StateEngine().intervene(run)
+
+    assert intervened.state is RunState.AWAITING_HUMAN_INTERVENTION
+    assert intervened.suspended_state is source
     assert intervened.suspension_kind is SuspensionKind.INTERVENTION
     assert intervened.version == run.version + 1
 
@@ -302,6 +358,45 @@ def test_resolve_intervention_uses_the_suspended_state_legal_targets() -> None:
     assert resolved.version == intervened.version + 1
 
 
+@pytest.mark.parametrize(
+    ("source", "target"),
+    tuple(
+        (source, target)
+        for source in INTERVENTION_SOURCES
+        for target in EXPECTED_LEGAL_TRANSITIONS[source]
+    ),
+)
+def test_resolve_intervention_accepts_every_permitted_target(
+    source: RunState, target: RunState
+) -> None:
+    run = RunSnapshot(id=uuid4(), project_id=uuid4(), task_id=uuid4(), state=source)
+    intervened = StateEngine().intervene(run)
+
+    resolved = StateEngine().resolve_intervention(intervened, target)
+
+    assert resolved.state is target
+    assert resolved.version == run.version + 2
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    tuple(
+        (source, target)
+        for source in INTERVENTION_SOURCES
+        for target in RunState
+        if target not in EXPECTED_LEGAL_TRANSITIONS[source]
+    ),
+)
+def test_resolve_intervention_rejects_every_forbidden_target(
+    source: RunState, target: RunState
+) -> None:
+    run = RunSnapshot(id=uuid4(), project_id=uuid4(), task_id=uuid4(), state=source)
+    intervened = StateEngine().intervene(run)
+
+    with pytest.raises(InvalidTransition):
+        StateEngine().resolve_intervention(intervened, target)
+
+
 def test_resolve_intervention_rejects_targets_not_legal_from_suspended_state() -> None:
     engine = StateEngine()
     intervened = engine.intervene(engine.transition(new_run(), RunState.PLANNING))
@@ -322,6 +417,34 @@ def test_resolve_intervention_rejects_non_intervention_snapshots() -> None:
     )
     with pytest.raises(InvalidTransition):
         StateEngine().resolve_intervention(malformed, RunState.FAILED)
+
+
+def test_resume_rejects_a_paused_snapshot_with_missing_suspension_kind() -> None:
+    malformed = RunSnapshot(
+        id=uuid4(),
+        project_id=uuid4(),
+        task_id=uuid4(),
+        state=RunState.PAUSED,
+        suspended_state=RunState.PLANNING,
+        suspension_kind=None,
+    )
+
+    with pytest.raises(InvalidTransition):
+        StateEngine().resume(malformed)
+
+
+def test_resolve_rejects_missing_intervention_kind_for_a_fabricated_pr_approval() -> None:
+    malformed = RunSnapshot(
+        id=uuid4(),
+        project_id=uuid4(),
+        task_id=uuid4(),
+        state=RunState.AWAITING_HUMAN_INTERVENTION,
+        suspended_state=RunState.AWAITING_PR_APPROVAL,
+        suspension_kind=None,
+    )
+
+    with pytest.raises(InvalidTransition):
+        StateEngine().resolve_intervention(malformed, RunState.PUBLISHING_PR)
 
 
 def test_exported_legal_policy_cannot_be_mutated() -> None:
