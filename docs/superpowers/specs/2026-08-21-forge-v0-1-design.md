@@ -88,7 +88,7 @@ empty infrastructure or abstraction layers for them.
 | Area | Decision |
 | --- | --- |
 | Shape | Local-first modular monolith |
-| Backend | Python 3.14, FastAPI, one API process and one worker process |
+| Backend | Python 3.14, FastAPI, separate API and worker entry points |
 | Agent framework | Google ADK behind a Forge-owned adapter |
 | Dashboard | Next.js and TypeScript |
 | Persistence | PostgreSQL from the first slice |
@@ -180,9 +180,9 @@ The dashboard contains presentation and interaction logic only. It cannot call
 GitHub, model providers, the filesystem, or Git directly. Workflow decisions
 remain in the Python application layer.
 
-The API and worker may run in one process during early development, but their
-interfaces and database-backed command boundary remain separate so they can be
-split without changing the domain model.
+The API and worker use separate process entry points, even in local
+development. They may share one Python package and container image, but all
+workflow dispatch crosses the PostgreSQL command boundary.
 
 ## 8. Repository structure
 
@@ -272,7 +272,7 @@ Plan approval is bound to:
 
 - normalized plan document and digest;
 - task version;
-- base repository and base commit;
+- base repository, base branch, and observed base commit;
 - project policy version;
 - permitted checks and dependency changes;
 - autonomy, usage, cost, and remediation budgets.
@@ -288,7 +288,8 @@ PR approval is bound to:
 - normalized diff digest;
 - validation results;
 - independent review decision;
-- target repository, base branch, and proposed title/body;
+- target repository, base branch, observed base commit, and proposed title/body;
+- build runner mode used to produce the evidence;
 - remote-remediation policy, defaulting to at most three cycles.
 
 Approval authorizes the Release Controller to publish that candidate and push
@@ -302,15 +303,19 @@ Merge approval is bound to:
 
 - GitHub repository and PR number;
 - exact remote head commit;
-- base branch;
+- base branch and exact observed base commit;
 - required checks and their successful conclusions;
 - absence of unresolved blocking review findings;
 - merge method;
 - current project policy version.
 
-Any remote-head, check-set, review, base, method, or policy change invalidates
-the approval. Immediately before merging, the Release Controller retrieves the
-remote state again and compares it with the approval evidence.
+Any remote-head, check-set, review, base commit, method, or policy change
+invalidates the approval. Forge-managed merge requires GitHub to enforce that
+the branch is up to date through strict required checks or a merge queue; the
+Release Controller credential cannot bypass that protection. Immediately
+before merging, the Release Controller retrieves the remote state again and
+compares it with the approval evidence. The merge API call also supplies the
+approved head commit as GitHub's atomic expected-head precondition.
 
 ### 9.3 Normal flow
 
@@ -333,8 +338,9 @@ CREATED
 ~~~
 
 The local loop ends when checks pass and no blocking or major review findings
-remain. The remote loop defaults to three remediation cycles. The project
-policy may lower or raise this limit, but the value is part of PR approval.
+remain. Local and remote loops each default to at most three remediation
+cycles. The project policy may lower or raise either limit. The local value is
+part of plan approval and the remote value is part of PR approval.
 
 Minor findings and suggestions are displayed and persisted. Project policy
 determines whether they block publication or merge.
@@ -365,20 +371,24 @@ The dashboard submits typed commands such as:
 Every command contains:
 
 - command ID and idempotency key;
-- actor identity;
 - run ID and expected run version;
 - expected artifact or approval digest where relevant;
 - structured payload;
 - submission timestamp.
 
-The API validates syntax and authorization, then stores the command in
-PostgreSQL. The worker claims commands through a lease. A run has at most one
-active workflow lease, preventing two workers from advancing it concurrently.
+The API derives actor identity and actor class from the authenticated session;
+it never trusts an actor supplied in the payload. It validates syntax and
+authorization, then stores the command in PostgreSQL. The worker claims
+commands through a lease. A run has at most one active workflow lease,
+preventing two workers from advancing it concurrently.
 
 Each successful state change, approval, tool call, and material observation is
-committed with an append-only run event in the same transaction as the current
-state update where possible. This is an auditable current-state model, not full
-event sourcing.
+committed with an append-only run event. State changes and their events are
+always one PostgreSQL transaction. Before a local or external side effect,
+Forge atomically persists an idempotent operation intent and causal event.
+After invocation it persists the outcome; after a crash it reconciles any
+intent without an outcome before advancing. This is an auditable current-state
+model with an operation outbox, not full event sourcing.
 
 On restart, the worker:
 
@@ -404,6 +414,8 @@ PostgreSQL is the source of truth from the first release.
 | projects | Repository identity, default branch, instructions, checks, and policy |
 | tasks | Normalized task text and optional external issue identity |
 | runs | Current workflow state, version, phase, budgets, and resource identity |
+| operator_sessions | Hashed local session identifiers, actor class, and expiry |
+| approval_challenges | Single-use gate/evidence challenges and expiry |
 | run_commands | Durable operator/system commands, idempotency, status, and lease |
 | run_events | Append-only audit timeline |
 | steps | Attempts, transitions, timings, and outcomes |
@@ -415,6 +427,7 @@ PostgreSQL is the source of truth from the first release.
 | validation_results | Named check, command version, exit state, and output artifact |
 | reviews | Structured findings, severity, location, status, and decision |
 | pull_requests | Repository, branch, PR number, head, checks, reviews, and merge state |
+| operation_intents | Idempotent local/remote side-effect intent and reconciliation state |
 
 Large plans, diffs, logs, and model outputs use a local content-addressed store.
 PostgreSQL holds their hashes, metadata, and lineage. The store uses atomic
@@ -540,7 +553,8 @@ It defines:
 - engineering instruction discovery rules;
 - named check commands, timeouts, and required status;
 - build runner and network policy;
-- allowed environment files and keys;
+- allowed environment files and keys, including which paths remain hidden from
+  agent repository tools;
 - worktree/database provisioning settings;
 - allowed merge methods;
 - finding severity rules;
@@ -555,14 +569,19 @@ Named checks map stable names such as test, lint, typecheck, and build to exact
 operator-approved command vectors. Agents select names, not arbitrary command
 strings.
 
-Dependency installation is permitted only when the approved plan and project
-policy allow it. An unexpected new dependency or install command requires human
-intervention.
+Bootstrap, dependency installation, migration, seed, and validation steps all
+use stable names mapped to policy-versioned argument vectors and the configured
+runner boundary. Dependency installation is permitted only when the approved
+plan and project policy allow it. An unexpected new dependency or command
+requires human intervention.
 
 ## 15. Worktree and database lifecycle
 
 Forge development itself ships matching setup and teardown scripts for
 PowerShell and Bash, modelled on the proven Parallel workflow.
+Forge's own worktree policy enables a separate PostgreSQL database by default
+and explicitly enumerates the local environment files to copy; it never uses a
+blanket glob or copies an unlisted secret file.
 
 Runtime provisioning and the scripts share these invariants:
 
@@ -573,8 +592,11 @@ Runtime provisioning and the scripts share these invariants:
 - rejection of symlink, junction, and traversal escapes;
 - a branch uniquely owned by the run;
 - explicit allowlists for copied environment files and rewritten keys;
+- secret-designated paths remain unreadable through agent repository tools;
 - secret values never printed in logs;
 - a dedicated PostgreSQL database per worktree when the project requests one;
+- database administration credentials remain in the trusted provisioner while
+  checks receive credentials scoped to their one worktree database;
 - recorded resource identity before implementation starts;
 - cleanup verification and idempotent teardown.
 
@@ -582,11 +604,20 @@ The setup sequence is:
 
 1. validate repository, branch, target path, and collision-free resource name;
 2. create the managed branch and worktree;
-3. copy only configured environment files without logging contents;
+3. copy only configured environment files without logging contents and retain
+   their secret-path classification;
 4. rewrite configured database identifiers and other worktree-local values;
 5. create the isolated database;
-6. run approved bootstrap, migration, and seed steps;
+6. run approved bootstrap, migration, and seed steps through the configured
+   sandboxed runner;
 7. persist verified resource metadata.
+
+Full environment-file copying is an explicit trusted-project option needed by
+some development workflows. The safer default copies only non-secret
+worktree-local configuration and injects allowlisted secret values directly
+into the operation that needs them. Agent tools cannot read secret-designated
+paths in either mode. Generated code may still read values intentionally made
+available to its runner, which remains a disclosed residual risk.
 
 If setup fails, Forge records the partial resource state and performs only
 validated, bounded rollback. Otherwise it requests intervention.
@@ -601,7 +632,9 @@ Validation runs the project policy's required named checks in a deterministic
 order. Every attempt records the exact policy version, command identity,
 duration, exit status, and bounded output artifact.
 
-By default, check execution occurs in a Docker container that:
+Every repository-controlled command—including bootstrap, dependency install,
+migration, seed, and validation—uses the same runner policy. By default it
+executes in a Docker container that:
 
 - runs as a non-root user;
 - mounts only the managed worktree;
@@ -613,15 +646,22 @@ By default, check execution occurs in a Docker container that:
 An operator may configure a trusted host runner for repositories that cannot
 run in Docker. It is disabled by default and displayed as unsandboxed in every
 approval and run view. Selecting it acknowledges that generated code can act
-with the Forge host account's permissions.
+with the Forge host account's permissions. It is available only to projects
+explicitly marked trusted, and the runner choice is bound into plan, PR, and
+merge evidence. Forge cannot claim containment from code executed this way.
 
 The local remediation loop requires revalidation and a fresh independent
 review after every Developer change. The remote loop follows the same sequence
 before the Release Controller pushes a remediation commit.
 
-The default remote limit is three cycles. A cycle is counted when a remediation
-attempt begins, regardless of whether it produces a commit. After the limit,
-Forge preserves all evidence and enters AWAITING_HUMAN_INTERVENTION.
+The default local and remote limits are three cycles each. A cycle is counted
+when a remediation attempt begins, regardless of whether it produces a commit.
+After the applicable limit, Forge preserves all evidence and enters
+AWAITING_HUMAN_INTERVENTION.
+
+Controlled Git operations use isolated noninteractive Git configuration,
+disable repository hooks and signing programs unless explicitly trusted by
+project policy, and reject configuration overrides supplied by an agent.
 
 ## 17. GitHub and pull-request flow
 
@@ -638,16 +678,26 @@ Forge preserves all evidence and enters AWAITING_HUMAN_INTERVENTION.
 7. The Release Controller pushes the resulting commit and returns to
    monitoring.
 8. When all required checks are green and blocking findings are resolved,
-   Forge freezes the remote evidence in AWAITING_MERGE_APPROVAL.
+   Forge verifies that the PR head is current with the observed base commit and
+   freezes both commits in AWAITING_MERGE_APPROVAL.
 9. The operator gives immediate merge approval for the exact remote head and
-   merge method.
-10. The Release Controller refetches the PR and merges only if every bound
-    condition still matches.
+   base commit, required evidence, and merge method.
+10. The Release Controller refetches the PR and base, verifies that strict
+    required checks or a merge queue prevent stale-base merging, and calls the
+    GitHub merge API with the approved head as its atomic expected-head
+    precondition.
 
 External commits to the managed branch invalidate candidate or merge evidence.
-Forge never force-pushes in v0.1. Base-branch drift is reported; policy may
-require remediation or a new approval, but Forge does not silently rebase after
-merge approval.
+Forge never force-pushes in v0.1. Any base-branch commit change invalidates
+merge readiness. Forge returns to MONITORING_PR and, within the approved remote
+remediation budget, updates the managed branch without rewriting history,
+reruns validation and independent review, waits for green remote checks, and
+requests a new merge approval. A conflict or exhausted budget requires human
+intervention.
+
+If GitHub cannot atomically enforce an up-to-date branch at merge time, Forge
+does not perform a managed merge in v0.1. It records the reason and leaves the
+operator to change repository protection or merge manually in GitHub.
 
 ## 18. Dashboard
 
@@ -689,9 +739,29 @@ REST handles commands and historical queries. Server-Sent Events stream
 ordered run events with resumable event IDs. Reconnecting clients query the
 current state and continue after their last received event.
 
-v0.1 is a single-operator local application. The API binds to loopback by
-default and enforces origin and CSRF protections for state-changing requests.
-Remote or multi-user exposure requires a later authentication design.
+v0.1 is a single-operator local application. The web application and API share
+one loopback origin. On startup, Forge creates a 256-bit, single-use bootstrap
+token with a five-minute expiry, persists only its hash, and emits a loopback
+URL whose fragment carries the token so it is not sent in HTTP logs or
+referrers. The dashboard exchanges it once for a random operator session.
+
+The session identifier is stored only in an HttpOnly, SameSite=Strict cookie
+and as a hash with idle and absolute expiry in PostgreSQL. A CLI rotation
+command revokes every session and bootstrap token and creates a new one. v0.1
+does not offer general API keys or approval-by-CLI.
+
+State-changing requests require the authenticated operator session, an
+Origin/Host check, and a session-bound CSRF token. Approval additionally
+requires a short-lived, single-use challenge bound to the run, gate, expected
+version, and evidence digest displayed by the approval page. The API derives
+the human actor from the session; system, worker, agent, and unauthenticated
+callers are categorically unable to create approvals.
+
+This boundary protects against unrelated web pages and ordinary local
+processes without the session. It does not survive compromise of the operator
+account or browser. In particular, trusted host-runner mode weakens the local
+boundary and is visibly disclosed at every later gate. Remote or multi-user
+exposure requires a new authentication design.
 
 ## 19. Observability and audit
 
@@ -747,6 +817,7 @@ found every defect. Those residual risks remain visible to the operator.
 | Scope, dependency, security, permission, or budget violation | Immediate intervention |
 | Worker/API restart | Lease expiry, state reconciliation, safe resume |
 | Duplicate command or remote request | Idempotent reconciliation |
+| Crash around a side effect | Reconcile persisted operation intent before retry or transition |
 | Artifact hash/storage corruption | FAILED with preserved metadata |
 | Cancellation | Stop dispatch; preserve resources and evidence |
 | Teardown failure | Preserve exact remaining resource state; do not guess |
@@ -766,10 +837,12 @@ needs a human decision is not incorrectly labelled failed.
 - canonical path and resource-name safety;
 - structured agent-output validation;
 - Release Controller preconditions.
+- local session, CSRF, actor-class, and approval-challenge authorization.
 
 ### 22.2 Integration tests
 
 - PostgreSQL repositories, migrations, commands, leases, and restart recovery;
+- atomic state/event writes and crash-point operation-intent reconciliation;
 - local content-addressed artifact storage;
 - worktree creation, collision handling, and teardown;
 - isolated database creation and cleanup;
@@ -788,6 +861,8 @@ Deterministic fake agents and a fake GitHub service exercise:
 - PR publication approval and idempotent creation;
 - failed CI, bounded remote remediation, and green recovery;
 - stale merge approval after head change;
+- stale merge approval after base change;
+- an atomic GitHub expected-head failure between preflight and merge;
 - exact-head successful merge;
 - pause, cancellation, restart, and explicit teardown.
 
@@ -797,6 +872,8 @@ Deterministic fake agents and a fake GitHub service exercise:
 - traversal, symlink, junction, and alternate-path escapes are rejected;
 - secret-bearing values are redacted from contexts, events, logs, and artifacts;
 - agents cannot invoke Release Controller operations;
+- unauthenticated, non-operator, wrong-origin, stale-session, and replayed
+  approval attempts are rejected;
 - stale or forged approvals are rejected;
 - unexpected dependencies and unapproved network access escalate.
 
@@ -830,14 +907,18 @@ dashboard:
 6. Produce a local commit and inspectable diff.
 7. Execute configured lint, test, typecheck, and other required named checks.
 8. Run a separate Reviewer and display structured findings.
-9. Perform bounded local remediation, validation, and re-review.
+9. Perform up to three local remediation, validation, and re-review cycles by
+   default.
 10. Display live state, artifacts, activity, checks, findings, and usage.
 11. Require PR publication approval before any remote write.
 12. Have the Release Controller push and create or reconcile the PR.
 13. Monitor CI/reviews and perform up to three approved remediation cycles by
     default.
-14. Request merge approval only for an exact green remote head.
-15. Reject stale approval and merge only after immediate human authorization.
+14. Request merge approval only for an exact green remote head and observed
+    base commit.
+15. Reject stale approval and merge only after immediate authenticated human
+    authorization, GitHub's atomic expected-head check, and enforced
+    up-to-date-base protection.
 16. Recover safely after restart and support pause and cancellation.
 17. Preserve resources on completion/cancellation and tear them down only on an
     explicit command.

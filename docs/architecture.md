@@ -62,7 +62,9 @@ Git, the filesystem, or PostgreSQL.
 
 Responsibilities:
 
-- authenticate the local operator boundary;
+- establish and authenticate the single local operator through a one-time
+  bootstrap exchange, expiring server-side session, CSRF token, and
+  evidence-bound approval challenge;
 - validate command syntax, expected run version, and request origin;
 - write durable commands;
 - serve projections and artifacts;
@@ -113,7 +115,9 @@ Responsibilities:
 - push only the branch recorded for an approved run;
 - create or reconcile one managed pull request;
 - observe remote heads, checks, and review state;
-- merge only when an exact-head human approval still matches.
+- merge only when exact head and base evidence still match;
+- supply the approved head to GitHub as an atomic merge precondition and
+  require strict up-to-date-base protection or a merge queue.
 
 It is deterministic application code, not an LLM agent. Agents never receive
 GitHub write credentials or its operations as callable tools.
@@ -123,10 +127,12 @@ GitHub write credentials or its operations as callable tools.
 Responsibilities:
 
 - current workflow state and optimistic version;
+- hashed operator sessions and single-use approval challenges;
 - durable commands and worker leases;
 - approvals and invalidations;
 - append-only events and audit metadata;
 - agent, tool, validation, review, PR, and usage records;
+- idempotent operation intents and reconciliation outcomes;
 - artifact metadata and lineage.
 
 The system uses current-state tables plus an append-only audit log. It is not
@@ -168,10 +174,13 @@ Large modules are split by capability, not by arbitrary technical layers.
 Every mutating request carries:
 
 - a unique command ID and idempotency key;
-- actor identity;
 - run ID and expected run version;
 - expected evidence digest for approval commands;
 - a typed payload.
+
+Actor identity and class are derived from the authenticated server-side
+session, never accepted from the request payload. Approval commands additionally
+consume a short-lived, single-use challenge bound to the gate and evidence.
 
 ### Agent contract
 
@@ -198,16 +207,22 @@ Authorization is evaluated in deterministic code before adapter invocation.
 
 ### Approval contract
 
-An approval identifies the actor, gate, run version, policy version, and digest
-of all evidence being authorized. A material evidence change makes it stale.
+An approval identifies the authenticated human actor, gate, run version, policy
+version, and digest of all evidence being authorized. PR and merge evidence
+include the relevant observed base commit; merge evidence also includes the
+exact remote head. A material evidence change makes approval stale.
 
 ## Concurrency and consistency
 
 - A PostgreSQL lease permits at most one active worker for a run.
 - Optimistic run versions reject stale dashboard commands.
-- State change and audit event are committed atomically where possible.
+- State change and its audit event are always committed atomically.
+- An idempotent operation intent is committed before every local or external
+  side effect; an outcome or reconciliation record follows it.
 - Commands and remote operations are idempotent and reconcilable.
 - External GitHub state is re-read before a consequential transition.
+- GitHub merge receives the approved head as an atomic expected-head
+  precondition; strict branch protection or a merge queue guards base drift.
 - Server-Sent Event sequence IDs let dashboards resume without missing events.
 
 ## Security boundaries
@@ -232,6 +247,10 @@ v0.1 runs locally with:
 - PostgreSQL;
 - optional Docker build sandboxes.
 
-The API binds to loopback by default. No GCP, Cloud Run, Terraform, Kubernetes,
-or distributed queue is included. The API/worker command boundary and
-OpenTelemetry instrumentation preserve a clean later deployment seam.
+The web application and API share one loopback origin. A single-use startup
+token establishes an expiring HttpOnly operator session; state changes also
+require CSRF validation, and approvals require a one-time evidence challenge.
+The API and worker use separate entry points and communicate through
+PostgreSQL. No GCP, Cloud Run, Terraform, Kubernetes, or distributed queue is
+included. The command boundary and OpenTelemetry instrumentation preserve a
+clean later deployment seam.

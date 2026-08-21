@@ -37,11 +37,16 @@ commits for the same approved task. It does not authorize merge.
 ### Merge approval
 
 After required checks are green and blocking findings are resolved, the
-operator approves one exact remote PR head, base, check/review evidence, policy
-version, and merge method. The Release Controller refetches GitHub state
-immediately before merging. Any material mismatch invalidates approval.
+operator approves one exact remote PR head, observed base commit, check/review
+evidence, policy version, and merge method. The Release Controller refetches
+GitHub state immediately before merging, supplies the approved head as
+GitHub's atomic expected-head precondition, and requires strict up-to-date-base
+protection or a merge queue. Any material mismatch invalidates approval.
 
-Only a human actor can create approvals. Agents cannot approve themselves.
+Only the authenticated operator actor class can create approvals. The API
+derives that actor from a server-side session; it does not trust actor input.
+Each approval consumes a short-lived, single-use challenge bound to its exact
+gate and evidence. Agents and system actors cannot approve themselves.
 Approvals are persisted, content-addressed, attributable, idempotent, and tied
 to an expected run version.
 

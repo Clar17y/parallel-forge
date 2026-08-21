@@ -38,9 +38,11 @@ The primary states are:
 - CANCELLED
 
 Typed durable commands request transitions. One worker lease advances a run at
-a time. State updates and append-only run events are committed together where
-possible. Agent output and tool results are inputs to transition decisions;
-they never transition the workflow directly.
+a time. Every state update and its append-only causal event are committed in
+one transaction. An idempotent operation intent is committed before each local
+or external side effect, followed by its outcome or a reconciliation record.
+Agent output and tool results are inputs to transition decisions; they never
+transition the workflow directly.
 
 Approvals bind the state version and exact evidence. External operations are
 idempotent and reconciled after restart before the run advances.
@@ -53,6 +55,7 @@ Positive:
 - approval gates cannot be bypassed through conversation;
 - the dashboard can show authoritative current and historical state;
 - restart, duplicate delivery, pause, and cancellation have defined behavior;
+- crashes around side effects can be reconciled from durable intent;
 - audit and evaluation data share stable run/step identities.
 
 Negative:

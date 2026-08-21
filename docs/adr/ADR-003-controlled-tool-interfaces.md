@@ -33,9 +33,11 @@ The Release Controller is trusted application code, not an LLM agent. GitHub
 write credentials exist only in its adapter. Agents cannot call release
 operations or receive those credentials.
 
-Checks are selected by stable names mapped to operator-approved command vectors.
-Filesystem operations canonicalize paths and enforce containment. Build code
-runs in Docker by default; any host runner is explicit and labelled
+Bootstrap, install, migration, seed, and validation operations are selected by
+stable names mapped to operator-approved command vectors. Filesystem operations
+canonicalize paths and enforce containment. Controlled Git disables hooks and
+signing programs unless explicitly trusted. Every repository-controlled
+command runs in Docker by default; any host runner is explicit and labelled
 unsandboxed.
 
 Internal ports and adapters implement the v0.1 boundary. MCP is introduced only

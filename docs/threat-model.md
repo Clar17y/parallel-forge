@@ -71,7 +71,7 @@ Only selected, policy-approved context may cross this boundary.
 ### Zone D: Target repository and generated-code runner
 
 Repository files, issue text, dependency scripts, generated code, test code,
-compiler plugins, and build output are untrusted.
+compiler plugins, CI output, and external review comments are untrusted.
 
 ### Zone E: GitHub
 
@@ -94,8 +94,10 @@ high-value assets and are never mounted into build sandboxes.
   defense.
 - Model providers may retain or process submitted data according to their own
   terms; Forge cannot erase that residual risk.
-- Operators understand that selecting the trusted host runner allows generated
-  code to act with the Forge process account's permissions.
+- The trusted host runner is selected only for an operator-designated trusted
+  project. Operators understand that generated code can then act with the
+  Forge process account's permissions and may invalidate local security
+  assumptions.
 
 ## 6. Threats and controls
 
@@ -153,9 +155,11 @@ intended operation.
 Controls:
 
 - expose named checks rather than agent-supplied command strings;
-- store approved commands as argument vectors in versioned project policy;
+- store bootstrap, install, migration, seed, and validation commands as argument
+  vectors in versioned project policy;
 - avoid shell interpolation in tool adapters;
-- run checks in a constrained Docker sandbox by default;
+- run every repository-controlled command in a constrained Docker sandbox by
+  default;
 - enforce time, CPU, memory, output, environment, mount, and network limits;
 - do not mount the Docker socket;
 - label and separately configure the unsandboxed host runner.
@@ -177,6 +181,8 @@ Controls:
 
 - agents receive no environment by default;
 - project policy allowlists environment files and keys per operation;
+- agent repository tools deny reads of secret-designated paths even when an
+  operator explicitly copies such a file into a worktree;
 - GitHub write credentials exist only in the Release Controller adapter;
 - redact known sensitive values before persistence, tracing, and display;
 - never persist unrestricted environment dumps;
@@ -186,7 +192,10 @@ Controls:
 Residual risk:
 
 Unknown secrets embedded in repository files may be read or sent to a provider.
-Future secret scanning can reduce this risk but cannot guarantee detection.
+Generated code can read any value intentionally injected into its runner.
+Full environment-file copying therefore requires explicit trusted-project
+policy and is visible at approval gates. Future secret scanning can reduce
+unknown-secret risk but cannot guarantee detection.
 
 ### T05: Unsafe dependency installation
 
@@ -220,6 +229,8 @@ Controls:
 - the Release Controller targets only the recorded repository and managed
   branch;
 - v0.1 never force-pushes;
+- controlled local Git uses isolated noninteractive configuration and disables
+  repository hooks and signing programs unless policy explicitly trusts them;
 - canonical worktree paths and resource identities are persisted and rechecked;
 - teardown is explicit and keeps branches by default;
 - branch deletion is separately confirmed;
@@ -285,6 +296,10 @@ Controls:
 - agents cannot create approval records;
 - approval commands require actor, expected run version, idempotency key, and
   exact evidence digest;
+- actor identity is derived from an authenticated, server-side operator
+  session and not accepted from command input;
+- approval requires a short-lived, single-use challenge bound to the gate and
+  evidence;
 - state transitions enforce required gates;
 - plan, PR, and merge approvals bind different evidence sets;
 - material change invalidates approval;
@@ -305,17 +320,23 @@ merge method makes a prior approval unsafe.
 
 Controls:
 
-- merge approval binds repository, PR, exact head, base, required successful
-  checks, review resolution, merge method, and policy version;
+- merge approval binds repository, PR, exact head, exact observed base commit,
+  required successful checks, review resolution, merge method, and policy
+  version;
 - Release Controller retrieves and compares authoritative GitHub state just
   before merge;
+- the GitHub merge call carries the approved head as the provider's atomic
+  expected-head precondition;
+- Forge-managed merge requires strict up-to-date branch protection or a merge
+  queue, enforced by GitHub with a credential that cannot bypass it;
 - any mismatch invalidates approval and returns to monitoring/intervention;
 - GitHub branch protection remains enabled.
 
 Residual risk:
 
-A race inside GitHub's own merge semantics is governed by GitHub protections
-and API preconditions. Forge records the observed and resulting merge commits.
+Forge relies on GitHub's expected-head and branch-protection transaction
+semantics. If the required protection cannot be verified, Forge refuses a
+managed merge rather than claiming exact-base safety.
 
 ### T11: Data leakage to model providers
 
@@ -370,6 +391,9 @@ records hide what was approved.
 Controls:
 
 - append run events alongside current-state changes;
+- commit each state change and causal event in one transaction;
+- commit an idempotent operation intent before a local or remote side effect
+  and record its outcome or reconciliation afterwards;
 - content-address artifacts and verify hashes;
 - record approval evidence and invalidation;
 - correlate agents, tools, checks, remote requests, and usage;
@@ -401,26 +425,36 @@ Residual risk:
 
 Provider pricing and token reporting may lag or differ from estimates.
 
-### T15: Local dashboard request forgery
+### T15: Local dashboard impersonation or request forgery
 
 Threat:
 
-A malicious page causes the operator's browser to issue an approval or other
-state-changing request to the loopback API.
+A malicious page or unrelated local process attempts to impersonate the
+operator or issue an approval or other state-changing request to the loopback
+API.
 
 Controls:
 
 - bind to loopback by default;
+- serve the dashboard and API through one origin;
+- exchange a five-minute, single-use 256-bit startup token for a random
+  HttpOnly, SameSite=Strict operator session while persisting only hashes;
+- apply idle and absolute session expiry and support CLI rotation that revokes
+  all sessions and bootstrap tokens;
 - validate Origin and Host;
 - use CSRF tokens and same-site cookies where cookies are used;
+- derive actor identity and class from server-side session state;
+- allow only the operator actor class to request and consume a short-lived,
+  evidence-bound approval challenge;
 - require typed POST commands with expected run versions and evidence digests;
 - avoid state-changing GET endpoints;
 - display exact approval evidence before submission.
 
 Residual risk:
 
-A compromised browser extension or host session remains inside the local trust
-boundary.
+A compromised browser extension, operator account, or host session remains
+inside the local trust boundary. Trusted host-runner mode explicitly weakens
+this boundary and must not be described as containment.
 
 ## 7. Security verification
 
@@ -428,13 +462,19 @@ Required automated coverage includes:
 
 - role-to-tool permission matrix tests;
 - illegal state-transition and approval-replay tests;
-- stale remote-head merge tests;
+- unauthenticated, wrong-origin, wrong-actor, expired-session, invalid-CSRF, and
+  reused approval-challenge tests;
+- stale remote-head and stale-base merge tests;
+- a simulated head change between merge preflight and the provider call,
+  proving the atomic expected-head precondition fails closed;
 - canonical path, traversal, symlink, junction, and collision tests;
 - redaction tests across events, logs, traces, artifacts, and API responses;
 - sandbox configuration assertions;
 - denied dependency/network escalation tests;
 - idempotent and wrong-repository Release Controller tests;
-- restart and expired-lease reconciliation tests.
+- crash-point operation-intent and expired-lease reconciliation tests;
+- sandbox-policy tests for bootstrap, install, migration, seed, and validation
+  commands.
 
 Before a live GitHub merge path is enabled, a fresh independent review must
 check the Release Controller, approval binding, credential scope, and remote
