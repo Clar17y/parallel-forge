@@ -1,1 +1,38 @@
 .worktrees/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# JavaScript / Next.js
+node_modules/
+.next/
+out/
+
+# Test and browser output
+playwright-report/
+test-results/
+
+# Forge-generated local state and artifacts
+.forge/
+artifacts/
+*.log
+
+# Build output
+dist/
+build/
+*.egg-info/

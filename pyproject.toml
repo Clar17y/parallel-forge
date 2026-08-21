@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "parallel-forge"
+version = "0.1.0"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "alembic>=1.16,<2",
+  "asyncpg>=0.30,<1",
+  "fastapi>=0.133,<1",
+  "google-adk==2.5.0",
+  "httpx>=0.28,<1",
+  "opentelemetry-api>=1.39,<=1.42.1",
+  "opentelemetry-sdk>=1.39,<=1.42.1",
+  "platformdirs>=4.3,<5",
+  "pydantic>=2.12,<3",
+  "pydantic-settings>=2.12,<3",
+  "pyyaml>=6,<7",
+  "sqlalchemy>=2.0,<3",
+  "typer>=0.16,<1",
+  "uvicorn>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.18,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=6.2,<7",
+  "respx>=0.22,<1",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+forge = "forge.cli.main:app"
+forge-api = "forge.api.main:run"
+forge-worker = "forge.worker.main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["apps/orchestrator/src/forge"]
+
+[tool.pytest.ini_options]
+testpaths = ["apps/orchestrator/tests", "tests"]
+asyncio_mode = "auto"
+markers = [
+  "integration: requires local PostgreSQL or Docker",
+  "docker: requires a running Docker daemon",
+  "live_provider: requires an explicitly configured paid model provider",
+  "live_github: requires an explicitly configured disposable GitHub repository",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+packages = ["forge"]
