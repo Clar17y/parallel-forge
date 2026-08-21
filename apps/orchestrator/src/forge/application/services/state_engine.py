@@ -3,108 +3,111 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from forge.domain.errors import InvalidTransition
-from forge.domain.run import RunSnapshot, RunState, SuspensionKind
+from forge.domain.run import RunSnapshot, RunState, SuspensionContext, SuspensionKind
 
-LEGAL: dict[RunState, frozenset[RunState]] = {
-    RunState.CREATED: frozenset({RunState.PLANNING, RunState.CANCELLED}),
-    RunState.PLANNING: frozenset(
-        {
-            RunState.AWAITING_PLAN_APPROVAL,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.AWAITING_PLAN_APPROVAL: frozenset(
-        {RunState.PLANNING, RunState.PREPARING_WORKTREE, RunState.CANCELLED}
-    ),
-    RunState.PREPARING_WORKTREE: frozenset(
-        {
-            RunState.IMPLEMENTING,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.IMPLEMENTING: frozenset(
-        {
-            RunState.VALIDATING,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.VALIDATING: frozenset(
-        {
-            RunState.REVIEWING,
-            RunState.REMEDIATING,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.REVIEWING: frozenset(
-        {
-            RunState.REMEDIATING,
-            RunState.AWAITING_PR_APPROVAL,
-            RunState.MONITORING_PR,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.REMEDIATING: frozenset(
-        {
-            RunState.VALIDATING,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.AWAITING_PR_APPROVAL: frozenset(
-        {RunState.REMEDIATING, RunState.PUBLISHING_PR, RunState.CANCELLED}
-    ),
-    RunState.PUBLISHING_PR: frozenset(
-        {
-            RunState.MONITORING_PR,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.MONITORING_PR: frozenset(
-        {
-            RunState.REMEDIATING,
-            RunState.AWAITING_MERGE_APPROVAL,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.AWAITING_HUMAN_INTERVENTION: frozenset({RunState.CANCELLED, RunState.FAILED}),
-    RunState.AWAITING_MERGE_APPROVAL: frozenset(
-        {
-            RunState.MONITORING_PR,
-            RunState.MERGING,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.CANCELLED,
-        }
-    ),
-    RunState.MERGING: frozenset(
-        {
-            RunState.COMPLETED,
-            RunState.MONITORING_PR,
-            RunState.AWAITING_HUMAN_INTERVENTION,
-            RunState.FAILED,
-        }
-    ),
-    RunState.PAUSED: frozenset({RunState.CANCELLED}),
-    RunState.COMPLETED: frozenset(),
-    RunState.FAILED: frozenset(),
-    RunState.CANCELLED: frozenset(),
-}
+LEGAL: Mapping[RunState, frozenset[RunState]] = MappingProxyType(
+    {
+        RunState.CREATED: frozenset({RunState.PLANNING, RunState.CANCELLED}),
+        RunState.PLANNING: frozenset(
+            {
+                RunState.AWAITING_PLAN_APPROVAL,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.AWAITING_PLAN_APPROVAL: frozenset(
+            {RunState.PLANNING, RunState.PREPARING_WORKTREE, RunState.CANCELLED}
+        ),
+        RunState.PREPARING_WORKTREE: frozenset(
+            {
+                RunState.IMPLEMENTING,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.IMPLEMENTING: frozenset(
+            {
+                RunState.VALIDATING,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.VALIDATING: frozenset(
+            {
+                RunState.REVIEWING,
+                RunState.REMEDIATING,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.REVIEWING: frozenset(
+            {
+                RunState.REMEDIATING,
+                RunState.AWAITING_PR_APPROVAL,
+                RunState.MONITORING_PR,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.REMEDIATING: frozenset(
+            {
+                RunState.VALIDATING,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.AWAITING_PR_APPROVAL: frozenset(
+            {RunState.REMEDIATING, RunState.PUBLISHING_PR, RunState.CANCELLED}
+        ),
+        RunState.PUBLISHING_PR: frozenset(
+            {
+                RunState.MONITORING_PR,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.MONITORING_PR: frozenset(
+            {
+                RunState.REMEDIATING,
+                RunState.AWAITING_MERGE_APPROVAL,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.AWAITING_HUMAN_INTERVENTION: frozenset({RunState.CANCELLED, RunState.FAILED}),
+        RunState.AWAITING_MERGE_APPROVAL: frozenset(
+            {
+                RunState.MONITORING_PR,
+                RunState.MERGING,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.CANCELLED,
+            }
+        ),
+        RunState.MERGING: frozenset(
+            {
+                RunState.COMPLETED,
+                RunState.MONITORING_PR,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.FAILED,
+            }
+        ),
+        RunState.PAUSED: frozenset({RunState.CANCELLED}),
+        RunState.COMPLETED: frozenset(),
+        RunState.FAILED: frozenset(),
+        RunState.CANCELLED: frozenset(),
+    }
+)
 
 # A descriptive alias keeps callers from depending on an implementation name.
 LEGAL_TRANSITIONS: Mapping[RunState, frozenset[RunState]] = LEGAL
@@ -136,6 +139,11 @@ class StateEngine:
             RunState.PAUSED,
             suspended_state=run.state,
             suspension_kind=SuspensionKind.PAUSE,
+            suspension_context=SuspensionContext(
+                state=run.state,
+                suspended_state=run.suspended_state,
+                suspension_kind=run.suspension_kind,
+            ),
         )
 
     def resume(self, run: RunSnapshot) -> RunSnapshot:
@@ -153,7 +161,26 @@ class StateEngine:
                 run.suspended_state,
                 reason="paused run has no valid suspended state",
             )
-        return run.with_state(run.suspended_state)
+        if run.suspension_kind not in (None, SuspensionKind.PAUSE):
+            raise InvalidTransition(
+                run.state,
+                run.suspended_state,
+                reason="paused run has invalid suspension kind",
+            )
+        context = run.suspension_context
+        if context is None:
+            return run.with_state(run.suspended_state)
+        if context.state is not run.suspended_state:
+            raise InvalidTransition(
+                run.state,
+                run.suspended_state,
+                reason="paused run has inconsistent suspension context",
+            )
+        return run.with_state(
+            context.state,
+            suspended_state=context.suspended_state,
+            suspension_kind=context.suspension_kind,
+        )
 
     def intervene(self, run: RunSnapshot) -> RunSnapshot:
         """Suspend an active run for a human decision."""
@@ -192,6 +219,12 @@ class StateEngine:
                 run.state,
                 target,
                 reason="intervention has no suspended state",
+            )
+        if run.suspension_kind not in (None, SuspensionKind.INTERVENTION):
+            raise InvalidTransition(
+                run.state,
+                target,
+                reason="intervention has invalid suspension kind",
             )
 
         target = self._coerce_state(target, run.state)

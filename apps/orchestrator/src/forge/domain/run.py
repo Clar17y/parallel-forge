@@ -34,6 +34,15 @@ class SuspensionKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class SuspensionContext:
+    """The state and suspension metadata hidden by an outer pause."""
+
+    state: RunState
+    suspended_state: RunState | None
+    suspension_kind: SuspensionKind | None
+
+
+@dataclass(frozen=True, slots=True)
 class RunSnapshot:
     """The complete immutable state needed to advance one run."""
 
@@ -46,12 +55,14 @@ class RunSnapshot:
     local_remediation_count: int = 0
     remote_remediation_count: int = 0
     suspension_kind: SuspensionKind | None = None
+    suspension_context: SuspensionContext | None = None
 
     def with_state(
         self,
         state: RunState,
         suspended_state: RunState | None = None,
         suspension_kind: SuspensionKind | None = None,
+        suspension_context: SuspensionContext | None = None,
     ) -> RunSnapshot:
         """Return a new snapshot with one version increment and no mutation."""
 
@@ -60,8 +71,9 @@ class RunSnapshot:
             state=state,
             suspended_state=suspended_state,
             suspension_kind=suspension_kind,
+            suspension_context=suspension_context,
             version=self.version + 1,
         )
 
 
-__all__ = ["RunSnapshot", "RunState", "SuspensionKind"]
+__all__ = ["RunSnapshot", "RunState", "SuspensionContext", "SuspensionKind"]
