@@ -438,3 +438,19 @@ reported by the handoff below.
 - Full source-tree format check still reports only the pre-existing
   out-of-scope `apps/orchestrator/src/forge/application/adapters/__init__.py`;
   no unrelated formatting was changed.
+
+## Fix round 2 — verification hygiene
+
+- Removed the candidate-added trailing blank line from
+  `apps/orchestrator/src/forge/application/adapters/__init__.py`. This is a
+  formatting-only change; no runtime behavior changed.
+- `.venv\\Scripts\\ruff.exe check apps/orchestrator/src apps/orchestrator/tests`
+  — clean.
+- `.venv\\Scripts\\ruff.exe format --check apps/orchestrator/src apps/orchestrator/tests`
+  — **132 files already formatted**; the touched adapter file also passes its
+  focused format check.
+- `.venv\\Scripts\\python.exe -m mypy apps/orchestrator/src/forge` — success,
+  **92 source files**.
+- `git diff --check dbeb9dec670817b326bf2b600ec0638432f92fda` against the
+  working tree — clean. The verifier report remains intentionally
+  uncommitted.
