@@ -10,6 +10,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -171,6 +172,7 @@ class AgentExecution(Base, TimestampMixin):
 
     __tablename__ = "agent_executions"
     __table_args__ = (
+        UniqueConstraint("id", "run_id", name="uq_agent_executions_id_run"),
         CheckConstraint("role IN ('planner','developer','reviewer')", name="role"),
         CheckConstraint(
             "status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED')", name="status"
@@ -240,26 +242,61 @@ class ModelUsage(Base):
 
     __tablename__ = "model_usage"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["agent_execution_id", "run_id"],
+            ["agent_executions.id", "agent_executions.run_id"],
+            name="fk_model_usage_agent_execution_run",
+            ondelete="CASCADE",
+        ),
         CheckConstraint(
-            "input_tokens >= 0 AND output_tokens >= 0 AND estimated_cost_minor >= 0 "
-            "AND latency_ms >= 0",
+            "input_tokens >= 0 AND output_tokens >= 0 AND cached_input_tokens >= 0 "
+            "AND duration_ms >= 0 AND tool_call_count >= 0 "
+            "AND (estimated_cost_minor IS NULL OR estimated_cost_minor >= 0)",
             name="usage_nonnegative",
         ),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="currency"),
+        CheckConstraint(
+            "provider = btrim(provider) AND char_length(provider) >= 1 "
+            "AND model = btrim(model) AND char_length(model) >= 1 "
+            "AND (provider_request_id IS NULL OR (provider_request_id = btrim(provider_request_id) "
+            "AND char_length(provider_request_id) >= 1))",
+            name="identity_nonempty",
+        ),
+        CheckConstraint(
+            "prompt_version = btrim(prompt_version) AND char_length(prompt_version) >= 1 "
+            "AND pricing_version = btrim(pricing_version) AND char_length(pricing_version) >= 1",
+            name="versions_nonempty",
+        ),
+        CheckConstraint(
+            "(estimated_cost_minor IS NOT NULL AND unknown_price_reason IS NULL) OR "
+            "(estimated_cost_minor IS NULL AND unknown_price_reason IS NOT NULL "
+            "AND unknown_price_reason = btrim(unknown_price_reason) "
+            "AND char_length(unknown_price_reason) >= 1)",
+            name="price_shape",
+        ),
+        Index("ix_model_usage_run_created_at", "run_id", "created_at"),
+        Index("ix_model_usage_agent_execution_id", "agent_execution_id"),
+        Index("ix_model_usage_provider_model", "provider", "model"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     run_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
     )
-    agent_execution_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey("agent_executions.id", ondelete="CASCADE"), nullable=False
-    )
+    agent_execution_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     provider: Mapped[str] = mapped_column(String(96), nullable=False)
     model: Mapped[str] = mapped_column(String(255), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(96), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    estimated_cost_minor: Mapped[int] = mapped_column(Integer, nullable=False)
-    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255))
+    pricing_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    estimated_cost_minor: Mapped[int | None] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    unknown_price_reason: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

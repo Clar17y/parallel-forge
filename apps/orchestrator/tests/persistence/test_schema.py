@@ -235,6 +235,11 @@ def test_schema_contains_required_identity_and_safety_constraints(
             "intent_uniques": inspector.get_unique_constraints("operation_intents"),
             "intent_columns": inspector.get_columns("operation_intents"),
             "intent_indexes": inspector.get_indexes("operation_intents"),
+            "usage_columns": inspector.get_columns("model_usage"),
+            "usage_indexes": inspector.get_indexes("model_usage"),
+            "usage_checks": inspector.get_check_constraints("model_usage"),
+            "usage_fks": inspector.get_foreign_keys("model_usage"),
+            "agent_uniques": inspector.get_unique_constraints("agent_executions"),
             "run_indexes": inspector.get_indexes("runs"),
             "command_indexes": inspector.get_indexes("run_commands"),
             "command_columns": inspector.get_columns("run_commands"),
@@ -304,6 +309,43 @@ def test_schema_contains_required_identity_and_safety_constraints(
     } <= {item["name"] for item in intent_checks}
     intent_index_columns = constrained_columns("intent_indexes")
     assert ("status", "execution_lease_expires_at", "updated_at") in intent_index_columns
+
+    usage_columns = result["usage_columns"]
+    usage_checks = result["usage_checks"]
+    usage_fks = result["usage_fks"]
+    assert isinstance(usage_columns, list)
+    assert isinstance(usage_checks, list)
+    assert isinstance(usage_fks, list)
+    usage_column_names = {item["name"] for item in usage_columns}
+    assert {
+        "prompt_version",
+        "cached_input_tokens",
+        "duration_ms",
+        "tool_call_count",
+        "provider_request_id",
+        "pricing_version",
+        "currency",
+        "unknown_price_reason",
+    } <= usage_column_names
+    assert "latency_ms" not in usage_column_names
+    assert {
+        "ck_model_usage_usage_nonnegative",
+        "ck_model_usage_currency",
+        "ck_model_usage_identity_nonempty",
+        "ck_model_usage_versions_nonempty",
+        "ck_model_usage_price_shape",
+    } <= {item["name"] for item in usage_checks}
+    assert {
+        ("run_id", "created_at"),
+        ("agent_execution_id",),
+        ("provider", "model"),
+    } <= constrained_columns("usage_indexes")
+    assert ("id", "run_id") in constrained_columns("agent_uniques")
+    assert any(
+        tuple(foreign_key["constrained_columns"]) == ("agent_execution_id", "run_id")
+        and foreign_key["referred_table"] == "agent_executions"
+        for foreign_key in usage_fks
+    )
 
     session_checks = result["session_checks"]
     run_checks = result["run_checks"]

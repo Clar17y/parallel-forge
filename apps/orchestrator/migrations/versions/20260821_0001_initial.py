@@ -667,6 +667,7 @@ def upgrade() -> None:
             ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_agent_executions")),
+        sa.UniqueConstraint("id", "run_id", name="uq_agent_executions_id_run"),
     )
     op.create_foreign_key(
         "fk_agent_executions_input_artifact_id_artifacts",
@@ -730,10 +731,17 @@ def upgrade() -> None:
         sa.Column("agent_execution_id", sa.Uuid(), nullable=False),
         sa.Column("provider", sa.String(length=96), nullable=False),
         sa.Column("model", sa.String(length=255), nullable=False),
+        sa.Column("prompt_version", sa.String(length=96), nullable=False),
         sa.Column("input_tokens", sa.Integer(), nullable=False),
         sa.Column("output_tokens", sa.Integer(), nullable=False),
-        sa.Column("estimated_cost_minor", sa.Integer(), nullable=False),
-        sa.Column("latency_ms", sa.Integer(), nullable=False),
+        sa.Column("cached_input_tokens", sa.Integer(), nullable=False),
+        sa.Column("duration_ms", sa.Integer(), nullable=False),
+        sa.Column("tool_call_count", sa.Integer(), nullable=False),
+        sa.Column("provider_request_id", sa.String(length=255), nullable=True),
+        sa.Column("pricing_version", sa.String(length=96), nullable=False),
+        sa.Column("estimated_cost_minor", sa.Integer(), nullable=True),
+        sa.Column("currency", sa.String(length=3), nullable=False),
+        sa.Column("unknown_price_reason", sa.String(length=255), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -741,15 +749,24 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.ForeignKeyConstraint(
-            ["agent_execution_id"],
-            ["agent_executions.id"],
-            name=op.f("fk_model_usage_agent_execution_id_agent_executions"),
+            ["agent_execution_id", "run_id"],
+            ["agent_executions.id", "agent_executions.run_id"],
+            name="fk_model_usage_agent_execution_run",
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["run_id"], ["runs.id"], name=op.f("fk_model_usage_run_id_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_model_usage")),
+    )
+    op.create_index(
+        "ix_model_usage_run_created_at", "model_usage", ["run_id", "created_at"], unique=False
+    )
+    op.create_index(
+        "ix_model_usage_agent_execution_id", "model_usage", ["agent_execution_id"], unique=False
+    )
+    op.create_index(
+        "ix_model_usage_provider_model", "model_usage", ["provider", "model"], unique=False
     )
     op.create_table(
         "reviews",
@@ -897,8 +914,36 @@ def upgrade() -> None:
     op.create_check_constraint(
         op.f("ck_model_usage_usage_nonnegative"),
         "model_usage",
-        "input_tokens >= 0 AND output_tokens >= 0 AND estimated_cost_minor >= 0 "
-        "AND latency_ms >= 0",
+        "input_tokens >= 0 AND output_tokens >= 0 AND cached_input_tokens >= 0 "
+        "AND duration_ms >= 0 AND tool_call_count >= 0 "
+        "AND (estimated_cost_minor IS NULL OR estimated_cost_minor >= 0)",
+    )
+    op.create_check_constraint(
+        op.f("ck_model_usage_currency"),
+        "model_usage",
+        "currency ~ '^[A-Z]{3}$'",
+    )
+    op.create_check_constraint(
+        op.f("ck_model_usage_identity_nonempty"),
+        "model_usage",
+        "provider = btrim(provider) AND char_length(provider) >= 1 "
+        "AND model = btrim(model) AND char_length(model) >= 1 "
+        "AND (provider_request_id IS NULL OR (provider_request_id = btrim(provider_request_id) "
+        "AND char_length(provider_request_id) >= 1))",
+    )
+    op.create_check_constraint(
+        op.f("ck_model_usage_versions_nonempty"),
+        "model_usage",
+        "prompt_version = btrim(prompt_version) AND char_length(prompt_version) >= 1 "
+        "AND pricing_version = btrim(pricing_version) AND char_length(pricing_version) >= 1",
+    )
+    op.create_check_constraint(
+        op.f("ck_model_usage_price_shape"),
+        "model_usage",
+        "(estimated_cost_minor IS NOT NULL AND unknown_price_reason IS NULL) OR "
+        "(estimated_cost_minor IS NULL AND unknown_price_reason IS NOT NULL "
+        "AND unknown_price_reason = btrim(unknown_price_reason) "
+        "AND char_length(unknown_price_reason) >= 1)",
     )
     op.create_check_constraint(
         op.f("ck_artifacts_size_and_schema_version"),

@@ -10,6 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.domain.event import RunEvent, thaw_payload
+from forge.observability.context import current_context
+from forge.observability.redaction import Redactor
 from forge.persistence.models import Run
 from forge.persistence.models import RunEvent as RunEventRecord
 from forge.persistence.repositories.runs import (
@@ -25,11 +27,28 @@ class InvalidEventCursor(ValueError):
 class PostgresEventRepository:
     """Persist immutable events using a safe row-lock sequence allocator."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, redactor: Redactor | None = None) -> None:
         self._session = session
+        self._redactor = redactor or Redactor()
 
     async def append(self, event: RunEvent) -> RunEvent:
         """Append one event and allocate its next sequence under the run lock."""
+
+        payload = thaw_payload(event.payload)
+        context = current_context()
+        if context.run_id is not None and context.run_id != event.run_id:
+            raise PersistenceDataError("event run does not match the active correlation context")
+        correlation = context.to_dict()
+        if correlation:
+            caller_correlation = payload.get("correlation")
+            merged_correlation = (
+                dict(caller_correlation) if isinstance(caller_correlation, Mapping) else {}
+            )
+            merged_correlation.update(correlation)
+            payload["correlation"] = merged_correlation
+        redacted_payload = self._redactor.redact(payload)
+        if not isinstance(redacted_payload, Mapping):
+            raise PersistenceDataError("redacted event payload is not an object")
 
         lock_result = await self._session.execute(
             select(Run.id).where(Run.id == event.run_id).with_for_update()
@@ -47,7 +66,7 @@ class PostgresEventRepository:
             raise PersistenceDataError(
                 f"event sequence {event.sequence} is not the next sequence {next_sequence}"
             )
-        stored = replace(event, sequence=next_sequence)
+        stored = replace(event, sequence=next_sequence, payload=redacted_payload)
         record = RunEventRecord(
             id=stored.event_id,
             sequence=next_sequence,
