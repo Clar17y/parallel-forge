@@ -19,7 +19,7 @@ _GITHUB_TOKEN = re.compile(r"(?i)\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-
 _ASSIGNMENT = re.compile(
     r"(?ix)\b(?:x[-_ ]?)?(?:api[-_ ]?(?:key|token)|access[-_]?token|refresh[-_]?token|"
     r"auth(?:orization)?|password|secret|credential|token)\s*[:=]\s*"
-    r"(?:[\"']([^\"']+)[\"']|([^\s,;]+))"
+    r"(?:[\"']([^\"']+)[\"']|((?:bearer|basic)\s+[^\s,;]+|[^\s,;]+))"
 )
 _DATABASE_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@")
 _PRIVATE_KEY = re.compile(
@@ -30,13 +30,14 @@ _PRIVATE_KEY = re.compile(
 def contains_credential(value: str) -> bool:
     """Return whether a string contains a credential-bearing representation."""
 
-    return bool(
-        _AUTH_VALUE.search(value)
-        or _GITHUB_TOKEN.search(value)
-        or _ASSIGNMENT.search(value)
-        or _DATABASE_URL.search(value)
-        or _PRIVATE_KEY.search(value)
-    )
+    for pattern in (_AUTH_VALUE, _GITHUB_TOKEN, _ASSIGNMENT, _DATABASE_URL, _PRIVATE_KEY):
+        for match in pattern.finditer(value):
+            candidate = match.group(0)
+            for marker in sorted(_REDACTED, key=len, reverse=True):
+                candidate = candidate.replace(marker, "")
+            if pattern.search(candidate):
+                return True
+    return False
 
 
 def redact_durable_text(value: str) -> str:

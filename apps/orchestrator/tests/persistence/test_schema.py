@@ -297,6 +297,11 @@ def test_schema_contains_required_identity_and_safety_constraints(
     assert "ck_operation_intents_status_shape" in {item["name"] for item in intent_checks}
     assert "ck_operation_intents_request_digest" in {item["name"] for item in intent_checks}
     assert "ck_operation_intents_execution_lease_shape" in {item["name"] for item in intent_checks}
+    assert {
+        "ck_operation_intents_attempt_count_nonnegative",
+        "ck_operation_intents_request_schema_version_positive",
+        "ck_operation_intents_outcome_shape",
+    } <= {item["name"] for item in intent_checks}
     intent_index_columns = constrained_columns("intent_indexes")
     assert ("status", "execution_lease_expires_at", "updated_at") in intent_index_columns
 

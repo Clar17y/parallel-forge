@@ -251,3 +251,56 @@ async def test_command_payload_rejects_secret_assignments_inside_text(
 async def test_claim_rejects_subsecond_leases(command_repository, persisted_run) -> None:
     with pytest.raises(ValueError, match="at least 1 second"):
         await command_repository.claim_next(worker_id="worker-a", lease_seconds=0.999)
+
+
+@pytest.mark.integration
+async def test_command_failure_redacts_bearer_github_token_before_persisting(
+    command_repository, persisted_run
+) -> None:
+    command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="provider-failure",
+        idempotency_key="provider-failure-redaction",
+        payload={},
+    )
+    claimed = await command_repository.claim_next(worker_id="worker-a", lease_seconds=1)
+    assert claimed is not None
+    secret = "ghp_0123456789abcdefghijklmnopqrstuv"
+
+    stored = await command_repository.fail(
+        command.id,
+        worker_id="worker-a",
+        error=f"Authorization: Bearer {secret}",
+        transient=False,
+    )
+
+    assert stored.error_summary is not None
+    assert secret not in stored.error_summary
+    assert "[REDACTED]" in stored.error_summary
+    assert len(stored.error_summary) <= 1024
+
+
+@pytest.mark.integration
+async def test_command_cancel_redacts_credentialed_database_url_before_persisting(
+    command_repository, persisted_run
+) -> None:
+    command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="cancel-with-secret",
+        idempotency_key="cancel-redaction",
+        payload={},
+    )
+    claimed = await command_repository.claim_next(worker_id="worker-a", lease_seconds=1)
+    assert claimed is not None
+    secret = "super-secret-password"
+
+    stored = await command_repository.cancel(
+        command.id,
+        worker_id="worker-a",
+        reason=f"database unavailable at postgresql://forge:{secret}@db.internal/forge",
+    )
+
+    assert stored.error_summary is not None
+    assert secret not in stored.error_summary
+    assert "[REDACTED]" in stored.error_summary
+    assert len(stored.error_summary) <= 1024

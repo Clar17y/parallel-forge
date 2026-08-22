@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.domain.command import CommandEnvelope, CommandStatus, thaw_payload
 from forge.domain.lease import validate_lease_seconds
+from forge.domain.payload import redact_durable_text
 from forge.persistence.models import Run, RunCommand
 from forge.persistence.repositories.runs import PersistenceDataError
 
@@ -37,9 +37,6 @@ class CommandStateConflict(CommandError):
     """A terminal command was asked to take a contradictory terminal result."""
 
 
-_ERROR_SECRET = re.compile(
-    r"(?i)(password|secret|credential|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+"
-)
 _MAX_ERROR_LENGTH = 1024
 
 
@@ -359,8 +356,7 @@ def _command_from_record(record: RunCommand) -> CommandEnvelope:
 def _bounded_error(error: str) -> str:
     if not isinstance(error, str):
         error = repr(error)
-    redacted = _ERROR_SECRET.sub(lambda match: f"{match.group(1)}=[REDACTED]", error)
-    return redacted[:_MAX_ERROR_LENGTH]
+    return redact_durable_text(error)[:_MAX_ERROR_LENGTH]
 
 
 def _utc(value: datetime) -> datetime:

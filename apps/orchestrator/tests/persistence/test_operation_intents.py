@@ -110,6 +110,28 @@ class BlockedInvokeAdapter:
         )
 
 
+@dataclass
+class BlockedReconcileAdapter:
+    """Hold recovery open long enough to exercise execution-lease renewal."""
+
+    reconcile_started: asyncio.Event
+    release_reconcile: asyncio.Event
+    reconcile_calls: int = 0
+
+    async def invoke(self, intent):
+        raise AssertionError("recovery must never invoke a side effect")
+
+    async def reconcile(self, intent):
+        self.reconcile_calls += 1
+        self.reconcile_started.set()
+        await self.release_reconcile.wait()
+        return OperationOutcome(
+            remote_resource_id="pr:renewed",
+            payload={"number": 44},
+            status=OperationStatus.SUCCEEDED,
+        )
+
+
 def _request(run_id):
     return {
         "run_id": run_id,
@@ -229,6 +251,45 @@ async def test_recovery_skips_an_active_execution_owner(
     assert observed.status is OperationStatus.PENDING
     assert observed.execution_owner == "active-worker"
     assert adapter.reconcile_calls == 0
+
+
+@pytest.mark.integration
+async def test_recovery_renews_claim_before_second_recovery_can_reconcile(
+    operation_repository, persisted_run
+) -> None:
+    intent = await operation_repository.begin(**_request(persisted_run.id))
+    adapter = BlockedReconcileAdapter(asyncio.Event(), asyncio.Event())
+    first = RecoveryService(operation_repository, execution_lease_seconds=1)
+    second = RecoveryService(operation_repository, execution_lease_seconds=1)
+    renewals = 0
+    renewal_seen = asyncio.Event()
+    original_renew = operation_repository.renew_execution
+
+    async def observe_renewal(*args, **kwargs):
+        nonlocal renewals
+        result = await original_renew(*args, **kwargs)
+        renewals += 1
+        renewal_seen.set()
+        return result
+
+    operation_repository.renew_execution = observe_renewal
+    first_task = asyncio.create_task(first.reconcile(intent.id, adapter))
+    await adapter.reconcile_started.wait()
+
+    try:
+        for _ in range(4):
+            await asyncio.wait_for(renewal_seen.wait(), timeout=2)
+            renewal_seen.clear()
+        second_result = await second.reconcile(intent.id, adapter)
+    finally:
+        adapter.release_reconcile.set()
+    recovered = await first_task
+
+    assert renewals >= 4
+    assert second_result.status is OperationStatus.PENDING
+    assert second_result.execution_owner is not None
+    assert adapter.reconcile_calls == 1
+    assert recovered.status is OperationStatus.SUCCEEDED
 
 
 @pytest.mark.integration

@@ -15,6 +15,8 @@ SECRET_PAYLOADS = (
     {"description": "headers include x-api-key=api-secret-value"},
     {"description": "token=do-not-persist"},
     {"description": "postgresql://forge:super-secret@db.internal/forge"},
+    {"description": "password=[REDACTED]still-secret"},
+    {"description": "postgresql://forge:[REDACTED]still-secret@db.internal/forge"},
     {"description": "-----BEGIN PRIVATE KEY-----\nsecret-material\n-----END PRIVATE KEY-----"},
     {"description": "github_pat_0123456789abcdefghijklmnopqrstuv"},
 )

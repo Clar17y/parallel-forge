@@ -183,17 +183,27 @@ class RecoveryService:
         )
         if not claim.acquired:
             return claim.intent
+        renewal = asyncio.create_task(self._renew_until_done(claim.intent.id, owner_id))
+        outcome: OperationOutcome | None = None
+        failure: str | None = None
         try:
             outcome = await adapter.reconcile(claim.intent)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - adapter failures become durable outcomes
+            failure = str(error)
+        finally:
+            renewal.cancel()
+            with suppress(asyncio.CancelledError):
+                await renewal
+        if failure is not None:
             return await self._operations.fail(
                 claim.intent.id,
-                error=str(error),
+                error=failure,
                 needs_reconciliation=True,
                 owner_id=owner_id,
             )
+        assert outcome is not None
         if outcome.status is OperationStatus.SUCCEEDED:
             return await self._operations.complete(claim.intent.id, outcome, owner_id=owner_id)
         return await self._operations.fail(
@@ -202,6 +212,21 @@ class RecoveryService:
             needs_reconciliation=True,
             owner_id=owner_id,
         )
+
+    async def _renew_until_done(self, intent_id: UUID, owner_id: str) -> None:
+        """Keep a recovery lease alive until the adapter call finishes."""
+
+        delay = self._execution_lease_seconds / 3
+        while True:
+            await asyncio.sleep(delay)
+            try:
+                await self._operations.renew_execution(
+                    intent_id,
+                    owner_id=owner_id,
+                    lease_seconds=self._execution_lease_seconds,
+                )
+            except Exception:  # noqa: BLE001 - lease loss stops this recovery safely
+                return
 
     async def reconcile_all(
         self, adapters: Mapping[str, OperationAdapter]
