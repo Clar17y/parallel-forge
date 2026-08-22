@@ -8,7 +8,6 @@ import errno
 import hashlib
 import os
 import re
-import secrets
 import stat
 import threading
 from collections.abc import Callable, Iterator
@@ -27,6 +26,7 @@ _DIGEST_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}\Z", re.ASCII
 _HASH_CHUNK: Final[int] = 1024 * 1024
 _O_DIRECTORY: Final[int] = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
+_O_TMPFILE: Final[int] = getattr(os, "O_TMPFILE", 0)
 
 
 @dataclass(slots=True)
@@ -152,10 +152,7 @@ class FilesystemArtifactStore:
         before_publish: Callable[[Path], None],
     ) -> None:
         target_name = target.name
-        temp_name = f".{target_name}.{secrets.token_hex(12)}.tmp"
         temp_fd: int | None = None
-        temp_identity: tuple[int, int] | None = None
-        published = False
         with self._posix_layout(digest=digest, create=True) as layout:
             existing = _open_posix_regular(layout.shard_fd, target_name, missing_ok=True)
             if existing is not None:
@@ -166,26 +163,15 @@ class FilesystemArtifactStore:
                 self._verify_posix_layout(layout)
                 return
             try:
-                temp_fd = os.open(
-                    temp_name,
-                    os.O_RDWR | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
-                    0o600,
-                    dir_fd=layout.shard_fd,
-                )
+                temp_fd = _open_posix_unnamed_temp(layout.shard_fd)
                 _require_regular_fd(temp_fd)
-                temp_identity = _fd_identity(temp_fd)
                 _write_fd(temp_fd, data)
                 os.fsync(temp_fd)
                 _read_verified_fd(temp_fd, digest)
                 before_publish(target)
+                self._verify_posix_layout(layout)
                 try:
-                    os.link(
-                        temp_name,
-                        target_name,
-                        src_dir_fd=layout.shard_fd,
-                        dst_dir_fd=layout.shard_fd,
-                        follow_symlinks=False,
-                    )
+                    _link_posix_unnamed_temp(temp_fd, layout.shard_fd, target_name)
                 except FileExistsError:
                     winner = _open_posix_regular(
                         layout.shard_fd,
@@ -198,12 +184,7 @@ class FilesystemArtifactStore:
                         _read_verified_fd(winner, digest)
                     finally:
                         os.close(winner)
-                except OSError as error:
-                    raise ArtifactStoreError(
-                        "artifact publication could not be made exclusive"
-                    ) from error
                 else:
-                    published = True
                     os.fsync(layout.shard_fd)
 
                 self._verify_posix_layout(layout)
@@ -214,16 +195,10 @@ class FilesystemArtifactStore:
                     _read_verified_fd(winner, digest)
                 finally:
                     os.close(winner)
-            except BaseException:
-                if published and temp_identity is not None:
-                    _unlink_posix_if_identity(layout.shard_fd, target_name, temp_identity)
-                raise
             finally:
                 if temp_fd is not None:
                     with contextlib.suppress(OSError):
                         os.close(temp_fd)
-                if temp_identity is not None:
-                    _unlink_posix_if_identity(layout.shard_fd, temp_name, temp_identity)
 
     @contextlib.contextmanager
     def _posix_layout(self, *, digest: str, create: bool) -> Iterator[_PosixLayout]:
@@ -301,6 +276,7 @@ def _open_posix_child(parent_fd: int, name: str, *, create: bool) -> int:
     if not name or name in {".", ".."} or "/" in name:
         raise ArtifactIntegrityError("artifact path component is invalid")
     flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW
+    created = False
     try:
         descriptor = os.open(name, flags, dir_fd=parent_fd)
     except FileNotFoundError:
@@ -308,6 +284,7 @@ def _open_posix_child(parent_fd: int, name: str, *, create: bool) -> int:
             raise ArtifactIntegrityError("artifact namespace is unavailable") from None
         try:
             os.mkdir(name, 0o700, dir_fd=parent_fd)
+            created = True
         except FileExistsError:
             pass
         except OSError as error:
@@ -321,6 +298,9 @@ def _open_posix_child(parent_fd: int, name: str, *, create: bool) -> int:
     try:
         if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
             raise ArtifactIntegrityError("artifact path contains a non-directory")
+        if created:
+            os.fsync(descriptor)
+            os.fsync(parent_fd)
     except BaseException:
         os.close(descriptor)
         raise
@@ -351,6 +331,25 @@ def _require_regular_fd(descriptor: int) -> None:
         raise ArtifactIntegrityError("artifact path is not a regular file")
 
 
+def _open_posix_unnamed_temp(parent_fd: int) -> int:
+    if not _O_TMPFILE:
+        raise ArtifactStoreError("unnamed artifact temp files are unavailable")
+    try:
+        return os.open(".", os.O_RDWR | _O_TMPFILE, 0o600, dir_fd=parent_fd)
+    except OSError as error:
+        raise ArtifactStoreError("unnamed artifact temp files are unavailable") from error
+
+
+def _link_posix_unnamed_temp(descriptor: int, parent_fd: int, name: str) -> None:
+    source = f"/proc/self/fd/{descriptor}"
+    try:
+        os.link(source, name, dst_dir_fd=parent_fd, follow_symlinks=True)
+    except FileExistsError:
+        raise
+    except OSError as error:
+        raise ArtifactStoreError("unnamed artifact publication is unavailable") from error
+
+
 def _fd_identity(descriptor: int) -> tuple[int, int]:
     result = os.fstat(descriptor)
     return (int(result.st_dev), int(result.st_ino))
@@ -378,21 +377,6 @@ def _read_verified_fd(descriptor: int, digest: str) -> bytes:
     if computed.hexdigest() != digest:
         raise ArtifactIntegrityError("artifact blob failed digest verification")
     return b"".join(chunks)
-
-
-def _unlink_posix_if_identity(
-    parent_fd: int,
-    name: str,
-    expected: tuple[int, int],
-) -> None:
-    try:
-        result = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError, OSError:
-        return
-    if not stat.S_ISREG(result.st_mode) or (int(result.st_dev), int(result.st_ino)) != expected:
-        return
-    with contextlib.suppress(FileNotFoundError):
-        os.unlink(name, dir_fd=parent_fd)
 
 
 def _bound_bytes(
