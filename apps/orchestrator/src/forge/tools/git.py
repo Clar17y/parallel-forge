@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 from collections.abc import Sequence
 from pathlib import Path
@@ -45,7 +44,7 @@ class ControlledGit:
         *,
         default_branch: str,
         state_root: str | os.PathLike[str],
-        git_executable: str | os.PathLike[str] | None = None,
+        git_executable: str | os.PathLike[str],
         runner: ProcessRunner | None = None,
     ) -> None:
         if not isinstance(repository, CanonicalRoot):
@@ -136,16 +135,11 @@ class ControlledGit:
         result = self._run(worktree.path, ("rev-parse", "--verify", "HEAD^{commit}"))
         return _parse_sha(result)
 
-    def is_ancestor(
-        self,
-        worktree: ManagedWorktree,
-        ancestor_sha: str | None = None,
-    ) -> bool:
+    def is_ancestor(self, worktree: ManagedWorktree) -> bool:
         """Return whether an exact commit is an ancestor of the handle's HEAD."""
 
         self._validate_handle(worktree)
-        ancestor = worktree.base_sha if ancestor_sha is None else ancestor_sha
-        _validate_sha(ancestor)
+        ancestor = worktree.base_sha
         result = self._run(
             worktree.path,
             ("merge-base", "--is-ancestor", ancestor, "HEAD"),
@@ -342,12 +336,7 @@ class ControlledGit:
             raise ControlledGitError()
 
 
-def _resolve_git_executable(value: str | os.PathLike[str] | None) -> Path:
-    if value is None:
-        configured = shutil.which("git")
-        if configured is None:
-            raise ControlledGitError()
-        value = configured
+def _resolve_git_executable(value: str | os.PathLike[str]) -> Path:
     try:
         path = Path(os.fspath(value))
     except TypeError, ValueError:

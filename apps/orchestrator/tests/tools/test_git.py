@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -15,6 +17,7 @@ from forge.tools.paths import CanonicalRoot
 
 PROJECT_ID = UUID("11111111-1111-1111-1111-111111111111")
 RUN_ID = UUID("22222222-2222-2222-2222-222222222222")
+TRUSTED_GIT = Path(shutil.which("git") or "git").resolve()
 
 
 class CapturingRunner:
@@ -173,6 +176,7 @@ def test_status_uses_exact_forge_prefix_and_sanitized_environment(
         CanonicalRoot(repository),
         default_branch="main",
         state_root=state_root,
+        git_executable=TRUSTED_GIT,
         runner=runner,
     )
     result = controlled.status(handle)
@@ -207,6 +211,7 @@ def test_status_and_diff_use_deterministic_safety_flags(tmp_path: Path) -> None:
         CanonicalRoot(repository),
         default_branch="main",
         state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
         runner=runner,
     )
 
@@ -245,6 +250,7 @@ def test_unsafe_local_filter_config_is_refused_before_status(tmp_path: Path) -> 
         CanonicalRoot(repository),
         default_branch="main",
         state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
     )
     with pytest.raises(ControlledGitError):
         controlled.status(handle)
@@ -263,6 +269,7 @@ def test_nonempty_trusted_hooks_are_refused(tmp_path: Path) -> None:
             CanonicalRoot(repository),
             default_branch="main",
             state_root=state_root,
+            git_executable=TRUSTED_GIT,
             runner=CapturingRunner(),
         )
     assert (hooks / "marker").read_text(encoding="utf-8") == "no"
@@ -274,6 +281,7 @@ def test_handle_path_must_be_exact_registered_worktree(tmp_path: Path) -> None:
         CanonicalRoot(repository),
         default_branch="main",
         state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
         runner=CapturingRunner(),
     )
 
@@ -310,6 +318,7 @@ def test_handle_path_rejects_symlink_or_reparse_target(tmp_path: Path) -> None:
         CanonicalRoot(repository),
         default_branch="main",
         state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
         runner=CapturingRunner(),
     )
     with pytest.raises(ControlledGitError):
@@ -323,6 +332,7 @@ def test_wrong_recorded_branch_fails_before_requested_operation(tmp_path: Path) 
         CanonicalRoot(repository),
         default_branch="main",
         state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
         runner=runner,
     )
     with pytest.raises(ControlledGitError):
@@ -336,6 +346,7 @@ def test_identity_helpers_return_lowercase_sha_and_ancestry(tmp_path: Path) -> N
         CanonicalRoot(repository),
         default_branch="main",
         state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
     )
 
     assert controlled.current_branch(handle) == "feat"
@@ -350,7 +361,79 @@ def test_identity_sha_decisions_fail_on_truncated_or_malformed_output(tmp_path: 
         CanonicalRoot(repository),
         default_branch="main",
         state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
         runner=TruncatedHeadRunner(),
     )
     with pytest.raises(ControlledGitError):
         controlled.head_sha(handle)
+
+
+@pytest.mark.parametrize(
+    "forged_name",
+    ("/absolute", "nested/name", r"nested\name", r"C:\drive", ".", "..", "../escape"),
+)
+def test_forged_worktree_names_are_rejected_before_git_invocation(
+    tmp_path: Path, forged_name: str
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    runner = CapturingRunner()
+    _controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+        runner=runner,
+    )
+
+    with pytest.raises(ValueError):
+        replace(handle.identity, worktree_name=forged_name)
+    assert runner.calls == []
+
+
+def test_is_ancestor_does_not_accept_a_caller_selected_ref(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+    )
+
+    with pytest.raises(TypeError):
+        controlled.is_ancestor(handle, handle.base_sha)  # type: ignore[call-arg]
+
+
+def test_absolute_git_executable_is_mandatory(tmp_path: Path) -> None:
+    repository, _identity, _handle = _managed_repository(tmp_path)
+    with pytest.raises(TypeError):
+        ControlledGit(
+            CanonicalRoot(repository),
+            default_branch="main",
+            state_root=tmp_path / "state",
+            runner=CapturingRunner(),
+        )
+
+
+def test_inherited_path_cannot_replace_explicit_trusted_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    rogue_marker = tmp_path / "rogue-marker"
+    rogue_directory = tmp_path / "rogue-bin"
+    rogue_directory.mkdir()
+    (rogue_directory / "git.exe").write_text(f"rogue marker: {rogue_marker}", encoding="utf-8")
+    monkeypatch.setenv("PATH", f"{rogue_directory}{os.pathsep}{os.environ.get('PATH', '')}")
+    runner = CapturingRunner()
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+        runner=runner,
+    )
+
+    controlled.status(handle)
+
+    assert runner.calls
+    assert all(argv[0] == str(TRUSTED_GIT) for argv, _cwd, _environment in runner.calls)
+    assert not rogue_marker.exists()

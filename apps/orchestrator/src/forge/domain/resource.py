@@ -24,6 +24,7 @@ _MAX_POSTGRES_IDENTIFIER_BYTES = 63
 _MAX_WORKTREE_NAME_LENGTH = 128
 _MAX_SECRET_ID_LENGTH = 512
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
+_WORKTREE_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +149,8 @@ def _validate_worktree_name(value: object) -> None:
         raise ValueError(
             f"worktree name must contain at most {_MAX_WORKTREE_NAME_LENGTH} characters"
         )
+    if _WORKTREE_NAME.fullmatch(value) is None:
+        raise ValueError("worktree name must be one safe lowercase filename component")
 
 
 def _validate_postgres_identifier(value: str, name: str) -> None:
