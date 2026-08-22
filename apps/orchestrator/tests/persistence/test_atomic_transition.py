@@ -3,7 +3,7 @@
 import pytest
 from forge.domain.errors import InvalidTransition
 from forge.domain.run import RunState
-from forge.persistence.repositories.runs import ConcurrencyConflict
+from forge.persistence.repositories.runs import ConcurrencyConflict, PersistenceError
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 
 
@@ -133,6 +133,79 @@ async def test_failure_after_event_insert_rolls_back_state_and_event(
                 event_type="run.planning_started",
                 event_payload={},
             )
+
+    async with uow:
+        assert await uow.runs.get(persisted_run.id) == persisted_run
+        assert await uow.events.list_after(persisted_run.id, sequence=0) == []
+
+
+@pytest.mark.integration
+async def test_caught_failure_before_event_insert_cannot_be_committed(
+    uow, persisted_run, monkeypatch
+) -> None:
+    async with uow:
+
+        async def fail(_event) -> object:
+            raise RuntimeError("injected before event insert")
+
+        monkeypatch.setattr(uow.events, "append", fail)
+        with pytest.raises(RuntimeError, match="before event insert"):
+            await uow.runs.transition(
+                run_id=persisted_run.id,
+                expected_version=0,
+                target=RunState.PLANNING,
+                event_type="run.planning_started",
+                event_payload={},
+            )
+        await uow.commit()
+
+    async with uow:
+        assert await uow.runs.get(persisted_run.id) == persisted_run
+        assert await uow.events.list_after(persisted_run.id, sequence=0) == []
+
+
+@pytest.mark.integration
+async def test_caught_failure_after_event_insert_cannot_be_committed(
+    uow, persisted_run, monkeypatch
+) -> None:
+    async with uow:
+        append = uow.events.append
+
+        async def append_then_fail(event):
+            await append(event)
+            raise RuntimeError("injected after event insert")
+
+        monkeypatch.setattr(uow.events, "append", append_then_fail)
+        with pytest.raises(RuntimeError, match="after event insert"):
+            await uow.runs.transition(
+                run_id=persisted_run.id,
+                expected_version=0,
+                target=RunState.PLANNING,
+                event_type="run.planning_started",
+                event_payload={},
+            )
+        await uow.commit()
+
+    async with uow:
+        assert await uow.runs.get(persisted_run.id) == persisted_run
+        assert await uow.events.list_after(persisted_run.id, sequence=0) == []
+
+
+@pytest.mark.integration
+async def test_unbound_repository_rejects_before_mutating_run(
+    uow, persisted_run, monkeypatch
+) -> None:
+    async with uow:
+        monkeypatch.setattr(uow.runs, "_events", None)
+        with pytest.raises(PersistenceError, match="not bound"):
+            await uow.runs.transition(
+                run_id=persisted_run.id,
+                expected_version=0,
+                target=RunState.PLANNING,
+                event_type="run.planning_started",
+                event_payload={},
+            )
+        await uow.commit()
 
     async with uow:
         assert await uow.runs.get(persisted_run.id) == persisted_run

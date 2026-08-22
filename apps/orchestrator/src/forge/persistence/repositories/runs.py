@@ -86,7 +86,10 @@ class PostgresRunRepository:
 
         with self._session.no_autoflush:
             project_result = await self._session.execute(
-                select(Project).where(Project.id == run.project_id).with_for_update()
+                select(Project)
+                .where(Project.id == run.project_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
             project = project_result.scalar_one_or_none()
             if project is None:
@@ -161,6 +164,8 @@ class PostgresRunRepository:
 
         current = _snapshot_from_record(record)
         changed = self._state_engine.transition(current, target)
+        if self._events is None:
+            raise PersistenceError("run repository is not bound to an event repository")
         event = RunEvent(
             run_id=run_id,
             run_version=changed.version,
@@ -171,12 +176,16 @@ class PostgresRunRepository:
             payload_schema_version=payload_schema_version,
             occurred_at=occurred_at or _utc_now(),
         )
-        _apply_snapshot(record, changed)
-
-        if self._events is None:
-            raise PersistenceError("run repository is not bound to an event repository")
-        await self._events.append(event)
-        await self._session.flush()
+        try:
+            _apply_snapshot(record, changed)
+            await self._events.append(event)
+            await self._session.flush()
+        except BaseException:
+            # A caller may catch the append failure and still call commit().
+            # Roll back immediately so a tracked run update can never commit
+            # without its causal event; the UoW remains reusable afterwards.
+            await self._session.rollback()
+            raise
         return changed
 
 

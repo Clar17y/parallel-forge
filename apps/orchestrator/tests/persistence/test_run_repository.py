@@ -15,7 +15,8 @@ from forge.persistence.repositories.runs import (
     RunCreationError,
     RunNotFound,
 )
-from sqlalchemy import text
+from sqlalchemy import delete, text
+from sqlalchemy.exc import DBAPIError
 
 
 @pytest.mark.integration
@@ -70,6 +71,51 @@ async def test_create_snapshots_current_policy_version_and_schema_defaults(
 
 
 @pytest.mark.integration
+async def test_create_refreshes_current_policy_after_external_update(
+    session_factory, uow, persisted_run
+) -> None:
+    first = RunSnapshot(
+        id=uuid4(), project_id=persisted_run.project_id, task_id=persisted_run.task_id
+    )
+    second = RunSnapshot(
+        id=uuid4(), project_id=persisted_run.project_id, task_id=persisted_run.task_id
+    )
+    async with uow:
+        await uow.runs.create(first)
+        await uow.commit()
+        cached_project = await uow.session.get(Project, persisted_run.project_id)
+        assert cached_project is not None
+        assert cached_project.current_policy_version == 1
+
+        async with session_factory() as external, external.begin():
+            external.add(
+                ProjectPolicyVersion(
+                    project_id=persisted_run.project_id,
+                    version=2,
+                    policy_digest="f" * 64,
+                    document_schema_version=1,
+                    document={"version": 2},
+                )
+            )
+            await external.flush()
+            project = await external.get(Project, persisted_run.project_id)
+            assert project is not None
+            project.current_policy_version = 2
+
+        assert cached_project.current_policy_version == 1
+        await uow.runs.create(second)
+        await uow.commit()
+
+    async with session_factory() as session:
+        first_record = await session.get(Run, first.id)
+        second_record = await session.get(Run, second.id)
+    assert first_record is not None
+    assert second_record is not None
+    assert first_record.policy_version == 1
+    assert second_record.policy_version == 2
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "snapshot",
     [
@@ -106,6 +152,54 @@ async def test_create_rejects_missing_project_without_writing(uow) -> None:
 
 
 @pytest.mark.integration
+async def test_create_rejects_project_without_current_policy_without_writing(
+    session_factory, uow
+) -> None:
+    project_id = uuid4()
+    task_id = uuid4()
+    candidate = RunSnapshot(id=uuid4(), project_id=project_id, task_id=task_id)
+    async with session_factory() as session, session.begin():
+        session.add(
+            Project(
+                id=project_id,
+                canonical_path=f"/tmp/forge-{project_id}",
+                github_repository=f"Clar17y/forge-{project_id}",
+                default_branch="main",
+            )
+        )
+        session.add(
+            Task(
+                id=task_id,
+                project_id=project_id,
+                normalized_text="task without policy",
+                task_digest="1" * 64,
+            )
+        )
+
+    with pytest.raises(RunCreationError, match="current policy"):
+        async with uow:
+            await uow.runs.create(candidate)
+    with pytest.raises(RunNotFound):
+        async with uow:
+            await uow.runs.get(candidate.id)
+
+
+@pytest.mark.integration
+async def test_policy_foreign_key_prevents_dangling_current_policy(
+    session_factory, persisted_run
+) -> None:
+    async with session_factory() as session:
+        with pytest.raises(DBAPIError, match="append-only|foreign key"):
+            async with session.begin():
+                await session.execute(
+                    delete(ProjectPolicyVersion).where(
+                        ProjectPolicyVersion.project_id == persisted_run.project_id,
+                        ProjectPolicyVersion.version == 1,
+                    )
+                )
+
+
+@pytest.mark.integration
 async def test_create_rejects_task_from_another_project(
     session_factory, uow, persisted_run
 ) -> None:
@@ -139,6 +233,9 @@ async def test_create_rejects_task_from_another_project(
     with pytest.raises(RunCreationError):
         async with uow:
             await uow.runs.create(candidate)
+    with pytest.raises(RunNotFound):
+        async with uow:
+            await uow.runs.get(candidate.id)
 
 
 @pytest.mark.integration
@@ -172,6 +269,61 @@ async def test_get_rejects_unknown_suspension_context_version(
                 await work.runs.get(persisted_run.id)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "context",
+    [
+        '{"state":"PLANNING"}',
+        '{"state":"NOT_A_STATE","suspended_state":null,"suspension_kind":null}',
+        '{"state":"PLANNING","suspended_state":null,"suspension_kind":"NOT_A_KIND"}',
+    ],
+)
+async def test_get_rejects_malformed_suspension_context(
+    session_factory, persisted_run, context
+) -> None:
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE runs SET state = 'PAUSED', suspended_state = 'PLANNING', "
+                "suspension_kind = 'PAUSE', suspension_context_schema_version = 1, "
+                "suspension_context = CAST(:context AS jsonb) WHERE id = :run_id"
+            ),
+            {"context": context, "run_id": persisted_run.id},
+        )
+
+    from forge.persistence.unit_of_work import PostgresUnitOfWork
+
+    with pytest.raises(PersistenceDataError):
+        async with PostgresUnitOfWork(session_factory) as work:
+            await work.runs.get(persisted_run.id)
+
+
+@pytest.mark.integration
+async def test_get_rejects_malformed_persisted_state(uow, monkeypatch) -> None:
+    record = Run(
+        id=uuid4(),
+        project_id=uuid4(),
+        task_id=uuid4(),
+        policy_version=1,
+        state="NOT_A_STATE",
+        version=0,
+        local_remediation_count=0,
+        remote_remediation_count=0,
+        token_budget=0,
+        cost_budget_minor=0,
+        duration_budget_seconds=0,
+        database_state="DISABLED",
+    )
+    async with uow:
+
+        async def fake_get(_model, _run_id):
+            return record
+
+        monkeypatch.setattr(uow.session, "get", fake_get)
+        with pytest.raises(PersistenceDataError, match="unknown state"):
+            await uow.runs.get(record.id)
 
 
 @pytest.mark.integration
