@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.services.state_engine import LEGAL, StateEngine
 from forge.domain.event import RunEvent
+from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState, SuspensionContext, SuspensionKind
 from forge.persistence.models import Project, ProjectPolicyVersion, Run, Task
 
@@ -220,6 +221,65 @@ class PostgresRunRepository:
             raise
         return changed
 
+    async def update_resource(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        worktree_path: str | None = None,
+        database_state: ResourceState,
+        database_name: str | None = None,
+        database_role: str | None = None,
+        secret_id: str | None = None,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        """Apply one locked optimistic resource update and causal event."""
+
+        statement = select(Run).where(Run.id == run_id).with_for_update()
+        result = await self._session.execute(statement)
+        record = result.scalar_one_or_none()
+        if record is None:
+            raise RunNotFound(run_id)
+
+        if record.version != expected_version:
+            raise ConcurrencyConflict(run_id, expected_version, record.version)
+
+        current = _snapshot_from_record(record)
+        changed = current.with_resource(
+            worktree_path=worktree_path,
+            database_state=database_state,
+            database_name=database_name,
+            database_role=database_role,
+            secret_id=secret_id,
+        )
+        if self._events is None:
+            raise PersistenceError("run repository is not bound to an event repository")
+        event = RunEvent(
+            run_id=run_id,
+            run_version=changed.version,
+            event_type=event_type,
+            payload=event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            payload_schema_version=payload_schema_version,
+            occurred_at=occurred_at or _utc_now(),
+        )
+        try:
+            _apply_snapshot(record, changed)
+            await self._events.append(event)
+            await self._session.flush()
+        except BaseException:
+            # A caller may catch an append failure and still call commit();
+            # roll back immediately so state cannot commit without its event.
+            await self._session.rollback()
+            raise
+        return changed
+
 
 def _validate_new_snapshot(run: RunSnapshot) -> None:
     """Reject any input that is not an untouched new run."""
@@ -232,6 +292,12 @@ def _validate_new_snapshot(run: RunSnapshot) -> None:
         raise RunCreationError("new runs cannot carry suspension metadata")
     if run.suspension_context is not None:
         raise RunCreationError("new runs cannot carry a suspension context")
+    if run.worktree_path is not None:
+        raise RunCreationError("new runs cannot carry a worktree path")
+    if run.database_state is not ResourceState.DISABLED or any(
+        value is not None for value in (run.database_name, run.database_role, run.secret_id)
+    ):
+        raise RunCreationError("new runs must have a disabled database resource")
     if run.local_remediation_count != 0 or run.remote_remediation_count != 0:
         raise RunCreationError("new runs must have zero remediation counts")
     if run.policy_version is not None and run.policy_version < 1:
@@ -262,22 +328,31 @@ def _snapshot_from_record(record: Run) -> RunSnapshot:
         None if record.suspension_kind is None else _suspension_kind(record.suspension_kind)
     )
     context = _decode_suspension_context(record, state, suspended_state, suspension_kind)
-    return RunSnapshot(
-        id=record.id,
-        project_id=record.project_id,
-        task_id=record.task_id,
-        policy_version=record.policy_version,
-        base_ref=record.base_ref,
-        base_sha=record.base_sha,
-        branch_name=record.branch_name,
-        state=state,
-        version=version,
-        suspended_state=suspended_state,
-        local_remediation_count=local_count,
-        remote_remediation_count=remote_count,
-        suspension_kind=suspension_kind,
-        suspension_context=context,
-    )
+    resource_state = _resource_state(record.database_state)
+    try:
+        return RunSnapshot(
+            id=record.id,
+            project_id=record.project_id,
+            task_id=record.task_id,
+            policy_version=record.policy_version,
+            base_ref=record.base_ref,
+            base_sha=record.base_sha,
+            branch_name=record.branch_name,
+            worktree_path=record.worktree_path,
+            database_state=resource_state,
+            database_name=record.database_name,
+            database_role=record.database_role,
+            secret_id=record.secret_id,
+            state=state,
+            version=version,
+            suspended_state=suspended_state,
+            local_remediation_count=local_count,
+            remote_remediation_count=remote_count,
+            suspension_kind=suspension_kind,
+            suspension_context=context,
+        )
+    except (TypeError, ValueError) as error:
+        raise PersistenceDataError(f"run resource fields are malformed: {error}") from error
 
 
 def _decode_suspension_context(
@@ -372,6 +447,11 @@ def _apply_snapshot(record: Run, snapshot: RunSnapshot) -> None:
     )
     record.local_remediation_count = snapshot.local_remediation_count
     record.remote_remediation_count = snapshot.remote_remediation_count
+    record.worktree_path = snapshot.worktree_path
+    record.database_state = snapshot.database_state.value
+    record.database_name = snapshot.database_name
+    record.database_role = snapshot.database_role
+    record.secret_id = snapshot.secret_id
     if snapshot.suspension_context is None:
         record.suspension_context_schema_version = None
         record.suspension_context = null()
@@ -408,6 +488,15 @@ def _suspension_kind(value: object) -> SuspensionKind:
         return SuspensionKind(value)
     except ValueError as error:
         raise PersistenceDataError(f"unknown suspension kind {value!r}") from error
+
+
+def _resource_state(value: object) -> ResourceState:
+    if not isinstance(value, str):
+        raise PersistenceDataError("database state is not a resource-state string")
+    try:
+        return ResourceState(value)
+    except ValueError as error:
+        raise PersistenceDataError(f"database_state contains unknown state {value!r}") from error
 
 
 def _nonnegative_int(value: object, field_name: str) -> int:

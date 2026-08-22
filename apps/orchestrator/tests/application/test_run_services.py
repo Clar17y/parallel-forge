@@ -375,7 +375,7 @@ async def test_run_queries_return_safe_snapshots() -> None:
     service = RunService(lambda: work)
     assert await service.get(run.id) == run
     assert await service.list(project_id=project_id) == [run]
-    assert not hasattr(await service.get(run.id), "secret_id")
+    assert (await service.get(run.id)).secret_id is None
 
 
 @pytest.mark.asyncio

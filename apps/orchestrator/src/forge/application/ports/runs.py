@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState
 
 
@@ -31,6 +32,24 @@ class RunRepository(Protocol):
         event_type: str,
         event_payload: Mapping[str, object],
         *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
+    async def update_resource(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        worktree_path: str | None = None,
+        database_state: ResourceState,
+        database_name: str | None = None,
+        database_role: str | None = None,
+        secret_id: str | None = None,
+        event_type: str,
+        event_payload: Mapping[str, object],
         actor_class: str = "system",
         actor_id: UUID | None = None,
         occurred_at: datetime | None = None,

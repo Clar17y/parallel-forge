@@ -4,6 +4,15 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from uuid import UUID
 
+from forge.domain.resource import ResourceState, validate_resource_shape
+
+
+class _Unset:
+    """Sentinel for resource fields omitted from an immutable update."""
+
+
+_UNSET = _Unset()
+
 
 class RunState(StrEnum):
     CREATED = "CREATED"
@@ -62,6 +71,19 @@ class RunSnapshot:
     base_ref: str | None = None
     base_sha: str | None = None
     branch_name: str | None = None
+    worktree_path: str | None = None
+    database_state: ResourceState = ResourceState.DISABLED
+    database_name: str | None = None
+    database_role: str | None = None
+    secret_id: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_resource_shape(
+            self.database_state,
+            self.database_name,
+            self.database_role,
+            self.secret_id,
+        )
 
     def with_state(
         self,
@@ -81,5 +103,39 @@ class RunSnapshot:
             version=self.version + 1,
         )
 
+    def with_resource(
+        self,
+        *,
+        worktree_path: str | None | _Unset = _UNSET,
+        database_state: ResourceState | _Unset = _UNSET,
+        database_name: str | None | _Unset = _UNSET,
+        database_role: str | None | _Unset = _UNSET,
+        secret_id: str | None | _Unset = _UNSET,
+    ) -> RunSnapshot:
+        """Return one versioned resource update without changing workflow state."""
 
-__all__ = ["RunSnapshot", "RunState", "SuspensionContext", "SuspensionKind"]
+        return replace(
+            self,
+            version=self.version + 1,
+            worktree_path=(
+                self.worktree_path if isinstance(worktree_path, _Unset) else worktree_path
+            ),
+            database_state=(
+                self.database_state if isinstance(database_state, _Unset) else database_state
+            ),
+            database_name=(
+                self.database_name if isinstance(database_name, _Unset) else database_name
+            ),
+            database_role=(
+                self.database_role if isinstance(database_role, _Unset) else database_role
+            ),
+            secret_id=self.secret_id if isinstance(secret_id, _Unset) else secret_id,
+        )
+
+
+__all__ = [
+    "RunSnapshot",
+    "RunState",
+    "SuspensionContext",
+    "SuspensionKind",
+]

@@ -16,11 +16,12 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from forge.domain.resource import ResourceState
 from forge.domain.run import RunState
 from forge.persistence.models.base import Base, TimestampMixin
 
 RUN_STATES = ",".join(f"'{state.value}'" for state in RunState)
-DATABASE_STATES = "'DISABLED','PROVISIONING','ACTIVE','FAILED','REMOVED'"
+DATABASE_STATES = ",".join(f"'{state.value}'" for state in ResourceState)
 PAUSE_SOURCE_STATES = ",".join(
     f"'{state.value}'"
     for state in RunState

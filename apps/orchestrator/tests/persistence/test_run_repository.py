@@ -6,10 +6,12 @@ from uuid import uuid4
 import pytest
 from forge.application.services.state_engine import StateEngine
 from forge.domain.event import RunEvent, thaw_payload
+from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState, SuspensionContext, SuspensionKind
 from forge.persistence.models import Project, ProjectPolicyVersion, Run, Task
 from forge.persistence.repositories.events import InvalidEventCursor
 from forge.persistence.repositories.runs import (
+    ConcurrencyConflict,
     PersistenceDataError,
     PostgresRunRepository,
     RunCreationError,
@@ -30,6 +32,91 @@ async def test_create_and_get_snapshot_round_trip(persisted_run, uow) -> None:
     assert loaded == persisted_run
     assert loaded.state is RunState.CREATED
     assert PostgresRunRepository is not None
+
+
+@pytest.mark.integration
+async def test_resource_update_round_trips_every_resource_field(uow, persisted_run) -> None:
+    async with uow:
+        changed = await uow.runs.update_resource(
+            run_id=persisted_run.id,
+            expected_version=0,
+            worktree_path="/managed/forge-worktree",
+            database_state=ResourceState.ACTIVE,
+            database_name="forge_db",
+            database_role="forge_role",
+            secret_id="secret-123",
+            event_type="run.resource_active",
+            event_payload={"source": "provisioner"},
+        )
+        await uow.commit()
+
+    assert changed.version == 1
+    assert changed.worktree_path == "/managed/forge-worktree"
+    assert changed.database_state is ResourceState.ACTIVE
+    assert changed.database_name == "forge_db"
+    assert changed.database_role == "forge_role"
+    assert changed.secret_id == "secret-123"
+
+    async with uow:
+        loaded = await uow.runs.get(persisted_run.id)
+        events = await uow.events.list_after(persisted_run.id, sequence=0)
+    assert loaded == changed
+    assert [(event.run_version, event.event_type) for event in events] == [
+        (1, "run.resource_active")
+    ]
+    assert events[0].payload == {"source": "provisioner"}
+
+
+@pytest.mark.integration
+async def test_stale_resource_update_writes_neither_state_nor_event(uow, persisted_run) -> None:
+    with pytest.raises(ConcurrencyConflict):
+        async with uow:
+            await uow.runs.update_resource(
+                run_id=persisted_run.id,
+                expected_version=9,
+                worktree_path="/managed/incorrect",
+                database_state=ResourceState.PROVISIONING,
+                database_name="forge_db",
+                event_type="run.resource_provisioning",
+                event_payload={},
+            )
+
+    async with uow:
+        loaded = await uow.runs.get(persisted_run.id)
+        events = await uow.events.list_after(persisted_run.id, sequence=0)
+    assert loaded == persisted_run
+    assert events == []
+
+
+@pytest.mark.integration
+async def test_resource_event_failure_rolls_back_state_and_event(
+    uow, persisted_run, monkeypatch
+) -> None:
+    async with uow:
+        append = uow.events.append
+
+        async def append_then_fail(event):
+            await append(event)
+            raise RuntimeError("injected resource event failure")
+
+        monkeypatch.setattr(uow.events, "append", append_then_fail)
+        with pytest.raises(RuntimeError, match="resource event failure"):
+            await uow.runs.update_resource(
+                run_id=persisted_run.id,
+                expected_version=0,
+                worktree_path="/managed/should-rollback",
+                database_state=ResourceState.PROVISIONING,
+                database_name="forge_db",
+                event_type="run.resource_provisioning",
+                event_payload={},
+            )
+        await uow.commit()
+
+    async with uow:
+        loaded = await uow.runs.get(persisted_run.id)
+        events = await uow.events.list_after(persisted_run.id, sequence=0)
+    assert loaded == persisted_run
+    assert events == []
 
 
 @pytest.mark.integration
