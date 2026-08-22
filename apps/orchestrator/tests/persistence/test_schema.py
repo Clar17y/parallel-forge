@@ -26,11 +26,13 @@ from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Uuid
 
 EXPECTED_TABLES = {
+    "api_mutations",
     "projects",
     "project_policy_versions",
     "tasks",
     "runs",
     "operator_sessions",
+    "operator_audit_events",
     "approval_challenges",
     "run_commands",
     "run_events",
@@ -275,7 +277,7 @@ def test_schema_contains_required_identity_and_safety_constraints(
     policy_primary_key = result["policy_primary_key"]
     assert isinstance(policy_primary_key, dict)
     assert tuple(policy_primary_key["constrained_columns"]) == ("project_id", "version")
-    assert ("external_source", "external_id") in constrained_columns("task_uniques")
+    assert ("project_id", "external_source", "external_id") in constrained_columns("task_uniques")
     assert ("run_id", "gate", "evidence_digest", "run_version") in constrained_columns(
         "approval_uniques"
     )
@@ -438,6 +440,7 @@ def test_every_execution_and_evidence_table_is_linked_to_a_run(
                 foreign_key["referred_table"] for foreign_key in inspector.get_foreign_keys(table)
             }
             for table in run_owned
+            if table not in {"api_mutations", "operator_audit_events"}
         }
 
     result = asyncio.run(_inspect_database(migrated_database_url, run_foreign_keys))
@@ -457,7 +460,7 @@ def test_migration_has_one_exact_reviewable_head(
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
     config = alembic_config_factory("postgresql+asyncpg://unused:unused@127.0.0.1/unused")
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260821_0001"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260822_0002"]
 
 
 def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
@@ -475,6 +478,7 @@ def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
         ("pull_requests", "reviews"): "reviews_schema_version",
         ("operation_intents", "request_payload"): "request_schema_version",
         ("operation_intents", "outcome_payload"): "outcome_schema_version",
+        ("operator_audit_events", "payload"): "schema_version",
     }
 
     observed_json: set[tuple[str, str]] = set()
@@ -487,6 +491,8 @@ def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
             assert table.c.id.primary_key
         for column in table.columns:
             if isinstance(column.type, JSONB):
+                if (table.name, column.name) == ("api_mutations", "response_payload"):
+                    continue
                 observed_json.add((table.name, column.name))
                 assert expected_json_versions[(table.name, column.name)] in table.c
 

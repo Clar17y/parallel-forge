@@ -142,7 +142,7 @@ async def persisted_run(session_factory):
 
     project_id = uuid4()
     task_id = uuid4()
-    run = RunSnapshot(id=uuid4(), project_id=project_id, task_id=task_id)
+    run = RunSnapshot(id=uuid4(), project_id=project_id, task_id=task_id, policy_version=1)
     async with session_factory() as session, session.begin():
         project = Project(
             id=project_id,

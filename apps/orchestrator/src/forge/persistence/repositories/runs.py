@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -94,9 +95,14 @@ class PostgresRunRepository:
             project = project_result.scalar_one_or_none()
             if project is None:
                 raise RunCreationError(f"project {run.project_id} was not found")
-            policy_version = project.current_policy_version
-            if policy_version is None or policy_version < 1:
+            current_policy_version = project.current_policy_version
+            if current_policy_version is None or current_policy_version < 1:
                 raise RunCreationError(f"project {run.project_id} has no current policy version")
+            policy_version = (
+                current_policy_version if run.policy_version is None else run.policy_version
+            )
+            if policy_version != current_policy_version:
+                raise RunCreationError("new run policy version is not the current project version")
 
             policy = await self._session.get(ProjectPolicyVersion, (run.project_id, policy_version))
             if policy is None:
@@ -132,6 +138,8 @@ class PostgresRunRepository:
                 token_budget=0,
                 cost_budget_minor=0,
                 duration_budget_seconds=0,
+                base_ref=run.base_ref,
+                base_sha=run.base_sha,
                 database_state="DISABLED",
             )
             self._session.add(record)
@@ -202,6 +210,14 @@ def _validate_new_snapshot(run: RunSnapshot) -> None:
         raise RunCreationError("new runs cannot carry a suspension context")
     if run.local_remediation_count != 0 or run.remote_remediation_count != 0:
         raise RunCreationError("new runs must have zero remediation counts")
+    if run.policy_version is not None and run.policy_version < 1:
+        raise RunCreationError("new run policy version must be positive")
+    if (run.base_ref is None) != (run.base_sha is None):
+        raise RunCreationError("new run base reference and SHA must be provided together")
+    if run.base_ref is not None and not run.base_ref.strip():
+        raise RunCreationError("new run base reference must not be blank")
+    if run.base_sha is not None and re.fullmatch(r"[0-9a-f]{40}", run.base_sha) is None:
+        raise RunCreationError("new run base SHA must be a lowercase commit")
 
 
 def _snapshot_from_record(record: Run) -> RunSnapshot:
@@ -224,6 +240,9 @@ def _snapshot_from_record(record: Run) -> RunSnapshot:
         id=record.id,
         project_id=record.project_id,
         task_id=record.task_id,
+        policy_version=record.policy_version,
+        base_ref=record.base_ref,
+        base_sha=record.base_sha,
         state=state,
         version=version,
         suspended_state=suspended_state,

@@ -8,10 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.application.services.state_engine import StateEngine
 from forge.observability.redaction import Redactor
+from forge.persistence.repositories.audit import PostgresAuditRepository
 from forge.persistence.repositories.auth import PostgresAuthRepository
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.events import PostgresEventRepository
+from forge.persistence.repositories.mutations import PostgresMutationRepository
+from forge.persistence.repositories.projects import PostgresProjectRepository
 from forge.persistence.repositories.runs import PostgresRunRepository
+from forge.persistence.repositories.tasks import PostgresTaskRepository
 
 
 class PostgresUnitOfWork:
@@ -34,6 +38,11 @@ class PostgresUnitOfWork:
         self.events: PostgresEventRepository
         self.auth: PostgresAuthRepository
         self.commands: PostgresCommandRepository
+        self.projects: PostgresProjectRepository
+        self.tasks: PostgresTaskRepository
+        self.mutations: PostgresMutationRepository
+        self.audit: PostgresAuditRepository
+        self.audits: PostgresAuditRepository
 
     @property
     def session(self) -> AsyncSession:
@@ -50,6 +59,11 @@ class PostgresUnitOfWork:
         self.events = PostgresEventRepository(self._session, redactor=self._redactor)
         self.auth = PostgresAuthRepository(self._session)
         self.commands = PostgresCommandRepository(session=self._session)
+        self.projects = PostgresProjectRepository(self._session)
+        self.tasks = PostgresTaskRepository(self._session)
+        self.mutations = PostgresMutationRepository(self._session)
+        self.audit = PostgresAuditRepository(self._session, redactor=self._redactor)
+        self.audits = self.audit
         self.runs = PostgresRunRepository(
             self._session,
             state_engine=self._state_engine,

@@ -1,5 +1,6 @@
 """Complete v0.1 SQLAlchemy model inventory."""
 
+from forge.persistence.models.api import ApiMutation, OperatorAuditEvent
 from forge.persistence.models.auth import ApprovalChallenge, OperatorSession
 from forge.persistence.models.base import Base
 from forge.persistence.models.execution import (
@@ -23,6 +24,7 @@ from forge.persistence.models.run import Run
 
 __all__ = [
     "AgentExecution",
+    "ApiMutation",
     "Approval",
     "ApprovalChallenge",
     "Artifact",
@@ -31,6 +33,7 @@ __all__ = [
     "Base",
     "ModelUsage",
     "OperationIntent",
+    "OperatorAuditEvent",
     "OperatorSession",
     "Project",
     "ProjectPolicyVersion",

@@ -56,6 +56,11 @@ class RunSnapshot:
     remote_remediation_count: int = 0
     suspension_kind: SuspensionKind | None = None
     suspension_context: SuspensionContext | None = None
+    # Optional for callers that create pre-Task-10 snapshots. Task 10 run
+    # creation supplies all three binding values.
+    policy_version: int | None = None
+    base_ref: str | None = None
+    base_sha: str | None = None
 
     def with_state(
         self,
