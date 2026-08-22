@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from forge.application.services.worker import TransientCommandError, Worker
-from forge.domain.command import CommandStatus
+from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 
 
@@ -145,3 +146,52 @@ async def test_cancelled_handler_leaves_lease_for_expiry_reclaim(
     assert stored.status is CommandStatus.LEASED
     assert stored.lease_owner == "worker-a"
     assert await command_repository.claim_next(worker_id="worker-b", lease_seconds=30) is None
+
+
+def test_worker_rejects_subsecond_lease() -> None:
+    with pytest.raises(ValueError, match="at least 1 second"):
+        Worker(
+            object(),
+            object(),
+            handlers={},
+            worker_id="worker-a",
+            lease_seconds=0.999,
+        )
+
+
+@pytest.mark.asyncio
+async def test_worker_renews_no_less_often_than_one_third_of_lease(monkeypatch) -> None:
+    delays: list[float] = []
+
+    async def stop_after_first_sleep(delay: float) -> None:
+        delays.append(delay)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", stop_after_first_sleep)
+    worker = Worker(
+        object(),
+        object(),
+        handlers={},
+        worker_id="worker-a",
+        lease_seconds=1,
+    )
+    command = CommandEnvelope(
+        id=uuid4(),
+        run_id=uuid4(),
+        command_type="renew",
+        idempotency_key="renew",
+        payload={},
+        status=CommandStatus.LEASED,
+        expected_run_version=0,
+        actor_id=None,
+        payload_schema_version=1,
+        attempt=1,
+        available_at=datetime.now(UTC),
+        lease_owner="worker-a",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=1),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker._renew_until_done(command)
+
+    assert delays == [pytest.approx(1 / 3)]

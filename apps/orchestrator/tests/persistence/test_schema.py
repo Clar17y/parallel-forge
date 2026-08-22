@@ -234,6 +234,7 @@ def test_schema_contains_required_identity_and_safety_constraints(
             "pr_uniques": inspector.get_unique_constraints("pull_requests"),
             "intent_uniques": inspector.get_unique_constraints("operation_intents"),
             "intent_columns": inspector.get_columns("operation_intents"),
+            "intent_indexes": inspector.get_indexes("operation_intents"),
             "run_indexes": inspector.get_indexes("runs"),
             "command_indexes": inspector.get_indexes("run_commands"),
             "command_columns": inspector.get_columns("run_commands"),
@@ -284,6 +285,8 @@ def test_schema_contains_required_identity_and_safety_constraints(
     assert isinstance(intent_columns, list)
     assert "request_digest" in {item["name"] for item in intent_columns}
     assert "remote_resource_id" in {item["name"] for item in intent_columns}
+    assert "execution_owner" in {item["name"] for item in intent_columns}
+    assert "execution_lease_expires_at" in {item["name"] for item in intent_columns}
     assert "resource_identity" not in {item["name"] for item in intent_columns}
     command_checks = result["command_checks"]
     intent_checks = result["intent_checks"]
@@ -293,6 +296,9 @@ def test_schema_contains_required_identity_and_safety_constraints(
     assert "ck_run_commands_terminal_timestamp_shape" in {item["name"] for item in command_checks}
     assert "ck_operation_intents_status_shape" in {item["name"] for item in intent_checks}
     assert "ck_operation_intents_request_digest" in {item["name"] for item in intent_checks}
+    assert "ck_operation_intents_execution_lease_shape" in {item["name"] for item in intent_checks}
+    intent_index_columns = constrained_columns("intent_indexes")
+    assert ("status", "execution_lease_expires_at", "updated_at") in intent_index_columns
 
     session_checks = result["session_checks"]
     run_checks = result["run_checks"]

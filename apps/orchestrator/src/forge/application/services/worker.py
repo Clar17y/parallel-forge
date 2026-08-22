@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from forge.application.ports.commands import CommandRepository
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
+from forge.domain.lease import validate_lease_seconds
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 
 
@@ -38,6 +39,7 @@ class Worker:
         self._session_factory = session_factory
         self._handlers = dict(handlers)
         self._worker_id = worker_id
+        validate_lease_seconds(lease_seconds)
         self._lease_seconds = lease_seconds
 
     async def tick(self) -> bool | None:
@@ -107,7 +109,7 @@ class Worker:
         return True
 
     async def _renew_until_done(self, command: CommandEnvelope) -> None:
-        delay = max(0.05, self._lease_seconds / 3)
+        delay = self._lease_seconds / 3
         while True:
             await asyncio.sleep(delay)
             try:

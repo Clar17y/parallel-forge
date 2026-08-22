@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.domain.command import CommandEnvelope, CommandStatus, thaw_payload
+from forge.domain.lease import validate_lease_seconds
 from forge.persistence.models import Run, RunCommand
 from forge.persistence.repositories.runs import PersistenceDataError
 
@@ -40,7 +41,6 @@ _ERROR_SECRET = re.compile(
     r"(?i)(password|secret|credential|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+"
 )
 _MAX_ERROR_LENGTH = 1024
-_MAX_LEASE_SECONDS = 24 * 60 * 60
 
 
 class PostgresCommandRepository:
@@ -282,8 +282,7 @@ class PostgresCommandRepository:
 def _validate_worker_and_lease(worker_id: str, lease_seconds: float) -> None:
     if not worker_id or len(worker_id) > 255:
         raise ValueError("worker id must contain 1-255 characters")
-    if isinstance(lease_seconds, bool) or lease_seconds <= 0 or lease_seconds > _MAX_LEASE_SECONDS:
-        raise ValueError("lease duration must be positive and bounded")
+    validate_lease_seconds(lease_seconds)
 
 
 def _require_owned_lease(record: RunCommand, worker_id: str, now: datetime) -> None:

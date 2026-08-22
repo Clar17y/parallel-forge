@@ -387,7 +387,21 @@ class OperationIntent(Base, TimestampMixin):
             "AND outcome_payload IS NULL AND outcome_schema_version IS NULL)",
             name="status_shape",
         ),
+        CheckConstraint(
+            "(status IN ('PENDING','NEEDS_RECONCILIATION') AND "
+            "((execution_owner IS NULL AND execution_lease_expires_at IS NULL) OR "
+            "(execution_owner IS NOT NULL AND execution_lease_expires_at IS NOT NULL))) OR "
+            "(status IN ('SUCCEEDED','FAILED') AND execution_owner IS NULL "
+            "AND execution_lease_expires_at IS NULL)",
+            name="execution_lease_shape",
+        ),
         Index("ix_operation_intents_status_updated_at", "status", "updated_at"),
+        Index(
+            "ix_operation_intents_execution_lease",
+            "status",
+            "execution_lease_expires_at",
+            "updated_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -403,6 +417,8 @@ class OperationIntent(Base, TimestampMixin):
     provider_request_id: Mapped[str | None] = mapped_column(String(512))
     repository_id: Mapped[str | None] = mapped_column(String(512))
     remote_resource_id: Mapped[str | None] = mapped_column(String(1024))
+    execution_owner: Mapped[str | None] = mapped_column(String(255))
+    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     outcome_schema_version: Mapped[int | None] = mapped_column(Integer)
     outcome_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

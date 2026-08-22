@@ -13,7 +13,8 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID, uuid4
 
-from forge.domain.command import _validate_error, _validate_json
+from forge.domain.command import _validate_error
+from forge.domain.payload import validate_durable_payload
 
 
 class OperationStatus(StrEnum):
@@ -52,7 +53,7 @@ def thaw_payload(value: Any) -> Any:
 def canonical_payload(value: Mapping[str, object]) -> str:
     """Serialize a redacted JSON payload deterministically for idempotency."""
 
-    _validate_json(value)
+    validate_durable_payload(value)
     return json.dumps(thaw_payload(value), sort_keys=True, separators=(",", ":"))
 
 
@@ -89,7 +90,7 @@ class OperationRequest:
             raise ValueError("request digest must be lowercase hexadecimal SHA-256")
         if self.request_schema_version not in SUPPORTED_OPERATION_SCHEMA_VERSIONS:
             raise ValueError(f"unsupported operation request schema: {self.request_schema_version}")
-        _validate_json(self.request_payload)
+        validate_durable_payload(self.request_payload)
         json.dumps(thaw_payload(self.request_payload))
         object.__setattr__(self, "request_payload", _freeze(dict(self.request_payload)))
 
@@ -111,12 +112,20 @@ class OperationOutcome:
             raise ValueError("operation outcomes cannot remain pending")
         if self.outcome_schema_version not in SUPPORTED_OPERATION_SCHEMA_VERSIONS:
             raise ValueError(f"unsupported operation outcome schema: {self.outcome_schema_version}")
-        _validate_json(self.payload)
+        validate_durable_payload(self.payload)
         json.dumps(thaw_payload(self.payload))
         object.__setattr__(self, "payload", _freeze(dict(self.payload)))
         if self.remote_resource_id is not None and len(self.remote_resource_id) > 1024:
             raise ValueError("remote resource identifier is too long")
         _validate_error(self.error, "operation outcome error")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperationExecutionClaim:
+    """The result of a durable compare-and-set execution-lease attempt."""
+
+    intent: OperationIntent
+    acquired: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -140,6 +149,8 @@ class OperationIntent:
     error: str | None = None
     request_schema_version: int = 1
     outcome_schema_version: int | None = None
+    execution_owner: str | None = None
+    execution_lease_expires_at: datetime | None = None
     # Repository begin marks a new row so an executor never mistakes an
     # existing unresolved intent for a definitely-new side effect.
     is_new: bool = field(default=False, compare=False, repr=False)
@@ -160,12 +171,20 @@ class OperationIntent:
             raise TypeError(f"unknown operation status: {self.status!r}")
         if self.attempt < 0:
             raise ValueError("operation attempt must be nonnegative")
+        if self.execution_owner is not None and (
+            not self.execution_owner or len(self.execution_owner) > 255
+        ):
+            raise ValueError("operation execution owner must contain 1-255 characters")
+        if self.execution_owner is None and self.execution_lease_expires_at is not None:
+            raise ValueError("an execution lease expiry requires an owner")
+        if self.execution_owner is not None and self.execution_lease_expires_at is None:
+            raise ValueError("an execution owner requires a lease expiry")
         if self.outcome_schema_version is not None and (
             self.outcome_schema_version not in SUPPORTED_OPERATION_SCHEMA_VERSIONS
         ):
             raise ValueError(f"unsupported operation outcome schema: {self.outcome_schema_version}")
         if self.outcome is not None:
-            _validate_json(self.outcome)
+            validate_durable_payload(self.outcome)
             json.dumps(thaw_payload(self.outcome))
             object.__setattr__(self, "outcome", _freeze(dict(self.outcome)))
             if self.outcome_schema_version is None:
@@ -182,6 +201,7 @@ class OperationIntent:
             (self.updated_at, "operation update time"),
             (self.started_at, "operation start time"),
             (self.completed_at, "operation completion time"),
+            (self.execution_lease_expires_at, "operation execution lease expiry"),
         ):
             if value is not None:
                 _aware(value, name)
@@ -189,6 +209,10 @@ class OperationIntent:
             raise ValueError("succeeded operation intents require completion time")
         if self.status is OperationStatus.SUCCEEDED and self.outcome is None:
             raise ValueError("succeeded operation intents require an outcome")
+        if self.status in {OperationStatus.SUCCEEDED, OperationStatus.FAILED} and (
+            self.execution_owner is not None or self.execution_lease_expires_at is not None
+        ):
+            raise ValueError("terminal operation intents cannot retain an execution lease")
         if self.status is OperationStatus.FAILED and self.completed_at is None:
             raise ValueError("failed operation intents require completion time")
         if self.status is OperationStatus.FAILED and not self.error:
@@ -238,6 +262,7 @@ class OperationIntent:
 
 __all__ = [
     "SUPPORTED_OPERATION_SCHEMA_VERSIONS",
+    "OperationExecutionClaim",
     "OperationIntent",
     "OperationOutcome",
     "OperationRequest",

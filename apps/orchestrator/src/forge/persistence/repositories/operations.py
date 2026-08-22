@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from forge.domain.lease import validate_lease_seconds
 from forge.domain.operation import (
+    OperationExecutionClaim,
     OperationIntent,
     OperationOutcome,
     OperationRequest,
@@ -19,6 +20,7 @@ from forge.domain.operation import (
     canonical_payload,
     thaw_payload,
 )
+from forge.domain.payload import redact_durable_text
 from forge.persistence.models import OperationIntent as OperationIntentRecord
 from forge.persistence.repositories.runs import PersistenceDataError
 
@@ -39,9 +41,8 @@ class OperationStateConflict(OperationError):
     """A terminal operation outcome cannot be rewritten contradictorily."""
 
 
-_ERROR_SECRET = re.compile(
-    r"(?i)(password|secret|credential|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+"
-)
+class OperationLeaseError(OperationError):
+    """The caller does not hold the current execution lease."""
 
 
 class PostgresOperationRepository:
@@ -61,6 +62,8 @@ class PostgresOperationRepository:
         request_schema_version: int = 1,
         kind: str | None = None,
         operation_kind: str | None = None,
+        execution_owner: str | None = None,
+        execution_lease_seconds: float | None = None,
     ) -> OperationIntent:
         resolved_kind = operation_type or kind or operation_kind
         if resolved_kind is None:
@@ -73,7 +76,13 @@ class PostgresOperationRepository:
             request_payload=request_payload,
             request_schema_version=request_schema_version,
         )
+        _validate_execution_request(execution_owner, execution_lease_seconds)
         now = _utc_now()
+        execution_lease_expires_at = (
+            now + timedelta(seconds=execution_lease_seconds)
+            if execution_owner is not None and execution_lease_seconds is not None
+            else None
+        )
         candidate = OperationIntent(
             id=uuid4(),
             run_id=request.run_id,
@@ -83,7 +92,7 @@ class PostgresOperationRepository:
             request_payload=request.request_payload,
             status=OperationStatus.PENDING,
             remote_resource_id=None,
-            attempt=0,
+            attempt=1 if execution_owner is not None else 0,
             created_at=now,
             updated_at=now,
             started_at=None,
@@ -91,6 +100,8 @@ class PostgresOperationRepository:
             outcome=None,
             error=None,
             request_schema_version=request.request_schema_version,
+            execution_owner=execution_owner,
+            execution_lease_expires_at=execution_lease_expires_at,
             is_new=True,
         )
         async with self._session_factory() as session, session.begin():
@@ -105,7 +116,9 @@ class PostgresOperationRepository:
                     request_schema_version=candidate.request_schema_version,
                     request_payload=thaw_payload(candidate.request_payload),
                     status="PENDING",
-                    attempt_count=0,
+                    attempt_count=candidate.attempt,
+                    execution_owner=candidate.execution_owner,
+                    execution_lease_expires_at=candidate.execution_lease_expires_at,
                     started_at=None,
                     completed_at=None,
                 )
@@ -129,6 +142,52 @@ class PostgresOperationRepository:
                 _check_begin_match(candidate, actual)
             return actual
 
+    async def claim_for_recovery(
+        self, intent_id: UUID, *, owner_id: str, lease_seconds: float
+    ) -> OperationExecutionClaim:
+        """CAS-claim an unowned or expired unresolved intent for reconciliation."""
+
+        _validate_execution_request(owner_id, lease_seconds)
+        now = _utc_now()
+        expiry = now + timedelta(seconds=lease_seconds)
+        async with self._session_factory() as session, session.begin():
+            record = await self._locked(intent_id, session)
+            current = _intent_from_record(record)
+            if current.status not in {
+                OperationStatus.PENDING,
+                OperationStatus.NEEDS_RECONCILIATION,
+            }:
+                return OperationExecutionClaim(intent=current, acquired=False)
+            if (
+                record.execution_owner is not None
+                and record.execution_lease_expires_at is not None
+                and record.execution_lease_expires_at > now
+            ):
+                return OperationExecutionClaim(intent=current, acquired=False)
+            record.execution_owner = owner_id
+            record.execution_lease_expires_at = expiry
+            record.attempt_count += 1
+            if record.started_at is None:
+                record.started_at = now
+            await session.flush()
+            await session.refresh(record)
+            return OperationExecutionClaim(intent=_intent_from_record(record), acquired=True)
+
+    async def renew_execution(
+        self, intent_id: UUID, *, owner_id: str, lease_seconds: float
+    ) -> OperationIntent:
+        """Extend an active execution lease only for its current owner."""
+
+        _validate_execution_request(owner_id, lease_seconds)
+        now = _utc_now()
+        async with self._session_factory() as session, session.begin():
+            record = await self._locked(intent_id, session)
+            _require_execution_owner(record, owner_id, now)
+            record.execution_lease_expires_at = now + timedelta(seconds=lease_seconds)
+            await session.flush()
+            await session.refresh(record)
+            return _intent_from_record(record)
+
     async def get(self, intent_id: UUID) -> OperationIntent:
         async with self._session_factory() as session:
             record = await session.get(OperationIntentRecord, intent_id)
@@ -136,7 +195,9 @@ class PostgresOperationRepository:
                 raise OperationNotFound(f"operation intent {intent_id} was not found")
             return _intent_from_record(record)
 
-    async def complete(self, intent_id: UUID, outcome: OperationOutcome) -> OperationIntent:
+    async def complete(
+        self, intent_id: UUID, outcome: OperationOutcome, *, owner_id: str | None = None
+    ) -> OperationIntent:
         if outcome.status is not OperationStatus.SUCCEEDED:
             raise ValueError("complete requires a succeeded operation outcome")
         async with self._session_factory() as session, session.begin():
@@ -154,6 +215,7 @@ class PostgresOperationRepository:
                 raise OperationStateConflict(
                     f"operation intent {intent_id} is already terminal: {record.status}"
                 )
+            _require_execution_owner(record, owner_id, _utc_now())
             now = _utc_now()
             record.status = "SUCCEEDED"
             record.remote_resource_id = outcome.remote_resource_id
@@ -161,6 +223,8 @@ class PostgresOperationRepository:
             record.outcome_payload = thaw_payload(outcome.payload)
             record.completed_at = now
             record.last_error = None
+            record.execution_owner = None
+            record.execution_lease_expires_at = None
             if record.started_at is None:
                 record.started_at = now
             await session.flush()
@@ -173,6 +237,7 @@ class PostgresOperationRepository:
         *,
         error: str,
         needs_reconciliation: bool = False,
+        owner_id: str | None = None,
     ) -> OperationIntent:
         bounded_error = _bounded_error(error)
         async with self._session_factory() as session, session.begin():
@@ -186,10 +251,16 @@ class PostgresOperationRepository:
                 )
             if record.status == "SUCCEEDED":
                 raise OperationStateConflict(f"operation intent {intent_id} already succeeded")
+            _require_execution_owner(record, owner_id, _utc_now())
             now = _utc_now()
             record.status = "NEEDS_RECONCILIATION" if needs_reconciliation else "FAILED"
             record.last_error = bounded_error
             record.completed_at = None if needs_reconciliation else now
+            record.outcome_payload = None
+            record.outcome_schema_version = None
+            record.remote_resource_id = None
+            record.execution_owner = None
+            record.execution_lease_expires_at = None
             if record.started_at is None:
                 record.started_at = now
             await session.flush()
@@ -272,6 +343,8 @@ def _intent_from_record(record: OperationIntentRecord, *, is_new: bool = False) 
             error=record.last_error,
             request_schema_version=record.request_schema_version,
             outcome_schema_version=record.outcome_schema_version,
+            execution_owner=record.execution_owner,
+            execution_lease_expires_at=record.execution_lease_expires_at,
             is_new=is_new,
         )
     except (TypeError, ValueError) as error:
@@ -280,8 +353,31 @@ def _intent_from_record(record: OperationIntentRecord, *, is_new: bool = False) 
 
 def _bounded_error(error: str) -> str:
     value = str(error)
-    value = _ERROR_SECRET.sub(lambda match: f"{match.group(1)}=[REDACTED]", value)
-    return value[:1024]
+    return redact_durable_text(value)[:1024]
+
+
+def _validate_execution_request(owner_id: str | None, lease_seconds: float | None) -> None:
+    if owner_id is None:
+        if lease_seconds is not None:
+            raise ValueError("an execution lease duration requires an owner")
+        return
+    if not isinstance(owner_id, str) or not owner_id or len(owner_id) > 255:
+        raise ValueError("operation execution owner must contain 1-255 characters")
+    if lease_seconds is None:
+        raise ValueError("an execution owner requires a lease duration")
+    validate_lease_seconds(lease_seconds)
+
+
+def _require_execution_owner(
+    record: OperationIntentRecord, owner_id: str | None, now: datetime
+) -> None:
+    if (
+        owner_id is None
+        or record.execution_owner != owner_id
+        or record.execution_lease_expires_at is None
+        or record.execution_lease_expires_at <= now
+    ):
+        raise OperationLeaseError(f"caller does not hold operation intent {record.id}")
 
 
 def _utc_now() -> datetime:
@@ -291,6 +387,7 @@ def _utc_now() -> datetime:
 __all__ = [
     "IdempotencyConflict",
     "OperationError",
+    "OperationLeaseError",
     "OperationNotFound",
     "OperationStateConflict",
     "PostgresOperationRepository",

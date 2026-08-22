@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from forge.application.services.recovery import RecoveryService
 from forge.domain.operation import OperationOutcome, OperationStatus
-from forge.persistence.repositories.operations import IdempotencyConflict
+from forge.persistence.repositories.operations import IdempotencyConflict, OperationLeaseError
 from forge.persistence.repositories.runs import PersistenceDataError
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 REQUEST_DIGEST = "a" * 64
+
+
+def test_operation_executor_rejects_subsecond_execution_leases() -> None:
+    from forge.application.services.recovery import OperationExecutor
+
+    with pytest.raises(ValueError, match="at least 1 second"):
+        OperationExecutor(object(), execution_lease_seconds=0.999)
 
 
 @pytest.mark.integration
@@ -69,6 +77,39 @@ class RecordingAdapter:
         )
 
 
+@dataclass
+class BlockedInvokeAdapter:
+    """Keep the first effect open so a duplicate call must coordinate durably."""
+
+    invoke_started: asyncio.Event
+    release_invoke: asyncio.Event
+    invoke_calls: int = 0
+    reconcile_calls: int = 0
+    reconciled_while_invoking: bool = False
+    invoking: bool = False
+
+    async def invoke(self, intent):
+        self.invoke_calls += 1
+        self.invoking = True
+        self.invoke_started.set()
+        await self.release_invoke.wait()
+        self.invoking = False
+        return OperationOutcome(
+            remote_resource_id="pr:blocked",
+            payload={"number": 43},
+            status=OperationStatus.SUCCEEDED,
+        )
+
+    async def reconcile(self, intent):
+        self.reconcile_calls += 1
+        self.reconciled_while_invoking |= self.invoking
+        return OperationOutcome(
+            remote_resource_id="pr:blocked",
+            payload={"number": 43},
+            status=OperationStatus.SUCCEEDED,
+        )
+
+
 def _request(run_id):
     return {
         "run_id": run_id,
@@ -97,8 +138,35 @@ async def test_operation_executor_commits_intent_before_invoke_and_short_circuit
 
 
 @pytest.mark.integration
-async def test_cancelled_invoke_leaves_unresolved_intent_for_reconcile(
+async def test_concurrent_duplicate_execute_waits_for_active_invoke(
     operation_repository, persisted_run
+) -> None:
+    from forge.application.services.recovery import OperationExecutor
+
+    adapter = BlockedInvokeAdapter(asyncio.Event(), asyncio.Event())
+    request = _request(persisted_run.id)
+    first_executor = OperationExecutor(operation_repository)
+    second_executor = OperationExecutor(operation_repository)
+
+    first_task = asyncio.create_task(first_executor.execute(request, adapter))
+    await adapter.invoke_started.wait()
+    second_task = asyncio.create_task(second_executor.execute(request, adapter))
+
+    await asyncio.sleep(0.1)
+    second_finished_while_first_blocked = second_task.done()
+    adapter.release_invoke.set()
+    first, second = await asyncio.gather(first_task, second_task)
+
+    assert not second_finished_while_first_blocked
+    assert first == second
+    assert adapter.invoke_calls == 1
+    assert adapter.reconcile_calls == 0
+    assert not adapter.reconciled_while_invoking
+
+
+@pytest.mark.integration
+async def test_cancelled_invoke_leaves_unresolved_intent_for_reconcile(
+    operation_repository, persisted_run, session_factory
 ) -> None:
     from forge.application.services.recovery import OperationExecutor
 
@@ -111,6 +179,19 @@ async def test_cancelled_invoke_leaves_unresolved_intent_for_reconcile(
     assert len(unresolved) == 1
     assert unresolved[0].status is OperationStatus.PENDING
     assert adapter.invoke_calls == 1
+
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE operation_intents "
+                "SET execution_lease_expires_at = :expired_at "
+                "WHERE id = :id"
+            ),
+            {
+                "expired_at": datetime.now(UTC) - timedelta(minutes=1),
+                "id": unresolved[0].id,
+            },
+        )
 
     recovery = RecoveryService(operation_repository)
     recovered = await recovery.reconcile(unresolved[0].id, adapter)
@@ -133,14 +214,86 @@ async def test_recovery_reconciles_existing_intent_without_invoking(
 
 
 @pytest.mark.integration
+async def test_recovery_skips_an_active_execution_owner(
+    operation_repository, persisted_run
+) -> None:
+    intent = await operation_repository.begin(
+        **_request(persisted_run.id),
+        execution_owner="active-worker",
+        execution_lease_seconds=1,
+    )
+    adapter = RecordingAdapter()
+
+    observed = await RecoveryService(operation_repository).reconcile(intent.id, adapter)
+
+    assert observed.status is OperationStatus.PENDING
+    assert observed.execution_owner == "active-worker"
+    assert adapter.reconcile_calls == 0
+
+
+@pytest.mark.integration
+async def test_operation_outcome_requires_current_execution_owner(
+    operation_repository, persisted_run
+) -> None:
+    intent = await operation_repository.begin(
+        **_request(persisted_run.id),
+        execution_owner="active-worker",
+        execution_lease_seconds=1,
+    )
+    outcome = OperationOutcome(remote_resource_id="resource:1", payload={"ok": True})
+
+    with pytest.raises(OperationLeaseError):
+        await operation_repository.complete(intent.id, outcome, owner_id="stale-worker")
+
+
+@pytest.mark.integration
+async def test_expired_execution_lease_is_reconciled_without_reinvoking(
+    operation_repository, persisted_run, session_factory
+) -> None:
+    intent = await operation_repository.begin(
+        **_request(persisted_run.id),
+        execution_owner="crashed-worker",
+        execution_lease_seconds=1,
+    )
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE operation_intents "
+                "SET execution_lease_expires_at = :expired_at "
+                "WHERE id = :id"
+            ),
+            {
+                "expired_at": datetime.now(UTC) - timedelta(minutes=1),
+                "id": intent.id,
+            },
+        )
+
+    expired = await operation_repository.get(intent.id)
+    assert expired.execution_lease_expires_at is not None
+    assert expired.execution_lease_expires_at <= datetime.now(UTC)
+
+    adapter = RecordingAdapter()
+    recovered = await RecoveryService(operation_repository).reconcile(intent.id, adapter)
+
+    assert recovered.status is OperationStatus.SUCCEEDED
+    assert recovered.remote_resource_id == "pr:42"
+    assert adapter.invoke_calls == 0
+    assert adapter.reconcile_calls == 1
+
+
+@pytest.mark.integration
 async def test_operation_outcome_round_trip_preserves_redacted_snapshot(
     operation_repository, persisted_run
 ) -> None:
     request = _request(persisted_run.id)
     request["request_payload"] = {"repository": "Clar17y/Parallel"}
-    intent = await operation_repository.begin(**request)
+    intent = await operation_repository.begin(
+        **request,
+        execution_owner="roundtrip-worker",
+        execution_lease_seconds=1,
+    )
     outcome = OperationOutcome(remote_resource_id="resource:1", payload={"nested": {"ok": True}})
-    stored = await operation_repository.complete(intent.id, outcome)
+    stored = await operation_repository.complete(intent.id, outcome, owner_id="roundtrip-worker")
     loaded = await operation_repository.get(intent.id)
     assert stored == loaded
     assert loaded.remote_resource_id == "resource:1"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,6 +10,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 from uuid import UUID
+
+from forge.domain.payload import validate_durable_error, validate_durable_payload
 
 
 class CommandStatus(StrEnum):
@@ -24,39 +25,11 @@ class CommandStatus(StrEnum):
 
 
 SUPPORTED_PAYLOAD_SCHEMA_VERSIONS = frozenset({1})
-_SECRET_KEY = re.compile(
-    r"^(?:password|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|"
-    r"client[_-]?secret|private[_-]?key|authorization|token)$",
-    re.IGNORECASE,
-)
-_REDACTED = frozenset({"[REDACTED]", "<redacted>", "REDACTED"})
-_RAW_SECRET_VALUE = re.compile(
-    r"(?i)(?:password|secret|credential|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+"
-)
 
 
 def _validate_json(value: Any, *, key: str | None = None) -> None:
-    if isinstance(value, Mapping):
-        for item_key, item_value in value.items():
-            if not isinstance(item_key, str):
-                raise TypeError("payload keys must be strings")
-            normalized_key = item_key.replace("_", "").replace("-", "").lower()
-            secret_key = _SECRET_KEY.fullmatch(item_key) or (
-                normalized_key.endswith(("password", "secret", "credential", "token"))
-                and normalized_key not in {"tokenbudget", "tokenlimit"}
-            )
-            if secret_key and not (
-                item_value is None or (isinstance(item_value, str) and item_value in _REDACTED)
-            ):
-                raise ValueError(f"raw credential field is not permitted: {item_key}")
-            _validate_json(item_value, key=item_key)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            _validate_json(item, key=key)
-    elif isinstance(value, str) and _RAW_SECRET_VALUE.search(value):
-        raise ValueError("raw credential value is not permitted")
-    elif value is not None and not isinstance(value, (str, int, float, bool)):
-        raise ValueError("payload must contain JSON-compatible values")
+    del key
+    validate_durable_payload(value)
 
 
 def _freeze(value: Any) -> Any:
@@ -85,12 +58,7 @@ def _aware(value: datetime, name: str) -> None:
 
 
 def _validate_error(value: str | None, name: str) -> None:
-    if value is None:
-        return
-    if len(value) > 1024:
-        raise ValueError(f"{name} is too long")
-    if _RAW_SECRET_VALUE.search(value):
-        raise ValueError(f"{name} contains a raw credential")
+    validate_durable_error(value, name)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

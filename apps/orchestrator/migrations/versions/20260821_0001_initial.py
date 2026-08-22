@@ -356,6 +356,8 @@ def upgrade() -> None:
         sa.Column("provider_request_id", sa.String(length=512), nullable=True),
         sa.Column("repository_id", sa.String(length=512), nullable=True),
         sa.Column("remote_resource_id", sa.String(length=1024), nullable=True),
+        sa.Column("execution_owner", sa.String(length=255), nullable=True),
+        sa.Column("execution_lease_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("outcome_schema_version", sa.Integer(), nullable=True),
         sa.Column("outcome_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("attempt_count", sa.Integer(), nullable=False),
@@ -391,6 +393,14 @@ def upgrade() -> None:
             "AND outcome_payload IS NULL AND outcome_schema_version IS NULL)",
             name=op.f("ck_operation_intents_status_shape"),
         ),
+        sa.CheckConstraint(
+            "(status IN ('PENDING','NEEDS_RECONCILIATION') AND "
+            "((execution_owner IS NULL AND execution_lease_expires_at IS NULL) OR "
+            "(execution_owner IS NOT NULL AND execution_lease_expires_at IS NOT NULL))) OR "
+            "(status IN ('SUCCEEDED','FAILED') AND execution_owner IS NULL "
+            "AND execution_lease_expires_at IS NULL)",
+            name=op.f("ck_operation_intents_execution_lease_shape"),
+        ),
         sa.ForeignKeyConstraint(
             ["run_id"],
             ["runs.id"],
@@ -404,6 +414,12 @@ def upgrade() -> None:
         "ix_operation_intents_status_updated_at",
         "operation_intents",
         ["status", "updated_at"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_operation_intents_execution_lease",
+        "operation_intents",
+        ["status", "execution_lease_expires_at", "updated_at"],
         unique=False,
     )
     op.create_table(
@@ -988,6 +1004,11 @@ def downgrade() -> None:
     op.drop_table("pull_requests")
     op.drop_index(
         "ix_operation_intents_status_updated_at",
+        table_name="operation_intents",
+        if_exists=True,
+    )
+    op.drop_index(
+        "ix_operation_intents_execution_lease",
         table_name="operation_intents",
         if_exists=True,
     )

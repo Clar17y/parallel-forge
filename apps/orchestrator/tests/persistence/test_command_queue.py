@@ -245,3 +245,9 @@ async def test_command_payload_rejects_secret_assignments_inside_text(
             idempotency_key="secret-text",
             payload={"description": "token=do-not-persist"},
         )
+
+
+@pytest.mark.integration
+async def test_claim_rejects_subsecond_leases(command_repository, persisted_run) -> None:
+    with pytest.raises(ValueError, match="at least 1 second"):
+        await command_repository.claim_next(worker_id="worker-a", lease_seconds=0.999)
