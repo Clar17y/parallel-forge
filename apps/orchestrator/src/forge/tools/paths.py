@@ -29,6 +29,7 @@ class _WindowsIdentity(NamedTuple):
 class _DirectoryAccess(NamedTuple):
     path: Path
     launch_path: str
+    capability: int
 
 
 if os.name == "nt":
@@ -281,6 +282,39 @@ class CanonicalRoot:
         with self._open_directory(normalized) as access:
             yield access.path
 
+    def list_directory(
+        self, value: str | os.PathLike[str] = "."
+    ) -> tuple[tuple[str, os.stat_result], ...]:
+        """List one contained directory while its no-follow capability is held."""
+
+        normalized = self.normalize(value, allow_root=True)
+        with self._open_directory(normalized) as access:
+            try:
+                if os.name == "nt":
+                    with os.scandir(access.path) as entries:
+                        return tuple(
+                            (entry.name, entry.stat(follow_symlinks=False)) for entry in entries
+                        )
+
+                try:
+                    names = os.listdir(access.capability)
+                except OSError, TypeError:
+                    proc_fd = Path("/proc/self/fd") / str(access.capability)
+                    if not proc_fd.parent.is_dir():
+                        raise RepositoryAccessDenied(
+                            "safe POSIX directory enumeration is unavailable"
+                        )
+                    names = os.listdir(proc_fd)
+                return tuple(
+                    (
+                        name,
+                        os.stat(name, dir_fd=access.capability, follow_symlinks=False),
+                    )
+                    for name in names
+                )
+            except OSError, TypeError, ValueError:
+                raise RepositoryAccessDenied("repository directory enumeration failed") from None
+
     @contextlib.contextmanager
     def _open_directory(self, normalized: str) -> Iterator[_DirectoryAccess]:
         if os.name == "nt":
@@ -347,7 +381,7 @@ class CanonicalRoot:
             path = self._path if normalized == "." else self._path.joinpath(*normalized.split("/"))
             proc_fd_root = Path("/proc/self/fd")
             launch_path = str(proc_fd_root / str(current)) if proc_fd_root.is_dir() else str(path)
-            yield _DirectoryAccess(path, launch_path)
+            yield _DirectoryAccess(path, launch_path, current)
             self._revalidate_root()
         except OSError, ValueError:
             raise RepositoryAccessDenied("repository directory is unavailable") from None
@@ -436,7 +470,7 @@ class CanonicalRoot:
                     current = current / part
                     handles.append(api.open_directory(current))
             self._revalidate_root()
-            yield _DirectoryAccess(current, str(current))
+            yield _DirectoryAccess(current, str(current), handles[-1])
             self._revalidate_root()
         except OSError, ValueError:
             raise RepositoryAccessDenied("repository directory is unavailable") from None

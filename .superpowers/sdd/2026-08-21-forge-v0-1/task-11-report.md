@@ -147,3 +147,75 @@ file reading/search, and instruction discovery remain out of scope.
   revalidated before and after the launch boundary.
 - Windows final process cwd link coverage follows the existing host capability
   policy for symlink/junction creation; no repository operations were added.
+
+---
+
+# Task 11 Slice 3a worker report
+
+## Status
+
+Complete for bounded repository listing and file reading. Search and
+instruction discovery remain intentionally out of scope for this slice.
+
+## TDD evidence
+
+- RED: the initial `test_repository.py` collection failed with
+  `ModuleNotFoundError: No module named 'forge.tools.repository'`.
+- GREEN: the repository tests passed after the adapter was added; the later
+  virtual-environment direct-read regression first failed, then passed after
+  ancestor detection was added.
+
+## Delivered
+
+- Added `RepositoryReader` with a pinned `CanonicalRoot`, positive
+  `max_file_bytes` and `max_list_entries` validation, configured secret,
+  managed-worktree, and artifact exclusions, and fixed component exclusions.
+- Added deterministic forward-slash regular-file listing with truthful byte
+  sizes, fail-closed traversal bounds, exact-or-descendant exclusions, and
+  exclusion of `.git`, worktrees, dependency environments, and directories
+  containing a regular `pyvenv.cfg`. `.env.example` remains visible when
+  `.env` is configured as a secret.
+- Added bounded no-follow UTF-8 reads. Reads reject binary NUL and invalid
+  UTF-8, preserve exact text including line endings, truncate only at a valid
+  multibyte boundary, and retain original byte size/truncation metadata.
+- Extended `CanonicalRoot` with descriptor/handle-held directory enumeration;
+  POSIX uses descriptor-relative no-follow stats and Windows uses the existing
+  no-reparse, delete-sharing-safe directory handles. Links/reparse entries are
+  omitted from listings and direct access fails closed. Root identity is
+  revalidated around enumeration and reads.
+- Added coverage for bounds, exclusions, `.env.example`, virtual environments,
+  binary/invalid UTF-8, multibyte truncation, linked entries, and root
+  replacement.
+
+## Material decisions
+
+- `list_files` returns only regular files. Because the existing synchronous
+  protocol exposes a sequence of `RepositoryEntry` records and no list-level
+  truncation record, exceeding `max_list_entries` fails closed with the
+  bounded generic `RepositoryAccessDenied` rather than returning an ambiguous
+  partial result.
+- A direct read below a directory containing `pyvenv.cfg` checks each existing
+  ancestor through the safe directory primitive before opening file bytes.
+  A symlink/reparse named `pyvenv.cfg` is not followed or treated as a virtual
+  environment marker.
+
+## Verification
+
+- Task 11 path/process/repository/security focused pytest:
+  `62 passed, 2 skipped in 1.74s`.
+- Affected artifact and Git inspector pytest:
+  `20 passed, 2 skipped in 0.70s`.
+- Full orchestrator pytest:
+  `923 passed, 3 skipped in 97.12s`.
+- Full orchestrator Ruff check: `All checks passed!`.
+- Full orchestrator Ruff format check: `141 files already formatted`.
+- Forge mypy: `Success: no issues found in 97 source files`.
+- `git diff --check`: pass before staging; staged check was repeated before
+  commit.
+
+## Unresolved concerns
+
+- Final-file symlink coverage remains capability-dependent on this Windows
+  host, as documented by the earlier path-boundary slice; directory junction,
+  intermediate-link, linked-entry, and root-replacement cases execute here.
+- No search or instruction-discovery behavior was added in this slice.

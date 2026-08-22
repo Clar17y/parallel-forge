@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from forge.tools.paths import CanonicalRoot, PathEscape, RepositoryAccessDenied
+from forge.tools.repository import RepositoryReader
 
 
 def _symlink_or_skip(link: Path, target: Path, *, directory: bool) -> None:
@@ -65,3 +66,33 @@ def test_root_replacement_is_not_reaccepted_after_construction(tmp_path: Path) -
 
     with pytest.raises(RepositoryAccessDenied):
         root.stat_file("safe.txt")
+
+
+def test_repository_reader_omits_and_denies_linked_entries(tmp_path: Path) -> None:
+    root_path = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    root_path.mkdir()
+    outside.mkdir()
+    (outside / "outside.txt").write_text("outside", encoding="utf-8")
+    _symlink_or_skip(root_path / "escape", outside, directory=True)
+    reader = RepositoryReader(root_path)
+
+    assert reader.list_files() == ()
+    with pytest.raises(RepositoryAccessDenied):
+        reader.read_file("escape/outside.txt")
+
+
+def test_repository_reader_rejects_root_replacement(tmp_path: Path) -> None:
+    root_path = tmp_path / "repo"
+    root_path.mkdir()
+    (root_path / "safe.txt").write_text("safe", encoding="utf-8")
+    reader = RepositoryReader(root_path)
+    moved = tmp_path / "repo-old"
+    root_path.rename(moved)
+    root_path.mkdir()
+    (root_path / "safe.txt").write_text("replacement", encoding="utf-8")
+
+    with pytest.raises(RepositoryAccessDenied):
+        reader.list_files()
+    with pytest.raises(RepositoryAccessDenied):
+        reader.read_file("safe.txt")
