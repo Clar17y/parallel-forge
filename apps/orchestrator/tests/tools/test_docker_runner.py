@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -109,6 +110,33 @@ class _CleanupBlockingProcess(_BlockingProcess):
             return _ProcessResult(stdout="", stderr="", stdout_original_byte_count=0)
         self.started.set()
         self.release.wait(timeout=5)
+        return self.result
+
+
+class _DelayedLaunchProcess(_FakeProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.launch_started = threading.Event()
+        self.launch_release = threading.Event()
+        self.launch_finished = threading.Event()
+        self.container_launched = threading.Event()
+        self.cleanup_started = threading.Event()
+        self.cleanup_release = threading.Event()
+        self.cleanup_finished = threading.Event()
+
+    def run_argv(self, argv: tuple[str, ...], **kwargs: object) -> _ProcessResult:
+        self.calls.append((argv, kwargs))
+        if argv[:3] == ("docker", "rm", "-f"):
+            self.cleanup_started.set()
+            if not self.container_launched.is_set():
+                return _ProcessResult(return_code=1, stdout="", stderr="not found")
+            self.cleanup_release.wait(timeout=5)
+            self.cleanup_finished.set()
+            return _ProcessResult(stdout="", stderr="", stdout_original_byte_count=0)
+        self.launch_started.set()
+        self.launch_release.wait(timeout=5)
+        self.container_launched.set()
+        self.launch_finished.set()
         return self.result
 
 
@@ -488,6 +516,12 @@ async def test_docker_cancellation_waits_for_blocked_cleanup_before_propagating(
     )
     assert await asyncio.to_thread(process.started.wait, 1)
     task.cancel()
+    launch_marker = asyncio.Event()
+    asyncio.get_running_loop().call_soon(launch_marker.set)
+    await launch_marker.wait()
+    assert not task.done()
+    assert not process.cleanup_started.is_set()
+    process.release.set()
     assert await asyncio.to_thread(process.cleanup_started.wait, 1)
     task.cancel()
     marker = asyncio.Event()
@@ -503,6 +537,68 @@ async def test_docker_cancellation_waits_for_blocked_cleanup_before_propagating(
     cleanup = process.calls[1][0]
     assert cleanup[:3] == ("docker", "rm", "-f")
     assert cleanup[3] == process.calls[0][0][process.calls[0][0].index("--name") + 1]
+
+
+@pytest.mark.asyncio
+async def test_docker_cancellation_waits_for_delayed_launch_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    command = _command()
+    process = _DelayedLaunchProcess()
+    runner = DockerRunner(
+        policy=_policy(command),
+        root=CanonicalRoot(worktree),
+        image_digest="sha256:" + "8" * 64,
+        process_runner=process,
+        artifact_store=_FakeArtifacts(),
+        telemetry=_FakeTelemetry(),
+    )
+
+    task = asyncio.create_task(
+        runner.run(RunCommandRequest(command_name=command.name, kind=command.kind))
+    )
+    assert await asyncio.to_thread(process.launch_started.wait, 1)
+    try:
+        task.cancel()
+        marker = asyncio.Event()
+        asyncio.get_running_loop().call_soon(marker.set)
+        await marker.wait()
+        assert not task.done()
+        assert not process.cleanup_started.is_set()
+        assert not process.container_launched.is_set()
+
+        task.cancel()
+        repeated_marker = asyncio.Event()
+        asyncio.get_running_loop().call_soon(repeated_marker.set)
+        await repeated_marker.wait()
+        assert not task.done()
+
+        process.launch_release.set()
+        assert await asyncio.to_thread(process.launch_finished.wait, 1)
+        assert process.container_launched.is_set()
+        assert await asyncio.to_thread(process.cleanup_started.wait, 1)
+        assert not task.done()
+
+        process.cleanup_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert process.cleanup_finished.is_set()
+    finally:
+        process.launch_release.set()
+        process.cleanup_release.set()
+        with suppress(asyncio.CancelledError, RunnerExecutionError):
+            if not task.done():
+                await task
+            else:
+                task.exception()
+
+    launch_argv = process.calls[0][0]
+    cleanup = process.calls[1][0]
+    assert launch_argv[0:2] == ("docker", "run")
+    assert cleanup[:3] == ("docker", "rm", "-f")
+    assert cleanup[3] == launch_argv[launch_argv.index("--name") + 1]
 
 
 @pytest.mark.parametrize("kind", tuple(StepKind))

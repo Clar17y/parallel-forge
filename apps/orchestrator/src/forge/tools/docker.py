@@ -193,12 +193,14 @@ class DockerRunner:
         }
         with self._telemetry.start_span("runner.docker", attributes=attributes):
             try:
-                process_result = await asyncio.to_thread(
-                    self._process_runner.run_argv,
-                    tuple(argv),
-                    cwd=self._root.path,
-                    environment=client_environment,
-                    timeout_seconds=spec.timeout_seconds,
+                process_result, caller_cancelled = await await_deferred_cancellation(
+                    asyncio.to_thread(
+                        self._process_runner.run_argv,
+                        tuple(argv),
+                        cwd=self._root.path,
+                        environment=client_environment,
+                        timeout_seconds=spec.timeout_seconds,
+                    )
                 )
             except asyncio.CancelledError:
                 await self._cleanup_for_terminal(container_name)
@@ -208,15 +210,13 @@ class DockerRunner:
                 if caller_cancelled:
                     raise asyncio.CancelledError()
                 raise RunnerExecutionError() from None
-            if process_result.timed_out:
-                caller_cancelled = await self._cleanup_for_terminal(container_name)
-                if caller_cancelled:
+            if caller_cancelled or process_result.timed_out or process_result.return_code == 125:
+                cancelled_before_cleanup = caller_cancelled
+                cleanup_cancelled = await self._cleanup_for_terminal(container_name)
+                if cancelled_before_cleanup or cleanup_cancelled:
                     raise asyncio.CancelledError()
-            elif process_result.return_code == 125:
-                caller_cancelled = await self._cleanup_for_terminal(container_name)
-                if caller_cancelled:
-                    raise asyncio.CancelledError()
-                raise RunnerExecutionError()
+                if process_result.return_code == 125:
+                    raise RunnerExecutionError()
             stdout_digest, stderr_digest = await persist_output_artifacts(
                 self._artifact_store,
                 process_result,
