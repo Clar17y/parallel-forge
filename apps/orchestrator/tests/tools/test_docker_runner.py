@@ -93,6 +93,25 @@ class _BlockingProcess(_FakeProcess):
         return self.result
 
 
+class _CleanupBlockingProcess(_BlockingProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleanup_started = threading.Event()
+        self.cleanup_release = threading.Event()
+        self.cleanup_finished = threading.Event()
+
+    def run_argv(self, argv: tuple[str, ...], **kwargs: object) -> _ProcessResult:
+        self.calls.append((argv, kwargs))
+        if argv[:3] == ("docker", "rm", "-f"):
+            self.cleanup_started.set()
+            self.cleanup_release.wait(timeout=5)
+            self.cleanup_finished.set()
+            return _ProcessResult(stdout="", stderr="", stdout_original_byte_count=0)
+        self.started.set()
+        self.release.wait(timeout=5)
+        return self.result
+
+
 class _FakeArtifacts:
     def __init__(self) -> None:
         self.values: list[bytes] = []
@@ -445,3 +464,86 @@ async def test_cancelling_docker_run_forces_exact_container_cleanup(tmp_path: Pa
     cleanup = process.calls[1][0]
     assert cleanup[:3] == ("docker", "rm", "-f")
     assert cleanup[3] == process.calls[0][0][process.calls[0][0].index("--name") + 1]
+
+
+@pytest.mark.asyncio
+async def test_docker_cancellation_waits_for_blocked_cleanup_before_propagating(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    command = _command()
+    process = _CleanupBlockingProcess()
+    runner = DockerRunner(
+        policy=_policy(command),
+        root=CanonicalRoot(worktree),
+        image_digest="sha256:" + "6" * 64,
+        process_runner=process,
+        artifact_store=_FakeArtifacts(),
+        telemetry=_FakeTelemetry(),
+    )
+
+    task = asyncio.create_task(
+        runner.run(RunCommandRequest(command_name=command.name, kind=command.kind))
+    )
+    assert await asyncio.to_thread(process.started.wait, 1)
+    task.cancel()
+    assert await asyncio.to_thread(process.cleanup_started.wait, 1)
+    task.cancel()
+    marker = asyncio.Event()
+    asyncio.get_running_loop().call_soon(marker.set)
+    await marker.wait()
+    assert not task.done()
+    assert not process.cleanup_finished.is_set()
+    process.cleanup_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert process.cleanup_finished.is_set()
+
+    cleanup = process.calls[1][0]
+    assert cleanup[:3] == ("docker", "rm", "-f")
+    assert cleanup[3] == process.calls[0][0][process.calls[0][0].index("--name") + 1]
+
+
+@pytest.mark.parametrize("kind", tuple(StepKind))
+@pytest.mark.asyncio
+async def test_docker_async_adapter_runs_registered_argv_for_every_step_kind(
+    tmp_path: Path,
+    kind: StepKind,
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    commands = tuple(
+        _command(
+            kind=registered_kind,
+            name=f"named-{registered_kind.value}",
+            argv=("forge", registered_kind.value),
+        )
+        for registered_kind in StepKind
+    )
+    policy = ProjectPolicy(
+        id=uuid4(),
+        version=3,
+        repository_path="D:/Code/Parallel",
+        github_repository="Clar17y/Parallel",
+        default_branch="main",
+        runner_mode=RunnerMode.DOCKER,
+        commands=commands,
+    )
+    process = _FakeProcess()
+    runner = DockerRunner(
+        policy=policy,
+        root=CanonicalRoot(worktree),
+        image_digest="sha256:" + "7" * 64,
+        process_runner=process,
+        artifact_store=_FakeArtifacts(),
+        telemetry=_FakeTelemetry(),
+    )
+
+    command = next(command for command in policy.commands if command.kind is kind)
+    result = await runner.run(RunCommandRequest(command_name=command.name, kind=command.kind))
+
+    assert result.kind is kind
+    run_argv = process.calls[0][0]
+    image_index = run_argv.index("sha256:" + "7" * 64)
+    assert run_argv[image_index + 1 :] == command.argv

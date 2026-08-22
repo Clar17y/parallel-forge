@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from typing import Protocol
 
 from forge.application.ports.artifacts import ArtifactStore
@@ -21,6 +22,26 @@ class RunnerExecutionError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("runner execution failed")
+
+
+async def await_deferred_cancellation[DeferredResult](
+    awaitable: Awaitable[DeferredResult],
+    *,
+    already_cancelled: bool = False,
+) -> tuple[DeferredResult, bool]:
+    """Finish a bounded operation before allowing caller cancellation to propagate."""
+
+    operation = asyncio.ensure_future(awaitable)
+    caller_cancelled = already_cancelled
+    while True:
+        try:
+            result = await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            if operation.cancelled():
+                raise
+            caller_cancelled = True
+            continue
+        return result, caller_cancelled
 
 
 class _ProcessResultLike(Protocol):
@@ -172,6 +193,7 @@ __all__ = [
     "NamedCommandResolver",
     "RunnerExecutionError",
     "UnknownNamedCommand",
+    "await_deferred_cancellation",
     "command_spec_digest",
     "persist_output_artifacts",
     "select_environment",

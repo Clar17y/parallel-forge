@@ -23,6 +23,7 @@ from forge.tools.process import ProcessRunner
 from forge.tools.runner import (
     NamedCommandResolver,
     RunnerExecutionError,
+    await_deferred_cancellation,
     persist_output_artifacts,
     select_environment,
 )
@@ -109,19 +110,24 @@ class TrustedHostRunner:
             attributes=audit_payload,
         ):
             try:
-                process_result = await asyncio.to_thread(
-                    self._process_runner.run_argv,
-                    spec.argv,
-                    cwd=self._root.path,
-                    environment=selected,
-                    timeout_seconds=spec.timeout_seconds,
+                process_result, caller_cancelled = await await_deferred_cancellation(
+                    asyncio.to_thread(
+                        self._process_runner.run_argv,
+                        spec.argv,
+                        cwd=self._root.path,
+                        environment=selected,
+                        timeout_seconds=spec.timeout_seconds,
+                    )
                 )
             except Exception:  # noqa: BLE001 - adapter failures must cross as one safe error
                 raise RunnerExecutionError() from None
-            stdout_digest, stderr_digest = await persist_output_artifacts(
-                self._artifact_store,
-                process_result,
-                secrets=selected,
+            (stdout_digest, stderr_digest), caller_cancelled = await await_deferred_cancellation(
+                persist_output_artifacts(
+                    self._artifact_store,
+                    process_result,
+                    secrets=selected,
+                ),
+                already_cancelled=caller_cancelled,
             )
         duration_ms = max(0, round((self._monotonic() - started) * 1000))
         result = CommandResult(
@@ -144,10 +150,18 @@ class TrustedHostRunner:
             stderr_truncated=process_result.stderr_truncated,
             unsandboxed=True,
         )
-        await self._record_audit(
-            "runner.trusted_host.completed",
-            {**audit_payload, "evidence_digest": result.evidence_digest},
+        completion_payload = {**audit_payload, "evidence_digest": result.evidence_digest}
+        if caller_cancelled:
+            completion_payload["caller_cancelled"] = True
+        _, caller_cancelled = await await_deferred_cancellation(
+            self._record_audit(
+                "runner.trusted_host.completed",
+                completion_payload,
+            ),
+            already_cancelled=caller_cancelled,
         )
+        if caller_cancelled:
+            raise asyncio.CancelledError()
         return result
 
     async def _record_audit(self, event_type: str, payload: Mapping[str, object]) -> None:

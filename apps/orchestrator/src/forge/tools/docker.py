@@ -21,6 +21,7 @@ from forge.tools.process import ProcessRunner
 from forge.tools.runner import (
     NamedCommandResolver,
     RunnerExecutionError,
+    await_deferred_cancellation,
     persist_output_artifacts,
     select_environment,
 )
@@ -200,15 +201,21 @@ class DockerRunner:
                     timeout_seconds=spec.timeout_seconds,
                 )
             except asyncio.CancelledError:
-                await asyncio.shield(self._cleanup(container_name))
+                await self._cleanup_for_terminal(container_name)
                 raise
             except Exception:  # noqa: BLE001 - adapter failures must cross as one safe error
-                await self._cleanup(container_name)
+                caller_cancelled = await self._cleanup_for_terminal(container_name)
+                if caller_cancelled:
+                    raise asyncio.CancelledError()
                 raise RunnerExecutionError() from None
             if process_result.timed_out:
-                await self._cleanup(container_name)
+                caller_cancelled = await self._cleanup_for_terminal(container_name)
+                if caller_cancelled:
+                    raise asyncio.CancelledError()
             elif process_result.return_code == 125:
-                await self._cleanup(container_name)
+                caller_cancelled = await self._cleanup_for_terminal(container_name)
+                if caller_cancelled:
+                    raise asyncio.CancelledError()
                 raise RunnerExecutionError()
             stdout_digest, stderr_digest = await persist_output_artifacts(
                 self._artifact_store,
@@ -236,6 +243,12 @@ class DockerRunner:
             stderr_truncated=process_result.stderr_truncated,
             unsandboxed=False,
         )
+
+    async def _cleanup_for_terminal(self, container_name: str) -> bool:
+        """Finish forced removal and report cancellation delivered during cleanup."""
+
+        _, caller_cancelled = await await_deferred_cancellation(self._cleanup(container_name))
+        return caller_cancelled
 
     async def _cleanup(self, container_name: str) -> None:
         try:

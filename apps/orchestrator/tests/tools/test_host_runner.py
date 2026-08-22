@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -57,9 +58,28 @@ class _FakeProcess:
         return _ProcessResult()
 
 
+class _BlockingProcess(_FakeProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    def run_argv(self, argv: tuple[str, ...], **kwargs: object) -> _ProcessResult:
+        self.calls.append((argv, kwargs))
+        self.started.set()
+        self.release.wait(timeout=5)
+        self.finished.set()
+        return _ProcessResult()
+
+
 class _FakeArtifacts:
+    def __init__(self) -> None:
+        self.values: list[bytes] = []
+
     async def put_bytes(self, data: bytes, **kwargs: object) -> ArtifactDescriptor:
         del kwargs
+        self.values.append(data)
         digest = "1" * 64 if b"stdout" in data else "2" * 64
         return ArtifactDescriptor(
             digest=digest,
@@ -197,3 +217,47 @@ def test_trusted_host_completion_audit_failure_does_not_return_unaudited_result(
         asyncio.run(runner.run(RunCommandRequest(command_name="named-lint", kind=StepKind.LINT)))
     assert len(process.calls) == 1
     assert [call[0] for call in audit.calls] == ["runner.trusted_host.attempt"]
+
+
+@pytest.mark.asyncio
+async def test_trusted_host_cancellation_finishes_evidence_and_completion_audit(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    process = _BlockingProcess()
+    artifacts = _FakeArtifacts()
+    audit = _FakeAudit()
+    runner = TrustedHostRunner(
+        policy=_policy(),
+        root=CanonicalRoot(root),
+        process_runner=process,
+        artifact_store=artifacts,
+        audit=audit,
+        telemetry=_FakeTelemetry(),
+    )
+
+    task = asyncio.create_task(
+        runner.run(RunCommandRequest(command_name="named-lint", kind=StepKind.LINT))
+    )
+    assert await asyncio.to_thread(process.started.wait, 1)
+    task.cancel()
+    task.cancel()
+    marker = asyncio.Event()
+    asyncio.get_running_loop().call_soon(marker.set)
+    await marker.wait()
+    assert not task.done()
+    assert not process.finished.is_set()
+    process.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert process.finished.is_set()
+
+    assert len(artifacts.values) == 2
+    assert [call[0] for call in audit.calls] == [
+        "runner.trusted_host.attempt",
+        "runner.trusted_host.completed",
+    ]
+    completion = audit.calls[1][2]
+    assert completion["caller_cancelled"] is True
+    assert isinstance(completion["evidence_digest"], str)
