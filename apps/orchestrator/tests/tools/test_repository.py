@@ -309,7 +309,7 @@ def test_search_rg_uses_explicit_argv_and_safe_literal_separator(tmp_path: Path)
     root = _repository(tmp_path)
     (root / "visible.txt").write_text("-needle.*\n", encoding="utf-8")
     executable = tmp_path / "rg.exe"
-    fake = _FakeProcessRunner(_rg_result(_rg_match("visible.txt", 1, "-needle.*")))
+    fake = _FakeProcessRunner(_rg_result(f"{_rg_match('visible.txt', 1, '-needle.*')}\n"))
     reader = RepositoryReader(
         root,
         rg_executable=executable,
@@ -359,6 +359,29 @@ def test_search_rg_accepts_exact_no_match_exit(tmp_path: Path) -> None:
     assert result == ()
 
 
+def test_search_rg_requires_a_terminated_json_line(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    (root / "visible.txt").write_text("needle\n", encoding="utf-8")
+    output = _rg_match("visible.txt", 1, "needle")
+
+    incomplete = _FakeProcessRunner(_rg_result(output))
+    with pytest.raises(RepositoryAccessDenied):
+        RepositoryReader(
+            root,
+            rg_executable=tmp_path / "rg.exe",
+            process_runner=incomplete,
+        ).search("needle")
+
+    complete = _FakeProcessRunner(_rg_result(f"{output}\n"))
+    result = RepositoryReader(
+        root,
+        rg_executable=tmp_path / "rg.exe",
+        process_runner=complete,
+    ).search("needle")
+
+    assert result == (SearchMatch(path="visible.txt", line_number=1, line_text="needle"),)
+
+
 @pytest.mark.parametrize(
     "result",
     [
@@ -398,7 +421,7 @@ def test_search_rg_rejects_hostile_or_secret_json_paths(tmp_path: Path, hostile_
     root = _repository(tmp_path)
     (root / "visible.txt").write_text("needle\n", encoding="utf-8")
     (root / ".env").write_text("needle\n", encoding="utf-8")
-    fake = _FakeProcessRunner(_rg_result(_rg_match(hostile_path, 1, "needle")))
+    fake = _FakeProcessRunner(_rg_result(f"{_rg_match(hostile_path, 1, 'needle')}\n"))
 
     with pytest.raises(RepositoryAccessDenied):
         RepositoryReader(
@@ -413,12 +436,15 @@ def test_search_rg_sorts_and_applies_global_cap_after_parsing(tmp_path: Path) ->
     root = _repository(tmp_path)
     for name in ("a.txt", "b.txt", "c.txt"):
         (root / name).write_text("needle\n", encoding="utf-8")
-    output = "\n".join(
-        (
-            _rg_match("c.txt", 1, "needle"),
-            _rg_match("a.txt", 1, "needle"),
-            _rg_match("b.txt", 1, "needle"),
+    output = (
+        "\n".join(
+            (
+                _rg_match("c.txt", 1, "needle"),
+                _rg_match("a.txt", 1, "needle"),
+                _rg_match("b.txt", 1, "needle"),
+            )
         )
+        + "\n"
     )
     fake = _FakeProcessRunner(_rg_result(output))
 
@@ -467,15 +493,18 @@ def test_search_rg_escapes_secret_globs_and_keeps_env_example_candidate(
 def test_search_rg_rejects_bytes_json_fields(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     (root / "visible.txt").write_text("needle\n", encoding="utf-8")
-    output = json.dumps(
-        {
-            "type": "match",
-            "data": {
-                "path": {"bytes": "visible.txt"},
-                "lines": {"text": "needle\n"},
-                "line_number": 1,
-            },
-        }
+    output = (
+        json.dumps(
+            {
+                "type": "match",
+                "data": {
+                    "path": {"bytes": "visible.txt"},
+                    "lines": {"text": "needle\n"},
+                    "line_number": 1,
+                },
+            }
+        )
+        + "\n"
     )
     fake = _FakeProcessRunner(_rg_result(output))
 

@@ -346,6 +346,8 @@ class RepositoryReader:
             raise RepositoryAccessDenied("repository search output is invalid")
         if not result.stdout.strip():
             raise RepositoryAccessDenied("repository search output is invalid")
+        if not result.stdout.endswith("\n"):
+            raise RepositoryAccessDenied("repository search output is incomplete")
         return self._parse_rg_output(result.stdout, literal, normalized, entries)[
             : self._max_search_matches
         ]

@@ -413,3 +413,38 @@ final Task 11 slice; no later task or feature was started.
 - File-link omission coverage remains capability-dependent on this Windows
   host, as documented by the earlier path-boundary slices; directory and
   intermediate reparse protections execute on supported hosts.
+
+---
+
+# Task 11 Review fix round 1
+
+## Status
+
+Complete. The ripgrep backend now rejects a nonempty stdout stream whose final
+JSON record is not terminated by a newline, while preserving the exact empty
+stdout/exit-1 no-match case.
+
+## TDD evidence
+
+- RED: `test_search_rg_requires_a_terminated_json_line` failed because a valid
+  final JSON object without `\n` was accepted (`DID NOT RAISE`).
+- GREEN: the backend gained the minimal nonempty-output newline check; the
+  regression proves an unterminated record is denied and the equivalent
+  newline-terminated record succeeds.
+- Existing successful fake rg records were made complete JSONL records by
+  adding their required final newline. The exact exit-1 empty no-match fixture
+  was retained unchanged.
+
+## Verification
+
+- Focused Task 11 repository/path/process/security pytest: `90 passed, 2
+  skipped in 1.88s`.
+- Ruff check for orchestrator source/tests: `All checks passed!`.
+- Ruff format check: `142 files already formatted`.
+- Mypy: `Success: no issues found in 97 source files`.
+- `git diff --check`: pass.
+
+## Unresolved concerns
+
+- No new concerns. Full-suite verification remains owned by the final
+  verifier, as requested for this review-fix round.
