@@ -349,12 +349,13 @@ def upgrade() -> None:
         sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column("operation_kind", sa.String(length=96), nullable=False),
         sa.Column("idempotency_key", sa.String(length=255), nullable=False),
+        sa.Column("request_digest", sa.String(length=64), nullable=False),
         sa.Column("request_schema_version", sa.Integer(), nullable=False),
         sa.Column("request_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("status", sa.String(length=24), nullable=False),
         sa.Column("provider_request_id", sa.String(length=512), nullable=True),
         sa.Column("repository_id", sa.String(length=512), nullable=True),
-        sa.Column("resource_identity", sa.String(length=1024), nullable=True),
+        sa.Column("remote_resource_id", sa.String(length=1024), nullable=True),
         sa.Column("outcome_schema_version", sa.Integer(), nullable=True),
         sa.Column("outcome_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("attempt_count", sa.Integer(), nullable=False),
@@ -374,8 +375,21 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
-            "status IN ('PENDING','IN_PROGRESS','SUCCEEDED','FAILED','RECONCILING')",
+            "status IN ('PENDING','SUCCEEDED','FAILED','NEEDS_RECONCILIATION')",
             name=op.f("ck_operation_intents_status"),
+        ),
+        sa.CheckConstraint(
+            "request_digest ~ '^[0-9a-f]{64}$'",
+            name=op.f("ck_operation_intents_request_digest"),
+        ),
+        sa.CheckConstraint(
+            "(status IN ('PENDING','NEEDS_RECONCILIATION') AND completed_at IS NULL "
+            "AND outcome_payload IS NULL AND outcome_schema_version IS NULL) OR "
+            "(status = 'SUCCEEDED' AND completed_at IS NOT NULL AND outcome_payload IS NOT NULL "
+            "AND outcome_schema_version IS NOT NULL AND outcome_schema_version >= 1) OR "
+            "(status = 'FAILED' AND completed_at IS NOT NULL AND last_error IS NOT NULL "
+            "AND outcome_payload IS NULL AND outcome_schema_version IS NULL)",
+            name=op.f("ck_operation_intents_status_shape"),
         ),
         sa.ForeignKeyConstraint(
             ["run_id"],
@@ -385,6 +399,12 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_operation_intents")),
         sa.UniqueConstraint("idempotency_key", name="uq_operation_intents_idempotency_key"),
+    )
+    op.create_index(
+        "ix_operation_intents_status_updated_at",
+        "operation_intents",
+        ["status", "updated_at"],
+        unique=False,
     )
     op.create_table(
         "pull_requests",
@@ -459,8 +479,18 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
-            "status IN ('PENDING','LEASED','SUCCEEDED','FAILED','CANCELLED')",
+            "status IN ('PENDING','LEASED','COMPLETED','FAILED','CANCELLED')",
             name=op.f("ck_run_commands_status"),
+        ),
+        sa.CheckConstraint(
+            "(status = 'LEASED' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL) "
+            "OR (status <> 'LEASED' AND lease_owner IS NULL AND lease_expires_at IS NULL)",
+            name=op.f("ck_run_commands_lease_shape"),
+        ),
+        sa.CheckConstraint(
+            "(status IN ('COMPLETED','FAILED','CANCELLED') AND completed_at IS NOT NULL) "
+            "OR (status IN ('PENDING','LEASED') AND completed_at IS NULL)",
+            name=op.f("ck_run_commands_terminal_timestamp_shape"),
         ),
         sa.ForeignKeyConstraint(
             ["run_id"], ["runs.id"], name=op.f("fk_run_commands_run_id_runs"), ondelete="CASCADE"
@@ -473,6 +503,18 @@ def upgrade() -> None:
         "ix_run_commands_lease_expires_at", "run_commands", ["lease_expires_at"], unique=False
     )
     op.create_index("ix_run_commands_status", "run_commands", ["status"], unique=False)
+    op.create_index(
+        "ix_run_commands_claim_order",
+        "run_commands",
+        ["status", "available_at", "created_at"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_run_commands_run_active_lease",
+        "run_commands",
+        ["run_id", "status", "lease_expires_at"],
+        unique=False,
+    )
     op.create_table(
         "run_events",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -937,11 +979,18 @@ def downgrade() -> None:
     op.drop_table("steps")
     op.drop_index("ix_run_events_run_id_sequence", table_name="run_events")
     op.drop_table("run_events")
+    op.drop_index("ix_run_commands_run_active_lease", table_name="run_commands", if_exists=True)
+    op.drop_index("ix_run_commands_claim_order", table_name="run_commands", if_exists=True)
     op.drop_index("ix_run_commands_status", table_name="run_commands")
     op.drop_index("ix_run_commands_lease_expires_at", table_name="run_commands")
     op.drop_index("ix_run_commands_available_at", table_name="run_commands")
     op.drop_table("run_commands")
     op.drop_table("pull_requests")
+    op.drop_index(
+        "ix_operation_intents_status_updated_at",
+        table_name="operation_intents",
+        if_exists=True,
+    )
     op.drop_table("operation_intents")
     op.drop_table("artifacts")
     op.drop_table("approvals")

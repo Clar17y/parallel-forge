@@ -172,3 +172,21 @@ async def persisted_run(session_factory):
         await work.runs.create(run)
         await work.commit()
     return run
+
+
+@pytest.fixture
+def command_repository(session_factory):
+    """Provide a command repository backed by the disposable database."""
+
+    from forge.persistence.repositories.commands import PostgresCommandRepository
+
+    return PostgresCommandRepository(session_factory)
+
+
+@pytest.fixture
+def operation_repository(session_factory):
+    """Provide an operation-intent repository backed by the disposable database."""
+
+    from forge.persistence.repositories.operations import PostgresOperationRepository
+
+    return PostgresOperationRepository(session_factory)

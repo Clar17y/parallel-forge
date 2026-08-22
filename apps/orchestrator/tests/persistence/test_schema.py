@@ -233,9 +233,13 @@ def test_schema_contains_required_identity_and_safety_constraints(
             "artifact_uniques": inspector.get_unique_constraints("artifacts"),
             "pr_uniques": inspector.get_unique_constraints("pull_requests"),
             "intent_uniques": inspector.get_unique_constraints("operation_intents"),
+            "intent_columns": inspector.get_columns("operation_intents"),
             "run_indexes": inspector.get_indexes("runs"),
             "command_indexes": inspector.get_indexes("run_commands"),
+            "command_columns": inspector.get_columns("run_commands"),
             "session_checks": inspector.get_check_constraints("operator_sessions"),
+            "command_checks": inspector.get_check_constraints("run_commands"),
+            "intent_checks": inspector.get_check_constraints("operation_intents"),
             "run_checks": inspector.get_check_constraints("runs"),
             "project_fks": inspector.get_foreign_keys("projects"),
             "run_fks": inspector.get_foreign_keys("runs"),
@@ -270,6 +274,25 @@ def test_schema_contains_required_identity_and_safety_constraints(
     assert {("state",), ("project_id",), ("updated_at",)} <= run_index_columns
     command_index_columns = constrained_columns("command_indexes")
     assert {("status",), ("available_at",), ("lease_expires_at",)} <= command_index_columns
+    assert {("status", "available_at", "created_at"), ("run_id", "status", "lease_expires_at")} <= {
+        tuple(item["column_names"]) for item in result["command_indexes"] if isinstance(item, dict)
+    }
+
+    command_columns = result["command_columns"]
+    intent_columns = result["intent_columns"]
+    assert isinstance(command_columns, list)
+    assert isinstance(intent_columns, list)
+    assert "request_digest" in {item["name"] for item in intent_columns}
+    assert "remote_resource_id" in {item["name"] for item in intent_columns}
+    assert "resource_identity" not in {item["name"] for item in intent_columns}
+    command_checks = result["command_checks"]
+    intent_checks = result["intent_checks"]
+    assert isinstance(command_checks, list)
+    assert isinstance(intent_checks, list)
+    assert "ck_run_commands_lease_shape" in {item["name"] for item in command_checks}
+    assert "ck_run_commands_terminal_timestamp_shape" in {item["name"] for item in command_checks}
+    assert "ck_operation_intents_status_shape" in {item["name"] for item in intent_checks}
+    assert "ck_operation_intents_request_digest" in {item["name"] for item in intent_checks}
 
     session_checks = result["session_checks"]
     run_checks = result["run_checks"]

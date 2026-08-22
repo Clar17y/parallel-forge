@@ -31,15 +31,27 @@ class RunCommand(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_run_commands_idempotency_key"),
         CheckConstraint(
-            "status IN ('PENDING','LEASED','SUCCEEDED','FAILED','CANCELLED')", name="status"
+            "status IN ('PENDING','LEASED','COMPLETED','FAILED','CANCELLED')", name="status"
         ),
         CheckConstraint(
             "expected_run_version >= 0 AND attempt_count >= 0", name="versions_and_attempts"
         ),
         CheckConstraint("payload_schema_version >= 1", name="payload_schema_version_positive"),
+        CheckConstraint(
+            "(status = 'LEASED' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL) "
+            "OR (status <> 'LEASED' AND lease_owner IS NULL AND lease_expires_at IS NULL)",
+            name="lease_shape",
+        ),
+        CheckConstraint(
+            "(status IN ('COMPLETED','FAILED','CANCELLED') AND completed_at IS NOT NULL) "
+            "OR (status IN ('PENDING','LEASED') AND completed_at IS NULL)",
+            name="terminal_timestamp_shape",
+        ),
         Index("ix_run_commands_status", "status"),
         Index("ix_run_commands_available_at", "available_at"),
         Index("ix_run_commands_lease_expires_at", "lease_expires_at"),
+        Index("ix_run_commands_claim_order", "status", "available_at", "created_at"),
+        Index("ix_run_commands_run_active_lease", "run_id", "status", "lease_expires_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -355,16 +367,27 @@ class OperationIntent(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_operation_intents_idempotency_key"),
         CheckConstraint(
-            "status IN ('PENDING','IN_PROGRESS','SUCCEEDED','FAILED','RECONCILING')",
+            "status IN ('PENDING','SUCCEEDED','FAILED','NEEDS_RECONCILIATION')",
             name="status",
         ),
         CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
         CheckConstraint("request_schema_version >= 1", name="request_schema_version_positive"),
+        CheckConstraint("request_digest ~ '^[0-9a-f]{64}$'", name="request_digest"),
         CheckConstraint(
             "(outcome_payload IS NULL AND outcome_schema_version IS NULL) OR "
             "(outcome_payload IS NOT NULL AND outcome_schema_version >= 1)",
             name="outcome_shape",
         ),
+        CheckConstraint(
+            "(status IN ('PENDING','NEEDS_RECONCILIATION') AND completed_at IS NULL "
+            "AND outcome_payload IS NULL AND outcome_schema_version IS NULL) OR "
+            "(status = 'SUCCEEDED' AND completed_at IS NOT NULL AND outcome_payload IS NOT NULL "
+            "AND outcome_schema_version IS NOT NULL AND outcome_schema_version >= 1) OR "
+            "(status = 'FAILED' AND completed_at IS NOT NULL AND last_error IS NOT NULL "
+            "AND outcome_payload IS NULL AND outcome_schema_version IS NULL)",
+            name="status_shape",
+        ),
+        Index("ix_operation_intents_status_updated_at", "status", "updated_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -373,12 +396,13 @@ class OperationIntent(Base, TimestampMixin):
     )
     operation_kind: Mapped[str] = mapped_column(String(96), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     request_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="PENDING")
     provider_request_id: Mapped[str | None] = mapped_column(String(512))
     repository_id: Mapped[str | None] = mapped_column(String(512))
-    resource_identity: Mapped[str | None] = mapped_column(String(1024))
+    remote_resource_id: Mapped[str | None] = mapped_column(String(1024))
     outcome_schema_version: Mapped[int | None] = mapped_column(Integer)
     outcome_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
