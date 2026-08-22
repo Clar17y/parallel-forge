@@ -12,7 +12,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from forge.domain.artifact import ArtifactDescriptor, canonical_storage_pointer, thaw_metadata
+from forge.domain.artifact import (
+    ArtifactDescriptor,
+    canonical_storage_pointer,
+    thaw_metadata,
+    validate_artifact_digest,
+)
 from forge.observability.redaction import Redactor
 from forge.persistence.models import Artifact, ArtifactLineage, ArtifactLineageParent
 from forge.persistence.repositories.runs import PersistenceDataError
@@ -69,8 +74,8 @@ class ArtifactRepository:
         if not isinstance(bounded_metadata, Mapping):
             raise TypeError("artifact metadata must be an object")
         metadata_snapshot = _with_truncation_metadata(dict(bounded_metadata), descriptor)
-        async with self._session_factory() as session, session.begin():
-            try:
+        try:
+            async with self._session_factory() as session, session.begin():
                 content = await self._content_row(descriptor, metadata_snapshot, session)
                 parent_ids = await self._parent_ids(parents, run_id, session)
                 lineage = await self._lineage_row(
@@ -83,15 +88,14 @@ class ArtifactRepository:
                     session,
                 )
                 return _descriptor_from_rows(content, lineage, parents)
-            except ArtifactRepositoryError:
-                raise
-            except IntegrityError as error:
-                raise ArtifactRepositoryError(
-                    "artifact metadata violated a database invariant"
-                ) from error
+        except ArtifactRepositoryError:
+            raise
+        except IntegrityError:
+            pass
+        raise ArtifactRepositoryError("artifact metadata violated a database invariant") from None
 
     async def get_by_digest(self, digest: str, *, run_id: UUID) -> ArtifactDescriptor:
-        _validate_digest(digest)
+        validate_artifact_digest(digest)
         if not isinstance(run_id, UUID):
             raise TypeError("artifact run id must be a UUID")
         async with self._session_factory() as session:
@@ -115,7 +119,7 @@ class ArtifactRepository:
     async def lineages(self, digest: str) -> tuple[ArtifactDescriptor, ...]:
         """Return all run lineages in deterministic run/time order."""
 
-        _validate_digest(digest)
+        validate_artifact_digest(digest)
         async with self._session_factory() as session:
             rows = (
                 await session.execute(
@@ -339,24 +343,15 @@ def _descriptor_from_rows(
 
 
 def _normalize_parents(parents: Sequence[str], digest: str) -> tuple[str, ...]:
-    _validate_digest(digest)
+    validate_artifact_digest(digest)
     normalized = tuple(parents)
     if normalized != tuple(sorted(set(normalized))):
         raise ArtifactMetadataConflict("artifact parent digests must be unique and sorted")
     for parent in normalized:
-        _validate_digest(parent)
+        validate_artifact_digest(parent)
         if parent == digest:
             raise ArtifactMetadataConflict("artifact cannot parent itself")
     return normalized
-
-
-def _validate_digest(digest: str) -> None:
-    if not isinstance(digest, str) or len(digest) != 64 or digest != digest.lower():
-        raise ValueError("artifact digest must be lowercase hexadecimal SHA-256")
-    try:
-        int(digest, 16)
-    except ValueError as error:
-        raise ValueError("artifact digest must be lowercase hexadecimal SHA-256") from error
 
 
 def _canonical_json(value: Mapping[str, object]) -> str:

@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
 import pytest
-from forge.artifacts.filesystem import ArtifactIntegrityError, FilesystemArtifactStore
+from forge.artifacts.filesystem import (
+    ArtifactIntegrityError,
+    ArtifactStoreError,
+    FilesystemArtifactStore,
+)
 
 
 @pytest.mark.asyncio
@@ -107,6 +112,30 @@ async def test_invalid_bounds_fail_before_writing(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         await store.put_bytes(b"data", media_type="text/plain", max_bytes=0)
     assert list(tmp_path.rglob("*")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle cleanup regression")
+@pytest.mark.parametrize("failure_stage", ("validation", "write"))
+async def test_windows_temp_cleanup_is_armed_at_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    from forge.artifacts import _win32
+
+    def fail(*_args: object) -> None:
+        raise ArtifactStoreError("simulated artifact temp failure")
+
+    hook = "_require_regular" if failure_stage == "validation" else "_write_all"
+    monkeypatch.setattr(_win32, hook, fail)
+    store = FilesystemArtifactStore(tmp_path / "root")
+
+    with pytest.raises(ArtifactStoreError, match="simulated artifact temp failure"):
+        await store.put_bytes(b"content", media_type="text/plain")
+
+    assert not list((tmp_path / "root").rglob("*.tmp"))
+    assert not list((tmp_path / "root").rglob("*.blob"))
 
 
 @pytest.mark.asyncio

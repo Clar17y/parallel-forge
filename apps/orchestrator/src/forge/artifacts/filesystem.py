@@ -7,7 +7,6 @@ import contextlib
 import errno
 import hashlib
 import os
-import re
 import stat
 import threading
 from collections.abc import Callable, Iterator
@@ -16,13 +15,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from forge.artifacts._errors import ArtifactIntegrityError, ArtifactStoreError
-from forge.domain.artifact import ArtifactDescriptor, canonical_storage_pointer
+from forge.domain.artifact import (
+    ArtifactDescriptor,
+    canonical_storage_pointer,
+    validate_artifact_digest,
+)
 
 if TYPE_CHECKING:
     from forge.artifacts._win32 import WindowsArtifactIO
 
 _DEFAULT_BOUNDING_POLICY: Final[str] = "none"
-_DIGEST_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _HASH_CHUNK: Final[int] = 1024 * 1024
 _O_DIRECTORY: Final[int] = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
@@ -85,11 +87,11 @@ class FilesystemArtifactStore:
         )
 
     async def open_bytes(self, digest: str) -> bytes:
-        _validate_digest(digest)
+        validate_artifact_digest(digest)
         return await asyncio.to_thread(self._read_verified_sync, digest)
 
     async def verify(self, digest: str) -> bool:
-        _validate_digest(digest)
+        validate_artifact_digest(digest)
         await asyncio.to_thread(self._read_verified_sync, digest)
         return True
 
@@ -249,11 +251,6 @@ class FilesystemArtifactStore:
 
     def _target_path(self, digest: str) -> Path:
         return self._root / Path(canonical_storage_pointer(digest))
-
-
-def _validate_digest(digest: str) -> None:
-    if not isinstance(digest, str) or _DIGEST_PATTERN.fullmatch(digest) is None:
-        raise ValueError("artifact digest must be lowercase hexadecimal SHA-256")
 
 
 def _open_posix_absolute_directory(path: Path, *, create: bool) -> int:

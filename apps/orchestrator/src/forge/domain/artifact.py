@@ -13,7 +13,7 @@ from uuid import UUID
 
 from forge.observability.redaction import redact_value
 
-_DIGEST = re.compile(r"\A[0-9a-f]{64}\Z")
+_DIGEST = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
 _MEDIA_TYPE_MAX = 255
 _PRODUCER_TYPE_MAX = 96
 _SCHEMA_VERSION = 1
@@ -23,7 +23,7 @@ _CANONICAL_PREFIX = "sha256/"
 def canonical_storage_pointer(digest: str) -> str:
     """Return the only relative storage pointer accepted for a digest."""
 
-    _require_digest(digest)
+    validate_artifact_digest(digest)
     return f"{_CANONICAL_PREFIX}{digest[:2]}/{digest[2:]}.blob"
 
 
@@ -65,7 +65,7 @@ class ArtifactDescriptor:
     truncation_policy: str = "none"
 
     def __post_init__(self) -> None:
-        _require_digest(self.digest)
+        validate_artifact_digest(self.digest)
         _require_bounded_nonempty(self.media_type, "media type", _MEDIA_TYPE_MAX)
         if type(self.byte_count) is not int or self.byte_count < 0:
             raise ValueError("artifact byte count must be a nonnegative integer")
@@ -85,7 +85,7 @@ class ArtifactDescriptor:
         if parents != tuple(sorted(set(parents))):
             raise ValueError("artifact parent digests must be unique and sorted")
         for parent in parents:
-            _require_digest(parent)
+            validate_artifact_digest(parent)
             if parent == self.digest:
                 raise ValueError("artifact cannot parent itself")
         if type(self.truncated) is not bool:
@@ -113,7 +113,9 @@ class ArtifactDescriptor:
         return canonical_storage_pointer(self.digest)
 
 
-def _require_digest(value: str) -> None:
+def validate_artifact_digest(value: str) -> None:
+    """Reject anything except one canonical lowercase ASCII SHA-256 digest."""
+
     if not isinstance(value, str) or _DIGEST.fullmatch(value) is None:
         raise ValueError("artifact digest must be lowercase hexadecimal SHA-256")
 
@@ -134,4 +136,9 @@ def _validate_storage_path(value: Path, digest: str) -> None:
         raise ValueError("artifact storage path is not canonical")
 
 
-__all__ = ["ArtifactDescriptor", "canonical_storage_pointer", "thaw_metadata"]
+__all__ = [
+    "ArtifactDescriptor",
+    "canonical_storage_pointer",
+    "thaw_metadata",
+    "validate_artifact_digest",
+]

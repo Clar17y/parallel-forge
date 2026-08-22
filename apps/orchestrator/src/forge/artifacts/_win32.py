@@ -35,15 +35,14 @@ else:
     _FILE_SHARE_DELETE = 0x00000004
     _CREATE_NEW = 1
     _OPEN_EXISTING = 3
-    _FILE_ATTRIBUTE_READONLY = 0x00000001
     _FILE_ATTRIBUTE_DIRECTORY = 0x00000010
     _FILE_ATTRIBUTE_NORMAL = 0x00000080
     _FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
     _FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
+    _FILE_FLAG_DELETE_ON_CLOSE = 0x04000000
     _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
     _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
     _FILE_BEGIN = 0
-    _FILE_DISPOSITION_INFO_CLASS = 4
     _ERROR_FILE_NOT_FOUND = 2
     _ERROR_PATH_NOT_FOUND = 3
     _ERROR_SHARING_VIOLATION = 32
@@ -68,9 +67,6 @@ else:
             ("file_index_high", wintypes.DWORD),
             ("file_index_low", wintypes.DWORD),
         )
-
-    class _FILE_DISPOSITION_INFO(ctypes.Structure):
-        _fields_ = (("delete_file", ctypes.c_ubyte),)
 
     _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _CREATE_FILE = _KERNEL32.CreateFileW
@@ -119,14 +115,6 @@ else:
         wintypes.DWORD,
     )
     _SET_POINTER.restype = wintypes.BOOL
-    _SET_FILE_INFO = _KERNEL32.SetFileInformationByHandle
-    _SET_FILE_INFO.argtypes = (
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-    )
-    _SET_FILE_INFO.restype = wintypes.BOOL
 
     def _win_error(code: int | None = None) -> OSError:
         return ctypes.WinError(code if code is not None else ctypes.get_last_error())
@@ -231,16 +219,6 @@ else:
             raise ArtifactIntegrityError("artifact blob failed digest verification")
         return data
 
-    def _mark_delete(handle: int) -> None:
-        disposition = _FILE_DISPOSITION_INFO(True)
-        if not _SET_FILE_INFO(
-            wintypes.HANDLE(handle),
-            _FILE_DISPOSITION_INFO_CLASS,
-            ctypes.byref(disposition),
-            ctypes.sizeof(disposition),
-        ):
-            raise _win_error()
-
     def _open_directory(path: Path, *, missing_ok: bool = False) -> int | None:
         handle = _create_file(
             path,
@@ -301,7 +279,11 @@ else:
                 access=_GENERIC_READ | _GENERIC_WRITE | _DELETE,
                 share=0,
                 creation=_CREATE_NEW,
-                flags=_FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
+                flags=(
+                    _FILE_ATTRIBUTE_NORMAL
+                    | _FILE_FLAG_DELETE_ON_CLOSE
+                    | _FILE_FLAG_OPEN_REPARSE_POINT
+                ),
             )
         except OSError as error:
             if getattr(error, "winerror", None) in {_ERROR_FILE_EXISTS, _ERROR_ALREADY_EXISTS}:
@@ -314,16 +296,6 @@ else:
             _close(handle)
             raise
         return handle
-
-    @contextlib.contextmanager
-    def _delete_temp_on_close(handle: int) -> Iterator[int]:
-        try:
-            yield handle
-        finally:
-            try:
-                _mark_delete(handle)
-            finally:
-                _close(handle)
 
     class _WindowsLayout:
         def __init__(self, handles: list[int], root_handle: int, target: Path) -> None:
@@ -362,7 +334,7 @@ else:
                 temp = layout.target.with_name(f".{layout.target.name}.{os.urandom(12).hex()}.tmp")
                 temp_handle = _create_temp(temp)
                 linked = False
-                with _delete_temp_on_close(temp_handle):
+                try:
                     _write_all(temp_handle, data)
                     _verify(temp_handle, digest)
                     before_publish(layout.target)
@@ -376,6 +348,8 @@ else:
                         ) from error
                     else:
                         linked = True
+                finally:
+                    _close(temp_handle)
 
                 if linked:
                     winner = _open_regular_retry(layout.target)
