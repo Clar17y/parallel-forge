@@ -19,6 +19,9 @@ from forge.application.services.auth import (
 )
 from forge.settings import Settings
 
+IDEMPOTENCY_HEADER = "Idempotency-Key"
+_MAX_IDEMPOTENCY_KEY_BYTES = 255
+
 
 def _settings(request: Request) -> Settings:
     value = getattr(request.app.state, "settings", None)
@@ -93,4 +96,25 @@ async def require_operator_mutation(request: Request) -> AuthenticatedActor:
     return actor
 
 
-__all__ = ["require_operator", "require_operator_mutation"]
+def require_idempotency_key(request: Request) -> str:
+    """Require one bounded, nonblank raw idempotency key for Task 10 POSTs."""
+
+    value = request.headers.get(IDEMPOTENCY_HEADER)
+    if (
+        value is None
+        or not value.strip()
+        or len(value.encode("utf-8")) > _MAX_IDEMPOTENCY_KEY_BYTES
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid idempotency key"
+        )
+    return value
+
+
+__all__ = [
+    "IDEMPOTENCY_HEADER",
+    "require_idempotency_key",
+    "require_operator",
+    "require_operator_mutation",
+]
