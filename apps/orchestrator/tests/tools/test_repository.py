@@ -9,6 +9,7 @@ from forge.application.ports.repository import (
     RepositoryAccessDenied,
     RepositoryEncodingError,
     RepositoryEntry,
+    SearchMatch,
 )
 from forge.tools.repository import RepositoryReader
 
@@ -158,3 +159,101 @@ def test_reader_rejects_nonpositive_or_boolean_bounds(tmp_path: Path, value: obj
         RepositoryReader(root, max_file_bytes=value)  # type: ignore[arg-type]
     with pytest.raises((TypeError, ValueError)):
         RepositoryReader(root, max_list_entries=value)  # type: ignore[arg-type]
+
+
+def test_search_is_literal_and_returns_deterministic_line_matches(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    (root / "z.txt").write_text("other\n-needle.* [x]\nneedle\n", encoding="utf-8")
+    (root / "a.txt").write_text("needle first\nneedle second\n", encoding="utf-8")
+    reader = RepositoryReader(root, max_search_matches=100)
+
+    result = reader.search("-needle.*")
+
+    assert result == (SearchMatch(path="z.txt", line_number=2, line_text="-needle.* [x]"),)
+    assert reader.search("not present") == ()
+
+
+def test_search_enforces_global_match_cap_in_path_and_line_order(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    for name in ("c.txt", "a.txt", "b.txt"):
+        (root / name).write_text("hit\n", encoding="utf-8")
+    reader = RepositoryReader(root, max_search_matches=2)
+
+    result = reader.search("hit")
+
+    assert result == (
+        SearchMatch(path="a.txt", line_number=1, line_text="hit"),
+        SearchMatch(path="b.txt", line_number=1, line_text="hit"),
+    )
+
+
+def test_search_fails_closed_before_inspecting_candidates_over_byte_cap(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    (root / "a.txt").write_bytes(b"hit\n")
+    (root / "b.txt").write_bytes(b"hit\n")
+    reader = RepositoryReader(root, max_search_bytes=5)
+
+    with pytest.raises(RepositoryAccessDenied):
+        reader.search("hit")
+
+
+def test_search_omits_exclusions_but_keeps_env_example(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    (root / "visible.txt").write_text("needle\n", encoding="utf-8")
+    (root / ".env").write_text("needle\n", encoding="utf-8")
+    (root / ".env.example").write_text("needle\n", encoding="utf-8")
+    (root / ".hidden.txt").write_text("needle\n", encoding="utf-8")
+    (root / ".git").mkdir()
+    (root / ".git" / "hidden.txt").write_text("needle\n", encoding="utf-8")
+    (root / "managed").mkdir()
+    (root / "managed" / "hidden.txt").write_text("needle\n", encoding="utf-8")
+    (root / "artifacts").mkdir()
+    (root / "artifacts" / "hidden.txt").write_text("needle\n", encoding="utf-8")
+    virtual = root / "virtual"
+    virtual.mkdir()
+    (virtual / "pyvenv.cfg").write_text("home = hidden\n", encoding="utf-8")
+    (virtual / "hidden.txt").write_text("needle\n", encoding="utf-8")
+    reader = RepositoryReader(
+        root,
+        secret_paths=(".env",),
+        managed_worktree_paths=("managed",),
+        artifact_paths=("artifacts",),
+    )
+
+    result = reader.search("needle")
+
+    assert tuple(match.path for match in result) == (".env.example", "visible.txt")
+
+
+@pytest.mark.parametrize(
+    ("name", "data"),
+    [("binary.bin", b"needle\x00hidden"), ("invalid.txt", b"needle\xffhidden")],
+)
+def test_search_skips_binary_and_invalid_utf8_like_bounded_reader(
+    tmp_path: Path, name: str, data: bytes
+) -> None:
+    root = _repository(tmp_path)
+    (root / name).write_bytes(data)
+    (root / "valid.txt").write_text("needle\n", encoding="utf-8")
+
+    result = RepositoryReader(root).search("needle")
+
+    assert result == (SearchMatch(path="valid.txt", line_number=1, line_text="needle"),)
+
+
+@pytest.mark.parametrize("literal", ["", "contains\x00nul", "contains\udcff"])
+def test_search_rejects_invalid_literal(tmp_path: Path, literal: str) -> None:
+    root = _repository(tmp_path)
+
+    with pytest.raises(ValueError):
+        RepositoryReader(root).search(literal)
+
+
+@pytest.mark.parametrize("name", ["max_search_matches", "max_search_bytes"])
+def test_search_rejects_nonpositive_or_boolean_bounds(tmp_path: Path, name: str) -> None:
+    root = _repository(tmp_path)
+
+    with pytest.raises((TypeError, ValueError)):
+        RepositoryReader(root, **{name: 0})
+    with pytest.raises((TypeError, ValueError)):
+        RepositoryReader(root, **{name: True})

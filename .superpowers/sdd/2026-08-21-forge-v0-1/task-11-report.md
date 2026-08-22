@@ -219,3 +219,59 @@ instruction discovery remain intentionally out of scope for this slice.
   host, as documented by the earlier path-boundary slice; directory junction,
   intermediate-link, linked-entry, and root-replacement cases execute here.
 - No search or instruction-discovery behavior was added in this slice.
+
+---
+
+# Task 11 Slice 3b1 worker report
+
+## Status
+
+Complete for the bounded pure-Python literal-search backend only. Ripgrep
+integration and instruction discovery remain intentionally out of scope for
+this micro-slice.
+
+## TDD evidence
+
+- RED: the new search tests collected but failed because the reader lacked the
+  search bounds and `search` method.
+- GREEN: `test_repository.py` passed with 22 tests after the bounded fallback
+  was implemented.
+
+## Delivered
+
+- Added nonempty strict UTF-8 literal validation, including rejection of NUL
+  and lone-surrogate queries without echoing query content.
+- Added deterministic forward-slash/path then line-order search results with
+  one `SearchMatch` per matching line and a configurable positive global match
+  cap (default 100).
+- Added a positive inspected-candidate byte cap (default 8 MiB) that fails
+  closed before reading a candidate that would exceed the remaining budget.
+- Reused `read_file` bounded UTF-8/NUL behavior; binary and invalid UTF-8
+  candidates are skipped consistently without exposing their contents.
+- Omitted hidden path components, fixed/configured/secret/virtual-environment
+  exclusions, and retained exact `.env.example` visibility/searchability.
+- Accepted `rg_executable=None` as an explicit constructor setting while this
+  micro-slice deliberately uses Python only.
+
+## Material decisions
+
+- Exceeding the search byte budget fails closed with bounded
+  `RepositoryAccessDenied`, matching the existing list-bound behavior rather
+  than returning an ambiguous partial search.
+- `.env.example` is the deliberate hidden-file exception required by this
+  slice; other dot-prefixed path components remain omitted.
+
+## Verification
+
+- Task 11 focused path/process/repository/security pytest:
+  `66 passed, 1 skipped in 1.32s`.
+- Repository Ruff check: `All checks passed!`.
+- Repository Ruff format check: `2 files already formatted`.
+- Forge repository mypy: `Success: no issues found in 1 source file`.
+- `git diff --check`: pass.
+
+## Unresolved concerns
+
+- Ripgrep process invocation, JSON parsing, and instruction discovery are
+  deferred to the next bounded slice; no subprocess/search fallback switching
+  was added here.
