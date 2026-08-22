@@ -13,6 +13,7 @@ from typing import cast
 from forge.application.ports.repository import (
     BinaryRepositoryFile,
     FileRead,
+    InstructionDocument,
     ProcessRunner,
     RepositoryAccessDenied,
     RepositoryEncodingError,
@@ -35,6 +36,7 @@ class _UnconfiguredRg:
 
 
 _RG_UNCONFIGURED = _UnconfiguredRg()
+_BUILTIN_INSTRUCTION_NAMES = ("AGENTS.md", "CLAUDE.md", "README.md")
 _FIXED_DIRECTORY_EXCLUSIONS = frozenset(
     {
         ".git",
@@ -66,6 +68,7 @@ class RepositoryReader:
         rg_executable: str | os.PathLike[str] | None | _UnconfiguredRg = _RG_UNCONFIGURED,
         process_runner: ProcessRunner | None = None,
         force_python_search: bool = False,
+        instruction_names: Sequence[str] = (),
     ) -> None:
         self._root = root if isinstance(root, CanonicalRoot) else CanonicalRoot(root)
         self._secret_paths = _normalize_exclusions(self._root, secret_paths)
@@ -90,6 +93,7 @@ class RepositoryReader:
             explicit_fallback = False
         self._force_python_search = force_python_search or explicit_fallback
         self._process_runner = process_runner
+        self._instruction_names = _validate_instruction_names(instruction_names)
 
     @property
     def root(self) -> CanonicalRoot:
@@ -184,6 +188,70 @@ class RepositoryReader:
             if argv is not None:
                 return self._search_with_rg(argv, literal, normalized, entries)
         return self._search_with_python(literal, entries)
+
+    def read_instructions(
+        self, target_path: str | os.PathLike[str] = "."
+    ) -> tuple[InstructionDocument, ...]:
+        """Return untrusted instructions from the root and deepest applicable ancestor."""
+
+        normalized = self._root.normalize(target_path, allow_root=True)
+        self._ensure_allowed(normalized, direct=True)
+        target_directory = self._instruction_target_directory(normalized)
+        chain = _directory_chain(target_directory)
+        root_documents = self._instruction_documents_in_directory(".")
+        deepest_documents: tuple[InstructionDocument, ...] = ()
+        for directory in chain[1:]:
+            documents = self._instruction_documents_in_directory(directory)
+            if documents:
+                deepest_documents = documents
+        return root_documents + deepest_documents
+
+    def _instruction_target_directory(self, normalized: str) -> str:
+        if normalized == ".":
+            return "."
+        try:
+            children = self._root.list_directory(normalized)
+        except RepositoryAccessDenied:
+            children = None
+        if children is not None:
+            if _contains_pyvenv_cfg(children):
+                raise RepositoryAccessDenied("instruction target is excluded")
+            return normalized
+        try:
+            metadata = self._root.stat_file(normalized)
+        except RepositoryAccessDenied:
+            raise RepositoryAccessDenied("instruction target is unavailable") from None
+        if stat.S_ISREG(metadata.st_mode):
+            parts = normalized.split("/")
+            return "." if len(parts) == 1 else "/".join(parts[:-1])
+        raise RepositoryAccessDenied("instruction target is not a regular file or directory")
+
+    def _instruction_documents_in_directory(
+        self, directory: str
+    ) -> tuple[InstructionDocument, ...]:
+        children = self._root.list_directory(directory)
+        by_name = {_instruction_name_key(name): (name, metadata) for name, metadata in children}
+        documents: list[InstructionDocument] = []
+        for configured_name in self._instruction_names:
+            item = by_name.get(_instruction_name_key(configured_name))
+            if item is None:
+                continue
+            actual_name, metadata = item
+            if _is_link_or_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
+                continue
+            path = actual_name if directory == "." else f"{directory}/{actual_name}"
+            if self._is_excluded(path) or self._has_virtual_environment_ancestor(path):
+                continue
+            result = self.read_file(path)
+            documents.append(
+                InstructionDocument(
+                    path=result.path,
+                    content=result.content,
+                    original_byte_count=result.original_byte_count,
+                    truncated=result.truncated,
+                )
+            )
+        return tuple(documents)
 
     def _bounded_search_entries(self, normalized: str) -> tuple[RepositoryEntry, ...]:
         entries = tuple(
@@ -448,6 +516,49 @@ def _validate_rg_executable(value: str | os.PathLike[str] | None) -> str | None:
     if not candidate.is_absolute():
         raise RepositoryAccessDenied("rg executable configuration is invalid")
     return raw
+
+
+def _validate_instruction_names(values: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise TypeError("instruction names must be a sequence of basenames")
+    try:
+        configured = tuple(values)
+    except TypeError, ValueError:
+        raise TypeError("instruction names must be a sequence of basenames") from None
+    names = list(_BUILTIN_INSTRUCTION_NAMES)
+    seen = {_instruction_name_key(name) for name in names}
+    for value in configured:
+        if (
+            not isinstance(value, str)
+            or not value
+            or "\x00" in value
+            or "/" in value
+            or "\\" in value
+            or value in {".", ".."}
+        ):
+            raise RepositoryAccessDenied("instruction name configuration is invalid")
+        try:
+            if Path(value).is_absolute():
+                raise RepositoryAccessDenied("instruction name configuration is invalid")
+        except TypeError, ValueError:
+            raise RepositoryAccessDenied("instruction name configuration is invalid") from None
+        key = _instruction_name_key(value)
+        if key in seen:
+            raise RepositoryAccessDenied("instruction name configuration is invalid")
+        seen.add(key)
+        names.append(value)
+    return tuple(names)
+
+
+def _instruction_name_key(name: str) -> str:
+    return name.casefold() if os.name == "nt" else name
+
+
+def _directory_chain(directory: str) -> tuple[str, ...]:
+    if directory == ".":
+        return (".",)
+    parts = directory.split("/")
+    return (".",) + tuple("/".join(parts[:index]) for index in range(1, len(parts) + 1))
 
 
 def _build_rg_argv(

@@ -344,3 +344,72 @@ literal search. Instruction discovery remains intentionally out of scope.
 
 - Instruction discovery remains deferred to the next slice; no instruction
   files are read or interpreted here.
+
+---
+
+# Task 11 Slice 3c worker report
+
+## Status
+
+Complete for bounded untrusted repository instruction discovery. This is the
+final Task 11 slice; no later task or feature was started.
+
+## TDD evidence
+
+- RED: the new instruction security module initially produced 9 failures
+  because `RepositoryReader.read_instructions` and configured instruction
+  names were absent.
+- GREEN: the instruction security suite passed with `9 passed, 1 skipped`.
+
+## Delivered
+
+- Added validated unique instruction basenames, rejecting separators,
+  absolute/drive paths, dot/parent names, NULs, non-text values, and duplicate
+  built-in/configured names with Windows-aware case handling. Discovery order is
+  `AGENTS.md`, `CLAUDE.md`, `README.md`, then configured names in their supplied
+  deterministic order.
+- Added existing-target validation for root, contained directory, and regular
+  file targets. File targets use their parent directory; links/reparses,
+  missing paths, nonregular targets, secrets, fixed exclusions, and virtual
+  environments fail closed.
+- Traverses only the target’s canonical ancestor chain, returns root documents
+  first, and retains documents only from the deepest nested ancestor with an
+  applicable readable document. Siblings and intermediate documents are not
+  returned; root documents are never duplicated.
+- Discovers regular instruction files without following links/reparses and
+  excludes configured secret/excluded paths before calling `read_file`.
+  Existing binary or invalid-UTF-8 instruction content fails closed. Content,
+  exact byte count, truncation, and normalized path come directly from the
+  bounded reader.
+- Made `InstructionDocument.untrusted_repository_content` an immutable,
+  `init=False` literal `True` field. Repository content is returned as ordinary
+  data only; no precedence, directives, policy, permission, prompt, or system
+  interpretation is performed.
+- Added coverage for malicious instruction text, bounded multibyte content,
+  malformed content, target variants, deepest-ancestor selection, configured
+  names, omissions, links, missing targets, and trust-marker override attempts.
+
+## Material decisions
+
+- A nested directory containing only secret/excluded instruction names is not
+  considered applicable; the deepest ancestor with at least one readable
+  document is selected.
+- A malformed or binary document that is actually selected fails closed rather
+  than being silently ignored. Absent, linked, secret, and excluded documents
+  are omitted before byte reads.
+
+## Verification
+
+- Full orchestrator pytest: `957 passed, 4 skipped in 97.69s`.
+- Post-format Task 11 tools/security plus affected artifact/Git pytest:
+  `109 passed, 4 skipped in 2.51s`.
+- Full Ruff check: `All checks passed!`.
+- Full Ruff format check: `142 files already formatted`.
+- Full Forge mypy: `Success: no issues found in 97 source files`.
+- `git diff --check`: pass.
+
+## Unresolved concerns
+
+- File-link omission coverage remains capability-dependent on this Windows
+  host, as documented by the earlier path-boundary slices; directory and
+  intermediate reparse protections execute on supported hosts.

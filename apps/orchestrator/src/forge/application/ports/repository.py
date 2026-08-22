@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 
@@ -70,7 +70,7 @@ class InstructionDocument:
     content: str
     original_byte_count: int
     truncated: bool
-    untrusted_repository_content: Literal[True] = True
+    untrusted_repository_content: Literal[True] = field(default=True, init=False)
 
     def __post_init__(self) -> None:
         if self.untrusted_repository_content is not True:
