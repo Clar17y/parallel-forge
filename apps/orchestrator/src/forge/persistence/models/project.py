@@ -75,6 +75,7 @@ class Task(Base, TimestampMixin):
     __tablename__ = "tasks"
     __table_args__ = (
         UniqueConstraint("external_source", "external_id", name="uq_tasks_external_identity"),
+        UniqueConstraint("id", "project_id", name="uq_tasks_id_project_id"),
         CheckConstraint(
             "(external_source IS NULL) = (external_id IS NULL)",
             name="external_identity_shape",

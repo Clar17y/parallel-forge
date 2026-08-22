@@ -102,6 +102,25 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("project_id", "version", name=op.f("pk_project_policy_versions")),
     )
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION forge_reject_project_policy_version_update()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $forge$
+        BEGIN
+            RAISE EXCEPTION 'project_policy_versions rows are immutable';
+        END;
+        $forge$;
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_project_policy_versions_immutable
+        BEFORE UPDATE ON project_policy_versions
+        FOR EACH ROW EXECUTE FUNCTION forge_reject_project_policy_version_update();
+        """
+    )
     op.create_foreign_key(
         "fk_projects_current_policy_version_project_policy_versions",
         "projects",
@@ -142,6 +161,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_tasks")),
         sa.UniqueConstraint("external_source", "external_id", name="uq_tasks_external_identity"),
+        sa.UniqueConstraint("id", "project_id", name="uq_tasks_id_project_id"),
     )
     op.create_table(
         "runs",
@@ -196,12 +216,12 @@ def upgrade() -> None:
             name=op.f("ck_runs_database_state"),
         ),
         sa.CheckConstraint(
-            "state IN ('CREATED','PLANNING','AWAITING_PLAN_APPROVAL','PREPARING_WORKTREE','IMPLEMENTING','VALIDATING','REVIEWING','REMEDIATING','AWAITING_PR_APPROVAL','PUBLISHING_PR','MONITORING_PR','AWAITING_HUMAN_INTERVENTION','AWAITING_MERGE_APPROVAL','MERGING','PAUSED','COMPLETED','FAILED','CANCELLED')",
+            "state IN ('CREATED','PLANNING','AWAITING_PLAN_APPROVAL','PREPARING_WORKTREE','IMPLEMENTING','VALIDATING','REVIEWING','REMEDIATING','AWAITING_PR_APPROVAL','PUBLISHING_PR','MONITORING_PR','AWAITING_HUMAN_INTERVENTION','INTERVENTION_REQUIRED','AWAITING_MERGE_APPROVAL','MERGING','PAUSED','COMPLETED','FAILED','CANCELLED')",
             name=op.f("ck_runs_state"),
         ),
         sa.CheckConstraint(
-            "(suspended_state IS NULL AND suspension_kind IS NULL AND suspension_context IS NULL AND suspension_context_schema_version IS NULL) OR (suspended_state IS NOT NULL AND suspension_kind IS NOT NULL)",
-            name=op.f("ck_runs_suspension_shape"),
+            "(state = 'PAUSED' AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL AND suspension_kind = 'PAUSE' AND suspension_context IS NOT NULL AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR (state IN ('INTERVENTION_REQUIRED','AWAITING_HUMAN_INTERVENTION') AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL AND suspension_kind = 'INTERVENTION' AND suspension_context IS NOT NULL AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR (state NOT IN ('PAUSED','INTERVENTION_REQUIRED','AWAITING_HUMAN_INTERVENTION') AND suspended_state IS NULL AND suspension_kind IS NULL AND suspension_context IS NULL AND suspension_context_schema_version IS NULL)",
+            name=op.f("ck_runs_suspension_state_shape"),
         ),
         sa.ForeignKeyConstraint(
             ["project_id", "policy_version"],
@@ -216,7 +236,10 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
-            ["task_id"], ["tasks.id"], name=op.f("fk_runs_task_id_tasks"), ondelete="RESTRICT"
+            ["task_id", "project_id"],
+            ["tasks.id", "tasks.project_id"],
+            name="fk_runs_task_project_tasks",
+            ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_runs")),
     )
@@ -453,24 +476,25 @@ def upgrade() -> None:
     op.create_table(
         "run_events",
         sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column("sequence", sa.BigInteger(), sa.Identity(always=False), nullable=False),
+        sa.Column("sequence", sa.BigInteger(), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column("run_version", sa.Integer(), nullable=False),
         sa.Column("event_type", sa.String(length=96), nullable=False),
+        sa.Column("actor_class", sa.String(length=24), nullable=False),
         sa.Column("actor_id", sa.Uuid(), nullable=True),
         sa.Column("payload_schema_version", sa.Integer(), nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
+        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
             ["run_id"], ["runs.id"], name=op.f("fk_run_events_run_id_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_run_events")),
-        sa.UniqueConstraint("sequence", name="uq_run_events_sequence"),
+        sa.CheckConstraint(
+            "actor_class IN ('system','worker','agent','operator','unauthenticated')",
+            name=op.f("ck_run_events_actor_class"),
+        ),
+        sa.CheckConstraint("sequence >= 1", name=op.f("ck_run_events_sequence_positive")),
+        sa.UniqueConstraint("run_id", "sequence", name="uq_run_events_run_sequence"),
     )
     op.create_index(
         "ix_run_events_run_id_sequence", "run_events", ["run_id", "sequence"], unique=False
@@ -768,17 +792,6 @@ def upgrade() -> None:
         "token_budget >= 0 AND cost_budget_minor >= 0 AND duration_budget_seconds >= 0",
     )
     op.create_check_constraint(
-        op.f("ck_runs_suspension_kind"),
-        "runs",
-        "suspension_kind IS NULL OR suspension_kind IN ('PAUSE','INTERVENTION')",
-    )
-    op.create_check_constraint(
-        op.f("ck_runs_suspension_context_version"),
-        "runs",
-        "(suspension_context IS NULL AND suspension_context_schema_version IS NULL) OR "
-        "(suspension_context IS NOT NULL AND suspension_context_schema_version >= 1)",
-    )
-    op.create_check_constraint(
         op.f("ck_approval_challenges_versions"),
         "approval_challenges",
         "run_version >= 0 AND policy_version >= 1",
@@ -943,6 +956,10 @@ def downgrade() -> None:
         "projects",
         type_="foreignkey",
     )
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_project_policy_versions_immutable ON project_policy_versions"
+    )
+    op.execute("DROP FUNCTION IF EXISTS forge_reject_project_policy_version_update()")
     op.drop_table("project_policy_versions")
     op.drop_table("projects")
     op.drop_table("operator_sessions")

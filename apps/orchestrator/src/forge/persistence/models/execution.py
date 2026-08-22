@@ -10,7 +10,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    Identity,
     Index,
     Integer,
     String,
@@ -65,29 +64,33 @@ class RunCommand(Base, TimestampMixin):
 
 
 class RunEvent(Base):
-    """Append-only causal audit event with a resumable global sequence."""
+    """Append-only causal audit event with a per-run application sequence."""
 
     __tablename__ = "run_events"
     __table_args__ = (
-        UniqueConstraint("sequence", name="uq_run_events_sequence"),
+        UniqueConstraint("run_id", "sequence", name="uq_run_events_run_sequence"),
+        CheckConstraint("sequence >= 1", name="sequence_positive"),
         CheckConstraint("run_version >= 0", name="run_version_nonnegative"),
+        CheckConstraint(
+            "actor_class IN ('system','worker','agent','operator','unauthenticated')",
+            name="actor_class",
+        ),
         CheckConstraint("payload_schema_version >= 1", name="payload_schema_version_positive"),
         Index("ix_run_events_run_id_sequence", "run_id", "sequence"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    sequence: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     run_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
     )
     run_version: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str] = mapped_column(String(96), nullable=False)
+    actor_class: Mapped[str] = mapped_column(String(24), nullable=False)
     actor_id: Mapped[UUID | None] = mapped_column(Uuid)
     payload_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class Step(Base, TimestampMixin):

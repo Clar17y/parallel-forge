@@ -29,6 +29,12 @@ class Run(Base, TimestampMixin):
     __tablename__ = "runs"
     __table_args__ = (
         ForeignKeyConstraint(
+            ("task_id", "project_id"),
+            ("tasks.id", "tasks.project_id"),
+            name="fk_runs_task_project_tasks",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
             ("project_id", "policy_version"),
             ("project_policy_versions.project_id", "project_policy_versions.version"),
             name="fk_runs_policy_version_project_policy_versions",
@@ -66,19 +72,17 @@ class Run(Base, TimestampMixin):
             name="pending_gate_shape",
         ),
         CheckConstraint(
-            "(suspended_state IS NULL AND suspension_kind IS NULL "
-            "AND suspension_context IS NULL AND suspension_context_schema_version IS NULL) "
-            "OR (suspended_state IS NOT NULL AND suspension_kind IS NOT NULL)",
-            name="suspension_shape",
-        ),
-        CheckConstraint(
-            "suspension_kind IS NULL OR suspension_kind IN ('PAUSE','INTERVENTION')",
-            name="suspension_kind",
-        ),
-        CheckConstraint(
-            "(suspension_context IS NULL AND suspension_context_schema_version IS NULL) OR "
-            "(suspension_context IS NOT NULL AND suspension_context_schema_version >= 1)",
-            name="suspension_context_version",
+            "(state = 'PAUSED' AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL "
+            "AND suspension_kind = 'PAUSE' AND suspension_context IS NOT NULL "
+            "AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR "
+            "(state IN ('INTERVENTION_REQUIRED','AWAITING_HUMAN_INTERVENTION') "
+            "AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL "
+            "AND suspension_kind = 'INTERVENTION' AND suspension_context IS NOT NULL "
+            "AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR "
+            "(state NOT IN ('PAUSED','INTERVENTION_REQUIRED','AWAITING_HUMAN_INTERVENTION') "
+            "AND suspended_state IS NULL AND suspension_kind IS NULL "
+            "AND suspension_context IS NULL AND suspension_context_schema_version IS NULL)",
+            name="suspension_state_shape",
         ),
         Index("ix_runs_state", "state"),
         Index("ix_runs_project_id", "project_id"),
@@ -89,9 +93,7 @@ class Run(Base, TimestampMixin):
     project_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
     )
-    task_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
-    )
+    task_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String(48), nullable=False, default=RunState.CREATED.value)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

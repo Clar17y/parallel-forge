@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import importlib
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from forge.persistence.models import Base
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Uuid
@@ -72,6 +75,96 @@ def _execute(database_url: str, statement: str) -> None:
             await engine.dispose()
 
     asyncio.run(execute())
+
+
+async def _insert_project_policy_task_run(
+    database_url: str,
+    *,
+    project_id: UUID | None = None,
+    task_id: UUID | None = None,
+    policy_version: int = 1,
+    run_id: UUID | None = None,
+    project_path_suffix: str | None = None,
+) -> tuple[UUID, UUID, UUID]:
+    project_id = project_id or uuid4()
+    task_id = task_id or uuid4()
+    run_id = run_id or uuid4()
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO projects "
+                    "(id, canonical_path, github_repository, default_branch) "
+                    "VALUES (:id, :path, :repository, 'main')"
+                ),
+                {
+                    "id": project_id,
+                    "path": project_path_suffix or f"/tmp/forge-{project_id}",
+                    "repository": f"Clar17y/forge-{project_id}",
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO project_policy_versions "
+                    "(project_id, version, policy_digest, document_schema_version, document) "
+                    "VALUES (:project_id, :version, :digest, 1, '{}'::jsonb)"
+                ),
+                {
+                    "project_id": project_id,
+                    "version": policy_version,
+                    "digest": "a" * 64,
+                },
+            )
+            await connection.execute(
+                text(
+                    "UPDATE projects SET current_policy_version = :version WHERE id = :project_id"
+                ),
+                {"project_id": project_id, "version": policy_version},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO tasks "
+                    "(id, project_id, normalized_text, task_digest) "
+                    "VALUES (:id, :project_id, 'task', :digest)"
+                ),
+                {"id": task_id, "project_id": project_id, "digest": "b" * 64},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO runs "
+                    "(id, project_id, task_id, policy_version, state, version, "
+                    "local_remediation_count, remote_remediation_count, token_budget, "
+                    "cost_budget_minor, duration_budget_seconds, database_state) "
+                    "VALUES (:id, :project_id, :task_id, :policy_version, 'CREATED', 0, "
+                    "0, 0, 0, 0, 0, 'DISABLED')"
+                ),
+                {
+                    "id": run_id,
+                    "project_id": project_id,
+                    "task_id": task_id,
+                    "policy_version": policy_version,
+                },
+            )
+    finally:
+        await engine.dispose()
+    return project_id, task_id, run_id
+
+
+async def _rejects(database_url: str, statement: str, parameters: dict[str, object]) -> None:
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            try:
+                await connection.execute(text(statement), parameters)
+            except DBAPIError:
+                await transaction.rollback()
+            else:
+                await transaction.rollback()
+                raise AssertionError(f"statement unexpectedly succeeded: {parameters}")
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.integration
@@ -281,3 +374,268 @@ def test_database_module_import_does_not_construct_an_engine(
         scoped.setattr(sqlalchemy.ext.asyncio, "create_async_engine", fail_if_called)
         importlib.reload(module)
     importlib.reload(module)
+
+
+@pytest.mark.integration
+def test_run_event_sequence_is_application_assigned_per_run_and_positive(
+    migrated_database_url: str,
+) -> None:
+    async def exercise() -> None:
+        _, _, first_run = await _insert_project_policy_task_run(migrated_database_url)
+        _, _, second_run = await _insert_project_policy_task_run(migrated_database_url)
+        engine = create_async_engine(migrated_database_url)
+        try:
+            async with engine.begin() as connection:
+                values = {
+                    "run_version": 0,
+                    "actor_class": "system",
+                    "occurred_at": datetime.now(UTC),
+                }
+                await connection.execute(
+                    text(
+                        "INSERT INTO run_events "
+                        "(id, sequence, run_id, run_version, event_type, actor_class, "
+                        "occurred_at, payload_schema_version, payload) "
+                        "VALUES (:id, 1, :run_id, :run_version, 'created', :actor_class, "
+                        ":occurred_at, 1, '{}'::jsonb)"
+                    ),
+                    {**values, "id": uuid4(), "run_id": first_run},
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO run_events "
+                        "(id, sequence, run_id, run_version, event_type, actor_class, "
+                        "occurred_at, payload_schema_version, payload) "
+                        "VALUES (:id, 1, :run_id, :run_version, 'created', :actor_class, "
+                        ":occurred_at, 1, '{}'::jsonb)"
+                    ),
+                    {**values, "id": uuid4(), "run_id": second_run},
+                )
+            await _rejects(
+                migrated_database_url,
+                "INSERT INTO run_events "
+                "(id, sequence, run_id, run_version, event_type, actor_class, occurred_at, "
+                "payload_schema_version, payload) VALUES (:id, 1, :run_id, 0, 'duplicate', "
+                ":actor_class, :occurred_at, 1, '{}'::jsonb)",
+                {
+                    "id": uuid4(),
+                    "run_id": first_run,
+                    "actor_class": "system",
+                    "occurred_at": datetime.now(UTC),
+                },
+            )
+            await _rejects(
+                migrated_database_url,
+                "INSERT INTO run_events "
+                "(id, sequence, run_id, run_version, event_type, actor_class, occurred_at, "
+                "payload_schema_version, payload) VALUES (:id, 0, :run_id, 0, 'invalid', "
+                ":actor_class, :occurred_at, 1, '{}'::jsonb)",
+                {
+                    "id": uuid4(),
+                    "run_id": first_run,
+                    "actor_class": "system",
+                    "occurred_at": datetime.now(UTC),
+                },
+            )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.integration
+def test_run_event_uses_bounded_actor_class_and_timezone_occurred_at(
+    migrated_database_url: str,
+) -> None:
+    _, _, run_id = asyncio.run(_insert_project_policy_task_run(migrated_database_url))
+    insert_statement = (
+        "INSERT INTO run_events "
+        "(id, sequence, run_id, run_version, event_type, actor_class, "
+        "occurred_at, payload_schema_version, payload) "
+        "VALUES (:id, :sequence, :run_id, 0, 'round_trip', :actor_class, "
+        ":occurred_at, 1, '{}'::jsonb)"
+    )
+
+    def columns(connection: Any) -> dict[str, Any]:
+        return {column["name"]: column for column in inspect(connection).get_columns("run_events")}
+
+    observed = asyncio.run(_inspect_database(migrated_database_url, columns))
+    assert isinstance(observed, dict)
+    assert "created_at" not in observed
+    assert observed["actor_class"]["nullable"] is False
+    assert observed["actor_class"]["type"].length <= 32
+    assert observed["occurred_at"]["nullable"] is False
+    assert observed["occurred_at"]["type"].timezone is True
+
+    async def round_trip() -> None:
+        engine = create_async_engine(migrated_database_url)
+        when = datetime(2026, 8, 22, 1, 2, 3, tzinfo=UTC)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(insert_statement),
+                    {
+                        "id": uuid4(),
+                        "sequence": 1,
+                        "run_id": run_id,
+                        "actor_class": "operator",
+                        "occurred_at": when,
+                    },
+                )
+            async with engine.connect() as connection:
+                row = (
+                    await connection.execute(
+                        text(
+                            "SELECT actor_class, occurred_at FROM run_events WHERE run_id = :run_id"
+                        ),
+                        {"run_id": run_id},
+                    )
+                ).one()
+                assert row.actor_class == "operator"
+                assert row.occurred_at == when
+        finally:
+            await engine.dispose()
+
+    asyncio.run(round_trip())
+    for sequence, actor_class, occurred_at in (
+        (2, "unknown", datetime.now(UTC)),
+        (3, None, datetime.now(UTC)),
+        (4, "operator", None),
+    ):
+        asyncio.run(
+            _rejects(
+                migrated_database_url,
+                insert_statement,
+                {
+                    "id": uuid4(),
+                    "sequence": sequence,
+                    "run_id": run_id,
+                    "actor_class": actor_class,
+                    "occurred_at": occurred_at,
+                },
+            )
+        )
+
+
+@pytest.mark.integration
+def test_run_suspension_metadata_is_state_specific_and_versioned(
+    migrated_database_url: str,
+) -> None:
+    async def exercise() -> None:
+        project_id, task_id, _ = await _insert_project_policy_task_run(migrated_database_url)
+        base = {
+            "project_id": project_id,
+            "task_id": task_id,
+            "policy_version": 1,
+            "local_remediation_count": 0,
+            "remote_remediation_count": 0,
+            "token_budget": 0,
+            "cost_budget_minor": 0,
+            "duration_budget_seconds": 0,
+            "database_state": "DISABLED",
+        }
+        common = (
+            "(id, project_id, task_id, policy_version, state, version, "
+            "suspended_state, suspension_kind, suspension_context_schema_version, "
+            "suspension_context, local_remediation_count, remote_remediation_count, "
+            "token_budget, cost_budget_minor, duration_budget_seconds, database_state)"
+        )
+        values = (
+            "VALUES (:id, :project_id, :task_id, :policy_version, :state, 0, "
+            ":suspended_state, :suspension_kind, :context_version, :context, "
+            ":local_remediation_count, :remote_remediation_count, :token_budget, "
+            ":cost_budget_minor, :duration_budget_seconds, :database_state)"
+        )
+        for state, kind, context_version, context in (
+            ("PAUSED", None, 1, '{"state":"CREATED"}'),
+            ("PAUSED", "INTERVENTION", 1, '{"state":"CREATED"}'),
+            ("PAUSED", "PAUSE", None, '{"state":"CREATED"}'),
+            ("INTERVENTION_REQUIRED", "INTERVENTION", 1, None),
+            ("INTERVENTION_REQUIRED", "PAUSE", 1, '{"state":"CREATED"}'),
+            ("CREATED", "PAUSE", 1, '{"state":"CREATED"}'),
+        ):
+            await _rejects(
+                migrated_database_url,
+                f"INSERT INTO runs {common} {values}",
+                {
+                    **base,
+                    "id": uuid4(),
+                    "state": state,
+                    "suspended_state": "CREATED",
+                    "suspension_kind": kind,
+                    "context_version": context_version,
+                    "context": context,
+                },
+            )
+
+        engine = create_async_engine(migrated_database_url)
+        try:
+            async with engine.begin() as connection:
+                for state, kind in (("PAUSED", "PAUSE"), ("INTERVENTION_REQUIRED", "INTERVENTION")):
+                    await connection.execute(
+                        text(f"INSERT INTO runs {common} {values}"),
+                        {
+                            **base,
+                            "id": uuid4(),
+                            "state": state,
+                            "suspended_state": "CREATED",
+                            "suspension_kind": kind,
+                            "context_version": 1,
+                            "context": '{"state":"CREATED"}',
+                        },
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.integration
+def test_runs_require_task_and_project_to_match(
+    migrated_database_url: str,
+) -> None:
+    async def exercise() -> None:
+        first_project, task_id, _ = await _insert_project_policy_task_run(migrated_database_url)
+        second_project, _, _ = await _insert_project_policy_task_run(migrated_database_url)
+        await _rejects(
+            migrated_database_url,
+            "INSERT INTO runs "
+            "(id, project_id, task_id, policy_version, state, version, "
+            "local_remediation_count, remote_remediation_count, token_budget, "
+            "cost_budget_minor, duration_budget_seconds, database_state) "
+            "VALUES (:id, :project_id, :task_id, 1, 'CREATED', 0, 0, 0, 0, 0, 0, 'DISABLED')",
+            {"id": uuid4(), "project_id": second_project, "task_id": task_id},
+        )
+        # Keep the first project referenced so the setup is explicit and not accidental.
+        assert first_project != second_project
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.integration
+def test_policy_versions_are_immutable_but_new_versions_append(
+    migrated_database_url: str,
+) -> None:
+    async def exercise() -> None:
+        project_id, _, _ = await _insert_project_policy_task_run(migrated_database_url)
+        await _rejects(
+            migrated_database_url,
+            "UPDATE project_policy_versions SET policy_digest = :digest "
+            "WHERE project_id = :project_id AND version = 1",
+            {"digest": "c" * 64, "project_id": project_id},
+        )
+        engine = create_async_engine(migrated_database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "INSERT INTO project_policy_versions "
+                        "(project_id, version, policy_digest, document_schema_version, document) "
+                        "VALUES (:project_id, 2, :digest, 1, '{}'::jsonb)"
+                    ),
+                    {"project_id": project_id, "digest": "d" * 64},
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
