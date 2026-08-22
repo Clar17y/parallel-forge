@@ -19,6 +19,7 @@ from forge.observability.telemetry import Telemetry
 from forge.tools.paths import CanonicalRoot
 from forge.tools.process import ProcessRunner
 from forge.tools.runner import (
+    DeferredCancellationState,
     NamedCommandResolver,
     RunnerExecutionError,
     await_deferred_cancellation,
@@ -192,6 +193,7 @@ class DockerRunner:
             "runner_mode": RunnerMode.DOCKER.value,
         }
         with self._telemetry.start_span("runner.docker", attributes=attributes):
+            launch_cancellation = DeferredCancellationState()
             try:
                 process_result, caller_cancelled = await await_deferred_cancellation(
                     asyncio.to_thread(
@@ -200,14 +202,15 @@ class DockerRunner:
                         cwd=self._root.path,
                         environment=client_environment,
                         timeout_seconds=spec.timeout_seconds,
-                    )
+                    ),
+                    state=launch_cancellation,
                 )
             except asyncio.CancelledError:
                 await self._cleanup_for_terminal(container_name)
                 raise
             except Exception:  # noqa: BLE001 - adapter failures must cross as one safe error
-                caller_cancelled = await self._cleanup_for_terminal(container_name)
-                if caller_cancelled:
+                cleanup_cancelled = await self._cleanup_for_terminal(container_name)
+                if launch_cancellation.requested or cleanup_cancelled:
                     raise asyncio.CancelledError()
                 raise RunnerExecutionError() from None
             if caller_cancelled or process_result.timed_out or process_result.return_code == 125:

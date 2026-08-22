@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Mapping
+from dataclasses import dataclass
 from typing import Protocol
 
 from forge.application.ports.artifacts import ArtifactStore
@@ -24,15 +25,25 @@ class RunnerExecutionError(RuntimeError):
         super().__init__("runner execution failed")
 
 
+@dataclass(slots=True)
+class DeferredCancellationState:
+    """Caller cancellation observed while a bounded operation reaches terminal state."""
+
+    requested: bool = False
+
+
 async def await_deferred_cancellation[DeferredResult](
     awaitable: Awaitable[DeferredResult],
     *,
     already_cancelled: bool = False,
+    state: DeferredCancellationState | None = None,
 ) -> tuple[DeferredResult, bool]:
     """Finish a bounded operation before allowing caller cancellation to propagate."""
 
     operation = asyncio.ensure_future(awaitable)
-    caller_cancelled = already_cancelled
+    caller_cancelled = already_cancelled or (state.requested if state is not None else False)
+    if state is not None:
+        state.requested = caller_cancelled
     while True:
         try:
             result = await asyncio.shield(operation)
@@ -40,6 +51,8 @@ async def await_deferred_cancellation[DeferredResult](
             if operation.cancelled():
                 raise
             caller_cancelled = True
+            if state is not None:
+                state.requested = True
             continue
         return result, caller_cancelled
 
@@ -190,6 +203,7 @@ def _utf8_size(value: str) -> int:
 
 
 __all__ = [
+    "DeferredCancellationState",
     "NamedCommandResolver",
     "RunnerExecutionError",
     "UnknownNamedCommand",

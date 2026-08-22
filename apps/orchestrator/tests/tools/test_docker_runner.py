@@ -140,6 +140,27 @@ class _DelayedLaunchProcess(_FakeProcess):
         return self.result
 
 
+class _DelayedLaunchErrorProcess(_DelayedLaunchProcess):
+    def __init__(self, *, cleanup_fails: bool) -> None:
+        super().__init__()
+        self.cleanup_fails = cleanup_fails
+
+    def run_argv(self, argv: tuple[str, ...], **kwargs: object) -> _ProcessResult:
+        self.calls.append((argv, kwargs))
+        if argv[:3] == ("docker", "rm", "-f"):
+            self.cleanup_started.set()
+            self.cleanup_release.wait(timeout=5)
+            self.cleanup_finished.set()
+            if self.cleanup_fails:
+                return _ProcessResult(return_code=1, stdout="", stderr="cleanup failed")
+            return _ProcessResult(stdout="", stderr="", stdout_original_byte_count=0)
+        self.launch_started.set()
+        self.launch_release.wait(timeout=5)
+        self.container_launched.set()
+        self.launch_finished.set()
+        raise OSError("Docker launch adapter failed")
+
+
 class _FakeArtifacts:
     def __init__(self) -> None:
         self.values: list[bytes] = []
@@ -597,6 +618,66 @@ async def test_docker_cancellation_waits_for_delayed_launch_before_cleanup(
     launch_argv = process.calls[0][0]
     cleanup = process.calls[1][0]
     assert launch_argv[0:2] == ("docker", "run")
+    assert cleanup[:3] == ("docker", "rm", "-f")
+    assert cleanup[3] == launch_argv[launch_argv.index("--name") + 1]
+
+
+@pytest.mark.parametrize(
+    ("cleanup_fails", "expected_error"),
+    [
+        (False, asyncio.CancelledError),
+        (True, RunnerExecutionError),
+    ],
+)
+@pytest.mark.asyncio
+async def test_docker_launch_error_preserves_prior_cancellation_after_cleanup(
+    tmp_path: Path,
+    cleanup_fails: bool,
+    expected_error: type[BaseException],
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    command = _command()
+    process = _DelayedLaunchErrorProcess(cleanup_fails=cleanup_fails)
+    runner = DockerRunner(
+        policy=_policy(command),
+        root=CanonicalRoot(worktree),
+        image_digest="sha256:" + "9" * 64,
+        process_runner=process,
+        artifact_store=_FakeArtifacts(),
+        telemetry=_FakeTelemetry(),
+    )
+
+    task = asyncio.create_task(
+        runner.run(RunCommandRequest(command_name=command.name, kind=command.kind))
+    )
+    assert await asyncio.to_thread(process.launch_started.wait, 1)
+    try:
+        task.cancel()
+        marker = asyncio.Event()
+        asyncio.get_running_loop().call_soon(marker.set)
+        await marker.wait()
+        assert not task.done()
+        assert not process.cleanup_started.is_set()
+
+        process.launch_release.set()
+        assert await asyncio.to_thread(process.launch_finished.wait, 1)
+        assert await asyncio.to_thread(process.cleanup_started.wait, 1)
+        process.cleanup_release.set()
+        with pytest.raises(expected_error):
+            await task
+        assert process.cleanup_finished.is_set()
+    finally:
+        process.launch_release.set()
+        process.cleanup_release.set()
+        with suppress(asyncio.CancelledError, RunnerExecutionError):
+            if not task.done():
+                await task
+            else:
+                task.exception()
+
+    launch_argv = process.calls[0][0]
+    cleanup = process.calls[1][0]
     assert cleanup[:3] == ("docker", "rm", "-f")
     assert cleanup[3] == launch_argv[launch_argv.index("--name") + 1]
 
