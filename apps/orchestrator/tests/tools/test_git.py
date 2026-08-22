@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import replace
@@ -12,6 +13,7 @@ import pytest
 from forge.application.ports.repository import ProcessResult
 from forge.application.ports.worktrees import ManagedWorktree
 from forge.domain.resource import WorktreeIdentity
+from forge.tools import git as git_module
 from forge.tools.git import ControlledGit, ControlledGitError
 from forge.tools.paths import CanonicalRoot
 from forge.tools.process import ProcessRunner
@@ -206,6 +208,35 @@ def _controlled(repository: Path, state_root: Path, runner: object | None = None
     )
 
 
+def _registration_for(worktree: Path) -> Path:
+    marker = worktree / ".git"
+    raw_marker = marker.read_text(encoding="utf-8")
+    assert raw_marker.startswith("gitdir: ")
+    raw_metadata = raw_marker.removesuffix("\n")[8:]
+    metadata = Path(raw_metadata)
+    if not metadata.is_absolute():
+        metadata = worktree / metadata
+    return metadata.resolve()
+
+
+def _rename_registration(worktree: Path, basename: str) -> Path:
+    marker = worktree / ".git"
+    metadata = _registration_for(worktree)
+    renamed = metadata.with_name(basename)
+    marker.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    marker.unlink()
+    marker.write_bytes(f"gitdir: {renamed}\n".encode())
+    metadata.rename(renamed)
+    return renamed
+
+
+def _add_registration_candidate(metadata_root: Path, name: str, target: Path) -> Path:
+    metadata = metadata_root / name
+    metadata.mkdir()
+    (metadata / "gitdir").write_bytes(f"{target}\n".encode())
+    return metadata
+
+
 def test_managed_worktree_is_immutable_and_requires_lowercase_base_sha(tmp_path: Path) -> None:
     repository, identity, handle = _managed_repository(tmp_path)
     assert handle.identity == identity
@@ -295,6 +326,121 @@ def test_status_and_diff_use_deterministic_safety_flags(tmp_path: Path) -> None:
         "HEAD",
         "--",
     )
+
+
+@pytest.mark.parametrize("basename", ("-", "registered-under-another-name"))
+def test_registered_worktree_metadata_basename_is_not_identity_name(
+    tmp_path: Path, basename: str
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    _rename_registration(handle.path, basename)
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+        runner=CapturingRunner(),
+    )
+
+    controlled.status(handle)
+
+
+def test_unrelated_valid_registration_does_not_hide_exact_target_match(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    metadata_root = repository / ".git" / "worktrees"
+    unrelated_target = tmp_path / "unrelated" / ".git"
+    unrelated_target.mkdir(parents=True)
+    _add_registration_candidate(metadata_root, "unrelated-registration", unrelated_target)
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+        runner=CapturingRunner(),
+    )
+
+    controlled.status(handle)
+
+
+def test_duplicate_exact_target_registrations_fail_closed(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    metadata = _rename_registration(handle.path, "first-registration")
+    duplicate = metadata.with_name("second-registration")
+    shutil.copytree(metadata, duplicate)
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+        runner=CapturingRunner(),
+    )
+
+    with pytest.raises(ControlledGitError):
+        controlled.status(handle)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    (b"/missing/target", b"/first\n/second\n", b"\xff\n", b"x" * 4097),
+)
+def test_malformed_registration_candidate_fails_closed(tmp_path: Path, contents: bytes) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    metadata_root = repository / ".git" / "worktrees"
+    malformed = metadata_root / "malformed-registration"
+    malformed.mkdir()
+    (malformed / "gitdir").write_bytes(contents)
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+        runner=CapturingRunner(),
+    )
+
+    with pytest.raises(ControlledGitError):
+        controlled.status(handle)
+
+
+def test_linked_registration_candidate_fails_closed(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    metadata_root = repository / ".git" / "worktrees"
+    outside = tmp_path / "outside-metadata"
+    outside.mkdir()
+    (outside / "gitdir").write_text(f"{tmp_path / 'unrelated' / '.git'}\n", encoding="utf-8")
+    linked = metadata_root / "linked-registration"
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except OSError, NotImplementedError:
+        pytest.skip("symlinks are not available on this host")
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+        runner=CapturingRunner(),
+    )
+
+    with pytest.raises(ControlledGitError):
+        controlled.status(handle)
+
+
+def test_registration_entry_cap_fails_closed(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    metadata_root = repository / ".git" / "worktrees"
+    for index in range(git_module._MAX_METADATA_ENTRIES + 1):
+        target = tmp_path / f"unrelated-{index}" / ".git"
+        target.mkdir(parents=True)
+        _add_registration_candidate(metadata_root, f"unrelated-{index}", target)
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+        runner=CapturingRunner(),
+    )
+
+    with pytest.raises(ControlledGitError):
+        controlled.status(handle)
 
 
 def test_unsafe_local_filter_config_is_refused_before_status(tmp_path: Path) -> None:
@@ -542,12 +688,51 @@ def test_create_refuses_default_or_invalid_branch_before_target_creation(
     tmp_path: Path, branch: str
 ) -> None:
     repository, base_sha = _source_repository(tmp_path)
-    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, branch=branch, database_enabled=False)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    object.__setattr__(identity, "branch", branch)
     controlled = _controlled(repository, tmp_path / "state")
 
-    with pytest.raises((ControlledGitError, ValueError)):
+    with pytest.raises(ControlledGitError):
         controlled.create_worktree(identity, base_sha)
     assert not (repository / ".worktrees").exists()
+
+
+def test_create_preflight_matches_registration_by_exact_target(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    metadata_root = repository / ".git" / "worktrees"
+    metadata_root.mkdir()
+    expected_target = repository / ".worktrees" / identity.worktree_name / ".git"
+    _add_registration_candidate(metadata_root, "-", expected_target)
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    with pytest.raises(ControlledGitError):
+        controlled.create_worktree(identity, base_sha)
+
+    assert not any("worktree" in argv and "add" in argv for argv, _cwd, _env in runner.calls)
+
+
+@pytest.mark.parametrize("basename", ("-", "non-identity-registration"))
+def test_remove_uses_exact_target_registration_lookup(tmp_path: Path, basename: str) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    _rename_registration(handle.path, basename)
+    controlled = ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=tmp_path / "state",
+        git_executable=TRUSTED_GIT,
+    )
+
+    controlled.remove_worktree(handle)
+
+    assert not handle.path.exists()
+    metadata_root = repository / ".git" / "worktrees"
+    assert not metadata_root.exists() or not any(metadata_root.iterdir())
 
 
 def test_create_refuses_existing_target_and_branch_collision(tmp_path: Path) -> None:

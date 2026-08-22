@@ -17,6 +17,7 @@ from forge.tools.process import ProcessRunner
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_METADATA_BYTES = 4096
+_MAX_METADATA_ENTRIES = 256
 _MAX_BRANCH_LENGTH = 255
 
 _FORGE_NAME = "Forge"
@@ -76,9 +77,12 @@ class ControlledGit:
         if not isinstance(identity, WorktreeIdentity):
             raise ControlledGitError()
         _validate_sha(base_sha)
+        try:
+            _validate_branch(identity.branch)
+        except TypeError, ValueError:
+            raise ControlledGitError() from None
         if _same_branch(identity.branch, self._default_branch):
             raise ControlledGitError()
-        _validate_branch(identity.branch)
         self._scan_local_config(self._repository.path)
         self._verify_branch_format(identity.branch)
         resolved_base = self._parse_base_sha(base_sha)
@@ -233,6 +237,10 @@ class ControlledGit:
         identity = worktree.identity
         if not isinstance(identity, WorktreeIdentity):
             raise ControlledGitError()
+        try:
+            _validate_branch(identity.branch)
+        except TypeError, ValueError:
+            raise ControlledGitError() from None
         if _same_branch(identity.branch, self._default_branch):
             raise ControlledGitError()
         expected = self._managed_root / identity.worktree_name
@@ -421,13 +429,28 @@ class ControlledGit:
         _reject_links(metadata_root)
         if not metadata_root.is_dir():
             raise ControlledGitError()
-        metadata = metadata_root / identity.worktree_name
-        if not os.path.lexists(metadata):
-            return None
-        _reject_links(metadata)
-        if not metadata.is_dir():
-            raise ControlledGitError()
-        return metadata
+        expected_target = self._managed_root / identity.worktree_name / ".git"
+        expected_target = _canonical_no_links_allow_missing(expected_target)
+        matches: list[Path] = []
+        try:
+            for index, metadata in enumerate(metadata_root.iterdir()):
+                if index >= _MAX_METADATA_ENTRIES:
+                    raise ControlledGitError()
+                _reject_links(metadata)
+                metadata_stat = os.stat(metadata, follow_symlinks=False)
+                if not stat.S_ISDIR(metadata_stat.st_mode):
+                    raise ControlledGitError()
+                target = _read_metadata_target(metadata)
+                if _path_key(target) != _path_key(expected_target):
+                    continue
+                matches.append(_canonical_no_links(metadata))
+                if len(matches) > 1:
+                    raise ControlledGitError()
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, ValueError:
+            raise ControlledGitError() from None
+        return matches[0] if matches else None
 
     def _verify_registration(self, worktree: Path, identity: WorktreeIdentity) -> None:
         git_marker = worktree / ".git"
@@ -448,18 +471,31 @@ class ControlledGit:
         self._verify_metadata_target(metadata, git_marker)
 
     def _verify_metadata_target(self, metadata: Path, expected_target: Path) -> None:
-        metadata_gitdir = metadata / "gitdir"
-        _reject_links(metadata_gitdir)
-        if not metadata_gitdir.is_file():
-            raise ControlledGitError()
-        registered_target = _read_small_text(metadata_gitdir).removesuffix("\n")
-        target = Path(registered_target)
-        if not target.is_absolute():
-            target = metadata / target
-        target = _canonical_no_links_allow_missing(target)
+        target = _read_metadata_target(metadata)
         expected_target = _canonical_no_links_allow_missing(expected_target)
         if _path_key(target) != _path_key(expected_target):
             raise ControlledGitError()
+
+
+def _read_metadata_target(metadata: Path) -> Path:
+    metadata_gitdir = metadata / "gitdir"
+    _reject_links(metadata_gitdir)
+    try:
+        metadata_stat = os.stat(metadata_gitdir, follow_symlinks=False)
+    except OSError, ValueError:
+        raise ControlledGitError() from None
+    if not stat.S_ISREG(metadata_stat.st_mode):
+        raise ControlledGitError()
+    record = _read_small_text(metadata_gitdir)
+    if not record.endswith("\n") or record.count("\n") != 1:
+        raise ControlledGitError()
+    registered_target = record.removesuffix("\n")
+    if not registered_target or "\r" in registered_target:
+        raise ControlledGitError()
+    target = Path(registered_target)
+    if not target.is_absolute():
+        target = metadata / target
+    return _canonical_no_links_allow_missing(target)
 
 
 def _resolve_git_executable(value: str | os.PathLike[str]) -> Path:
