@@ -30,6 +30,9 @@ class BinaryRepositoryFile(RepositoryEncodingError):
 class ProcessExecutionError(RepositoryError):
     """A bounded local process invocation could not be completed safely."""
 
+    def __init__(self) -> None:
+        super().__init__("repository process execution failed")
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RepositoryEntry:

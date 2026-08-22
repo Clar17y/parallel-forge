@@ -26,6 +26,11 @@ class _WindowsIdentity(NamedTuple):
     file_index_low: int
 
 
+class _DirectoryAccess(NamedTuple):
+    path: Path
+    launch_path: str
+
+
 if os.name == "nt":
     from ctypes import wintypes
 
@@ -268,6 +273,23 @@ class CanonicalRoot:
         with self.open_read(value) as stream:
             return stream.read()
 
+    @contextlib.contextmanager
+    def open_directory(self, value: str | os.PathLike[str] = ".") -> Iterator[Path]:
+        """Open one contained directory without following links or reparses."""
+
+        normalized = self.normalize(value, allow_root=True)
+        with self._open_directory(normalized) as access:
+            yield access.path
+
+    @contextlib.contextmanager
+    def _open_directory(self, normalized: str) -> Iterator[_DirectoryAccess]:
+        if os.name == "nt":
+            with self._open_windows_directory(normalized) as access:
+                yield access
+            return
+        with self._open_posix_directory(normalized) as access:
+            yield access
+
     def _identity_for_path(self) -> tuple[int, ...]:
         if self._windows is not None:
             handle = self._windows.open_directory(self._path)
@@ -292,6 +314,47 @@ class CanonicalRoot:
     def _stat_posix(self, normalized: str) -> os.stat_result:
         with self._open_posix_descriptor(normalized) as descriptor:
             return os.fstat(descriptor)
+
+    @contextlib.contextmanager
+    def _open_posix_directory(self, normalized: str) -> Iterator[_DirectoryAccess]:
+        if not _O_DIRECTORY or not _O_NOFOLLOW:
+            raise RepositoryAccessDenied("safe POSIX path capabilities are unavailable")
+        self._revalidate_root()
+        root_descriptor: int | None = None
+        directory_descriptors: list[int] = []
+        try:
+            root_descriptor = os.open(
+                self._path,
+                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+            )
+            if _fd_identity(root_descriptor) != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+            current = root_descriptor
+            directory_descriptors.append(root_descriptor)
+            if normalized != ".":
+                for part in normalized.split("/"):
+                    child = os.open(
+                        part,
+                        os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                        dir_fd=current,
+                    )
+                    if not stat.S_ISDIR(os.fstat(child).st_mode):
+                        os.close(child)
+                        raise RepositoryAccessDenied("repository path is not a directory")
+                    directory_descriptors.append(child)
+                    current = child
+            self._revalidate_root()
+            path = self._path if normalized == "." else self._path.joinpath(*normalized.split("/"))
+            proc_fd_root = Path("/proc/self/fd")
+            launch_path = str(proc_fd_root / str(current)) if proc_fd_root.is_dir() else str(path)
+            yield _DirectoryAccess(path, launch_path)
+            self._revalidate_root()
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository directory is unavailable") from None
+        finally:
+            for descriptor in reversed(directory_descriptors):
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
 
     @contextlib.contextmanager
     def _open_posix(self, normalized: str) -> Iterator[BinaryIO]:
@@ -354,6 +417,32 @@ class CanonicalRoot:
     def _stat_windows(self, normalized: str) -> os.stat_result:
         with self._open_windows(normalized) as stream:
             return os.fstat(stream.fileno())
+
+    @contextlib.contextmanager
+    def _open_windows_directory(self, normalized: str) -> Iterator[_DirectoryAccess]:
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        self._revalidate_root()
+        handles: list[int] = []
+        try:
+            root_handle = api.open_directory(self._path)
+            handles.append(root_handle)
+            if api.identity(root_handle) != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+            current = self._path
+            if normalized != ".":
+                for part in normalized.split("/"):
+                    current = current / part
+                    handles.append(api.open_directory(current))
+            self._revalidate_root()
+            yield _DirectoryAccess(current, str(current))
+            self._revalidate_root()
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository directory is unavailable") from None
+        finally:
+            for handle in reversed(handles):
+                api.close(handle)
 
     @contextlib.contextmanager
     def _open_windows(self, normalized: str) -> Iterator[BinaryIO]:
