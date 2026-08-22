@@ -70,6 +70,86 @@ class ControlledGit:
         _prepare_empty_file(self._global_attributes_path)
         self._runner = runner or ProcessRunner(repository)
 
+    def create_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
+        """Create and verify one exact managed worktree without cleanup guesses."""
+
+        if not isinstance(identity, WorktreeIdentity):
+            raise ControlledGitError()
+        _validate_sha(base_sha)
+        if _same_branch(identity.branch, self._default_branch):
+            raise ControlledGitError()
+        _validate_branch(identity.branch)
+        self._scan_local_config(self._repository.path)
+        self._verify_branch_format(identity.branch)
+        resolved_base = self._parse_base_sha(base_sha)
+        if resolved_base != base_sha:
+            raise ControlledGitError()
+        self._verify_managed_root_ignored()
+        if self._branch_exists_at(self._repository.path, identity.branch):
+            raise ControlledGitError()
+        expected_metadata = self._registration_metadata(identity)
+        if expected_metadata is not None:
+            raise ControlledGitError()
+
+        managed_root = _prepare_directory(self._managed_root)
+        expected_path = managed_root / identity.worktree_name
+        if _path_key(expected_path) != _path_key(self._managed_root / identity.worktree_name):
+            raise ControlledGitError()
+        if os.path.lexists(expected_path):
+            _reject_links(expected_path)
+            raise ControlledGitError()
+        self._run(
+            self._repository.path,
+            (
+                "worktree",
+                "add",
+                "-b",
+                identity.branch,
+                str(expected_path),
+                base_sha,
+            ),
+        )
+
+        handle = ManagedWorktree(identity=identity, path=expected_path, base_sha=base_sha)
+        self._validate_handle(handle)
+        if self.head_sha(handle) != base_sha or not self.is_ancestor(handle):
+            raise ControlledGitError()
+        return handle
+
+    def remove_worktree(self, worktree: ManagedWorktree) -> None:
+        """Remove one exact registered worktree and retain its branch."""
+
+        identity, expected_path = self._validate_handle_shape(worktree)
+        metadata = self._registration_metadata(identity)
+        path_exists = os.path.lexists(expected_path)
+        if not path_exists:
+            if metadata is None:
+                return
+            self._verify_metadata_target(metadata, expected_path / ".git")
+            self.prune()
+            if self._registration_metadata(identity) is not None:
+                raise ControlledGitError()
+            return
+
+        _reject_links(expected_path)
+        if not expected_path.is_dir() or metadata is None:
+            raise ControlledGitError()
+        self._verify_registration(expected_path, identity)
+        self._verify_current_branch(worktree)
+        self._scan_local_config(expected_path)
+        self._run(
+            self._repository.path,
+            ("worktree", "remove", "--force", "--", str(expected_path)),
+        )
+        if os.path.lexists(expected_path) or self._registration_metadata(identity) is not None:
+            raise ControlledGitError()
+
+    def prune(self) -> None:
+        """Prune only stale Git worktree registration metadata."""
+
+        self._scan_local_config(self._repository.path)
+        self._run(self._repository.path, ("worktree", "prune", "--expire=now"))
+
     def status(self, worktree: ManagedWorktree) -> GitStatus:
         """Return bounded deterministic porcelain-v1 status output."""
 
@@ -147,21 +227,25 @@ class ControlledGit:
         )
         return _return_code(result) == 0
 
-    def _validate_handle(self, worktree: ManagedWorktree, *, verify_branch: bool = True) -> None:
+    def _validate_handle_shape(self, worktree: ManagedWorktree) -> tuple[WorktreeIdentity, Path]:
         if not isinstance(worktree, ManagedWorktree):
             raise ControlledGitError()
         identity = worktree.identity
         if not isinstance(identity, WorktreeIdentity):
             raise ControlledGitError()
-        if identity.branch == self._default_branch:
+        if _same_branch(identity.branch, self._default_branch):
             raise ControlledGitError()
         expected = self._managed_root / identity.worktree_name
         if _path_key(worktree.path) != _path_key(expected):
             raise ControlledGitError()
         _validate_sha(worktree.base_sha)
+        return identity, expected
+
+    def _validate_handle(self, worktree: ManagedWorktree, *, verify_branch: bool = True) -> None:
+        identity, expected = self._validate_handle_shape(worktree)
         try:
             _reject_links(worktree.path)
-            if not worktree.path.is_dir():
+            if not worktree.path.is_dir() or _path_key(worktree.path) != _path_key(expected):
                 raise ControlledGitError()
             self._verify_registration(worktree.path, identity)
         except ControlledGitError:
@@ -304,6 +388,47 @@ class ControlledGit:
         except OSError, RuntimeError, ValueError:
             raise ControlledGitError() from None
 
+    def _verify_branch_format(self, branch: str) -> None:
+        self._run(self._repository.path, ("check-ref-format", "--branch", branch))
+
+    def _parse_base_sha(self, base_sha: str) -> str:
+        result = self._run(
+            self._repository.path,
+            ("rev-parse", "--verify", f"{base_sha}^{{commit}}"),
+        )
+        return _parse_sha(result)
+
+    def _verify_managed_root_ignored(self) -> None:
+        self._run(self._repository.path, ("check-ignore", "--quiet", "--", ".worktrees/"))
+
+    def _branch_exists_at(self, worktree: Path, branch: str) -> bool:
+        result = self._run(
+            worktree,
+            ("show-ref", "--verify", "--quiet", f"refs/heads/{branch}"),
+            allow_return_codes=(0, 1),
+        )
+        return _return_code(result) == 0
+
+    def _registration_metadata(self, identity: WorktreeIdentity) -> Path | None:
+        git_directory = self._repository.path / ".git"
+        if os.path.lexists(git_directory):
+            _reject_links(git_directory)
+            if not git_directory.is_dir():
+                raise ControlledGitError()
+        metadata_root = git_directory / "worktrees"
+        if not os.path.lexists(metadata_root):
+            return None
+        _reject_links(metadata_root)
+        if not metadata_root.is_dir():
+            raise ControlledGitError()
+        metadata = metadata_root / identity.worktree_name
+        if not os.path.lexists(metadata):
+            return None
+        _reject_links(metadata)
+        if not metadata.is_dir():
+            raise ControlledGitError()
+        return metadata
+
     def _verify_registration(self, worktree: Path, identity: WorktreeIdentity) -> None:
         git_marker = worktree / ".git"
         _reject_links(git_marker)
@@ -317,11 +442,12 @@ class ControlledGit:
         if not metadata.is_absolute():
             metadata = worktree / metadata
         metadata = _canonical_no_links(metadata)
-        expected = _canonical_no_links(
-            self._repository.path / ".git" / "worktrees" / identity.worktree_name
-        )
-        if _path_key(metadata) != _path_key(expected) or not metadata.is_dir():
+        expected = self._registration_metadata(identity)
+        if expected is None or _path_key(metadata) != _path_key(expected):
             raise ControlledGitError()
+        self._verify_metadata_target(metadata, git_marker)
+
+    def _verify_metadata_target(self, metadata: Path, expected_target: Path) -> None:
         metadata_gitdir = metadata / "gitdir"
         _reject_links(metadata_gitdir)
         if not metadata_gitdir.is_file():
@@ -330,8 +456,8 @@ class ControlledGit:
         target = Path(registered_target)
         if not target.is_absolute():
             target = metadata / target
-        target = _canonical_no_links(target)
-        expected_target = _canonical_no_links(git_marker)
+        target = _canonical_no_links_allow_missing(target)
+        expected_target = _canonical_no_links_allow_missing(expected_target)
         if _path_key(target) != _path_key(expected_target):
             raise ControlledGitError()
 
@@ -424,9 +550,32 @@ def _reject_links(path: Path) -> None:
             raise ControlledGitError()
 
 
+def _reject_existing_links(path: Path) -> None:
+    current = Path(path.anchor)
+    if not current:
+        raise ControlledGitError()
+    for component in path.parts[1:]:
+        current /= component
+        if not os.path.lexists(current):
+            break
+        try:
+            metadata = os.lstat(current)
+        except OSError, ValueError:
+            raise ControlledGitError() from None
+        if stat.S_ISLNK(metadata.st_mode) or bool(
+            getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT
+        ):
+            raise ControlledGitError()
+
+
 def _canonical_no_links(path: Path) -> Path:
     _reject_links(path)
     return path.resolve(strict=True)
+
+
+def _canonical_no_links_allow_missing(path: Path) -> Path:
+    _reject_existing_links(path)
+    return path.resolve(strict=False)
 
 
 def _read_small_text(path: Path) -> str:
@@ -458,6 +607,10 @@ def _validate_branch(value: object) -> None:
         or "//" in value
     ):
         raise ValueError("invalid branch")
+
+
+def _same_branch(first: str, second: str) -> bool:
+    return first.casefold() == second.casefold() if os.name == "nt" else first == second
 
 
 def _validate_sha(value: object) -> None:

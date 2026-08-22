@@ -79,7 +79,13 @@ class GitDiff(GitOutput):
 
 
 class ControlledGitPort(Protocol):
-    """Handle-bound read operations exposed to the application layer."""
+    """Exact managed-worktree operations exposed to the application layer."""
+
+    def create_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree: ...
+
+    def remove_worktree(self, worktree: ManagedWorktree) -> None: ...
+
+    def prune(self) -> None: ...
 
     def status(self, worktree: ManagedWorktree) -> GitStatus: ...
 

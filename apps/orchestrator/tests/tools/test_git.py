@@ -14,6 +14,7 @@ from forge.application.ports.worktrees import ManagedWorktree
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.git import ControlledGit, ControlledGitError
 from forge.tools.paths import CanonicalRoot
+from forge.tools.process import ProcessRunner
 
 PROJECT_ID = UUID("11111111-1111-1111-1111-111111111111")
 RUN_ID = UUID("22222222-2222-2222-2222-222222222222")
@@ -115,6 +116,29 @@ class TruncatedHeadRunner(CapturingRunner):
         return result
 
 
+class RecordingRunner:
+    def __init__(self, repository: Path) -> None:
+        self._delegate = ProcessRunner(CanonicalRoot(repository))
+        self.calls: list[tuple[tuple[str, ...], str, dict[str, str]]] = []
+
+    def run_argv(
+        self,
+        argv: tuple[str, ...] | list[str],
+        *,
+        cwd: str,
+        environment: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> ProcessResult:
+        command = tuple(argv)
+        self.calls.append((command, cwd, dict(environment)))
+        return self._delegate.run_argv(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def _git(repository: Path, *arguments: str) -> None:
     result = subprocess.run(
         [shutil.which("git") or "git", "-C", str(repository), *arguments],
@@ -147,6 +171,39 @@ def _managed_repository(tmp_path: Path) -> tuple[Path, WorktreeIdentity, Managed
         text=True,
     ).stdout.strip()
     return repository, identity, ManagedWorktree(identity=identity, path=path, base_sha=base_sha)
+
+
+def _source_repository(tmp_path: Path, *, ignored: bool = True) -> tuple[Path, str]:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+    _git(repository, "config", "user.name", "Forge Test")
+    _git(repository, "config", "user.email", "forge@example.test")
+    (repository / "README.md").write_text("forge\n", encoding="utf-8")
+    _git(repository, "add", "README.md")
+    _git(repository, "commit", "-m", "initial")
+    if ignored:
+        (repository / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
+        _git(repository, "add", ".gitignore")
+        _git(repository, "commit", "-m", "ignore managed worktrees")
+    base_sha = subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.strip()
+    return repository, base_sha
+
+
+def _controlled(repository: Path, state_root: Path, runner: object | None = None) -> ControlledGit:
+    return ControlledGit(
+        CanonicalRoot(repository),
+        default_branch="main",
+        state_root=state_root,
+        git_executable=TRUSTED_GIT,
+        runner=runner,  # type: ignore[arg-type]
+    )
 
 
 def test_managed_worktree_is_immutable_and_requires_lowercase_base_sha(tmp_path: Path) -> None:
@@ -437,3 +494,184 @@ def test_inherited_path_cannot_replace_explicit_trusted_git(
     assert runner.calls
     assert all(argv[0] == str(TRUSTED_GIT) for argv, _cwd, _environment in runner.calls)
     assert not rogue_marker.exists()
+
+
+def test_create_worktree_uses_exact_add_argv_and_verifies_identity(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    handle = controlled.create_worktree(identity, base_sha)
+
+    expected_path = repository / ".worktrees" / identity.worktree_name
+    assert handle.identity == identity
+    assert handle.path == expected_path
+    assert handle.base_sha == base_sha
+    assert controlled.current_branch(handle) == identity.branch
+    assert controlled.head_sha(handle) == base_sha
+    add_call = next(
+        argv for argv, _cwd, _environment in runner.calls if argv[-6:-5] == ("worktree",)
+    )
+    assert add_call[-6:] == (
+        "worktree",
+        "add",
+        "-b",
+        identity.branch,
+        str(expected_path),
+        base_sha,
+    )
+
+
+def test_create_refuses_nonignored_root_without_creating_it(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path, ignored=False)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.create_worktree(identity, base_sha)
+    assert not (repository / ".worktrees").exists()
+
+
+@pytest.mark.parametrize("branch", ("main", "bad..branch", "bad?branch"))
+def test_create_refuses_default_or_invalid_branch_before_target_creation(
+    tmp_path: Path, branch: str
+) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, branch=branch, database_enabled=False)
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises((ControlledGitError, ValueError)):
+        controlled.create_worktree(identity, base_sha)
+    assert not (repository / ".worktrees").exists()
+
+
+def test_create_refuses_existing_target_and_branch_collision(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    target = repository / ".worktrees" / identity.worktree_name
+    target.parent.mkdir()
+    target.mkdir()
+    controlled = _controlled(repository, tmp_path / "state")
+    with pytest.raises(ControlledGitError):
+        controlled.create_worktree(identity, base_sha)
+    assert target.is_dir()
+
+    shutil.rmtree(target)
+    _git(repository, "branch", identity.branch, base_sha)
+    with pytest.raises(ControlledGitError):
+        controlled.create_worktree(identity, base_sha)
+    assert not target.exists()
+
+
+def test_create_refuses_unsafe_local_filter_before_add(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    marker = tmp_path / "filter-marker"
+    command = f"\"{sys.executable}\" -c \"open(r'{marker}', 'w').write('executed')\""
+    _git(repository, "config", "filter.evil.clean", command)
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.create_worktree(identity, base_sha)
+    assert not marker.exists()
+    assert not (repository / ".worktrees" / identity.worktree_name).exists()
+
+
+def test_remove_is_exact_force_idempotent_and_keeps_branch(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+    handle = controlled.create_worktree(identity, base_sha)
+
+    controlled.remove_worktree(handle)
+    controlled.remove_worktree(handle)
+
+    assert not handle.path.exists()
+    assert (
+        subprocess.run(
+            [
+                str(TRUSTED_GIT),
+                "-C",
+                str(repository),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{identity.branch}",
+            ],
+            check=False,
+            capture_output=True,
+            shell=False,
+        ).returncode
+        == 0
+    )
+    remove_calls = [argv for argv, _cwd, _environment in runner.calls if argv[-4:-3] == ("remove",)]
+    assert remove_calls
+    assert remove_calls[0][-4:] == ("remove", "--force", "--", str(handle.path))
+
+
+def test_remove_refuses_unregistered_or_wrong_branch_without_deletion(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    target = repository / ".worktrees" / identity.worktree_name
+    target.parent.mkdir()
+    target.mkdir()
+    forged = ManagedWorktree(identity=identity, path=target, base_sha=base_sha)
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(forged)
+    assert target.is_dir()
+
+    shutil.rmtree(target)
+    handle = controlled.create_worktree(identity, base_sha)
+    _git(handle.path, "switch", "-c", "other")
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+    assert handle.path.is_dir()
+
+
+def test_remove_locked_worktree_fails_closed(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    handle = controlled.create_worktree(identity, base_sha)
+    _git(repository, "worktree", "lock", str(handle.path))
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+    assert handle.path.is_dir()
+
+
+def test_prune_only_removes_stale_registration_and_not_live_worktree(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+    handle = controlled.create_worktree(identity, base_sha)
+    controlled.prune()
+    assert handle.path.is_dir()
+
+    shutil.rmtree(handle.path)
+    controlled.prune()
+    assert not handle.path.exists()
+    assert not any((repository / ".git" / "worktrees").glob(identity.worktree_name))
+    prune_calls = [argv for argv, _cwd, _environment in runner.calls if argv[-2:-1] == ("prune",)]
+    assert prune_calls
+    assert prune_calls[-1][-2:] == ("prune", "--expire=now")
