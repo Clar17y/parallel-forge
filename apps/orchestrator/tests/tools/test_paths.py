@@ -103,6 +103,22 @@ def test_open_read_and_stat_are_regular_file_only(tmp_path: Path) -> None:
     assert root.stat_file("src/main.py").st_size == len(b"print('ok')\n")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="directory sharing semantics are Windows-specific")
+def test_open_directory_blocks_rename_until_capability_is_released(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    directory = root_path / "src"
+    moved = tmp_path / "moved-src"
+
+    with root.open_directory("src"):
+        with pytest.raises(PermissionError):
+            directory.rename(moved)
+        assert directory.is_dir()
+
+    directory.rename(moved)
+    assert moved.is_dir()
+
+
 def test_open_read_rejects_a_symlinked_intermediate_component(tmp_path: Path) -> None:
     root_path = _make_root(tmp_path)
     outside = tmp_path / "outside"

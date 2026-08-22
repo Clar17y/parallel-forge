@@ -36,7 +36,7 @@ if os.name == "nt":
     from ctypes import wintypes
 
     _GENERIC_READ = 0x80000000
-    _FILE_READ_ATTRIBUTES = 0x00000080
+    _FILE_LIST_DIRECTORY = 0x00000001
     _FILE_SHARE_READ = 0x00000001
     _FILE_SHARE_WRITE = 0x00000002
     _OPEN_EXISTING = 3
@@ -101,7 +101,7 @@ class _WindowsPathApi:
     def open_directory(self, path: Path) -> int:
         handle = self._open(
             path,
-            access=_FILE_READ_ATTRIBUTES,
+            access=_FILE_LIST_DIRECTORY,
             flags=_FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
         )
         try:
