@@ -140,6 +140,37 @@ class _DelayedLaunchProcess(_FakeProcess):
         return self.result
 
 
+class _EventuallyVisibleTimeoutProcess(_FakeProcess):
+    def __init__(self) -> None:
+        super().__init__(
+            _ProcessResult(
+                return_code=-9,
+                stdout="",
+                stderr="",
+                timed_out=True,
+                stdout_original_byte_count=0,
+            )
+        )
+        self.cleanup_attempts = 0
+        self.first_cleanup_attempt = threading.Event()
+        self.removed = threading.Event()
+        self.container_visible = False
+
+    def run_argv(self, argv: tuple[str, ...], **kwargs: object) -> _ProcessResult:
+        self.calls.append((argv, kwargs))
+        if argv[:3] != ("docker", "rm", "-f"):
+            return self.result
+        self.cleanup_attempts += 1
+        if self.cleanup_attempts == 1:
+            self.first_cleanup_attempt.set()
+            self.container_visible = True
+            return _ProcessResult(return_code=1, stdout="", stderr="not found")
+        if self.container_visible:
+            self.removed.set()
+            return _ProcessResult(stdout="", stderr="", stdout_original_byte_count=0)
+        return _ProcessResult(return_code=1, stdout="", stderr="not found")
+
+
 class _DelayedLaunchErrorProcess(_DelayedLaunchProcess):
     def __init__(self, *, cleanup_fails: bool) -> None:
         super().__init__()
@@ -350,6 +381,38 @@ def test_docker_timeout_forces_named_container_cleanup_without_host_fallback(
     assert process.calls[1][0][3] == process.calls[0][0][process.calls[0][0].index("--name") + 1]
 
 
+def test_docker_timeout_retries_exact_name_cleanup_until_daemon_visibility(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    command = _command()
+    process = _EventuallyVisibleTimeoutProcess()
+    runner = DockerRunner(
+        policy=_policy(command),
+        root=CanonicalRoot(worktree),
+        image_digest="sha256:" + "a" * 64,
+        process_runner=process,
+        artifact_store=_FakeArtifacts(),
+        telemetry=_FakeTelemetry(),
+    )
+
+    result = asyncio.run(
+        runner.run(RunCommandRequest(command_name=command.name, kind=command.kind))
+    )
+
+    assert result.timed_out is True
+    assert process.first_cleanup_attempt.is_set()
+    assert process.removed.is_set()
+    assert process.cleanup_attempts == 2
+    launch_name = process.calls[0][0][process.calls[0][0].index("--name") + 1]
+    cleanup_calls = [call[0] for call in process.calls[1:]]
+    assert cleanup_calls == [
+        ("docker", "rm", "-f", launch_name),
+        ("docker", "rm", "-f", launch_name),
+    ]
+
+
 def test_docker_uncertain_launch_surfaces_generic_error_and_cleans_up(tmp_path: Path) -> None:
     worktree = tmp_path / "repo"
     worktree.mkdir()
@@ -459,6 +522,12 @@ def test_docker_cleanup_failure_never_returns_a_timeout_result(tmp_path: Path) -
 
     with pytest.raises(RunnerExecutionError, match="^runner execution failed$"):
         asyncio.run(runner.run(RunCommandRequest(command_name=command.name, kind=command.kind)))
+    launch_name = process.calls[0][0][process.calls[0][0].index("--name") + 1]
+    assert [call[0] for call in process.calls[1:]] == [
+        ("docker", "rm", "-f", launch_name),
+        ("docker", "rm", "-f", launch_name),
+        ("docker", "rm", "-f", launch_name),
+    ]
 
 
 def test_malformed_unicode_output_is_normalized_before_artifact_persistence(

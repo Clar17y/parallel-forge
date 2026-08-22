@@ -57,6 +57,8 @@ _DOCKER_BASELINE_KEYS = frozenset(
     }
 )
 _CLEANUP_TIMEOUT_SECONDS = 15.0
+_CLEANUP_MAX_ATTEMPTS = 3
+_CLEANUP_RETRY_DELAY_SECONDS = 0.25
 
 
 class _ProcessResultLike(Protocol):
@@ -254,18 +256,23 @@ class DockerRunner:
         return caller_cancelled
 
     async def _cleanup(self, container_name: str) -> None:
-        try:
-            result = await asyncio.to_thread(
-                self._process_runner.run_argv,
-                ("docker", "rm", "-f", container_name),
-                cwd=self._root.path,
-                environment=self._docker_environment,
-                timeout_seconds=_CLEANUP_TIMEOUT_SECONDS,
-            )
-        except Exception:  # noqa: BLE001 - cleanup must fail closed for any adapter error
-            raise RunnerExecutionError() from None
-        if result.timed_out or result.return_code != 0:
-            raise RunnerExecutionError()
+        for attempt in range(_CLEANUP_MAX_ATTEMPTS):
+            try:
+                result = await asyncio.to_thread(
+                    self._process_runner.run_argv,
+                    ("docker", "rm", "-f", container_name),
+                    cwd=self._root.path,
+                    environment=self._docker_environment,
+                    timeout_seconds=_CLEANUP_TIMEOUT_SECONDS,
+                )
+                succeeded = not result.timed_out and result.return_code == 0
+            except Exception:  # noqa: BLE001 - cleanup must fail closed for any adapter error
+                succeeded = False
+            if succeeded:
+                return
+            if attempt + 1 < _CLEANUP_MAX_ATTEMPTS:
+                await asyncio.sleep(_CLEANUP_RETRY_DELAY_SECONDS)
+        raise RunnerExecutionError()
 
 
 def _docker_command_environment(
