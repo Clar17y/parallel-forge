@@ -166,13 +166,15 @@ class Redactor:
             traversal.active_ids.remove(identity)
 
     def _redact_string(self, value: str) -> str:
-        redacted = value
+        normalized = _normalize_string(value)
+        redacted = normalized
         for secret in self._secrets:
             redacted = redacted.replace(secret, REDACTED)
         redacted = redact_durable_text(redacted)
-        return self._truncate_string(redacted, original_bytes=len(value.encode("utf-8")))
+        return self._truncate_string(redacted, original_bytes=len(normalized.encode("utf-8")))
 
     def _truncate_string(self, value: str, *, original_bytes: int | None = None) -> str:
+        value = _normalize_string(value)
         encoded = value.encode("utf-8")
         if len(encoded) <= self._policy.max_string_bytes:
             return value
@@ -198,6 +200,14 @@ class Redactor:
         while candidate in result:
             candidate = f"_{candidate}"
         return candidate
+
+
+def _normalize_string(value: str) -> str:
+    """Replace UTF-16 surrogate code points before UTF-8/JSON boundaries."""
+
+    return "".join(
+        "\ufffd" if 0xD800 <= ord(character) <= 0xDFFF else character for character in value
+    )
 
 
 def redact_value(

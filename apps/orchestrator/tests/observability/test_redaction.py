@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from forge.observability.redaction import RedactionPolicy, Redactor, redact_value
 
 
@@ -65,6 +67,16 @@ def test_string_and_collection_bounds_are_utf8_safe_and_deterministic() -> None:
     assert len(result["text"].encode()) <= 64
     assert "80B" in result["text"]
     assert result["items"][-1]["__forge_truncated__"] == 3
+
+
+def test_lone_surrogates_are_normalized_to_json_safe_text() -> None:
+    malformed = "before" + chr(0xD800) + "after"
+
+    result = redact_value({"message": malformed})
+
+    assert result == {"message": "before�after"}
+    assert chr(0xD800) not in result["message"]
+    assert json.dumps(result, ensure_ascii=False).encode("utf-8")
 
 
 def test_depth_nodes_cycles_and_unsupported_values_are_bounded() -> None:

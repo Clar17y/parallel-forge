@@ -63,7 +63,11 @@ class Telemetry:
             "attributes": safe_attributes,
         }
 
-        with self._tracer.start_as_current_span(safe_operation) as span:
+        with self._tracer.start_as_current_span(
+            safe_operation,
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
             span.set_attribute("forge.operation", safe_operation)
             span.set_attribute("forge.retry_number", retry_number)
             for name, value in correlation_values.items():

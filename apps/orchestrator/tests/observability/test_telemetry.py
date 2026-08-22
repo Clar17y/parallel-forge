@@ -85,3 +85,44 @@ def test_span_records_correlation_retry_duration_and_safe_attributes() -> None:
     assert span.attributes["forge.duration_ms"] == 125
     assert "abcdefghijkl" not in str(span.attributes)
     provider.shutdown()
+
+
+def test_span_does_not_export_raw_exception_event_or_text() -> None:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    telemetry = Telemetry(
+        tracer=provider.get_tracer("forge-test"),
+        sink=lambda _record: None,
+        clock=Clock(),
+    )
+    secret = "Bearer exception-secret-123456"
+
+    with pytest.raises(RuntimeError, match="remote failure"), telemetry.start_span("provider.call"):
+        raise RuntimeError(f"remote failure {secret}")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.status.status_code is StatusCode.ERROR
+    assert span.attributes is not None
+    assert span.attributes["forge.status"] == "error"
+    assert "remote failure" in str(span.attributes["forge.error"])
+    assert secret not in str(span.attributes["forge.error"])
+    assert not span.events
+    assert secret not in str(span)
+    provider.shutdown()
+
+
+def test_span_normalizes_lone_surrogate_before_structured_json_output() -> None:
+    malformed = "before" + chr(0xD800) + "after"
+    records: list[str] = []
+    telemetry = Telemetry(sink=records.append, clock=Clock())
+
+    with telemetry.start_span("provider.call", attributes={"message": malformed}):
+        pass
+
+    assert chr(0xD800) not in records[0]
+    record = json.loads(records[0])
+    assert record["attributes"]["message"] == "before�after"
+    assert json.dumps(record, ensure_ascii=False).encode("utf-8")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -71,3 +72,26 @@ async def test_event_append_rejects_a_different_ambient_run(session_factory, per
                     payload={},
                 )
             )
+
+
+@pytest.mark.integration
+async def test_event_append_normalizes_lone_surrogates_before_jsonb(
+    session_factory, persisted_run
+) -> None:
+    malformed = "before" + chr(0xD800) + "after"
+
+    async with PostgresUnitOfWork(session_factory) as work:
+        stored = await work.events.append(
+            RunEvent(
+                run_id=persisted_run.id,
+                run_version=0,
+                event_type="observability.surrogate",
+                payload={"message": malformed},
+            )
+        )
+        await work.commit()
+
+    assert stored.payload["message"] == "before�after"
+    rendered = json.dumps(dict(stored.payload), ensure_ascii=False)
+    assert chr(0xD800) not in rendered
+    assert rendered.encode("utf-8")
