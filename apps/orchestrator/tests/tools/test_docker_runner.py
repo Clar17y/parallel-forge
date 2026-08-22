@@ -208,6 +208,27 @@ class _FakeArtifacts:
         )
 
 
+class _BlockingArtifacts:
+    def __init__(self) -> None:
+        self.values: list[bytes] = []
+        self.first_started = asyncio.Event()
+        self.first_release = asyncio.Event()
+
+    async def put_bytes(self, data: bytes, **kwargs: object) -> ArtifactDescriptor:
+        del kwargs
+        if not self.values:
+            self.first_started.set()
+            await self.first_release.wait()
+        self.values.append(data)
+        digest = f"{len(self.values):064x}"
+        return ArtifactDescriptor(
+            digest=digest,
+            media_type="application/json",
+            byte_count=len(data),
+            storage_path=Path("sha256") / digest[:2] / f"{digest[2:]}.blob",
+        )
+
+
 class _FakeTelemetry:
     class _Span:
         def __enter__(self) -> _FakeTelemetry._Span:
@@ -354,6 +375,90 @@ def test_docker_runner_persists_deterministic_redacted_output(tmp_path: Path) ->
     assert b"literal-secret" not in artifacts.values[0]
     assert result.stdout_digest == "0" * 63 + "1"
     assert result.stderr_digest == "0" * 63 + "2"
+
+
+@pytest.mark.asyncio
+async def test_docker_cancellation_defers_until_both_output_artifacts_persist(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    command = _command()
+    stdout = "token=literal-secret\n"
+    stderr = "warning\n"
+    process = _FakeProcess(
+        _ProcessResult(
+            stdout=stdout,
+            stderr=stderr,
+            stdout_original_byte_count=len(stdout.encode()),
+            stderr_original_byte_count=len(stderr.encode()),
+        )
+    )
+    artifacts = _BlockingArtifacts()
+    runner = DockerRunner(
+        policy=_policy(command),
+        root=CanonicalRoot(worktree),
+        image_digest="sha256:" + "a" * 64,
+        process_runner=process,
+        artifact_store=artifacts,
+        telemetry=_FakeTelemetry(),
+    )
+
+    task = asyncio.create_task(
+        runner.run(
+            RunCommandRequest(
+                command_name=command.name,
+                kind=command.kind,
+                environment={"FORGE_INPUT": "literal-secret"},
+            )
+        )
+    )
+    await asyncio.wait_for(artifacts.first_started.wait(), timeout=1)
+    try:
+        for _ in range(2):
+            task.cancel()
+            marker = asyncio.Event()
+            asyncio.get_running_loop().call_soon(marker.set)
+            await marker.wait()
+            assert not task.done()
+
+        artifacts.first_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        artifacts.first_release.set()
+        if task.done():
+            with suppress(asyncio.CancelledError, RunnerExecutionError):
+                task.exception()
+        else:
+            with suppress(asyncio.CancelledError, RunnerExecutionError):
+                await task
+
+    stdout_evidence = json.loads(artifacts.values[0])
+    stderr_evidence = json.loads(artifacts.values[1])
+    assert [stdout_evidence["stream"], stderr_evidence["stream"]] == [
+        "stdout",
+        "stderr",
+    ]
+    assert stdout_evidence == {
+        "captured_byte_count": len(b"token=[REDACTED]\n"),
+        "encoding": "utf-8-replacement",
+        "original_byte_count": len(stdout.encode()),
+        "stream": "stdout",
+        "text": "token=[REDACTED]\n",
+        "truncated": False,
+    }
+    assert stderr_evidence == {
+        "captured_byte_count": len(stderr.encode()),
+        "encoding": "utf-8-replacement",
+        "original_byte_count": len(stderr.encode()),
+        "stream": "stderr",
+        "text": stderr,
+        "truncated": False,
+    }
+    assert b"literal-secret" not in artifacts.values[0]
+    assert b"literal-secret" not in artifacts.values[1]
+    assert len(process.calls) == 1
 
 
 def test_docker_timeout_forces_named_container_cleanup_without_host_fallback(

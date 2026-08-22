@@ -222,11 +222,16 @@ class DockerRunner:
                     raise asyncio.CancelledError()
                 if process_result.return_code == 125:
                     raise RunnerExecutionError()
-            stdout_digest, stderr_digest = await persist_output_artifacts(
-                self._artifact_store,
-                process_result,
-                secrets=selected,
+            (stdout_digest, stderr_digest), caller_cancelled = await await_deferred_cancellation(
+                persist_output_artifacts(
+                    self._artifact_store,
+                    process_result,
+                    secrets=selected,
+                ),
+                already_cancelled=caller_cancelled,
             )
+            if caller_cancelled:
+                raise asyncio.CancelledError()
         duration_ms = max(0, round((self._monotonic() - started) * 1000))
         return CommandResult(
             command_name=spec.name,
