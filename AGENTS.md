@@ -24,3 +24,22 @@
 - Use `rtk` for noisy commands such as lint, type checking, and full test runs.
 - Keep credentials out of source, logs, artifacts, and persisted run records.
 - Preserve unrelated work and do not rewrite or reset another agent's changes.
+
+## Controlled command runner
+
+- Repository commands are selected only by exact names from the active,
+  versioned project policy. Forge agents never supply shell text, argv, mounts,
+  images, environment keys, network settings, or Docker flags.
+- Docker is the default. The runner mounts only the canonical managed worktree,
+  runs as UID/GID 10001, receives only allowlisted environment values, has no
+  Docker socket, and defaults to no network. Trusted-host mode is explicitly
+  unsandboxed and is valid only for an operator-designated trusted project.
+- The linux/amd64 Python runner base is pinned to
+  `python:3.14.2-slim@sha256:51f5baff157fee39a31e5b32394dde7ed2977bcea7a0b16a8978a8d23c270f85`.
+  The Node extraction stage is pinned to
+  `node:24.19.0-slim@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848`.
+  Any configured final runner image must also be addressed by its immutable
+  `sha256:` image ID or repository digest; mutable tags are rejected.
+- Command output is untrusted, bounded, redacted, and persisted only as
+  evidence artifacts. Never log command environment values or put them in the
+  Docker argv.

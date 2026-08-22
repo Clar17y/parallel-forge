@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1
+
+FROM --platform=linux/amd64 node:24.19.0-slim@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS node-runtime
+
+FROM --platform=linux/amd64 python:3.14.2-slim@sha256:51f5baff157fee39a31e5b32394dde7ed2977bcea7a0b16a8978a8d23c270f85
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && groupadd --gid 10001 forge \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/forge forge \
+    && git config --system --add safe.directory /workspace \
+    && python --version \
+    && node --version | grep '^v24\.' \
+    && npm --version \
+    && ! command -v docker
+
+ENV HOME=/home/forge
+WORKDIR /workspace
+USER 10001:10001
