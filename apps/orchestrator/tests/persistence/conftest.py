@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
+import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.engine import URL, make_url
@@ -106,3 +107,68 @@ def migrated_database_url(test_database_url: str) -> Iterator[str]:
         yield test_database_url
     finally:
         command.downgrade(config, "base")
+
+
+@pytest.fixture
+def session_factory(migrated_database_url: str):
+    """Provide one async-session factory backed by the disposable database."""
+
+    from forge.persistence.database import create_engine, create_session_factory
+
+    engine = create_engine(migrated_database_url)
+    factory = create_session_factory(engine)
+    try:
+        yield factory
+    finally:
+        asyncio.run(engine.dispose())
+
+
+@pytest.fixture
+def uow(session_factory):
+    """Provide a reusable unit of work for tests that open one context at a time."""
+
+    from forge.persistence.unit_of_work import PostgresUnitOfWork
+
+    return PostgresUnitOfWork(session_factory)
+
+
+@pytest_asyncio.fixture
+async def persisted_run(session_factory):
+    """Seed one project, current policy, task, and CREATED run snapshot."""
+
+    from forge.domain.run import RunSnapshot
+    from forge.persistence.models import Project, ProjectPolicyVersion, Task
+    from forge.persistence.unit_of_work import PostgresUnitOfWork
+
+    project_id = uuid4()
+    task_id = uuid4()
+    run = RunSnapshot(id=uuid4(), project_id=project_id, task_id=task_id)
+    async with session_factory() as session, session.begin():
+        project = Project(
+            id=project_id,
+            canonical_path=f"/tmp/forge-{project_id}",
+            github_repository=f"Clar17y/forge-{project_id}",
+            default_branch="main",
+        )
+        policy = ProjectPolicyVersion(
+            project_id=project_id,
+            version=1,
+            policy_digest="a" * 64,
+            document_schema_version=1,
+            document={},
+        )
+        task = Task(
+            id=task_id,
+            project_id=project_id,
+            normalized_text="task",
+            task_digest="b" * 64,
+        )
+        session.add_all([project, policy, task])
+        await session.flush()
+        project.current_policy_version = 1
+        await session.flush()
+
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(run)
+        await work.commit()
+    return run
