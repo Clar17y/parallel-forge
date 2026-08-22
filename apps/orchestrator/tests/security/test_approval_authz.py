@@ -11,7 +11,9 @@ from uuid import UUID, uuid4
 import pytest
 from forge.application.services.approvals import (
     ApprovalAuthorizationService,
+    ApprovalCommandValidationError,
     AuthorizationError,
+    validate_approval_command,
 )
 from forge.application.services.auth import AuthenticatedActor, hash_token
 
@@ -47,6 +49,7 @@ class FakeApprovalStore:
         self.events: list[object] = []
         self.commands: list[dict[str, object]] = []
         self.fail_command = False
+        self.revoked_sessions: set[UUID] = set()
 
     async def lock_run(self, run_id: UUID) -> dict[str, object] | None:
         return self.run if run_id == self.run_id else None
@@ -60,7 +63,11 @@ class FakeApprovalStore:
         actor_id: UUID | None = None,
     ) -> object | None:
         del now, for_update
-        if session_id != self.session_id or (actor_id is not None and actor_id != self.actor_id):
+        if (
+            session_id != self.session_id
+            or session_id in self.revoked_sessions
+            or (actor_id is not None and actor_id != self.actor_id)
+        ):
             return None
         return {"id": session_id, "actor_id": self.actor_id}
 
@@ -232,6 +239,38 @@ async def test_non_operator_actor_is_rejected() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_session_revocation_race_is_rechecked_before_side_effects() -> None:
+    store = FakeApprovalStore(gate="plan")
+    actor = AuthenticatedActor(
+        actor_id=store.actor_id,
+        actor_class="operator",
+        session_id=store.session_id,
+    )
+    service = ApprovalAuthorizationService(
+        lambda: FakeUow(store),
+        clock=SimpleNamespace(now=lambda: store.now),
+    )
+    # Model logout/rotation committing after the API dependency but before
+    # the authorization transaction obtains its session lock.
+    store.revoked_sessions.add(store.session_id)
+
+    with pytest.raises(AuthorizationError, match="invalid or expired session"):
+        await service.authorize(
+            actor=actor,
+            run_id=store.run_id,
+            gate="plan",
+            run_version=17,
+            evidence_digest="a" * 64,
+            challenge_token=store.challenge_token,
+        )
+
+    assert store.challenge["consumed_at"] is None
+    assert store.approvals == []
+    assert store.events == []
+    assert store.commands == []
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_postgres_authorization_is_atomic_and_enqueues_only_approval_id(
@@ -262,8 +301,7 @@ async def test_postgres_authorization_is_atomic_and_enqueues_only_approval_id(
     bootstrap = await auth.issue_bootstrap()
     session = await auth.exchange_bootstrap(bootstrap)
     challenge = await challenge_service.issue(
-        session_id=session.session_id,
-        actor_id=session.actor_id,
+        actor=session.actor,
         run_id=persisted_run.id,
         gate="plan",
         run_version=0,
@@ -335,8 +373,7 @@ async def test_postgres_command_failure_rolls_back_all_authorization_rows(
     authorization = ApprovalAuthorizationService(uow_factory, clock=clock)
     session = await auth.exchange_bootstrap(await auth.issue_bootstrap())
     challenge = await challenge_service.issue(
-        session_id=session.session_id,
-        actor_id=session.actor_id,
+        actor=session.actor,
         run_id=persisted_run.id,
         gate="merge",
         run_version=0,
@@ -377,3 +414,65 @@ async def test_postgres_command_failure_rolls_back_all_authorization_rows(
         )
     assert challenge_row is not None
     assert challenge_row.consumed_at is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_worker_validator_invalidates_stale_run_version(
+    session_factory, persisted_run
+) -> None:
+    from forge.application.services.approvals import ApprovalChallengeService
+    from forge.application.services.auth import AuthService
+    from forge.persistence.models import Approval, Run, RunCommand
+    from forge.persistence.repositories.commands import PostgresCommandRepository
+    from forge.persistence.unit_of_work import PostgresUnitOfWork
+    from sqlalchemy import select, update
+
+    digest = "d" * 64
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(Run)
+            .where(Run.id == persisted_run.id)
+            .values(
+                state="AWAITING_PR_APPROVAL",
+                pending_gate="pr",
+                pending_evidence_digest=digest,
+            )
+        )
+    clock = SimpleNamespace(now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+    uow_factory = lambda: PostgresUnitOfWork(session_factory)
+    auth = AuthService(uow_factory, clock=clock)
+    challenge_service = ApprovalChallengeService(uow_factory, clock=clock)
+    authorization = ApprovalAuthorizationService(uow_factory, clock=clock)
+    session = await auth.exchange_bootstrap(await auth.issue_bootstrap())
+    challenge = await challenge_service.issue(
+        actor=session.actor,
+        run_id=persisted_run.id,
+        gate="pr",
+        run_version=0,
+        evidence_digest=digest,
+    )
+    approval = await authorization.authorize(
+        actor=session.actor,
+        run_id=persisted_run.id,
+        gate="pr",
+        run_version=0,
+        evidence_digest=digest,
+        challenge_token=challenge.token,
+    )
+    async with session_factory() as db:
+        command_row = await db.scalar(
+            select(RunCommand).where(RunCommand.run_id == persisted_run.id)
+        )
+    assert command_row is not None
+    command = await PostgresCommandRepository(session_factory).get(command_row.id)
+
+    async with session_factory() as db, db.begin():
+        await db.execute(update(Run).where(Run.id == persisted_run.id).values(version=1))
+        with pytest.raises(ApprovalCommandValidationError, match="approval evidence is stale"):
+            await validate_approval_command(command, session=db, clock=clock)
+        stale = await db.scalar(select(Approval).where(Approval.id == approval.id))
+
+    assert stale is not None
+    assert stale.invalidated_at == datetime(2026, 1, 1, tzinfo=UTC)
+    assert stale.invalidation_reason == "stale approval evidence"

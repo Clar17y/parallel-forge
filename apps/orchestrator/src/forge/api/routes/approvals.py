@@ -67,8 +67,7 @@ def router_for() -> APIRouter:
                 ApprovalChallengeService, request.app.state.approval_challenge_service
             )
             challenge = await challenge_service.issue(
-                session_id=actor.session_id,
-                actor_id=actor.actor_id,
+                actor=actor,
                 run_id=run_id,
                 gate=body.gate,
                 run_version=body.run_version,

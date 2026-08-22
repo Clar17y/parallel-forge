@@ -97,14 +97,15 @@ class ApprovalChallengeService:
     async def issue(
         self,
         *,
-        session_id: UUID,
+        actor: AuthenticatedActor,
         run_id: UUID,
         gate: str,
         run_version: int,
         evidence_digest: str,
-        actor_id: UUID | None = None,
+        session_id: UUID | None = None,
         policy_version: int | None = None,
     ) -> ApprovalChallengeToken:
+        bound_session_id = _require_actor_binding(actor, session_id)
         _require_gate(gate)
         _require_digest(evidence_digest)
         now = _aware_now(self._clock)
@@ -112,10 +113,10 @@ class ApprovalChallengeService:
         challenge_id = uuid4()
         async with self._unit_of_work_factory() as work:
             session = await work.auth.get_session_by_id(
-                session_id=session_id,
+                session_id=bound_session_id,
                 now=now,
                 for_update=True,
-                actor_id=actor_id,
+                actor_id=actor.actor_id,
             )
             if session is None:
                 raise AuthorizationError("invalid or expired session")
@@ -136,7 +137,7 @@ class ApprovalChallengeService:
                 raise AuthorizationError("run does not match approval evidence")
             await work.auth.create_challenge(
                 challenge_id=challenge_id,
-                session_id=session_id,
+                session_id=bound_session_id,
                 run_id=run_id,
                 gate=gate,
                 run_version=run_version,
@@ -148,7 +149,7 @@ class ApprovalChallengeService:
             await work.commit()
         return ApprovalChallengeToken(
             id=challenge_id,
-            session_id=session_id,
+            session_id=bound_session_id,
             run_id=run_id,
             gate=gate,
             run_version=run_version,
@@ -162,13 +163,14 @@ class ApprovalChallengeService:
         self,
         token: str,
         *,
-        session_id: UUID,
+        actor: AuthenticatedActor,
         run_id: UUID,
         gate: str,
         run_version: int,
         evidence_digest: str,
-        actor_id: UUID | None = None,
+        session_id: UUID | None = None,
     ) -> ApprovalChallengeToken:
+        bound_session_id = _require_actor_binding(actor, session_id)
         _require_gate(gate)
         _require_digest(evidence_digest)
         if not isinstance(token, str) or not token:
@@ -185,13 +187,13 @@ class ApprovalChallengeService:
             if expires_at <= now:
                 raise AuthorizationError("challenge is expired or already consumed")
             challenge_session = _uuid_value(challenge, "session_id")
-            if challenge_session != session_id:
+            if challenge_session != bound_session_id:
                 raise AuthorizationError("challenge does not match approval evidence")
             session = await work.auth.get_session_by_id(
-                session_id=session_id,
+                session_id=bound_session_id,
                 now=now,
                 for_update=True,
-                actor_id=actor_id,
+                actor_id=actor.actor_id,
             )
             if session is None:
                 raise AuthorizationError("invalid or expired session")
@@ -399,6 +401,17 @@ async def validate_approval_command(
 def _require_gate(gate: str) -> None:
     if gate not in _COMMAND_FOR_GATE:
         raise AuthorizationError("unsupported approval gate")
+
+
+def _require_actor_binding(
+    actor: AuthenticatedActor,
+    session_id: UUID | None,
+) -> UUID:
+    if not isinstance(actor, AuthenticatedActor) or actor.actor_class != "operator":
+        raise AuthorizationError("operator authorization required")
+    if session_id is not None and session_id != actor.session_id:
+        raise AuthorizationError("invalid or expired session")
+    return actor.session_id
 
 
 def _require_digest(value: str) -> None:

@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from forge.application.ports.clock import Clock
-from forge.application.services.auth import AuthenticationError, AuthService
+from forge.application.services.auth import AuthenticationError, AuthService, CsrfError
 
 
 @dataclass
@@ -117,7 +117,11 @@ class FakeAuthRepository:
                 row["revoked_at"] = at
 
     async def revoke_all(self, *, at: datetime) -> None:
-        del at
+        for row in self.bootstraps.values():
+            if row["used_at"] is None:
+                row["used_at"] = at
+        for row in self.sessions.values():
+            row["revoked_at"] = at
 
 
 @pytest.fixture
@@ -138,6 +142,139 @@ async def test_bootstrap_token_is_single_use(clock: Clock) -> None:
 
     with pytest.raises(AuthenticationError, match="invalid or expired bootstrap token"):
         await service.exchange_bootstrap(token)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_expires_at_exact_five_minute_boundary(clock: Clock) -> None:
+    uow = FakeAuthUnitOfWork()
+    service = AuthService(lambda: uow, clock=clock)
+
+    token = await service.issue_bootstrap()
+    clock.advance(minutes=5)
+
+    with pytest.raises(AuthenticationError, match="invalid or expired bootstrap token"):
+        await service.exchange_bootstrap(token)
+
+
+@pytest.mark.asyncio
+async def test_idle_expiry_fails_at_exact_thirty_minute_boundary(clock: Clock) -> None:
+    uow = FakeAuthUnitOfWork()
+    service = AuthService(lambda: uow, clock=clock)
+    session = await service.exchange_bootstrap(await service.issue_bootstrap())
+    clock.advance(minutes=30)
+
+    with pytest.raises(AuthenticationError, match="invalid or expired session"):
+        await service.require_session(session.session_token)
+
+
+@pytest.mark.asyncio
+async def test_activity_slides_idle_and_caps_at_unchanged_absolute_expiry(
+    clock: Clock,
+) -> None:
+    uow = FakeAuthUnitOfWork()
+    service = AuthService(lambda: uow, clock=clock)
+    session = await service.exchange_bootstrap(await service.issue_bootstrap())
+
+    clock.advance(minutes=29)
+    actor = await service.require_session(session.session_token)
+    first_info = await service.session_info(actor)
+    assert first_info.idle_expires_at == datetime(2026, 1, 1, 0, 59, tzinfo=UTC)
+    assert first_info.absolute_expires_at == session.absolute_expires_at
+
+    # Keep the sliding window alive while moving close to the absolute cap.
+    for _ in range(27):
+        clock.advance(minutes=25)
+        actor = await service.require_session(session.session_token)
+    clock.advance(minutes=1)
+    actor = await service.require_session(session.session_token)
+    capped_info = await service.session_info(actor)
+    assert capped_info.idle_expires_at == session.absolute_expires_at
+    assert capped_info.absolute_expires_at == session.absolute_expires_at
+
+    clock.advance(minutes=15)
+    with pytest.raises(AuthenticationError, match="invalid or expired session"):
+        await service.require_session(session.session_token)
+
+
+@pytest.mark.asyncio
+async def test_absolute_expiry_fails_at_exact_twelve_hour_boundary(clock: Clock) -> None:
+    uow = FakeAuthUnitOfWork()
+    service = AuthService(lambda: uow, clock=clock)
+    session = await service.exchange_bootstrap(await service.issue_bootstrap())
+    clock.advance(hours=12)
+
+    with pytest.raises(AuthenticationError, match="invalid or expired session"):
+        await service.require_session(session.session_token)
+
+
+@pytest.mark.asyncio
+async def test_rotation_revokes_sessions_and_consumes_old_bootstraps(clock: Clock) -> None:
+    uow = FakeAuthUnitOfWork()
+    service = AuthService(lambda: uow, clock=clock)
+    first_session = await service.exchange_bootstrap(await service.issue_bootstrap())
+    pending_bootstrap = await service.issue_bootstrap()
+    second_session = await service.exchange_bootstrap(pending_bootstrap)
+    old_pending_bootstrap = await service.issue_bootstrap()
+
+    fresh_bootstrap = await service.rotate()
+
+    with pytest.raises(AuthenticationError, match="invalid or expired session"):
+        await service.require_session(first_session.session_token)
+    with pytest.raises(AuthenticationError, match="invalid or expired session"):
+        await service.require_session(second_session.session_token)
+    with pytest.raises(AuthenticationError, match="invalid or expired bootstrap token"):
+        await service.exchange_bootstrap(old_pending_bootstrap)
+    # The bootstrap issued after rotation is the only credential accepted.
+    fresh_session = await service.exchange_bootstrap(fresh_bootstrap)
+    assert fresh_session.actor_class == "operator"
+
+
+@pytest.mark.asyncio
+async def test_failed_csrf_does_not_slide_idle_expiry_or_leak_raw_tokens(
+    clock: Clock,
+) -> None:
+    uow = FakeAuthUnitOfWork()
+    service = AuthService(lambda: uow, clock=clock)
+    bootstrap = "bootstrap-secret-for-test"
+    session = await service.exchange_bootstrap(await service.issue_bootstrap())
+    assert bootstrap not in repr(session)
+    assert all(bootstrap not in key for key in uow.auth.bootstraps)
+    assert all(bootstrap not in key for key in uow.auth.sessions)
+
+    clock.advance(minutes=29)
+    with pytest.raises(CsrfError) as raised:
+        await service.require_session(
+            session.session_token,
+            csrf_token="wrong-csrf-secret",
+            require_csrf=True,
+        )
+    assert "wrong-csrf-secret" not in repr(raised.value)
+    row = next(iter(uow.auth.sessions.values()))
+    assert row["idle_expires_at"] == datetime(2026, 1, 1, 0, 30, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_raw_tokens_are_absent_from_persistence_and_auth_errors(clock: Clock) -> None:
+    uow = FakeAuthUnitOfWork()
+    service = AuthService(lambda: uow, clock=clock)
+    bootstrap = await service.issue_bootstrap()
+    session = await service.exchange_bootstrap(bootstrap)
+
+    assert bootstrap not in repr(session)
+    assert session.session_token not in repr(session)
+    assert session.csrf_token not in repr(session)
+    persisted = [*uow.auth.bootstraps, *uow.auth.sessions]
+    for value in persisted:
+        assert bootstrap not in value
+        assert session.session_token not in value
+        assert session.csrf_token not in value
+
+    invalid = "invalid-bootstrap-secret"
+    with pytest.raises(AuthenticationError) as raised:
+        await service.exchange_bootstrap(invalid)
+    assert invalid not in str(raised.value)
+    assert invalid not in repr(raised.value)
+    assert raised.value.__cause__ is None
 
 
 @pytest.mark.asyncio
