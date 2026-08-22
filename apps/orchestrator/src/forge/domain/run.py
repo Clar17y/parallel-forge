@@ -61,6 +61,7 @@ class RunSnapshot:
     policy_version: int | None = None
     base_ref: str | None = None
     base_sha: str | None = None
+    branch_name: str | None = None
 
     def with_state(
         self,

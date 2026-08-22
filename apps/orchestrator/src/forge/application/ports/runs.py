@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -14,6 +14,12 @@ class RunRepository(Protocol):
     """Persistence operations for the authoritative run snapshot."""
 
     async def get(self, run_id: UUID) -> RunSnapshot: ...
+
+    async def get_for_update(self, run_id: UUID) -> RunSnapshot: ...
+
+    async def list(
+        self, *, project_id: UUID | None = None, task_id: UUID | None = None
+    ) -> Sequence[RunSnapshot]: ...
 
     async def create(self, run: RunSnapshot) -> None: ...
 

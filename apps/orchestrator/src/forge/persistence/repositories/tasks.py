@@ -100,10 +100,17 @@ class PostgresTaskRepository:
         await self._session.flush()
         return _task_from_record(stored)
 
-    async def get(self, task_id: UUID) -> TaskRecord:
+    async def get(self, task_id: UUID, *, for_update: bool = False) -> TaskRecord:
         """Load one immutable task source."""
 
-        task = await self._session.get(Task, task_id)
+        if for_update:
+            task = (
+                await self._session.execute(
+                    select(Task).where(Task.id == task_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+        else:
+            task = await self._session.get(Task, task_id)
         if task is None:
             raise TaskNotFound("task was not found")
         return _task_from_record(task)

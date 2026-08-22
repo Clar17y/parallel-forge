@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -80,6 +80,29 @@ class PostgresRunRepository:
             raise RunNotFound(run_id)
         return _snapshot_from_record(record)
 
+    async def get_for_update(self, run_id: UUID) -> RunSnapshot:
+        """Load one run while holding its row lock for a same-transaction command."""
+
+        record = (
+            await self._session.execute(select(Run).where(Run.id == run_id).with_for_update())
+        ).scalar_one_or_none()
+        if record is None:
+            raise RunNotFound(run_id)
+        return _snapshot_from_record(record)
+
+    async def list(
+        self, *, project_id: UUID | None = None, task_id: UUID | None = None
+    ) -> Sequence[RunSnapshot]:
+        """List safe run snapshots in deterministic creation order."""
+
+        statement = select(Run).order_by(Run.created_at, Run.id)
+        if project_id is not None:
+            statement = statement.where(Run.project_id == project_id)
+        if task_id is not None:
+            statement = statement.where(Run.task_id == task_id)
+        result = await self._session.execute(statement)
+        return [_snapshot_from_record(record) for record in result.scalars().all()]
+
     async def create(self, run: RunSnapshot) -> None:
         """Create one new run while snapshotting the project's current policy."""
 
@@ -140,6 +163,7 @@ class PostgresRunRepository:
                 duration_budget_seconds=0,
                 base_ref=run.base_ref,
                 base_sha=run.base_sha,
+                branch_name=run.branch_name,
                 database_state="DISABLED",
             )
             self._session.add(record)
@@ -218,6 +242,8 @@ def _validate_new_snapshot(run: RunSnapshot) -> None:
         raise RunCreationError("new run base reference must not be blank")
     if run.base_sha is not None and re.fullmatch(r"[0-9a-f]{40}", run.base_sha) is None:
         raise RunCreationError("new run base SHA must be a lowercase commit")
+    if run.branch_name is not None and (not run.branch_name.strip() or len(run.branch_name) > 512):
+        raise RunCreationError("new run branch name is invalid")
 
 
 def _snapshot_from_record(record: Run) -> RunSnapshot:
@@ -243,6 +269,7 @@ def _snapshot_from_record(record: Run) -> RunSnapshot:
         policy_version=record.policy_version,
         base_ref=record.base_ref,
         base_sha=record.base_sha,
+        branch_name=record.branch_name,
         state=state,
         version=version,
         suspended_state=suspended_state,
