@@ -119,6 +119,7 @@ class ApprovalRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    id: UUID | None = None
     gate: ApprovalGate
     evidence_digest: str
     run_id: UUID

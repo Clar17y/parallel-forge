@@ -43,8 +43,16 @@ _MAX_ERROR_LENGTH = 1024
 class PostgresCommandRepository:
     """Persist commands with explicit idempotency and row-lock lease semantics."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
+        if (session_factory is None) == (session is None):
+            raise ValueError("provide exactly one command persistence boundary")
         self._session_factory = session_factory
+        self._session = session
 
     async def enqueue(
         self,
@@ -75,48 +83,69 @@ class PostgresCommandRepository:
             lease_owner=None,
             lease_expires_at=None,
         )
-        async with self._session_factory() as session, session.begin():
-            inserted = await session.execute(
-                insert(RunCommand)
-                .values(
-                    id=candidate.id,
-                    run_id=candidate.run_id,
-                    command_type=candidate.command_type,
-                    idempotency_key=candidate.idempotency_key,
-                    expected_run_version=candidate.expected_run_version,
-                    actor_id=candidate.actor_id,
-                    payload_schema_version=candidate.payload_schema_version,
-                    payload=thaw_payload(candidate.payload),
-                    status="PENDING",
-                    available_at=candidate.available_at,
-                    attempt_count=0,
-                )
-                .on_conflict_do_nothing(index_elements=[RunCommand.idempotency_key])
-                .returning(RunCommand.id)
+        if self._session is not None:
+            return await self._enqueue_core(
+                self._session,
+                candidate,
+                compare_availability=requested_available_at is not None,
             )
-            inserted_id = inserted.scalar_one_or_none()
-            record = await session.get(RunCommand, inserted_id or candidate.id)
-            if record is None:
-                record = (
-                    await session.execute(
-                        select(RunCommand).where(
-                            RunCommand.idempotency_key == candidate.idempotency_key
-                        )
+        if self._session_factory is None:
+            raise CommandError("command persistence boundary is not configured")
+        async with self._factory()() as session, session.begin():
+            return await self._enqueue_core(
+                session,
+                candidate,
+                compare_availability=requested_available_at is not None,
+            )
+
+    async def _enqueue_core(
+        self,
+        session: AsyncSession,
+        candidate: CommandEnvelope,
+        *,
+        compare_availability: bool,
+    ) -> CommandEnvelope:
+        inserted = await session.execute(
+            insert(RunCommand)
+            .values(
+                id=candidate.id,
+                run_id=candidate.run_id,
+                command_type=candidate.command_type,
+                idempotency_key=candidate.idempotency_key,
+                expected_run_version=candidate.expected_run_version,
+                actor_id=candidate.actor_id,
+                payload_schema_version=candidate.payload_schema_version,
+                payload=thaw_payload(candidate.payload),
+                status="PENDING",
+                available_at=candidate.available_at,
+                attempt_count=0,
+            )
+            .on_conflict_do_nothing(index_elements=[RunCommand.idempotency_key])
+            .returning(RunCommand.id)
+        )
+        inserted_id = inserted.scalar_one_or_none()
+        record = await session.get(RunCommand, inserted_id or candidate.id)
+        if record is None:
+            record = (
+                await session.execute(
+                    select(RunCommand).where(
+                        RunCommand.idempotency_key == candidate.idempotency_key
                     )
-                ).scalar_one_or_none()
-            if record is None:
-                raise CommandError("command insert disappeared before it could be loaded")
-            actual = _command_from_record(record)
-            if inserted_id is None:
-                _check_enqueue_match(
-                    candidate,
-                    actual,
-                    compare_availability=requested_available_at is not None,
                 )
-            return actual
+            ).scalar_one_or_none()
+        if record is None:
+            raise CommandError("command insert disappeared before it could be loaded")
+        actual = _command_from_record(record)
+        if inserted_id is None:
+            _check_enqueue_match(
+                candidate,
+                actual,
+                compare_availability=compare_availability,
+            )
+        return actual
 
     async def get(self, command_id: UUID) -> CommandEnvelope:
-        async with self._session_factory() as session:
+        async with self._factory()() as session:
             record = await session.get(RunCommand, command_id)
             if record is None:
                 raise CommandNotFound(f"command {command_id} was not found")
@@ -126,7 +155,7 @@ class PostgresCommandRepository:
         _validate_worker_and_lease(worker_id, lease_seconds)
         now = _utc_now()
         expiry = now + timedelta(seconds=lease_seconds)
-        async with self._session_factory() as session, session.begin():
+        async with self._factory()() as session, session.begin():
             skipped: set[UUID] = set()
             while True:
                 eligibility = [
@@ -188,7 +217,7 @@ class PostgresCommandRepository:
     ) -> CommandEnvelope:
         _validate_worker_and_lease(worker_id, lease_seconds)
         now = _utc_now()
-        async with self._session_factory() as session, session.begin():
+        async with self._factory()() as session, session.begin():
             record = await self._locked(command_id, session)
             _require_owned_lease(record, worker_id, now)
             record.lease_expires_at = now + timedelta(seconds=lease_seconds)
@@ -204,7 +233,7 @@ class PostgresCommandRepository:
     ) -> CommandEnvelope:
         del result  # The command contract has no unbounded result column.
         now = _utc_now()
-        async with self._session_factory() as session, session.begin():
+        async with self._factory()() as session, session.begin():
             record = await self._locked(command_id, session)
             if record.status == "COMPLETED":
                 return _command_from_record(record)
@@ -227,7 +256,7 @@ class PostgresCommandRepository:
     ) -> CommandEnvelope:
         bounded_error = _bounded_error(error)
         now = _utc_now()
-        async with self._session_factory() as session, session.begin():
+        async with self._factory()() as session, session.begin():
             record = await self._locked(command_id, session)
             if record.status == "FAILED" and not transient:
                 if record.error_summary == bounded_error:
@@ -252,7 +281,7 @@ class PostgresCommandRepository:
         """Cancel a currently leased command under the same lease rules."""
 
         now = _utc_now()
-        async with self._session_factory() as session, session.begin():
+        async with self._factory()() as session, session.begin():
             record = await self._locked(command_id, session)
             if record.status == "CANCELLED":
                 return _command_from_record(record)
@@ -274,6 +303,11 @@ class PostgresCommandRepository:
         if record is None:
             raise CommandNotFound(f"command {command_id} was not found")
         return record
+
+    def _factory(self) -> async_sessionmaker[AsyncSession]:
+        if self._session_factory is None:
+            raise CommandError("command persistence boundary is not configured")
+        return self._session_factory
 
 
 def _validate_worker_and_lease(worker_id: str, lease_seconds: float) -> None:

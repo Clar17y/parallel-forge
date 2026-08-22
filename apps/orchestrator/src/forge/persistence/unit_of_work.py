@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.application.services.state_engine import StateEngine
 from forge.observability.redaction import Redactor
+from forge.persistence.repositories.auth import PostgresAuthRepository
+from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.events import PostgresEventRepository
 from forge.persistence.repositories.runs import PostgresRunRepository
 
@@ -30,6 +32,8 @@ class PostgresUnitOfWork:
         self._committed = False
         self.runs: PostgresRunRepository
         self.events: PostgresEventRepository
+        self.auth: PostgresAuthRepository
+        self.commands: PostgresCommandRepository
 
     @property
     def session(self) -> AsyncSession:
@@ -44,6 +48,8 @@ class PostgresUnitOfWork:
             raise RuntimeError("unit of work cannot be entered twice concurrently")
         self._session = self._session_factory()
         self.events = PostgresEventRepository(self._session, redactor=self._redactor)
+        self.auth = PostgresAuthRepository(self._session)
+        self.commands = PostgresCommandRepository(session=self._session)
         self.runs = PostgresRunRepository(
             self._session,
             state_engine=self._state_engine,
