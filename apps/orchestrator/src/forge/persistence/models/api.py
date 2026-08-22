@@ -42,7 +42,7 @@ class ApiMutation(Base, TimestampMixin):
             "(lifecycle_state = 'RESERVED' AND response_status IS NULL AND response_payload IS NULL "
             "AND resource_kind IS NULL AND resource_id IS NULL) OR "
             "(lifecycle_state = 'COMPLETED' AND response_status IS NOT NULL "
-            "AND response_payload IS NOT NULL)",
+            "AND response_payload IS NOT NULL AND resource_kind IS NOT NULL AND resource_id IS NOT NULL)",
             name="completion_shape",
         ),
         Index("ix_api_mutations_lifecycle_created_at", "lifecycle_state", "created_at"),

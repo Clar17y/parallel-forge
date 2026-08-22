@@ -25,7 +25,9 @@ def upgrade() -> None:
     # older SQL callers working while normalizing the stored identity.
     op.add_column(
         "projects",
-        sa.Column("name", sa.String(length=255), nullable=True, server_default=sa.text("'Project'")),
+        sa.Column(
+            "name", sa.String(length=255), nullable=True, server_default=sa.text("'Project'")
+        ),
     )
     op.add_column(
         "projects",
@@ -39,7 +41,9 @@ def upgrade() -> None:
     op.execute("UPDATE projects SET github_repository = lower(btrim(github_repository))")
     op.alter_column("projects", "name", nullable=False, server_default=sa.text("'Project'"))
     op.alter_column("projects", "canonical_path_key", nullable=False, server_default=sa.text("''"))
-    op.create_unique_constraint("uq_projects_canonical_path_key", "projects", ["canonical_path_key"])
+    op.create_unique_constraint(
+        "uq_projects_canonical_path_key", "projects", ["canonical_path_key"]
+    )
     op.create_check_constraint(op.f("ck_projects_name_nonblank"), "projects", "btrim(name) <> ''")
     op.create_check_constraint(
         op.f("ck_projects_canonical_path_key_nonblank"),
@@ -104,7 +108,9 @@ def upgrade() -> None:
 
     op.add_column(
         "tasks",
-        sa.Column("title", sa.String(length=512), nullable=True, server_default=sa.text("'Imported task'")),
+        sa.Column(
+            "title", sa.String(length=512), nullable=True, server_default=sa.text("'Imported task'")
+        ),
     )
     op.add_column(
         "tasks",
@@ -130,7 +136,9 @@ def upgrade() -> None:
     )
     op.alter_column("tasks", "title", nullable=False, server_default=sa.text("'Imported task'"))
     op.alter_column("tasks", "body", nullable=False, server_default=sa.text("''"))
-    op.alter_column("tasks", "untrusted_external_content", nullable=False, server_default=sa.text("false"))
+    op.alter_column(
+        "tasks", "untrusted_external_content", nullable=False, server_default=sa.text("false")
+    )
     op.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS uq_tasks_external_identity")
     op.create_unique_constraint(
         "uq_tasks_project_external_identity",
@@ -144,8 +152,12 @@ def upgrade() -> None:
         "OR (external_source IS NOT NULL AND external_id IS NOT NULL AND untrusted_external_content = TRUE)",
     )
     op.create_check_constraint(op.f("ck_tasks_title_nonblank"), "tasks", "btrim(title) <> ''")
-    op.create_check_constraint(op.f("ck_tasks_title_bounded"), "tasks", "octet_length(title) <= 512")
-    op.create_check_constraint(op.f("ck_tasks_body_bounded"), "tasks", "octet_length(body) <= 1048576")
+    op.create_check_constraint(
+        op.f("ck_tasks_title_bounded"), "tasks", "octet_length(title) <= 512"
+    )
+    op.create_check_constraint(
+        op.f("ck_tasks_body_bounded"), "tasks", "octet_length(body) <= 1048576"
+    )
     op.execute(
         """
         CREATE OR REPLACE FUNCTION forge_reject_task_update()
@@ -179,8 +191,18 @@ def upgrade() -> None:
         sa.Column("response_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("resource_kind", sa.String(length=96), nullable=True),
         sa.Column("resource_id", sa.Uuid(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.CheckConstraint(
             "lifecycle_state IN ('RESERVED','COMPLETED')",
             name=op.f("ck_api_mutations_lifecycle_state"),
@@ -196,7 +218,8 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(lifecycle_state = 'RESERVED' AND response_status IS NULL AND response_payload IS NULL "
             "AND resource_kind IS NULL AND resource_id IS NULL) OR "
-            "(lifecycle_state = 'COMPLETED' AND response_status IS NOT NULL AND response_payload IS NOT NULL)",
+            "(lifecycle_state = 'COMPLETED' AND response_status IS NOT NULL AND response_payload IS NOT NULL "
+            "AND resource_kind IS NOT NULL AND resource_id IS NOT NULL)",
             name=op.f("ck_api_mutations_completion_shape"),
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_api_mutations")),
@@ -221,8 +244,15 @@ def upgrade() -> None:
         sa.Column("correlation_id", sa.Uuid(), nullable=False),
         sa.Column("schema_version", sa.Integer(), nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("schema_version >= 1", name=op.f("ck_operator_audit_events_schema_version_positive")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "schema_version >= 1", name=op.f("ck_operator_audit_events_schema_version_positive")
+        ),
         sa.CheckConstraint(
             "char_length(event_type) BETWEEN 1 AND 96",
             name=op.f("ck_operator_audit_events_event_type_bounded"),
@@ -264,6 +294,24 @@ def downgrade() -> None:
     """Remove Task 10 foundation while leaving the 0001 schema intact."""
 
     op.execute(
+        """
+        DO $forge$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM tasks
+                WHERE external_source IS NOT NULL AND external_id IS NOT NULL
+                GROUP BY external_source, external_id
+                HAVING count(*) > 1
+            ) THEN
+                RAISE EXCEPTION 'cannot downgrade Task 10: duplicate external task identities exist';
+            END IF;
+        END;
+        $forge$;
+        """
+    )
+
+    op.execute(
         "DROP TRIGGER IF EXISTS trg_operator_audit_events_immutable ON operator_audit_events"
     )
     op.execute("DROP FUNCTION IF EXISTS forge_reject_operator_audit_update()")
@@ -274,7 +322,9 @@ def downgrade() -> None:
     )
     op.drop_table("operator_audit_events", if_exists=True)
 
-    op.drop_index("ix_api_mutations_lifecycle_created_at", table_name="api_mutations", if_exists=True)
+    op.drop_index(
+        "ix_api_mutations_lifecycle_created_at", table_name="api_mutations", if_exists=True
+    )
     op.drop_table("api_mutations", if_exists=True)
 
     op.execute("DROP TRIGGER IF EXISTS trg_tasks_immutable ON tasks")
@@ -282,28 +332,20 @@ def downgrade() -> None:
     op.drop_constraint("ck_tasks_body_bounded", "tasks", type_="check", if_exists=True)
     op.drop_constraint("ck_tasks_title_bounded", "tasks", type_="check", if_exists=True)
     op.drop_constraint("ck_tasks_title_nonblank", "tasks", type_="check", if_exists=True)
-    op.drop_constraint("ck_tasks_external_source_trust_shape", "tasks", type_="check", if_exists=True)
-    op.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS uq_tasks_project_external_identity")
-    op.execute(
-        """
-        DO $forge$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1
-                FROM tasks
-                WHERE external_source IS NOT NULL
-                GROUP BY external_source, external_id
-                HAVING count(*) > 1
-            ) THEN
-                ALTER TABLE tasks
-                    ADD CONSTRAINT uq_tasks_external_identity
-                    UNIQUE (external_source, external_id);
-            END IF;
-        END;
-        $forge$;
-        """
+    op.drop_constraint(
+        "ck_tasks_external_source_trust_shape", "tasks", type_="check", if_exists=True
     )
-    for column in ("untrusted_external_content", "source_updated_at", "source_url", "body", "title"):
+    op.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS uq_tasks_project_external_identity")
+    op.create_unique_constraint(
+        "uq_tasks_external_identity", "tasks", ["external_source", "external_id"]
+    )
+    for column in (
+        "untrusted_external_content",
+        "source_updated_at",
+        "source_url",
+        "body",
+        "title",
+    ):
         op.drop_column("tasks", column)
 
     op.execute("DROP TRIGGER IF EXISTS trg_projects_identity_immutable ON projects")
@@ -311,7 +353,9 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS forge_reject_project_identity_update()")
     op.execute("DROP FUNCTION IF EXISTS forge_normalize_project_identity_insert()")
     op.drop_index("ix_projects_canonical_path_key", table_name="projects", if_exists=True)
-    op.drop_constraint("ck_projects_canonical_path_key_nonblank", "projects", type_="check", if_exists=True)
+    op.drop_constraint(
+        "ck_projects_canonical_path_key_nonblank", "projects", type_="check", if_exists=True
+    )
     op.drop_constraint("ck_projects_name_nonblank", "projects", type_="check", if_exists=True)
     op.drop_constraint("uq_projects_canonical_path_key", "projects", type_="unique", if_exists=True)
     op.drop_column("projects", "canonical_path_key")

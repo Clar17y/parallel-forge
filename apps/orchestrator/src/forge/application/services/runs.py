@@ -24,6 +24,7 @@ from forge.application.services.auth import AuthenticatedActor
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
+from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.runs import (
     ConcurrencyConflict,
     RunCreationError,
@@ -289,7 +290,31 @@ class RunCommandService:
             idempotency_key, actor_id=actor.actor_id, run_id=run_id
         )
         async with self._unit_of_work_factory() as work:
+            existing = await work.commands.get_by_idempotency_key(queue_key)
+            if existing is not None:
+                _validate_command_replay(
+                    existing,
+                    run_id=run_id,
+                    actor_id=actor.actor_id,
+                    request=request,
+                )
+                await work.commit()
+                return existing
             run = await work.runs.get_for_update(run_id)
+            # A concurrent producer may have committed while this request was
+            # waiting for the run lock. Re-read the queue key before checking
+            # the current run version/state so a retry remains idempotent even
+            # after the worker has advanced the run.
+            existing = await work.commands.get_by_idempotency_key(queue_key)
+            if existing is not None:
+                _validate_command_replay(
+                    existing,
+                    run_id=run_id,
+                    actor_id=actor.actor_id,
+                    request=request,
+                )
+                await work.commit()
+                return existing
             if request.expected_run_version != run.version:
                 raise ConcurrencyConflict(run_id, request.expected_run_version, run.version)
             _validate_state(run.state, request.command_type)
@@ -369,6 +394,45 @@ def _command_payload(request: RunCommandRequest, run: RunSnapshot) -> dict[str, 
         if request.delete_branch:
             if run.branch_name is None or request.confirm_branch_name != run.branch_name:
                 raise RunCommandValidationError("branch confirmation does not match the run")
+            return {
+                "delete_branch": True,
+                "confirm_branch_name": request.confirm_branch_name,
+            }
+        return {"delete_branch": False}
+    return {}
+
+
+def _validate_command_replay(
+    existing: CommandEnvelope,
+    *,
+    run_id: UUID,
+    actor_id: UUID,
+    request: RunCommandRequest,
+) -> None:
+    """Require an existing queue key to carry the exact original request."""
+
+    expected_payload = _request_payload(request)
+    if (
+        existing.run_id != run_id
+        or existing.actor_id != actor_id
+        or existing.command_type != request.command_type
+        or existing.expected_run_version != request.expected_run_version
+        or dict(existing.payload) != expected_payload
+    ):
+        raise IdempotencyConflict("command idempotency key was reused for a different request")
+
+
+def _request_payload(request: RunCommandRequest) -> dict[str, object]:
+    """Build a request fingerprint without consulting mutable run state."""
+
+    if request.command_type in {
+        RunCommandType.REQUEST_PLAN_REVISION,
+        RunCommandType.REQUEST_CANDIDATE_CHANGES,
+        RunCommandType.REJECT_MERGE,
+    }:
+        return {"feedback": request.feedback}
+    if request.command_type == RunCommandType.TEARDOWN_RUN_RESOURCES:
+        if request.delete_branch:
             return {
                 "delete_branch": True,
                 "confirm_branch_name": request.confirm_branch_name,

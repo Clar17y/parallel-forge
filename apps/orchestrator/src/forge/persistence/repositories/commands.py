@@ -151,6 +151,24 @@ class PostgresCommandRepository:
                 raise CommandNotFound(f"command {command_id} was not found")
             return _command_from_record(record)
 
+    async def get_by_idempotency_key(self, idempotency_key: str) -> CommandEnvelope | None:
+        """Load an existing command from the active transaction by its key."""
+
+        if self._session is not None:
+            record = (
+                await self._session.execute(
+                    select(RunCommand).where(RunCommand.idempotency_key == idempotency_key)
+                )
+            ).scalar_one_or_none()
+            return None if record is None else _command_from_record(record)
+        async with self._factory()() as session:
+            record = (
+                await session.execute(
+                    select(RunCommand).where(RunCommand.idempotency_key == idempotency_key)
+                )
+            ).scalar_one_or_none()
+            return None if record is None else _command_from_record(record)
+
     async def claim_next(self, *, worker_id: str, lease_seconds: float) -> CommandEnvelope | None:
         _validate_worker_and_lease(worker_id, lease_seconds)
         now = _utc_now()

@@ -362,3 +362,79 @@ The full source-tree format check also reports one pre-existing unformatted
 slice; it was left untouched to preserve unrelated work. The in-scope API
 source and tests pass format checking. The containing candidate commit is
 reported by the handoff below.
+
+## Fix round 1 — review regressions
+
+### TDD evidence
+
+- RED command:
+  `.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/application/test_run_services.py::test_run_command_replay_survives_worker_transition apps/orchestrator/tests/persistence/test_task10_persistence.py::test_task10_mutation_completion_requires_replayable_resource apps/orchestrator/tests/persistence/test_schema.py::test_task10_downgrade_refuses_cross_project_external_identity_duplicates -q`
+  first failed all three intended regressions: replay reached the stale
+  `ConcurrencyConflict`, completion without a resource did not raise, and the
+  downgrade guard did not raise. The migration test setup initially attempted
+  to update an append-only task (correctly rejected by its trigger); it was
+  changed to direct inserts and retained the intended `DID NOT RAISE` RED.
+- GREEN command (same three focused tests) — **3 passed**.
+- `.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/application/test_run_services.py -q` — **19 passed**.
+- `.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/persistence/test_task10_persistence.py apps/orchestrator/tests/persistence/test_schema.py -q` — **27 passed**.
+- `.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/persistence/test_task10_run_service_integration.py -q` — **3 passed**.
+- `.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/persistence/test_command_queue.py apps/orchestrator/tests/persistence/test_run_repository.py -q` — **28 passed**.
+- `.venv\\Scripts\\python.exe -m pytest -q` — **867 passed, 2 skipped** in 96.21s.
+
+### Fixes and decisions
+
+- Command replay now resolves the actor/run-scoped queue key before mutable
+  run state/version validation, validates the stored actor/type/version/payload
+  fingerprint, and rechecks after acquiring the run lock for concurrent
+  producers. An identical retry therefore returns the original command after a
+  worker transition; a changed request remains an idempotency conflict.
+- The 0002 downgrade now preflights cross-project external-identity duplicates
+  and raises before any destructive DDL. Compatible data restores the exact
+  0001 global external-identity constraint instead of silently reporting a
+  partial downgrade. The regression proves the failed downgrade remains at
+  revision 0002 with all Task 10 tables intact; the existing clean downgrade /
+  upgrade test remains green.
+- `COMPLETED` mutation receipts now require both `resource_kind` and
+  `resource_id` in the SQL check constraint and in the repository completion
+  guard. Tests cover both malformed direct SQL/repository completion and normal
+  replay.
+- The persistence round-trip fixture uses distinct external IDs for its two
+  projects so ordinary migrated-database teardown remains compatible with the
+  truthful 0001 downgrade guard; project-scoped duplicate identity behavior is
+  covered by the application service tests and the dedicated downgrade
+  regression seeds cross-project duplicates without attempting a destructive
+  cleanup.
+
+### Static and migration verification
+
+- `.venv\\Scripts\\ruff.exe check` on all changed source, migration, and test
+  files — clean.
+- `.venv\\Scripts\\ruff.exe format --check` on all changed files — **9 files
+  already formatted**.
+- `.venv\\Scripts\\python.exe -m mypy apps/orchestrator/src/forge` — success,
+  **92 files**.
+- `git diff --check` — clean.
+- Schema tests include Alembic model comparison/check, head inventory, clean
+  upgrade/downgrade/re-upgrade, and the incompatible-duplicate refusal.
+
+### Final fix-round verification
+
+- Current fixed-regression rerun:
+  `.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/application/test_run_services.py::test_run_command_replay_survives_worker_transition apps/orchestrator/tests/persistence/test_task10_persistence.py::test_task10_mutation_completion_requires_replayable_resource apps/orchestrator/tests/persistence/test_schema.py::test_task10_downgrade_refuses_cross_project_external_identity_duplicates -q`
+  — **3 passed**.
+- Added compatible-data PostgreSQL coverage for a valid external task. The
+  first assertion run exposed the expected deterministic `Imported task`
+  title backfill after crossing the 0001 schema boundary; correcting that
+  test expectation produced **2 passed** for the incompatible and compatible
+  downgrade cases.
+- `.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/persistence/test_schema.py -q`
+  — **19 passed**.
+- Affected run/mutation/migration/persistence suites — **78 passed**.
+- `.venv\\Scripts\\python.exe -m pytest -q` — **868 passed, 2 skipped** in
+  95.38s.
+- Changed-file Ruff check — clean; changed-file Ruff format check — **9 files
+  already formatted**; mypy — success, **92 source files**; `git diff --check`
+  — clean.
+- Full source-tree format check still reports only the pre-existing
+  out-of-scope `apps/orchestrator/src/forge/application/adapters/__init__.py`;
+  no unrelated formatting was changed.

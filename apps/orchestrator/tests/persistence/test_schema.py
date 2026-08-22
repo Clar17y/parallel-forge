@@ -224,6 +224,137 @@ def test_initial_migration_downgrades_and_reapplies_cleanly(
 
 
 @pytest.mark.integration
+def test_task10_downgrade_refuses_cross_project_external_identity_duplicates(
+    test_database_url: str,
+    alembic_config_factory: Callable[[str], Config],
+) -> None:
+    config = alembic_config_factory(test_database_url)
+    command.upgrade(config, "head")
+    first_project, _, _ = asyncio.run(_insert_project_policy_task_run(test_database_url))
+    second_project, _, _ = asyncio.run(_insert_project_policy_task_run(test_database_url))
+
+    async def add_external_identity_duplicates() -> None:
+        engine = create_async_engine(test_database_url)
+        try:
+            async with engine.begin() as connection:
+                for project_id in (first_project, second_project):
+                    await connection.execute(
+                        text(
+                            "INSERT INTO tasks "
+                            "(id, project_id, title, body, normalized_text, task_digest, "
+                            "untrusted_external_content, external_source, external_id) "
+                            "VALUES (:task_id, :project_id, 'Imported', 'Body', 'Imported\\n\\nBody', "
+                            ":digest, true, 'github', '42')"
+                        ),
+                        {"task_id": uuid4(), "project_id": project_id, "digest": "e" * 64},
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(add_external_identity_duplicates())
+
+    with pytest.raises(Exception, match="duplicate external task identities"):
+        command.downgrade(config, "20260821_0001")
+
+    assert _table_names(test_database_url) == EXPECTED_TABLES
+
+    def current_revision(connection: Any) -> str:
+        value = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        assert isinstance(value, str)
+        return value
+
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260822_0002"
+
+    def duplicate_count(connection: Any) -> int:
+        value = connection.execute(
+            text(
+                "SELECT count(*) FROM tasks WHERE external_source = 'github' AND external_id = '42'"
+            )
+        ).scalar_one()
+        assert isinstance(value, int)
+        return value
+
+    assert asyncio.run(_inspect_database(test_database_url, duplicate_count)) == 2
+
+
+@pytest.mark.integration
+def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
+    test_database_url: str,
+    alembic_config_factory: Callable[[str], Config],
+) -> None:
+    config = alembic_config_factory(test_database_url)
+    command.upgrade(config, "head")
+    project_id, _, _ = asyncio.run(_insert_project_policy_task_run(test_database_url))
+    external_task_id = uuid4()
+
+    async def add_compatible_external_task() -> None:
+        engine = create_async_engine(test_database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "INSERT INTO tasks "
+                        "(id, project_id, title, body, normalized_text, task_digest, "
+                        "untrusted_external_content, external_source, external_id) "
+                        "VALUES (:task_id, :project_id, 'Imported', 'Body', :normalized_text, "
+                        ":digest, true, 'github', '42')"
+                    ),
+                    {
+                        "task_id": external_task_id,
+                        "project_id": project_id,
+                        "normalized_text": "Imported\n\nBody",
+                        "digest": "e" * 64,
+                    },
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(add_compatible_external_task())
+
+    command.downgrade(config, "20260821_0001")
+
+    def current_revision(connection: Any) -> str:
+        value = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        assert isinstance(value, str)
+        return value
+
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260821_0001"
+    assert _table_names(test_database_url) == EXPECTED_TABLES - {
+        "api_mutations",
+        "operator_audit_events",
+    }
+
+    def task_constraints(connection: Any) -> set[str]:
+        return {item["name"] for item in inspect(connection).get_unique_constraints("tasks")}
+
+    assert asyncio.run(_inspect_database(test_database_url, task_constraints)) >= {
+        "uq_tasks_external_identity"
+    }
+
+    command.upgrade(config, "head")
+    assert _table_names(test_database_url) == EXPECTED_TABLES
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260822_0002"
+
+    def reupgraded_task(connection: Any) -> tuple[str, str, bool, str, str]:
+        row = connection.execute(
+            text(
+                "SELECT title, body, untrusted_external_content, external_source, external_id "
+                "FROM tasks WHERE id = :task_id"
+            ),
+            {"task_id": external_task_id},
+        ).one()
+        return tuple(row)
+
+    assert asyncio.run(_inspect_database(test_database_url, reupgraded_task)) == (
+        "Imported task",
+        "Imported\n\nBody",
+        True,
+        "github",
+        "42",
+    )
+
+
+@pytest.mark.integration
 def test_schema_contains_required_identity_and_safety_constraints(
     migrated_database_url: str,
 ) -> None:

@@ -111,6 +111,8 @@ class PostgresMutationRepository:
 
         if type(response_status) is not int or not 100 <= response_status <= 599:
             raise ValueError("mutation response status is invalid")
+        if not isinstance(resource_kind, str) or not resource_kind.strip() or resource_id is None:
+            raise MutationRepositoryError("completed mutation requires a resource kind and id")
         payload = dict(response_payload)
         validate_durable_payload(payload)
         record = (

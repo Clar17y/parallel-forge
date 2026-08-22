@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
@@ -200,6 +200,9 @@ class FakeCommands:
         )
         self.records[key] = command
         return command
+
+    async def get_by_idempotency_key(self, idempotency_key: str) -> CommandEnvelope | None:
+        return self.records.get(idempotency_key)
 
 
 @dataclass
@@ -487,6 +490,33 @@ async def test_run_command_replay_and_changed_request_conflict_without_transitio
             request=RunCommandRequest(command_type="cancel", expected_run_version=4),
         )
     assert work.runs.records[run_id].version == 4
+
+
+@pytest.mark.asyncio
+async def test_run_command_replay_survives_worker_transition() -> None:
+    from forge.application.services.runs import RunCommandRequest, RunCommandService
+
+    work, _, _ = _uow(state=RunState.PLANNING)
+    run_id = next(iter(work.runs.records))
+    service = RunCommandService(lambda: work)
+    request = RunCommandRequest(command_type="pause", expected_run_version=4)
+    first = await service.enqueue(
+        actor=ACTOR, run_id=run_id, idempotency_key="command-after-transition", request=request
+    )
+
+    work.runs.records[run_id] = replace(work.runs.records[run_id], state=RunState.PAUSED, version=5)
+    replay = await service.enqueue(
+        actor=ACTOR, run_id=run_id, idempotency_key="command-after-transition", request=request
+    )
+
+    assert replay.id == first.id
+    with pytest.raises(IdempotencyConflict):
+        await service.enqueue(
+            actor=ACTOR,
+            run_id=run_id,
+            idempotency_key="command-after-transition",
+            request=RunCommandRequest(command_type="cancel", expected_run_version=4),
+        )
 
 
 @pytest.mark.asyncio

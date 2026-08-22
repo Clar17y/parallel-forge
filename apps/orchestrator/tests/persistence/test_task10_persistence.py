@@ -108,9 +108,10 @@ async def test_task10_repositories_preserve_task_sources_policy_versions_and_sna
             source_url="https://example.test/issues/4",
             source_updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             external_source="github",
-            external_id="4",
+            external_id="5",
         )
-        assert second_task.task_digest == task.task_digest
+        assert second_task.external_id == "5"
+        assert second_task.task_digest != task.task_digest
         await work.commit()
 
     async with PostgresUnitOfWork(session_factory) as work:
@@ -174,6 +175,47 @@ async def test_task10_mutation_receipts_hash_keys_and_reject_changed_requests(
                 scope="project:1",
                 idempotency_key="raw-key",
                 request_digest="b" * 64,
+            )
+
+
+@pytest.mark.integration
+async def test_task10_mutation_completion_requires_replayable_resource(
+    session_factory: object,
+) -> None:
+    from forge.persistence.repositories.mutations import MutationRepositoryError
+    from forge.persistence.unit_of_work import PostgresUnitOfWork
+
+    async with PostgresUnitOfWork(session_factory) as work:
+        receipt = await work.mutations.reserve(
+            actor_id=uuid4(),
+            action="task.create",
+            scope="project:resource-required",
+            idempotency_key="resource-required",
+            request_digest="a" * 64,
+        )
+        with pytest.raises(MutationRepositoryError, match="resource"):
+            await work.mutations.complete(
+                receipt.id,
+                response_status=201,
+                response_payload={"id": "safe"},
+            )
+
+    async with session_factory() as session, session.begin():
+        with pytest.raises(DBAPIError):
+            await session.execute(
+                text(
+                    "INSERT INTO api_mutations "
+                    "(id, actor_id, action, scope, key_hash, request_digest, lifecycle_state, "
+                    "response_status, response_payload) VALUES "
+                    "(:id, :actor_id, 'malformed', 'scope', :key_hash, :request_digest, "
+                    "'COMPLETED', 201, '{}'::jsonb)"
+                ),
+                {
+                    "id": uuid4(),
+                    "actor_id": uuid4(),
+                    "key_hash": "c" * 64,
+                    "request_digest": "d" * 64,
+                },
             )
 
 
