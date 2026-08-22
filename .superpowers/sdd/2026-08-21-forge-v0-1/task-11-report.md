@@ -275,3 +275,72 @@ this micro-slice.
 - Ripgrep process invocation, JSON parsing, and instruction discovery are
   deferred to the next bounded slice; no subprocess/search fallback switching
   was added here.
+
+---
+
+# Task 11 Slice 3b2 worker report
+
+## Status
+
+Complete for the confined ripgrep backend layered over the bounded Python
+literal search. Instruction discovery remains intentionally out of scope.
+
+## TDD evidence
+
+- RED: the new fake-runner/ripgrep tests initially failed at the missing
+  constructor/process boundary; after the validator repair, the substantive
+  backend suite passed.
+- GREEN: repository search tests passed with both fake-runner and real
+  discoverable-ripgrep coverage.
+
+## Delivered
+
+- Added absolute executable validation with generic configuration errors,
+  default absolute `shutil.which("rg")` discovery, explicit-`None` and
+  `force_python_search` fallback controls, and injectable `ProcessRunner`.
+- Enumerated the same safe, nonhidden bounded candidate set before spawning;
+  explicit contained candidate paths plus escaped literal `--glob` exclusions
+  prevent configured secrets, worktrees, artifacts, and fixed excluded
+  directories from being read by ripgrep. Oversized argv falls back to the
+  already bounded Python backend before spawn.
+- Added argv-only ripgrep invocation with fixed strings, JSON output,
+  `--no-hidden`, `--no-ignore`, path sorting, bounded max-count, `--`
+  separation, fixed root cwd, and minimal explicit locale environment. The
+  committed process runner supplies independent 1 MiB stdout/stderr bounds
+  and no shell.
+- Added fail-closed handling for timeout, truncation, malformed/empty JSON,
+  unexpected exit codes, invalid UTF-8 replacement output, bytes fields,
+  hostile/secret/excluded paths, non-files, and inconsistent match records.
+  Valid match records are revalidated against the pinned root and candidate
+  set, deduplicated per path/line, sorted deterministically, and globally
+  capped.
+- Added tests for leading-dash/metacharacter literals, no-match exit 1,
+  explicit fallback, exact argv/environment, escaped globs, `.env.example`,
+  hostile paths, malformed/truncated/error/timeout results, deterministic
+  caps, and real ripgrep discovery.
+
+## Material decisions
+
+- The ripgrep command receives the enumerated allowed regular files as
+  contained relative targets, rather than the whole root. This keeps virtual
+  environments and hidden exceptions out of the process even if a glob
+  implementation differs across ripgrep/platform versions; exclusion globs
+  remain present as a defense-in-depth contract.
+- Explicit `rg_executable=None` means forced Python fallback; an omitted
+  executable uses safe absolute discovery. Explicit paths must be absolute but
+  need not exist when a fake runner is injected; a real missing executable
+  remains a process failure and never silently falls back.
+
+## Verification
+
+- Task 11 repository/path/process/security pytest:
+  `80 passed, 1 skipped in 1.59s`.
+- Task 11 tools/security Ruff check: `All checks passed!`.
+- Task 11 tools/security Ruff format check: `9 files already formatted`.
+- Full Forge mypy: `Success: no issues found in 97 source files`.
+- `git diff --check`: pass.
+
+## Unresolved concerns
+
+- Instruction discovery remains deferred to the next slice; no instruction
+  files are read or interpreted here.
