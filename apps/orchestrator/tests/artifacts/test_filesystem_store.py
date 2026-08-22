@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import shutil
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,9 @@ async def test_read_rejects_tampered_missing_and_malformed_objects(tmp_path: Pat
         await store.open_bytes(artifact.digest)
     with pytest.raises(ArtifactIntegrityError):
         await store.verify(artifact.digest)
+    artifact.storage_path.unlink()
+    with pytest.raises(ArtifactIntegrityError):
+        await store.open_bytes(artifact.digest)
     with pytest.raises(ValueError):
         await store.open_bytes("ABC")
     with pytest.raises(ValueError):
@@ -45,9 +49,14 @@ async def test_read_rejects_tampered_missing_and_malformed_objects(tmp_path: Pat
 async def test_link_and_nonregular_targets_fail_closed(tmp_path: Path) -> None:
     store = FilesystemArtifactStore(tmp_path)
     artifact = await store.put_bytes(b"trusted", media_type="text/plain")
+    artifact.storage_path.unlink()
+    artifact.storage_path.mkdir()
+    with pytest.raises(ArtifactIntegrityError):
+        await store.verify(artifact.digest)
+    artifact.storage_path.rmdir()
+
     replacement = tmp_path / "replacement.blob"
     replacement.write_bytes(b"trusted")
-    artifact.storage_path.unlink()
     try:
         artifact.storage_path.symlink_to(replacement)
     except OSError, NotImplementedError:
@@ -98,3 +107,102 @@ async def test_invalid_bounds_fail_before_writing(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         await store.put_bytes(b"data", media_type="text/plain", max_bytes=0)
     assert list(tmp_path.rglob("*")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("digest", ("０" * 64, "١" * 64, "ａ" * 64))
+async def test_non_ascii_digest_rejected_before_root_io(tmp_path: Path, digest: str) -> None:
+    root = tmp_path / "not-created"
+    store = FilesystemArtifactStore(root)
+
+    with pytest.raises(ValueError):
+        await store.open_bytes(digest)
+    assert not root.exists()
+
+
+@pytest.mark.asyncio
+async def test_root_replacement_between_calls_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    store = FilesystemArtifactStore(root)
+    await store.put_bytes(b"first", media_type="text/plain")
+    moved = tmp_path / "moved-root"
+    root.rename(moved)
+    root.mkdir()
+
+    with pytest.raises(ArtifactIntegrityError):
+        await store.put_bytes(b"second", media_type="text/plain")
+    assert list(root.rglob("*.blob")) == []
+    shutil.rmtree(moved)
+
+
+@pytest.mark.asyncio
+async def test_publish_namespace_swap_is_blocked_or_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    store = FilesystemArtifactStore(root)
+    await store.put_bytes(b"seed", media_type="text/plain")
+    race_digest = hashlib.sha256(b"race").hexdigest()
+    canonical_target = root / "sha256" / race_digest[:2] / f"{race_digest[2:]}.blob"
+    called = False
+    swapped = False
+    moved_shard: Path | None = None
+
+    def swap_shard(target: Path) -> None:
+        nonlocal called, moved_shard, swapped
+        called = True
+        shard = target.parent
+        moved = shard.with_name("moved-shard")
+        try:
+            shard.rename(moved)
+            shard.mkdir()
+        except OSError:
+            return
+        swapped = True
+        moved_shard = moved
+
+    store._before_publish = swap_shard  # type: ignore[attr-defined,method-assign]
+    try:
+        result = await store.put_bytes(b"race", media_type="text/plain")
+    except ArtifactIntegrityError, OSError:
+        result = None
+
+    assert called
+    if swapped:
+        assert result is None
+        assert moved_shard is not None
+        assert not canonical_target.exists()
+        assert not (moved_shard / canonical_target.name).exists()
+        assert not list(root.rglob("*.tmp"))
+    else:
+        assert result is not None
+        assert await store.open_bytes(result.digest) == b"race"
+
+
+@pytest.mark.asyncio
+async def test_read_namespace_swap_never_returns_replaced_bytes(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path / "root")
+    artifact = await store.put_bytes(b"trusted", media_type="text/plain")
+    called = False
+    replaced = False
+
+    def replace_target(target: Path) -> None:
+        nonlocal called, replaced
+        called = True
+        backup = target.with_name("backup.blob")
+        try:
+            target.rename(backup)
+            target.write_bytes(b"outside")
+        except OSError:
+            return
+        replaced = True
+
+    store._before_read_open = replace_target  # type: ignore[attr-defined,method-assign]
+    try:
+        result = await store.open_bytes(artifact.digest)
+    except ArtifactIntegrityError:
+        result = None
+
+    assert called
+    if replaced:
+        assert result is None
+    else:
+        assert result == b"trusted"
