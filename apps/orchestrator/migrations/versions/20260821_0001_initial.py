@@ -315,14 +315,10 @@ def upgrade() -> None:
     op.create_table(
         "artifacts",
         sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column("digest", sa.String(length=64), nullable=False),
         sa.Column("media_type", sa.String(length=255), nullable=False),
         sa.Column("storage_pointer", sa.Text(), nullable=False),
         sa.Column("size_bytes", sa.BigInteger(), nullable=False),
-        sa.Column("producer_kind", sa.String(length=96), nullable=False),
-        sa.Column("producer_id", sa.Uuid(), nullable=True),
-        sa.Column("parent_artifact_id", sa.Uuid(), nullable=True),
         sa.Column("metadata_schema_version", sa.Integer(), nullable=False),
         sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column(
@@ -331,17 +327,97 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["parent_artifact_id"],
-            ["artifacts.id"],
-            name=op.f("fk_artifacts_parent_artifact_id_artifacts"),
-            ondelete="SET NULL",
+        sa.CheckConstraint(
+            "digest ~ '^[0-9a-f]{64}$'", name=op.f("ck_artifacts_digest_lowercase_sha256")
         ),
-        sa.ForeignKeyConstraint(
-            ["run_id"], ["runs.id"], name=op.f("fk_artifacts_run_id_runs"), ondelete="CASCADE"
+        sa.CheckConstraint(
+            "btrim(media_type) <> ''", name=op.f("ck_artifacts_media_type_nonempty")
+        ),
+        sa.CheckConstraint(
+            "storage_pointer ~ '^sha256/[0-9a-f]{2}/[0-9a-f]{62}\\.blob$'",
+            name=op.f("ck_artifacts_storage_pointer_canonical"),
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_artifacts")),
         sa.UniqueConstraint("digest", name="uq_artifacts_digest"),
+    )
+    op.create_table(
+        "artifact_lineages",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("artifact_id", sa.Uuid(), nullable=False),
+        sa.Column("run_id", sa.Uuid(), nullable=False),
+        sa.Column("producer_kind", sa.String(length=96), nullable=False),
+        sa.Column("producer_id", sa.Uuid(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "btrim(producer_kind) <> ''",
+            name=op.f("ck_artifact_lineages_producer_kind_nonempty"),
+        ),
+        sa.ForeignKeyConstraint(
+            ["artifact_id"],
+            ["artifacts.id"],
+            name=op.f("fk_artifact_lineages_artifact"),
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["run_id"], ["runs.id"], name=op.f("fk_artifact_lineages_run"), ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_artifact_lineages")),
+        sa.UniqueConstraint(
+            "artifact_id", "run_id", name="uq_artifact_lineages_artifact_run"
+        ),
+        sa.UniqueConstraint("id", "run_id", name="uq_artifact_lineages_id_run"),
+    )
+    op.create_index(
+        "ix_artifact_lineages_run_created_at",
+        "artifact_lineages",
+        ["run_id", "created_at"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_artifact_lineages_artifact_id", "artifact_lineages", ["artifact_id"], unique=False
+    )
+    op.create_table(
+        "artifact_lineage_parents",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("artifact_id", sa.Uuid(), nullable=False),
+        sa.Column("run_id", sa.Uuid(), nullable=False),
+        sa.Column("parent_artifact_id", sa.Uuid(), nullable=False),
+        sa.CheckConstraint(
+            "artifact_id <> parent_artifact_id", name=op.f("ck_artifact_lineage_parents_no_self_parent")
+        ),
+        sa.ForeignKeyConstraint(
+            ["artifact_id", "run_id"],
+            ["artifact_lineages.artifact_id", "artifact_lineages.run_id"],
+            name=op.f("fk_artifact_lineage_parents_lineage"),
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["run_id"],
+            ["runs.id"],
+            name=op.f("fk_artifact_lineage_parents_run"),
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["parent_artifact_id", "run_id"],
+            ["artifact_lineages.artifact_id", "artifact_lineages.run_id"],
+            name=op.f("fk_artifact_lineage_parents_parent"),
+            ondelete="RESTRICT",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_artifact_lineage_parents")),
+        sa.UniqueConstraint(
+            "artifact_id", "run_id", "parent_artifact_id", name="uq_artifact_lineage_parent_edge"
+        ),
+    )
+    op.create_index(
+        "ix_artifact_lineage_parents_parent",
+        "artifact_lineage_parents",
+        ["parent_artifact_id", "run_id"],
+        unique=False,
     )
     op.create_table(
         "operation_intents",
@@ -1058,6 +1134,23 @@ def downgrade() -> None:
         if_exists=True,
     )
     op.drop_table("operation_intents")
+    op.drop_index(
+        "ix_artifact_lineage_parents_parent",
+        table_name="artifact_lineage_parents",
+        if_exists=True,
+    )
+    op.drop_table("artifact_lineage_parents", if_exists=True)
+    op.drop_index(
+        "ix_artifact_lineages_artifact_id",
+        table_name="artifact_lineages",
+        if_exists=True,
+    )
+    op.drop_index(
+        "ix_artifact_lineages_run_created_at",
+        table_name="artifact_lineages",
+        if_exists=True,
+    )
+    op.drop_table("artifact_lineages", if_exists=True)
     op.drop_table("artifacts")
     op.drop_table("approvals")
     op.drop_table("approval_challenges")

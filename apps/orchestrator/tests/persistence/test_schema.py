@@ -44,6 +44,8 @@ EXPECTED_TABLES = {
     "reviews",
     "pull_requests",
     "operation_intents",
+    "artifact_lineages",
+    "artifact_lineage_parents",
 }
 
 
@@ -235,6 +237,12 @@ def test_schema_contains_required_identity_and_safety_constraints(
             "intent_uniques": inspector.get_unique_constraints("operation_intents"),
             "intent_columns": inspector.get_columns("operation_intents"),
             "intent_indexes": inspector.get_indexes("operation_intents"),
+            "artifact_indexes": inspector.get_indexes("artifact_lineages"),
+            "artifact_parent_indexes": inspector.get_indexes("artifact_lineage_parents"),
+            "artifact_columns": inspector.get_columns("artifacts"),
+            "artifact_checks": inspector.get_check_constraints("artifacts"),
+            "artifact_lineage_checks": inspector.get_check_constraints("artifact_lineages"),
+            "artifact_parent_checks": inspector.get_check_constraints("artifact_lineage_parents"),
             "usage_columns": inspector.get_columns("model_usage"),
             "usage_indexes": inspector.get_indexes("model_usage"),
             "usage_checks": inspector.get_check_constraints("model_usage"),
@@ -309,6 +317,34 @@ def test_schema_contains_required_identity_and_safety_constraints(
     } <= {item["name"] for item in intent_checks}
     intent_index_columns = constrained_columns("intent_indexes")
     assert ("status", "execution_lease_expires_at", "updated_at") in intent_index_columns
+
+    artifact_columns = result["artifact_columns"]
+    assert isinstance(artifact_columns, list)
+    assert {"digest", "storage_pointer", "size_bytes", "metadata_schema_version"} <= {
+        item["name"] for item in artifact_columns
+    }
+    assert not {"run_id", "producer_kind", "parent_artifact_id"} & {
+        item["name"] for item in artifact_columns
+    }
+    artifact_checks = result["artifact_checks"]
+    assert isinstance(artifact_checks, list)
+    assert {
+        "ck_artifacts_digest_lowercase_sha256",
+        "ck_artifacts_media_type_nonempty",
+        "ck_artifacts_storage_pointer_canonical",
+        "ck_artifacts_size_and_schema_version",
+    } <= {item["name"] for item in artifact_checks}
+    lineage_checks = result["artifact_lineage_checks"]
+    parent_checks = result["artifact_parent_checks"]
+    assert isinstance(lineage_checks, list)
+    assert isinstance(parent_checks, list)
+    assert "ck_artifact_lineages_producer_kind_nonempty" in {
+        item["name"] for item in lineage_checks
+    }
+    assert "ck_artifact_lineage_parents_no_self_parent" in {item["name"] for item in parent_checks}
+    artifact_index_columns = constrained_columns("artifact_indexes")
+    assert {("run_id", "created_at"), ("artifact_id",)} <= artifact_index_columns
+    assert constrained_columns("artifact_parent_indexes") >= {("parent_artifact_id", "run_id")}
 
     usage_columns = result["usage_columns"]
     usage_checks = result["usage_checks"]
@@ -392,6 +428,7 @@ def test_every_execution_and_evidence_table_is_linked_to_a_run(
         "tasks",
         "runs",
         "operator_sessions",
+        "artifacts",
     }
 
     def run_foreign_keys(connection: Any) -> dict[str, set[str]]:

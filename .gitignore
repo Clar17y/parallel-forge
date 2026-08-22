@@ -29,7 +29,7 @@ test-results/
 
 # Forge-generated local state and artifacts
 .forge/
-artifacts/
+/.forge/artifacts/
 *.log
 
 # Build output

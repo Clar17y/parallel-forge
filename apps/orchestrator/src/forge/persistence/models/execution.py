@@ -303,34 +303,96 @@ class ModelUsage(Base):
 
 
 class Artifact(Base):
-    """Content-addressed artifact metadata and lineage."""
+    """Immutable content metadata for one content-addressed blob."""
 
     __tablename__ = "artifacts"
     __table_args__ = (
         UniqueConstraint("digest", name="uq_artifacts_digest"),
+        CheckConstraint("digest ~ '^[0-9a-f]{64}$'", name="digest_lowercase_sha256"),
+        CheckConstraint("btrim(media_type) <> ''", name="media_type_nonempty"),
+        CheckConstraint(
+            "storage_pointer ~ '^sha256/[0-9a-f]{2}/[0-9a-f]{62}\\.blob$'",
+            name="storage_pointer_canonical",
+        ),
         CheckConstraint(
             "size_bytes >= 0 AND metadata_schema_version >= 1", name="size_and_schema_version"
         ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    run_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
-    )
     digest: Mapped[str] = mapped_column(String(64), nullable=False)
     media_type: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_pointer: Mapped[str] = mapped_column(Text, nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    producer_kind: Mapped[str] = mapped_column(String(96), nullable=False)
-    producer_id: Mapped[UUID | None] = mapped_column(Uuid)
-    parent_artifact_id: Mapped[UUID | None] = mapped_column(
-        Uuid, ForeignKey("artifacts.id", ondelete="SET NULL")
-    )
     metadata_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     artifact_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class ArtifactLineage(Base):
+    """One immutable run-specific provenance record for an artifact."""
+
+    __tablename__ = "artifact_lineages"
+    __table_args__ = (
+        UniqueConstraint("artifact_id", "run_id", name="uq_artifact_lineages_artifact_run"),
+        UniqueConstraint("id", "run_id", name="uq_artifact_lineages_id_run"),
+        CheckConstraint("btrim(producer_kind) <> ''", name="producer_kind_nonempty"),
+        Index("ix_artifact_lineages_run_created_at", "run_id", "created_at"),
+        Index("ix_artifact_lineages_artifact_id", "artifact_id"),
+        ForeignKeyConstraint(
+            ["artifact_id"],
+            ["artifacts.id"],
+            name="fk_artifact_lineages_artifact",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id"], ["runs.id"], name="fk_artifact_lineages_run", ondelete="CASCADE"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    artifact_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    run_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    producer_kind: Mapped[str] = mapped_column(String(96), nullable=False)
+    producer_id: Mapped[UUID | None] = mapped_column(Uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ArtifactLineageParent(Base):
+    """A normalized parent edge constrained to the same run lineage."""
+
+    __tablename__ = "artifact_lineage_parents"
+    __table_args__ = (
+        UniqueConstraint(
+            "artifact_id", "run_id", "parent_artifact_id", name="uq_artifact_lineage_parent_edge"
+        ),
+        CheckConstraint("artifact_id <> parent_artifact_id", name="no_self_parent"),
+        ForeignKeyConstraint(
+            ["artifact_id", "run_id"],
+            ["artifact_lineages.artifact_id", "artifact_lineages.run_id"],
+            name="fk_artifact_lineage_parents_lineage",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id"], ["runs.id"], name="fk_artifact_lineage_parents_run", ondelete="CASCADE"
+        ),
+        ForeignKeyConstraint(
+            ["parent_artifact_id", "run_id"],
+            ["artifact_lineages.artifact_id", "artifact_lineages.run_id"],
+            name="fk_artifact_lineage_parents_parent",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_artifact_lineage_parents_parent", "parent_artifact_id", "run_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    artifact_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    run_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    parent_artifact_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
 
 
 class ValidationResult(Base):
