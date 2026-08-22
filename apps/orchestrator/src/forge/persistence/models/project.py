@@ -57,7 +57,7 @@ class ProjectPolicyVersion(Base):
 
     project_id: Mapped[UUID] = mapped_column(
         Uuid,
-        ForeignKey("projects.id", ondelete="CASCADE"),
+        ForeignKey("projects.id", ondelete="RESTRICT"),
         primary_key=True,
     )
     version: Mapped[int] = mapped_column(Integer, primary_key=True)

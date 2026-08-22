@@ -98,7 +98,7 @@ def upgrade() -> None:
             ["project_id"],
             ["projects.id"],
             name=op.f("fk_project_policy_versions_project_id_projects"),
-            ondelete="CASCADE",
+            ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("project_id", "version", name=op.f("pk_project_policy_versions")),
     )
@@ -109,7 +109,7 @@ def upgrade() -> None:
         LANGUAGE plpgsql
         AS $forge$
         BEGIN
-            RAISE EXCEPTION 'project_policy_versions rows are immutable';
+            RAISE EXCEPTION 'project_policy_versions rows are append-only';
         END;
         $forge$;
         """
@@ -117,7 +117,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_project_policy_versions_immutable
-        BEFORE UPDATE ON project_policy_versions
+        BEFORE UPDATE OR DELETE ON project_policy_versions
         FOR EACH ROW EXECUTE FUNCTION forge_reject_project_policy_version_update();
         """
     )
@@ -216,11 +216,11 @@ def upgrade() -> None:
             name=op.f("ck_runs_database_state"),
         ),
         sa.CheckConstraint(
-            "state IN ('CREATED','PLANNING','AWAITING_PLAN_APPROVAL','PREPARING_WORKTREE','IMPLEMENTING','VALIDATING','REVIEWING','REMEDIATING','AWAITING_PR_APPROVAL','PUBLISHING_PR','MONITORING_PR','AWAITING_HUMAN_INTERVENTION','INTERVENTION_REQUIRED','AWAITING_MERGE_APPROVAL','MERGING','PAUSED','COMPLETED','FAILED','CANCELLED')",
+            "state IN ('CREATED','PLANNING','AWAITING_PLAN_APPROVAL','PREPARING_WORKTREE','IMPLEMENTING','VALIDATING','REVIEWING','REMEDIATING','AWAITING_PR_APPROVAL','PUBLISHING_PR','MONITORING_PR','AWAITING_HUMAN_INTERVENTION','AWAITING_MERGE_APPROVAL','MERGING','PAUSED','COMPLETED','FAILED','CANCELLED')",
             name=op.f("ck_runs_state"),
         ),
         sa.CheckConstraint(
-            "(state = 'PAUSED' AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL AND suspension_kind = 'PAUSE' AND suspension_context IS NOT NULL AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR (state IN ('INTERVENTION_REQUIRED','AWAITING_HUMAN_INTERVENTION') AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL AND suspension_kind = 'INTERVENTION' AND suspension_context IS NOT NULL AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR (state NOT IN ('PAUSED','INTERVENTION_REQUIRED','AWAITING_HUMAN_INTERVENTION') AND suspended_state IS NULL AND suspension_kind IS NULL AND suspension_context IS NULL AND suspension_context_schema_version IS NULL)",
+            "(state = 'PAUSED' AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL AND suspension_kind = 'PAUSE' AND suspension_context IS NOT NULL AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR (state = 'AWAITING_HUMAN_INTERVENTION' AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL AND suspension_kind = 'INTERVENTION' AND suspension_context IS NULL AND suspension_context_schema_version IS NULL) OR (state NOT IN ('PAUSED','AWAITING_HUMAN_INTERVENTION') AND suspended_state IS NULL AND suspension_kind IS NULL AND suspension_context IS NULL AND suspension_context_schema_version IS NULL)",
             name=op.f("ck_runs_suspension_state_shape"),
         ),
         sa.ForeignKeyConstraint(

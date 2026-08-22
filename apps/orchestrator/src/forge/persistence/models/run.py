@@ -75,11 +75,10 @@ class Run(Base, TimestampMixin):
             "(state = 'PAUSED' AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL "
             "AND suspension_kind = 'PAUSE' AND suspension_context IS NOT NULL "
             "AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR "
-            "(state IN ('INTERVENTION_REQUIRED','AWAITING_HUMAN_INTERVENTION') "
-            "AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL "
-            "AND suspension_kind = 'INTERVENTION' AND suspension_context IS NOT NULL "
-            "AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR "
-            "(state NOT IN ('PAUSED','INTERVENTION_REQUIRED','AWAITING_HUMAN_INTERVENTION') "
+            "(state = 'AWAITING_HUMAN_INTERVENTION' AND suspended_state IS NOT NULL "
+            "AND suspension_kind IS NOT NULL AND suspension_kind = 'INTERVENTION' "
+            "AND suspension_context IS NULL AND suspension_context_schema_version IS NULL) OR "
+            "(state NOT IN ('PAUSED','AWAITING_HUMAN_INTERVENTION') "
             "AND suspended_state IS NULL AND suspension_kind IS NULL "
             "AND suspension_context IS NULL AND suspension_context_schema_version IS NULL)",
             name="suspension_state_shape",

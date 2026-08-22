@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -13,6 +14,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from forge.application.services.state_engine import StateEngine
+from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.models import Base
 from sqlalchemy import inspect, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -180,6 +183,21 @@ def test_initial_migration_matches_the_declared_models(
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
     command.check(alembic_config_factory(migrated_database_url))
+
+
+@pytest.mark.integration
+def test_database_run_state_constraint_matches_domain_values(
+    migrated_database_url: str,
+) -> None:
+    def state_constraint(connection: Any) -> str:
+        checks = inspect(connection).get_check_constraints("runs")
+        state_check = next(item for item in checks if item["name"] == "ck_runs_state")
+        assert isinstance(state_check["sqltext"], str)
+        return state_check["sqltext"]
+
+    sqltext = asyncio.run(_inspect_database(migrated_database_url, state_constraint))
+    database_states = set(re.findall(r"'([^']+)'", sqltext))
+    assert database_states == {state.value for state in RunState}
 
 
 @pytest.mark.integration
@@ -550,8 +568,8 @@ def test_run_suspension_metadata_is_state_specific_and_versioned(
             ("PAUSED", None, 1, '{"state":"CREATED"}'),
             ("PAUSED", "INTERVENTION", 1, '{"state":"CREATED"}'),
             ("PAUSED", "PAUSE", None, '{"state":"CREATED"}'),
-            ("INTERVENTION_REQUIRED", "INTERVENTION", 1, None),
-            ("INTERVENTION_REQUIRED", "PAUSE", 1, '{"state":"CREATED"}'),
+            ("AWAITING_HUMAN_INTERVENTION", "INTERVENTION", 1, '{"state":"CREATED"}'),
+            ("AWAITING_HUMAN_INTERVENTION", "PAUSE", None, None),
             ("CREATED", "PAUSE", 1, '{"state":"CREATED"}'),
         ):
             await _rejects(
@@ -571,7 +589,10 @@ def test_run_suspension_metadata_is_state_specific_and_versioned(
         engine = create_async_engine(migrated_database_url)
         try:
             async with engine.begin() as connection:
-                for state, kind in (("PAUSED", "PAUSE"), ("INTERVENTION_REQUIRED", "INTERVENTION")):
+                for state, kind in (
+                    ("PAUSED", "PAUSE"),
+                    ("AWAITING_HUMAN_INTERVENTION", "INTERVENTION"),
+                ):
                     await connection.execute(
                         text(f"INSERT INTO runs {common} {values}"),
                         {
@@ -580,10 +601,62 @@ def test_run_suspension_metadata_is_state_specific_and_versioned(
                             "state": state,
                             "suspended_state": "CREATED",
                             "suspension_kind": kind,
-                            "context_version": 1,
-                            "context": '{"state":"CREATED"}',
+                            "context_version": 1 if state == "PAUSED" else None,
+                            "context": '{"state":"CREATED"}' if state == "PAUSED" else None,
                         },
                     )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.integration
+def test_state_engine_intervention_snapshot_persists_without_context(
+    migrated_database_url: str,
+) -> None:
+    async def exercise() -> None:
+        project_id, task_id, _ = await _insert_project_policy_task_run(migrated_database_url)
+        initial = RunSnapshot(
+            id=uuid4(),
+            project_id=project_id,
+            task_id=task_id,
+            state=RunState.PLANNING,
+        )
+        intervened = StateEngine().intervene(initial)
+        assert intervened.state is RunState.AWAITING_HUMAN_INTERVENTION
+        assert intervened.suspended_state is RunState.PLANNING
+        assert intervened.suspension_kind is not None
+        assert intervened.suspension_kind.value == "INTERVENTION"
+        assert intervened.suspension_context is None
+
+        engine = create_async_engine(migrated_database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "INSERT INTO runs "
+                        "(id, project_id, task_id, policy_version, state, version, "
+                        "suspended_state, suspension_kind, suspension_context_schema_version, "
+                        "suspension_context, local_remediation_count, remote_remediation_count, "
+                        "token_budget, cost_budget_minor, duration_budget_seconds, database_state) "
+                        "VALUES (:id, :project_id, :task_id, 1, :state, :version, "
+                        ":suspended_state, :suspension_kind, NULL, NULL, 0, 0, 0, 0, 0, 'DISABLED')"
+                    ),
+                    {
+                        "id": intervened.id,
+                        "project_id": intervened.project_id,
+                        "task_id": intervened.task_id,
+                        "state": intervened.state.value,
+                        "version": intervened.version,
+                        "suspended_state": intervened.suspended_state.value
+                        if intervened.suspended_state is not None
+                        else None,
+                        "suspension_kind": intervened.suspension_kind.value
+                        if intervened.suspension_kind is not None
+                        else None,
+                    },
+                )
         finally:
             await engine.dispose()
 
@@ -637,5 +710,15 @@ def test_policy_versions_are_immutable_but_new_versions_append(
                 )
         finally:
             await engine.dispose()
+        await _rejects(
+            migrated_database_url,
+            "DELETE FROM project_policy_versions WHERE project_id = :project_id AND version = 2",
+            {"project_id": project_id},
+        )
+        await _rejects(
+            migrated_database_url,
+            "DELETE FROM projects WHERE id = :project_id",
+            {"project_id": project_id},
+        )
 
     asyncio.run(exercise())
