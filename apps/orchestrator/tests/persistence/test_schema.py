@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -14,7 +15,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from forge.application.services.state_engine import StateEngine
+from forge.application.services.state_engine import LEGAL, StateEngine
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.models import Base
 from sqlalchemy import inspect, text
@@ -599,7 +600,9 @@ def test_run_suspension_metadata_is_state_specific_and_versioned(
                             **base,
                             "id": uuid4(),
                             "state": state,
-                            "suspended_state": "CREATED",
+                            "suspended_state": "PLANNING"
+                            if state == "AWAITING_HUMAN_INTERVENTION"
+                            else "CREATED",
                             "suspension_kind": kind,
                             "context_version": 1 if state == "PAUSED" else None,
                             "context": '{"state":"CREATED"}' if state == "PAUSED" else None,
@@ -659,6 +662,129 @@ def test_state_engine_intervention_snapshot_persists_without_context(
                 )
         finally:
             await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.integration
+def test_suspended_state_matches_exact_state_engine_source_sets(
+    migrated_database_url: str,
+) -> None:
+    async def exercise() -> None:
+        project_id, task_id, _ = await _insert_project_policy_task_run(migrated_database_url)
+        engine = create_async_engine(migrated_database_url)
+        state_engine = StateEngine()
+        terminal_states = {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
+        pause_sources = set(RunState) - terminal_states - {RunState.PAUSED}
+        intervention_sources = {
+            source
+            for source, targets in LEGAL.items()
+            if RunState.AWAITING_HUMAN_INTERVENTION in targets
+        }
+        insert_statement = text(
+            "INSERT INTO runs "
+            "(id, project_id, task_id, policy_version, state, version, suspended_state, "
+            "suspension_kind, suspension_context_schema_version, suspension_context, "
+            "local_remediation_count, remote_remediation_count, token_budget, "
+            "cost_budget_minor, duration_budget_seconds, database_state) "
+            "VALUES (:id, :project_id, :task_id, 1, :state, :version, :suspended_state, "
+            ":suspension_kind, :context_version, CAST(:context AS jsonb), "
+            "0, 0, 0, 0, 0, 'DISABLED')"
+        )
+
+        def parameters(snapshot: RunSnapshot) -> dict[str, object]:
+            context = snapshot.suspension_context
+            serialized_context = None
+            if context is not None:
+                serialized_context = json.dumps(
+                    {
+                        "state": context.state.value,
+                        "suspended_state": context.suspended_state.value
+                        if context.suspended_state is not None
+                        else None,
+                        "suspension_kind": context.suspension_kind.value
+                        if context.suspension_kind is not None
+                        else None,
+                    }
+                )
+            return {
+                "id": snapshot.id,
+                "project_id": snapshot.project_id,
+                "task_id": snapshot.task_id,
+                "state": snapshot.state.value,
+                "version": snapshot.version,
+                "suspended_state": snapshot.suspended_state.value
+                if snapshot.suspended_state is not None
+                else None,
+                "suspension_kind": snapshot.suspension_kind.value
+                if snapshot.suspension_kind is not None
+                else None,
+                "context_version": 1 if context is not None else None,
+                "context": serialized_context,
+            }
+
+        try:
+            async with engine.begin() as connection:
+                for source in pause_sources:
+                    if source is RunState.AWAITING_HUMAN_INTERVENTION:
+                        active = state_engine.intervene(
+                            RunSnapshot(
+                                id=uuid4(),
+                                project_id=project_id,
+                                task_id=task_id,
+                                state=RunState.PLANNING,
+                            )
+                        )
+                    else:
+                        active = RunSnapshot(
+                            id=uuid4(),
+                            project_id=project_id,
+                            task_id=task_id,
+                            state=source,
+                        )
+                    await connection.execute(
+                        insert_statement, parameters(state_engine.pause(active))
+                    )
+
+                for source in intervention_sources:
+                    active = RunSnapshot(
+                        id=uuid4(),
+                        project_id=project_id,
+                        task_id=task_id,
+                        state=source,
+                    )
+                    await connection.execute(
+                        insert_statement,
+                        parameters(state_engine.intervene(active)),
+                    )
+        finally:
+            await engine.dispose()
+
+        invalid_rows = (
+            ("PAUSED", "NOT_A_STATE", "PAUSE", 1, '{"state":"CREATED"}'),
+            ("PAUSED", "PAUSED", "PAUSE", 1, '{"state":"PAUSED"}'),
+            *(
+                ("PAUSED", state.value, "PAUSE", 1, f'{{"state":"{state.value}"}}')
+                for state in terminal_states
+            ),
+            ("AWAITING_HUMAN_INTERVENTION", "CREATED", "INTERVENTION", None, None),
+        )
+        for state, suspended_state, kind, context_version, context in invalid_rows:
+            await _rejects(
+                migrated_database_url,
+                str(insert_statement),
+                {
+                    "id": uuid4(),
+                    "project_id": project_id,
+                    "task_id": task_id,
+                    "state": state,
+                    "version": 1,
+                    "suspended_state": suspended_state,
+                    "suspension_kind": kind,
+                    "context_version": context_version,
+                    "context": context,
+                },
+            )
 
     asyncio.run(exercise())
 

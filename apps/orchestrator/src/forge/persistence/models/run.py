@@ -21,6 +21,26 @@ from forge.persistence.models.base import Base, TimestampMixin
 
 RUN_STATES = ",".join(f"'{state.value}'" for state in RunState)
 DATABASE_STATES = "'DISABLED','PROVISIONING','ACTIVE','FAILED','REMOVED'"
+PAUSE_SOURCE_STATES = ",".join(
+    f"'{state.value}'"
+    for state in RunState
+    if state not in {RunState.PAUSED, RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
+)
+INTERVENTION_SOURCE_STATES = ",".join(
+    f"'{state.value}'"
+    for state in (
+        RunState.PLANNING,
+        RunState.PREPARING_WORKTREE,
+        RunState.IMPLEMENTING,
+        RunState.VALIDATING,
+        RunState.REVIEWING,
+        RunState.REMEDIATING,
+        RunState.PUBLISHING_PR,
+        RunState.MONITORING_PR,
+        RunState.AWAITING_MERGE_APPROVAL,
+        RunState.MERGING,
+    )
+)
 
 
 class Run(Base, TimestampMixin):
@@ -72,10 +92,12 @@ class Run(Base, TimestampMixin):
             name="pending_gate_shape",
         ),
         CheckConstraint(
-            "(state = 'PAUSED' AND suspended_state IS NOT NULL AND suspension_kind IS NOT NULL "
+            "(state = 'PAUSED' AND suspended_state IS NOT NULL "
+            f"AND suspended_state IN ({PAUSE_SOURCE_STATES}) AND suspension_kind IS NOT NULL "
             "AND suspension_kind = 'PAUSE' AND suspension_context IS NOT NULL "
             "AND suspension_context_schema_version IS NOT NULL AND suspension_context_schema_version >= 1) OR "
             "(state = 'AWAITING_HUMAN_INTERVENTION' AND suspended_state IS NOT NULL "
+            f"AND suspended_state IN ({INTERVENTION_SOURCE_STATES}) "
             "AND suspension_kind IS NOT NULL AND suspension_kind = 'INTERVENTION' "
             "AND suspension_context IS NULL AND suspension_context_schema_version IS NULL) OR "
             "(state NOT IN ('PAUSED','AWAITING_HUMAN_INTERVENTION') "
