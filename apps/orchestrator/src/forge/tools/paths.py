@@ -92,12 +92,14 @@ class _QuarantineAccess:
         "_git",
         "_live",
         "_metadata_parent",
+        "_mutation_bound",
         "_owner",
         "_registration",
         "_registration_deleted",
         "_registration_initially_present",
         "_registration_moved",
         "_registration_path",
+        "_registration_probe",
         "_registration_quarantine",
         "_registration_quarantine_parent",
         "_registration_quarantine_path",
@@ -110,6 +112,7 @@ class _QuarantineAccess:
         "_target_initially_present",
         "_target_moved",
         "_target_path",
+        "_target_probe",
         "_target_quarantine",
         "_target_quarantine_parent",
         "_target_quarantine_path",
@@ -137,6 +140,9 @@ class _QuarantineAccess:
         registration_quarantine_parent: _QuarantineHandle,
         target_quarantine_path: Path,
         registration_quarantine_path: Path | None,
+        mutation_bound: bool = True,
+        target_probe: _QuarantineHandle | None = None,
+        registration_probe: _QuarantineHandle | None = None,
     ) -> None:
         if seal is not _QUARANTINE_SEAL:
             raise TypeError("quarantine capability is internal")
@@ -150,6 +156,8 @@ class _QuarantineAccess:
         self._registration_path = registration_path
         self._target = target
         self._registration = registration
+        self._target_probe = target_probe
+        self._registration_probe = registration_probe
         self._target_initially_present = target_initially_present
         self._registration_initially_present = registration_initially_present
         self._target_quarantine_parent = target_quarantine_parent
@@ -164,6 +172,7 @@ class _QuarantineAccess:
         self._registration_moved = False
         self._registration_deleted = False
         self._registration_root_retired = False
+        self._mutation_bound = mutation_bound
         self._live = True
         object.__setattr__(self, "_sealed", True)
 
@@ -1301,23 +1310,134 @@ class CanonicalRoot:
     def _open_worktree_quarantine(
         self, target_leaf: str, registration_basename: str
     ) -> Iterator[_QuarantineAccess]:
-        """Pin one target and registration for exact, one-way quarantine moves."""
+        """Pin and immediately bind one target for exact quarantine moves."""
+
+        with self._prepare_worktree_quarantine(target_leaf, registration_basename) as access:
+            self._bind_worktree_quarantine(access)
+            yield access
+
+    @contextlib.contextmanager
+    def _prepare_worktree_quarantine(
+        self, target_leaf: str, registration_basename: str
+    ) -> Iterator[_QuarantineAccess]:
+        """Prepare one live target while allowing safe Git inspection."""
 
         target_name = _validate_quarantine_component(target_leaf)
         registration_name = _validate_quarantine_component(registration_basename)
         self._revalidate_root()
         if os.name == "nt":
-            with self._open_windows_worktree_quarantine(target_name, registration_name) as access:
+            with self._open_windows_worktree_removal(
+                target_name,
+                registration_name,
+                mode=_REMOVAL_LIVE,
+                prepared=True,
+            ) as access:
                 try:
                     yield access
                 finally:
                     access._release(self._windows.close if self._windows else os.close)
             return
-        with self._open_posix_worktree_quarantine(target_name, registration_name) as access:
+        with self._open_posix_worktree_removal(
+            target_name,
+            registration_name,
+            mode=_REMOVAL_LIVE,
+            prepared=True,
+        ) as access:
             try:
                 yield access
             finally:
                 access._release(os.close)
+
+    def _bind_worktree_quarantine(self, access: _QuarantineAccess) -> None:
+        """Promote one prepared live access to mutation authority exactly once."""
+
+        access = self._accept_quarantine_access(access)
+        if access._mutation_bound:
+            raise RepositoryAccessDenied("repository quarantine is already mutation-bound")
+        if (
+            not access._target_initially_present
+            or not access._registration_initially_present
+            or access._target is None
+            or access._registration is None
+            or access._target_probe is None
+            or access._registration_probe is None
+        ):
+            raise RepositoryAccessDenied("repository quarantine is not a live prepared access")
+        try:
+            if os.name == "nt":
+                api = self._windows
+                if api is None:
+                    raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+                api.assert_child_absent(
+                    access._target_quarantine_parent.capability,
+                    access._target_path.name,
+                )
+                api.assert_child_absent(
+                    access._registration_quarantine_parent.capability,
+                    access.registration_path.name,
+                )
+                self._verify_windows_registration_state(access)
+                target_handle = api.open_directory_for_rename(access.target_path)
+                registration_handle: int | None = None
+                try:
+                    registration_handle = api.open_directory_for_rename(access.registration_path)
+                    target_identity = tuple(api.identity(target_handle))
+                    registration_identity = tuple(api.identity(registration_handle))
+                    if target_identity != access._target_probe.identity:
+                        raise RepositoryAccessDenied("repository target identity changed")
+                    if registration_identity != access._registration_probe.identity:
+                        raise RepositoryAccessDenied("repository registration identity changed")
+                    object.__setattr__(
+                        access,
+                        "_target",
+                        _QuarantineEntry(
+                            access._target.name,
+                            access._target.path,
+                            access._target.parent,
+                            _QuarantineHandle(target_handle, target_identity),
+                        ),
+                    )
+                    object.__setattr__(
+                        access,
+                        "_registration",
+                        _QuarantineEntry(
+                            access._registration.name,
+                            access._registration.path,
+                            access._registration.parent,
+                            _QuarantineHandle(registration_handle, registration_identity),
+                        ),
+                    )
+                    self._verify_windows_registration_state(access)
+                    access._retain(target_handle)
+                    access._retain(registration_handle)
+                    object.__setattr__(access, "_mutation_bound", True)
+                    return
+                except BaseException:
+                    api.close(target_handle)
+                    if registration_handle is not None:
+                        api.close(registration_handle)
+                    raise
+
+            self._reject_posix_live_collisions(access)
+            self._verify_posix_registration_state(access)
+            if access._target.handle.identity != access._target_probe.identity:
+                raise RepositoryAccessDenied("repository target identity changed")
+            if access._registration.handle.identity != access._registration_probe.identity:
+                raise RepositoryAccessDenied("repository registration identity changed")
+            self._assert_posix_entry_present(access._target)
+            self._assert_posix_entry_present(access._registration)
+            self._verify_posix_registration_state(access)
+            object.__setattr__(access, "_mutation_bound", True)
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository quarantine binding failed") from None
+
+    def _accept_mutation_access(self, access: _QuarantineAccess) -> _QuarantineAccess:
+        access = self._accept_quarantine_access(access)
+        if not access._mutation_bound:
+            raise RepositoryAccessDenied("repository quarantine is not mutation-bound")
+        return access
 
     @contextlib.contextmanager
     def _open_stale_registration_quarantine(
@@ -1405,6 +1525,23 @@ class CanonicalRoot:
         api.assert_child_absent(registration_handle, "locked")
         api.verify_regular_child(registration_handle, "gitdir")
 
+    def _reject_posix_live_collisions(self, access: _QuarantineAccess) -> None:
+        self._assert_posix_name_absent(
+            access._target_quarantine_parent.capability,
+            access._target_path.name,
+        )
+        self._assert_posix_name_absent(
+            access._registration_quarantine_parent.capability,
+            access.registration_path.name,
+        )
+
+    @staticmethod
+    def _verify_posix_registration_state(access: _QuarantineAccess) -> None:
+        if access._registration is None:
+            raise RepositoryAccessDenied("registration source is unavailable")
+        _reject_posix_registration_lock(access._registration.handle.capability)
+        _verify_posix_gitdir(access._registration.handle.capability)
+
     def _accept_quarantine_access(self, access: _QuarantineAccess) -> _QuarantineAccess:
         """Accept only this root's live, owner-sealed quarantine capability."""
 
@@ -1447,6 +1584,10 @@ class CanonicalRoot:
                 os.name != "nt" or not access._registration_root_retired
             ):
                 self._verify_quarantine_handle("registration", access._registration.handle)
+            if access._target_probe is not None:
+                self._verify_quarantine_handle("target probe", access._target_probe)
+            if access._registration_probe is not None:
+                self._verify_quarantine_handle("registration probe", access._registration_probe)
             if access._target_quarantine is not None:
                 self._verify_quarantine_handle(
                     "target quarantine", access._target_quarantine.handle
@@ -1479,7 +1620,7 @@ class CanonicalRoot:
     def _quarantine_target(self, access: _QuarantineAccess) -> None:
         """Move the exact opened target into its deterministic quarantine root."""
 
-        access = self._accept_quarantine_access(access)
+        access = self._accept_mutation_access(access)
         if not access._target_initially_present or access._target is None:
             raise RepositoryAccessDenied("target source is unavailable")
         if access._target_moved or access._target_quarantine is not None:
@@ -1503,7 +1644,7 @@ class CanonicalRoot:
     def _quarantine_registration(self, access: _QuarantineAccess) -> None:
         """Move the exact registration only after the live target is absent."""
 
-        access = self._accept_quarantine_access(access)
+        access = self._accept_mutation_access(access)
         if access._registration is None or not access._registration_initially_present:
             raise RepositoryAccessDenied("registration source is unavailable")
         if not access._target_deleted and access._target_initially_present:
@@ -1537,7 +1678,7 @@ class CanonicalRoot:
     def _delete_target_quarantine(self, access: _QuarantineAccess) -> None:
         """Delete a moved target quarantine while retaining its proof entry last."""
 
-        access = self._accept_quarantine_access(access)
+        access = self._accept_mutation_access(access)
         if access._target_deleted:
             return
         if access._target is None or not access._target_moved or access._target_quarantine is None:
@@ -1561,7 +1702,7 @@ class CanonicalRoot:
     def _delete_registration_quarantine(self, access: _QuarantineAccess) -> None:
         """Delete a moved registration quarantine after target deletion completes."""
 
-        access = self._accept_quarantine_access(access)
+        access = self._accept_mutation_access(access)
         if access._registration_deleted:
             return
         if access._registration is None or not access._registration_initially_present:
@@ -2341,6 +2482,7 @@ class CanonicalRoot:
         registration_name: str | None,
         *,
         mode: str,
+        prepared: bool = False,
     ) -> Iterator[_QuarantineAccess]:
         if not _O_DIRECTORY or not _O_NOFOLLOW:
             raise RepositoryAccessDenied("safe POSIX path capabilities are unavailable")
@@ -2473,6 +2615,20 @@ class CanonicalRoot:
                     if registration_name is not None
                     else None
                 ),
+                mutation_bound=mode != _REMOVAL_LIVE or not prepared,
+                target_probe=(
+                    _QuarantineHandle(target_descriptor, _fd_identity(target_descriptor))
+                    if prepared and mode == _REMOVAL_LIVE and target_descriptor is not None
+                    else None
+                ),
+                registration_probe=(
+                    _QuarantineHandle(
+                        registration_descriptor,
+                        _fd_identity(registration_descriptor),
+                    )
+                    if prepared and mode == _REMOVAL_LIVE and registration_descriptor is not None
+                    else None
+                ),
             )
             yield access
             self._revalidate_root()
@@ -2502,12 +2658,15 @@ class CanonicalRoot:
         registration_name: str | None,
         *,
         mode: str,
+        prepared: bool = False,
     ) -> Iterator[_QuarantineAccess]:
         api = self._windows
         if api is None:
             raise RepositoryAccessDenied("Windows path capabilities are unavailable")
         if mode not in {_REMOVAL_LIVE, _REMOVAL_STALE_REGISTRATION, _REMOVAL_ABSENT}:
             raise RepositoryAccessDenied("repository removal mode is invalid")
+        if prepared and mode != _REMOVAL_LIVE:
+            raise RepositoryAccessDenied("repository prepared mode is invalid")
         if mode != _REMOVAL_ABSENT and registration_name is None:
             raise RepositoryAccessDenied("registration source is unavailable")
         resources: list[int] = []
@@ -2530,7 +2689,11 @@ class CanonicalRoot:
             target_path = worktree_parent_path / target_name
             target_handle: int | None = None
             if mode == _REMOVAL_LIVE:
-                target_handle = api.open_directory_for_rename(target_path)
+                target_handle = (
+                    api.open_directory_for_verification(target_path)
+                    if prepared
+                    else api.open_directory_for_rename(target_path)
+                )
                 resources.append(target_handle)
             else:
                 api.assert_child_absent(worktree_parent_handle, target_name)
@@ -2541,7 +2704,11 @@ class CanonicalRoot:
             registration_handle: int | None = None
             if registration_name is not None:
                 registration_path = metadata_parent_path / registration_name
-                registration_handle = api.open_directory_for_rename(registration_path)
+                registration_handle = (
+                    api.open_directory_for_verification(registration_path)
+                    if prepared
+                    else api.open_directory_for_rename(registration_path)
+                )
                 resources.append(registration_handle)
                 api.assert_child_absent(registration_handle, "locked")
                 api.verify_regular_child(registration_handle, "gitdir")
@@ -2631,6 +2798,23 @@ class CanonicalRoot:
                 registration_quarantine_path=(
                     registration_quarantine_path / registration_name
                     if registration_name is not None
+                    else None
+                ),
+                mutation_bound=mode != _REMOVAL_LIVE or not prepared,
+                target_probe=(
+                    _QuarantineHandle(target_handle, target_identity)
+                    if prepared
+                    and mode == _REMOVAL_LIVE
+                    and target_handle is not None
+                    and target_identity is not None
+                    else None
+                ),
+                registration_probe=(
+                    _QuarantineHandle(registration_handle, registration_identity)
+                    if prepared
+                    and mode == _REMOVAL_LIVE
+                    and registration_handle is not None
+                    and registration_identity is not None
                     else None
                 ),
             )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -31,6 +32,44 @@ def _make_quarantine_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     registration.mkdir(parents=True)
     (registration / "gitdir").write_text(f"{target / '.git'}\n", encoding="utf-8")
     return root, target, registration, tmp_path / "outside"
+
+
+def _make_real_quarantine_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    git = shutil.which("git") or "git"
+    root = tmp_path / "repository"
+    root.mkdir()
+    for arguments in (
+        ("init", "-b", "main"),
+        ("config", "user.name", "Forge Test"),
+        ("config", "user.email", "forge@example.test"),
+    ):
+        result = subprocess.run(
+            [git, "-C", str(root), *arguments],
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+    (root / "README.md").write_text("forge\n", encoding="utf-8")
+    for arguments in (("add", "README.md"), ("commit", "-m", "initial")):
+        result = subprocess.run(
+            [git, "-C", str(root), *arguments],
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+    target = root / ".worktrees" / "target"
+    target.parent.mkdir()
+    result = subprocess.run(
+        [git, "-C", str(root), "worktree", "add", "-b", "feature", str(target), "HEAD"],
+        capture_output=True,
+        check=False,
+        shell=False,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    metadata = next((root / ".git" / "worktrees").iterdir())
+    return root, target, metadata
 
 
 def _remove_flat_directory(path: Path) -> None:
@@ -580,6 +619,291 @@ def test_open_read_rejects_a_symlinked_intermediate_component(tmp_path: Path) ->
 
     with pytest.raises(RepositoryAccessDenied), root.open_read("linked/secret.txt"):
         pass
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory sharing semantics")
+def test_prepared_live_quarantine_allows_git_reopen_before_binding(tmp_path: Path) -> None:
+    root_path, target, registration = _make_real_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    git = shutil.which("git") or "git"
+
+    with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+        result = subprocess.run(
+            [git, "-C", str(target), "branch", "--show-current"],
+            capture_output=True,
+            check=False,
+            shell=False,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "feature"
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_target(access)
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_registration(access)
+
+    assert target.is_dir()
+    assert registration.is_dir()
+
+
+def test_prepared_live_quarantine_binds_before_ordered_mutation(tmp_path: Path) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+
+    with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_target(access)
+        root._bind_worktree_quarantine(access)
+        with pytest.raises(RepositoryAccessDenied):
+            root._bind_worktree_quarantine(access)
+
+        root._quarantine_target(access)
+        root._delete_target_quarantine(access)
+        root._quarantine_registration(access)
+        root._delete_registration_quarantine(access)
+
+    assert not target.exists()
+    assert not registration.exists()
+    assert not (root_path / ".worktrees" / ".forge-quarantine" / target.name).exists()
+    assert not (root_path / ".git" / ".forge-worktree-quarantine" / registration.name).exists()
+
+
+def test_open_worktree_quarantine_prepares_then_binds_before_yield(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    original_bind = root._bind_worktree_quarantine
+    bound: list[object] = []
+
+    def bind_spy(access: object) -> None:
+        bound.append(access)
+        original_bind(access)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(root, "_bind_worktree_quarantine", bind_spy)
+    with root._open_worktree_quarantine(target.name, registration.name) as access:
+        assert access._mutation_bound is True
+        assert bound == [access]
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        "target-disappears",
+        "registration-disappears",
+        "target-collision",
+        "registration-collision",
+        "locked",
+        "malformed-gitdir",
+    ),
+)
+def test_prepared_live_bind_rejects_changed_sources_or_metadata_without_mutation(
+    tmp_path: Path, change: str
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    moved: Path | None = None
+
+    with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+        if change == "target-disappears":
+            moved = target.with_name("moved-target")
+            target.rename(moved)
+        elif change == "registration-disappears":
+            moved = registration.with_name("moved-registration")
+            registration.rename(moved)
+        elif change == "target-collision":
+            access.target_quarantine_path.mkdir()
+        elif change == "registration-collision":
+            access.registration_quarantine_path.mkdir()
+        elif change == "locked":
+            (registration / "locked").write_text("locked\n", encoding="utf-8")
+        else:
+            (registration / "gitdir").unlink()
+            (registration / "gitdir").mkdir()
+
+        with pytest.raises(RepositoryAccessDenied):
+            root._bind_worktree_quarantine(access)
+        assert access._mutation_bound is False
+        assert not access.target_quarantine_path.is_dir() or change == "target-collision"
+        assert (
+            not access.registration_quarantine_path.is_dir() or change == "registration-collision"
+        )
+
+    if moved is not None:
+        assert moved.is_dir()
+    else:
+        assert target.is_dir()
+        assert registration.is_dir()
+
+
+def test_bind_rejects_foreign_released_stale_and_absent_accesses(tmp_path: Path) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    foreign = CanonicalRoot(root_path)
+
+    with (
+        root._prepare_worktree_quarantine(target.name, registration.name) as prepared,
+        pytest.raises(RepositoryAccessDenied),
+    ):
+        foreign._bind_worktree_quarantine(prepared)
+
+    with pytest.raises(RepositoryAccessDenied):
+        root._bind_worktree_quarantine(prepared)
+
+    _remove_flat_directory(target)
+    with (
+        root._open_stale_registration_quarantine(target.name, registration.name) as stale,
+        pytest.raises(RepositoryAccessDenied),
+    ):
+        root._bind_worktree_quarantine(stale)
+
+    _remove_flat_directory(registration)
+    with (
+        root._inspect_absent_worktree_removal(target.name) as absent,
+        pytest.raises(RepositoryAccessDenied),
+    ):
+        root._bind_worktree_quarantine(absent)
+
+
+def test_prepared_live_access_rejects_every_mutation_before_binding(tmp_path: Path) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+
+    with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+        for mutation in (
+            root._quarantine_target,
+            root._delete_target_quarantine,
+            root._quarantine_registration,
+            root._delete_registration_quarantine,
+        ):
+            with pytest.raises(RepositoryAccessDenied):
+                mutation(access)
+
+    assert target.is_dir()
+    assert registration.is_dir()
+
+
+def test_prepared_live_access_holds_the_repository_mutation_lock(tmp_path: Path) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    competing = CanonicalRoot(root_path)
+
+    with (
+        root._prepare_worktree_quarantine(target.name, registration.name),
+        pytest.raises(RepositoryAccessDenied),
+        competing._prepare_worktree_quarantine(target.name, registration.name),
+    ):
+        pass
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows rename-sharing conflict")
+def test_windows_prepared_live_bind_rejects_a_rename_sharing_conflict(
+    tmp_path: Path,
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+        competing = api.open_directory_for_rename(target)
+        try:
+            with pytest.raises(RepositoryAccessDenied):
+                root._bind_worktree_quarantine(access)
+        finally:
+            api.close(competing)
+        assert access._mutation_bound is False
+        assert target.is_dir()
+        assert registration.is_dir()
+        assert not access.target_quarantine_path.exists()
+        assert not access.registration_quarantine_path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows bind handle cleanup")
+def test_windows_prepared_live_bind_closes_target_when_registration_open_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    original_open = api.open_directory_for_rename
+    original_close = api.close
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def open_spy(path: Path) -> int:
+        if opened:
+            raise RepositoryAccessDenied("injected registration open failure")
+        handle = original_open(path)
+        opened.append(handle)
+        return handle
+
+    def close_spy(handle: int) -> None:
+        closed.append(handle)
+        original_close(handle)
+
+    monkeypatch.setattr(api, "open_directory_for_rename", open_spy)
+    monkeypatch.setattr(api, "close", close_spy)
+    with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+        with pytest.raises(RepositoryAccessDenied):
+            root._bind_worktree_quarantine(access)
+        assert access._mutation_bound is False
+        with pytest.raises((OSError, RepositoryAccessDenied)):
+            api.identity(opened[0])
+
+    assert opened
+    assert opened[0] in closed
+    assert target.is_dir()
+    assert registration.is_dir()
+
+
+@pytest.mark.parametrize("state", ("prepare", "bind", "bind-failure", "exception"))
+def test_prepared_live_context_releases_all_retained_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    closed: list[int] = []
+    retained: set[int] = set()
+    if os.name == "nt":
+        api = root._windows
+        assert api is not None
+        original_close = api.close
+
+        def close_spy(handle: int) -> None:
+            closed.append(handle)
+            original_close(handle)
+
+        monkeypatch.setattr(api, "close", close_spy)
+    else:
+        original_close = os.close
+
+        def close_spy(handle: int) -> None:
+            closed.append(handle)
+            original_close(handle)
+
+        monkeypatch.setattr(os, "close", close_spy)
+
+    if state == "exception":
+        with (
+            pytest.raises(RuntimeError),
+            root._prepare_worktree_quarantine(target.name, registration.name) as access,
+        ):
+            retained.update(access._resources)
+            raise RuntimeError("injected context failure")
+    else:
+        with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+            retained.update(access._resources)
+            if state == "bind":
+                root._bind_worktree_quarantine(access)
+                retained.update(access._resources)
+            elif state == "bind-failure":
+                (registration / "locked").write_text("locked\n", encoding="utf-8")
+                with pytest.raises(RepositoryAccessDenied):
+                    root._bind_worktree_quarantine(access)
+
+    assert retained <= set(closed)
 
 
 def test_quarantine_moves_exact_target_then_registration(tmp_path: Path) -> None:
@@ -2006,12 +2330,10 @@ def test_quarantine_preserves_exact_evidence_after_post_rename_failure(
         del path
         raise RepositoryAccessDenied("injected verification failure")
 
-    monkeypatch.setattr(api, "open_directory_for_verification", fail_reopen)
-    with (
-        pytest.raises(RepositoryAccessDenied),
-        root._open_worktree_quarantine(target.name, registration.name) as access,
-    ):
-        root._quarantine_target(access)
+    with root._open_worktree_quarantine(target.name, registration.name) as access:
+        monkeypatch.setattr(api, "open_directory_for_verification", fail_reopen)
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_target(access)
     assert not target.exists()
     retained = root_path / ".worktrees" / ".forge-quarantine" / target.name
     assert retained.is_dir()
@@ -2078,6 +2400,7 @@ def test_quarantine_closes_destination_after_identity_failure(
 
         with pytest.raises(RepositoryAccessDenied):
             root._quarantine_target(access)
+        monkeypatch.undo()
 
     assert opened
     assert opened[0] in closed
