@@ -225,6 +225,23 @@ if os.name == "nt":
     _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
     _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
     _FILE_RENAME_INFORMATION_CLASS = 10
+    _FILE_NAMES_INFORMATION_CLASS = 12
+    _FILE_DISPOSITION_INFORMATION_EX_CLASS = 21
+    _FILE_DISPOSITION_DELETE = 0x00000001
+    _FILE_DISPOSITION_POSIX_SEMANTICS = 0x00000002
+    _FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE = 0x00000010
+    _FILE_DISPOSITION_FLAGS = (
+        _FILE_DISPOSITION_DELETE
+        | _FILE_DISPOSITION_POSIX_SEMANTICS
+        | _FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE
+    )
+    _FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
+    _FILE_OPEN_REPARSE_POINT = 0x00200000
+    _SYNCHRONIZE = 0x00100000
+    _OBJ_CASE_INSENSITIVE = 0x00000040
+    _STATUS_SUCCESS = 0x00000000
+    _STATUS_BUFFER_OVERFLOW = 0x80000005
+    _STATUS_NO_MORE_FILES = 0x80000006
     _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
     _TOKEN_QUERY = 0x0008
     _TOKEN_USER = 1
@@ -293,6 +310,26 @@ if os.name == "nt":
             ("status_or_pointer", _IoStatusUnion),
             ("information", ctypes.c_size_t),
         )
+
+    class _UnicodeString(ctypes.Structure):
+        _fields_ = (
+            ("length", wintypes.USHORT),
+            ("maximum_length", wintypes.USHORT),
+            ("buffer", wintypes.LPWSTR),
+        )
+
+    class _ObjectAttributes(ctypes.Structure):
+        _fields_ = (
+            ("length", wintypes.ULONG),
+            ("root_directory", wintypes.HANDLE),
+            ("object_name", ctypes.POINTER(_UnicodeString)),
+            ("attributes", wintypes.ULONG),
+            ("security_descriptor", ctypes.c_void_p),
+            ("security_quality_of_service", ctypes.c_void_p),
+        )
+
+    class _FileDispositionInfoEx(ctypes.Structure):
+        _fields_ = (("flags", wintypes.DWORD),)
 
     _FILE_RENAME_NAME_OFFSET = _FileRenameInfo.file_name_length.offset + ctypes.sizeof(
         wintypes.DWORD
@@ -416,9 +453,47 @@ class _WindowsPathApi:
             ctypes.c_uint32,
         )
         self._nt_set_file_information.restype = ctypes.c_long
+        self._nt_query_directory_file = ntdll.NtQueryDirectoryFile
+        self._nt_query_directory_file.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(_IoStatusBlock),
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            wintypes.BOOLEAN,
+            ctypes.c_void_p,
+            wintypes.BOOLEAN,
+        )
+        self._nt_query_directory_file.restype = ctypes.c_long
+        self._nt_open_file = ntdll.NtOpenFile
+        self._nt_open_file.argtypes = (
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_uint32,
+            ctypes.POINTER(_ObjectAttributes),
+            ctypes.POINTER(_IoStatusBlock),
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        )
+        self._nt_open_file.restype = ctypes.c_long
         self._rtl_nt_status_to_dos_error = ntdll.RtlNtStatusToDosError
         self._rtl_nt_status_to_dos_error.argtypes = (ctypes.c_long,)
         self._rtl_nt_status_to_dos_error.restype = ctypes.c_ulong
+        self._set_file_information_by_handle: Any | None = None
+        try:
+            self._set_file_information_by_handle = kernel32.SetFileInformationByHandle
+        except AttributeError:
+            self._set_file_information_by_handle = None
+        else:
+            self._set_file_information_by_handle.argtypes = (
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            )
+            self._set_file_information_by_handle.restype = wintypes.BOOL
 
     @staticmethod
     def _value(handle: ctypes.c_void_p | int) -> int:
@@ -743,6 +818,177 @@ class _WindowsPathApi:
             return
         dos_error = int(self._rtl_nt_status_to_dos_error(status))
         raise OSError(dos_error or 1, "native quarantine rename failed")
+
+    @staticmethod
+    def _parse_file_names_information(data: bytes, information_length: int) -> tuple[str, ...]:
+        """Parse one strict ``FILE_NAMES_INFORMATION`` response buffer."""
+
+        if information_length < 0 or information_length > len(data):
+            raise RepositoryAccessDenied("native directory enumeration is malformed")
+        limit = information_length
+        offset = 0
+        names: list[str] = []
+        if limit == 0:
+            return ()
+        while True:
+            if limit - offset < 12:
+                raise RepositoryAccessDenied("native directory enumeration is malformed")
+            next_offset = int.from_bytes(data[offset : offset + 4], "little")
+            name_length = int.from_bytes(data[offset + 8 : offset + 12], "little")
+            name_start = offset + 12
+            name_end = name_start + name_length
+            if name_length % 2 or name_end > limit:
+                raise RepositoryAccessDenied("native directory enumeration is malformed")
+            try:
+                name = data[name_start:name_end].decode("utf-16-le", errors="strict")
+            except UnicodeDecodeError:
+                raise RepositoryAccessDenied("native directory enumeration is malformed") from None
+            names.append(name)
+            if next_offset == 0:
+                if name_end != limit:
+                    raise RepositoryAccessDenied("native directory enumeration is malformed")
+                return tuple(names)
+            if next_offset < 12 + name_length or next_offset % 4:
+                raise RepositoryAccessDenied("native directory enumeration is malformed")
+            next_position = offset + next_offset
+            if next_position > limit:
+                raise RepositoryAccessDenied("native directory enumeration is malformed")
+            if any(data[name_end:next_position]):
+                raise RepositoryAccessDenied("native directory enumeration is malformed")
+            offset = next_position
+
+    def enumerate_names(self, handle: int) -> tuple[str, ...]:
+        """Enumerate validated direct children using only an opened directory handle."""
+
+        names: list[str] = []
+        seen: set[str] = set()
+        restart_scan = True
+        buffer_size = 64 * 1024
+        while True:
+            buffer = ctypes.create_string_buffer(buffer_size)
+            io_status = _IoStatusBlock()
+            status = int(
+                self._nt_query_directory_file(
+                    handle,
+                    None,
+                    None,
+                    None,
+                    ctypes.byref(io_status),
+                    ctypes.cast(buffer, ctypes.c_void_p),
+                    buffer_size,
+                    _FILE_NAMES_INFORMATION_CLASS,
+                    False,
+                    None,
+                    restart_scan,
+                )
+            )
+            restart_scan = False
+            normalized_status = status & 0xFFFFFFFF
+            if normalized_status == _STATUS_NO_MORE_FILES:
+                return tuple(names)
+            if normalized_status not in {_STATUS_SUCCESS, _STATUS_BUFFER_OVERFLOW}:
+                self._raise_native_status(status, "native directory enumeration failed")
+            information_length = int(io_status.information)
+            if information_length <= 0 or information_length > buffer_size:
+                raise RepositoryAccessDenied("native directory enumeration is malformed")
+            for name in self._parse_file_names_information(
+                ctypes.string_at(buffer, information_length), information_length
+            ):
+                if name in {".", ".."}:
+                    continue
+                try:
+                    _validate_quarantine_component(name)
+                except PathEscape, UnicodeError, ValueError:
+                    raise RepositoryAccessDenied(
+                        "native directory enumeration contains an invalid name"
+                    ) from None
+                if name in seen:
+                    raise RepositoryAccessDenied("native directory enumeration is duplicated")
+                seen.add(name)
+                names.append(name)
+            if normalized_status == _STATUS_SUCCESS:
+                continue
+
+    def open_child(self, parent_handle: int, name: str, *, list_handle: bool = False) -> int:
+        """Open one validated child relative to a retained directory handle."""
+
+        try:
+            name = _validate_quarantine_component(name)
+            encoded = name.encode("utf-16-le", errors="strict")
+        except PathEscape, UnicodeError, ValueError:
+            raise RepositoryAccessDenied("native child name is invalid") from None
+        if len(encoded) > 0xFFFE:
+            raise RepositoryAccessDenied("native child name is too long")
+        name_buffer = ctypes.create_unicode_buffer(name)
+        unicode_name = _UnicodeString(
+            len(encoded),
+            len(encoded) + ctypes.sizeof(wintypes.WCHAR),
+            ctypes.cast(name_buffer, wintypes.LPWSTR),
+        )
+        object_attributes = _ObjectAttributes(
+            ctypes.sizeof(_ObjectAttributes),
+            wintypes.HANDLE(parent_handle),
+            ctypes.pointer(unicode_name),
+            _OBJ_CASE_INSENSITIVE,
+            None,
+            None,
+        )
+        access = (
+            _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+            if list_handle
+            else _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+        )
+        share = (
+            _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE
+            if list_handle
+            else _FILE_SHARE_READ | _FILE_SHARE_WRITE
+        )
+        options = _FILE_OPEN_REPARSE_POINT | _FILE_SYNCHRONOUS_IO_NONALERT
+        raw_handle = ctypes.c_void_p()
+        io_status = _IoStatusBlock()
+        status = int(
+            self._nt_open_file(
+                ctypes.byref(raw_handle),
+                access,
+                ctypes.byref(object_attributes),
+                ctypes.byref(io_status),
+                share,
+                options,
+            )
+        )
+        if status & 0xFFFFFFFF != _STATUS_SUCCESS:
+            self._raise_native_status(status, "native relative child open failed")
+        try:
+            child = self._value(raw_handle)
+            self.information(child)
+            return child
+        except BaseException:
+            raw_value = raw_handle.value
+            if raw_value is not None and raw_value != _INVALID_HANDLE_VALUE:
+                self.close(int(raw_value))
+            raise
+
+    def dispose(self, handle: int) -> None:
+        """Mark one already-opened exact handle for POSIX-style deletion."""
+
+        setter = self._set_file_information_by_handle
+        if setter is None:
+            raise RepositoryAccessDenied("native file disposition is unavailable")
+        info = _FileDispositionInfoEx(_FILE_DISPOSITION_FLAGS)
+        ctypes.set_last_error(0)
+        if not setter(
+            handle,
+            _FILE_DISPOSITION_INFORMATION_EX_CLASS,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            raise RepositoryAccessDenied("native file disposition failed")
+
+    def _raise_native_status(self, status: int, message: str) -> None:
+        dos_error = int(self._rtl_nt_status_to_dos_error(status))
+        if dos_error:
+            raise OSError(dos_error, message)
+        raise RepositoryAccessDenied(message)
 
     def _open(
         self,

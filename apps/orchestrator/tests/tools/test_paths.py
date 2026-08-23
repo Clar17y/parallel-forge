@@ -50,6 +50,34 @@ def _make_symlink(link: Path, target: Path, *, directory: bool) -> None:
     pytest.skip("the current host cannot create a symlink or junction")
 
 
+def _make_junction(link: Path, target: Path) -> None:
+    result = subprocess.run(
+        ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        shell=False,
+        check=False,
+    )
+    if result.returncode != 0 or not link.is_dir():
+        details = b" ".join((result.stdout, result.stderr)).decode(errors="replace")
+        raise AssertionError(f"could not create junction: {details}")
+
+
+def _file_names_information(*names: str) -> bytes:
+    records: list[bytes] = []
+    for index, name in enumerate(names):
+        encoded = name.encode("utf-16-le")
+        record_length = 12 + len(encoded)
+        next_offset = 0 if index == len(names) - 1 else (record_length + 3) & ~3
+        record = (
+            next_offset.to_bytes(4, "little")
+            + b"\x00\x00\x00\x00"
+            + len(encoded).to_bytes(4, "little")
+            + encoded
+        )
+        records.append(record + b"\x00" * (next_offset - record_length))
+    return b"".join(records)
+
+
 def test_canonical_root_rejects_a_symlinked_root(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
@@ -68,6 +96,262 @@ def test_native_rename_abi_guard_and_io_status_layout() -> None:
     assert ctypes.sizeof(paths._IoStatusBlock) == 16
     assert paths._IoStatusBlock.status.offset == 0
     assert paths._IoStatusBlock.information.offset == 8
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native quarantine deletion primitives")
+def test_windows_native_enumerates_exact_names_from_a_retained_handle(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    (root_path / "one.txt").write_text("one", encoding="utf-8")
+    (root_path / "nested").mkdir()
+    (root_path / "nested" / "two.txt").write_text("two", encoding="utf-8")
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    handle = api.open_directory(root_path)
+    try:
+        assert set(api.enumerate_names(handle)) == {"one.txt", "nested", "src"}
+    finally:
+        api.close(handle)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native enumeration parser")
+def test_windows_native_file_name_parser_accepts_strict_utf16_records() -> None:
+    data = _file_names_information("normal.txt", "café.txt", "😀.bin")
+
+    assert paths._WindowsPathApi._parse_file_names_information(data, len(data)) == (
+        "normal.txt",
+        "café.txt",
+        "😀.bin",
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native enumeration parser")
+@pytest.mark.parametrize(
+    ("data", "information_length"),
+    [
+        (b"\x00" * 11, 11),
+        (b"\x00" * 12, 13),
+        (
+            b"\x00" * 8 + (1).to_bytes(4, "little") + b"A",
+            13,
+        ),
+        (
+            b"\x00" * 8 + (2).to_bytes(4, "little") + b"\x00\xd8",
+            14,
+        ),
+    ],
+)
+def test_windows_native_file_name_parser_rejects_malformed_lengths_and_utf16(
+    data: bytes, information_length: int
+) -> None:
+    with pytest.raises(RepositoryAccessDenied):
+        paths._WindowsPathApi._parse_file_names_information(data, information_length)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native enumeration validation")
+def test_windows_native_enumeration_rejects_a_malformed_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = CanonicalRoot(_make_root(tmp_path))
+    api = root._windows
+    assert api is not None
+    parent = api.open_directory(root.path)
+    malformed = b"\x00" * 8 + (2).to_bytes(4, "little") + b"\x00\xd8"
+
+    def query_directory(
+        _handle: int,
+        _event: object,
+        _apc_routine: object,
+        _apc_context: object,
+        io_status: object,
+        buffer: object,
+        _length: int,
+        _information_class: int,
+        _return_single_entry: bool,
+        _file_name: object,
+        _restart_scan: bool,
+    ) -> int:
+        ctypes.memmove(buffer, malformed, len(malformed))
+        ctypes.cast(io_status, ctypes.POINTER(paths._IoStatusBlock)).contents.information = len(
+            malformed
+        )
+        return paths._STATUS_SUCCESS
+
+    monkeypatch.setattr(api, "_nt_query_directory_file", query_directory)
+    try:
+        with pytest.raises(RepositoryAccessDenied):
+            api.enumerate_names(parent)
+    finally:
+        api.close(parent)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native relative child opens")
+def test_windows_native_opens_normal_directory_and_reparse_children_relative_to_handle(
+    tmp_path: Path,
+) -> None:
+    root_path = _make_root(tmp_path)
+    (root_path / "normal.txt").write_text("normal", encoding="utf-8")
+    directory = root_path / "directory"
+    directory.mkdir()
+    (directory / "inside.txt").write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "marker.txt").write_text("outside", encoding="utf-8")
+    _make_junction(root_path / "junction", outside)
+
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    parent = api.open_directory(root_path)
+    children: list[int] = []
+    try:
+        normal = api.open_child(parent, "normal.txt")
+        children.append(normal)
+        normal_info = api.information(normal)
+        assert not int(normal_info.attributes) & (
+            paths._FILE_ATTRIBUTE_DIRECTORY | paths._FILE_ATTRIBUTE_REPARSE_POINT
+        )
+
+        directory_handle = api.open_child(parent, "directory", list_handle=True)
+        children.append(directory_handle)
+        directory_info = api.information(directory_handle)
+        assert int(directory_info.attributes) & paths._FILE_ATTRIBUTE_DIRECTORY
+        assert not int(directory_info.attributes) & paths._FILE_ATTRIBUTE_REPARSE_POINT
+        assert api.enumerate_names(directory_handle) == ("inside.txt",)
+
+        junction = api.open_child(parent, "junction")
+        children.append(junction)
+        junction_info = api.information(junction)
+        assert int(junction_info.attributes) & paths._FILE_ATTRIBUTE_REPARSE_POINT
+    finally:
+        for child in reversed(children):
+            api.close(child)
+        api.close(parent)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native handle disposition")
+def test_windows_native_disposition_removes_normal_readonly_and_empty_entries(
+    tmp_path: Path,
+) -> None:
+    root_path = _make_root(tmp_path)
+    normal = root_path / "normal.txt"
+    normal.write_text("normal", encoding="utf-8")
+    readonly = root_path / "readonly.txt"
+    readonly.write_text("readonly", encoding="utf-8")
+    os.chmod(readonly, 0o444)
+    empty = root_path / "empty"
+    empty.mkdir()
+
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    parent = api.open_directory(root_path)
+    try:
+        for name in ("normal.txt", "readonly.txt", "empty"):
+            handle = api.open_child(parent, name)
+            try:
+                api.dispose(handle)
+            finally:
+                api.close(handle)
+    finally:
+        api.close(parent)
+
+    assert not normal.exists()
+    assert not readonly.exists()
+    assert not empty.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native directory disposition")
+def test_windows_native_disposition_refuses_nonempty_directory(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    nonempty = root_path / "nonempty"
+    nonempty.mkdir()
+    marker = nonempty / "marker.txt"
+    marker.write_text("keep", encoding="utf-8")
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    parent = api.open_directory(root_path)
+    handle = api.open_child(parent, "nonempty")
+    try:
+        with pytest.raises(RepositoryAccessDenied):
+            api.dispose(handle)
+    finally:
+        api.close(handle)
+        api.close(parent)
+
+    assert nonempty.is_dir()
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native reparse disposition")
+def test_windows_native_disposition_removes_junction_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    root_path = _make_root(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "marker.txt"
+    marker.write_text("outside", encoding="utf-8")
+    junction_path = root_path / "junction"
+    _make_junction(junction_path, outside)
+
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    parent = api.open_directory(root_path)
+    handle = api.open_child(parent, "junction")
+    try:
+        assert int(api.information(handle).attributes) & paths._FILE_ATTRIBUTE_REPARSE_POINT
+        api.dispose(handle)
+    finally:
+        api.close(handle)
+        api.close(parent)
+
+    assert not os.path.lexists(junction_path)
+    assert marker.read_text(encoding="utf-8") == "outside"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native sharing and handle cleanup")
+def test_windows_native_locked_child_fails_then_retries_and_closes_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path = _make_root(tmp_path)
+    locked = root_path / "locked.txt"
+    locked.write_text("locked", encoding="utf-8")
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    parent = api.open_directory(root_path)
+    closed: list[int] = []
+    original_close = api.close
+
+    def close_spy(handle: int) -> None:
+        closed.append(handle)
+        original_close(handle)
+
+    monkeypatch.setattr(api, "close", close_spy)
+    held = api.open_child(parent, "locked.txt")
+    try:
+        with pytest.raises((OSError, RepositoryAccessDenied)):
+            api.open_child(parent, "locked.txt")
+    finally:
+        api.close(held)
+
+    retried = api.open_child(parent, "locked.txt")
+    api.close(retried)
+    closed_before_injected_failure = len(closed)
+
+    def fail_information(_handle: int) -> object:
+        raise RepositoryAccessDenied("injected child information failure")
+
+    monkeypatch.setattr(api, "information", fail_information)
+    with pytest.raises(RepositoryAccessDenied):
+        api.open_child(parent, "locked.txt")
+    assert len(closed) == closed_before_injected_failure + 1
+
+    api.close(parent)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows security descriptor behavior")
