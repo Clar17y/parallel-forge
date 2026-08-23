@@ -19,6 +19,15 @@ _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+_TARGET_QUARANTINE_NAME = ".forge-quarantine"
+_REGISTRATION_QUARANTINE_NAME = ".forge-worktree-quarantine"
+_QUARANTINE_SEAL = object()
+
+
+def _require_windows_native_pointer_size(pointer_size: int | None = None) -> None:
+    actual_size = ctypes.sizeof(ctypes.c_void_p) if pointer_size is None else pointer_size
+    if actual_size != 8:
+        raise RepositoryAccessDenied("Windows native filesystem ABI is unsupported")
 
 
 class _WindowsIdentity(NamedTuple):
@@ -28,6 +37,112 @@ class _WindowsIdentity(NamedTuple):
 
 
 _ACCESS_SEAL = object()
+
+
+class _QuarantineHandle(NamedTuple):
+    capability: int
+    identity: tuple[int, ...]
+
+
+class _QuarantineEntry(NamedTuple):
+    name: str
+    path: Path
+    parent: _QuarantineHandle
+    handle: _QuarantineHandle
+
+
+class _QuarantineAccess:
+    """Owner-sealed capabilities for one exact, one-way quarantine operation."""
+
+    __slots__ = (
+        "_git",
+        "_live",
+        "_metadata_parent",
+        "_owner",
+        "_registration",
+        "_registration_moved",
+        "_registration_quarantine",
+        "_registration_quarantine_parent",
+        "_registration_quarantine_path",
+        "_resources",
+        "_root",
+        "_sealed",
+        "_target",
+        "_target_moved",
+        "_target_quarantine",
+        "_target_quarantine_parent",
+        "_target_quarantine_path",
+        "_worktree_parent",
+    )
+
+    def __init__(
+        self,
+        *,
+        seal: object,
+        owner: object,
+        resources: list[int],
+        root: _QuarantineHandle,
+        git: _QuarantineHandle,
+        worktree_parent: _QuarantineHandle,
+        metadata_parent: _QuarantineHandle,
+        target: _QuarantineEntry,
+        registration: _QuarantineEntry,
+        target_quarantine_parent: _QuarantineHandle,
+        registration_quarantine_parent: _QuarantineHandle,
+        target_quarantine_path: Path,
+        registration_quarantine_path: Path,
+    ) -> None:
+        if seal is not _QUARANTINE_SEAL:
+            raise TypeError("quarantine capability is internal")
+        self._owner = owner
+        self._resources = resources
+        self._root = root
+        self._git = git
+        self._worktree_parent = worktree_parent
+        self._metadata_parent = metadata_parent
+        self._target = target
+        self._registration = registration
+        self._target_quarantine_parent = target_quarantine_parent
+        self._registration_quarantine_parent = registration_quarantine_parent
+        self._target_quarantine_path = target_quarantine_path
+        self._registration_quarantine_path = registration_quarantine_path
+        self._target_quarantine: _QuarantineEntry | None = None
+        self._registration_quarantine: _QuarantineEntry | None = None
+        self._target_moved = False
+        self._registration_moved = False
+        self._live = True
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("quarantine capability is immutable")
+        object.__setattr__(self, name, value)
+
+    @property
+    def target_path(self) -> Path:
+        return self._target.path
+
+    @property
+    def registration_path(self) -> Path:
+        return self._registration.path
+
+    @property
+    def target_quarantine_path(self) -> Path:
+        return self._target_quarantine_path
+
+    @property
+    def registration_quarantine_path(self) -> Path:
+        return self._registration_quarantine_path
+
+    def _retain(self, capability: int) -> None:
+        self._resources.append(capability)
+
+    def _release(self, close: Any) -> None:
+        object.__setattr__(self, "_live", False)
+        for capability in reversed(self._resources):
+            with contextlib.suppress(OSError, ValueError):
+                close(capability)
+        self._resources.clear()
 
 
 class _DirectoryAccess:
@@ -92,15 +207,36 @@ _ACTIVE_DIRECTORY_ACCESS: contextvars.ContextVar[_DirectoryAccess | None] = cont
 if os.name == "nt":
     from ctypes import wintypes
 
+    _DELETE = 0x00010000
     _GENERIC_READ = 0x80000000
+    _GENERIC_WRITE = 0x40000000
+    _FILE_READ_ATTRIBUTES = 0x00000080
     _FILE_LIST_DIRECTORY = 0x00000001
+    _FILE_ADD_SUBDIRECTORY = 0x00000004
+    _READ_CONTROL = 0x00020000
     _FILE_SHARE_READ = 0x00000001
     _FILE_SHARE_WRITE = 0x00000002
+    _FILE_SHARE_DELETE = 0x00000004
     _OPEN_EXISTING = 3
+    _OPEN_ALWAYS = 4
+    _ERROR_ALREADY_EXISTS = 183
+    _FILE_ATTRIBUTE_NORMAL = 0x00000080
     _FILE_ATTRIBUTE_DIRECTORY = 0x00000010
     _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
     _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+    _FILE_RENAME_INFORMATION_CLASS = 10
     _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    _TOKEN_QUERY = 0x0008
+    _TOKEN_USER = 1
+    _SECURITY_DESCRIPTOR_REVISION = 1
+    _SE_FILE_OBJECT = 1
+    _OWNER_SECURITY_INFORMATION = 0x00000001
+    _DACL_SECURITY_INFORMATION = 0x00000004
+    _SE_DACL_PROTECTED = 0x1000
+    _ACCESS_ALLOWED_ACE_TYPE = 0
+    _INHERITED_ACE = 0x10
+    _FILE_ALL_ACCESS = 0x001F01FF
+    _LOCAL_SYSTEM_SID = "S-1-5-18"
 
     class _FileTime(ctypes.Structure):
         _fields_ = (("low", wintypes.DWORD), ("high", wintypes.DWORD))
@@ -119,6 +255,49 @@ if os.name == "nt":
             ("file_index_low", wintypes.DWORD),
         )
 
+    class _SecurityAttributes(ctypes.Structure):
+        _fields_ = (
+            ("length", wintypes.DWORD),
+            ("security_descriptor", ctypes.c_void_p),
+            ("inherit_handle", wintypes.BOOL),
+        )
+
+    class _SidAndAttributes(ctypes.Structure):
+        _fields_ = (("sid", ctypes.c_void_p), ("attributes", wintypes.DWORD))
+
+    class _TokenUser(ctypes.Structure):
+        _fields_ = (("user", _SidAndAttributes),)
+
+    class _AclHeader(ctypes.Structure):
+        _fields_ = (
+            ("revision", wintypes.BYTE),
+            ("sbz1", wintypes.BYTE),
+            ("size", wintypes.WORD),
+            ("ace_count", wintypes.WORD),
+            ("sbz2", wintypes.WORD),
+        )
+
+    class _FileRenameInfo(ctypes.Structure):
+        _fields_ = (
+            ("replace_if_exists", wintypes.BOOLEAN),
+            ("root_directory", wintypes.HANDLE),
+            ("file_name_length", wintypes.DWORD),
+        )
+
+    class _IoStatusUnion(ctypes.Union):
+        _fields_ = (("status", ctypes.c_long), ("pointer", ctypes.c_void_p))
+
+    class _IoStatusBlock(ctypes.Structure):
+        _anonymous_ = ("status_or_pointer",)
+        _fields_ = (
+            ("status_or_pointer", _IoStatusUnion),
+            ("information", ctypes.c_size_t),
+        )
+
+    _FILE_RENAME_NAME_OFFSET = _FileRenameInfo.file_name_length.offset + ctypes.sizeof(
+        wintypes.DWORD
+    )
+
 
 class _WindowsPathApi:
     """Small handle-only Windows API surface used while a path is inspected."""
@@ -126,6 +305,7 @@ class _WindowsPathApi:
     def __init__(self) -> None:
         if os.name != "nt":
             raise RuntimeError("Windows path API is unavailable on this platform")
+        _require_windows_native_pointer_size()
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._create_file = kernel32.CreateFileW
         self._create_file.argtypes = (
@@ -147,6 +327,98 @@ class _WindowsPathApi:
             ctypes.POINTER(_ByHandleFileInformation),
         )
         self._get_file_information.restype = ctypes.c_int
+        self._create_directory = kernel32.CreateDirectoryW
+        self._create_directory.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.POINTER(_SecurityAttributes),
+        )
+        self._create_directory.restype = ctypes.c_int
+        self._local_free = kernel32.LocalFree
+        self._local_free.argtypes = (ctypes.c_void_p,)
+        self._local_free.restype = ctypes.c_void_p
+        self._get_current_process = kernel32.GetCurrentProcess
+        self._get_current_process.argtypes = ()
+        self._get_current_process.restype = ctypes.c_void_p
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        self._open_process_token = advapi32.OpenProcessToken
+        self._open_process_token.argtypes = (
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        self._open_process_token.restype = ctypes.c_int
+        self._get_token_information = advapi32.GetTokenInformation
+        self._get_token_information.argtypes = (
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        self._get_token_information.restype = ctypes.c_int
+        self._convert_sid_to_string = advapi32.ConvertSidToStringSidW
+        self._convert_sid_to_string.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        self._convert_sid_to_string.restype = ctypes.c_int
+        self._convert_string_security_descriptor = (
+            advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        )
+        self._convert_string_security_descriptor.argtypes = (
+            ctypes.c_wchar_p,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        self._convert_string_security_descriptor.restype = ctypes.c_int
+        self._get_security_info = advapi32.GetSecurityInfo
+        self._get_security_info.argtypes = (
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        self._get_security_info.restype = wintypes.DWORD
+        self._get_security_descriptor_control = advapi32.GetSecurityDescriptorControl
+        self._get_security_descriptor_control.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.WORD),
+            ctypes.POINTER(wintypes.WORD),
+        )
+        self._get_security_descriptor_control.restype = ctypes.c_int
+        self._get_security_descriptor_dacl = advapi32.GetSecurityDescriptorDacl
+        self._get_security_descriptor_dacl.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL),
+        )
+        self._get_security_descriptor_dacl.restype = ctypes.c_int
+        self._get_ace = advapi32.GetAce
+        self._get_ace.argtypes = (
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        self._get_ace.restype = ctypes.c_int
+        ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+        self._nt_set_file_information = ntdll.NtSetInformationFile
+        self._nt_set_file_information.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(_IoStatusBlock),
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        )
+        self._nt_set_file_information.restype = ctypes.c_long
+        self._rtl_nt_status_to_dos_error = ntdll.RtlNtStatusToDosError
+        self._rtl_nt_status_to_dos_error.argtypes = (ctypes.c_long,)
+        self._rtl_nt_status_to_dos_error.restype = ctypes.c_ulong
 
     @staticmethod
     def _value(handle: ctypes.c_void_p | int) -> int:
@@ -173,6 +445,27 @@ class _WindowsPathApi:
             self.close(handle)
             raise
 
+    def open_directory_for_verification(self, path: Path) -> int:
+        """Reopen a moved directory while a DELETE source handle remains live."""
+
+        handle = self._open(
+            path,
+            access=_FILE_LIST_DIRECTORY,
+            flags=_FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+            share=_FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+        )
+        try:
+            info = self.information(handle)
+            if (
+                int(info.attributes) & _FILE_ATTRIBUTE_REPARSE_POINT
+                or not int(info.attributes) & _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("repository quarantine destination is not a directory")
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
     def open_regular(self, path: Path) -> int:
         handle = self._open(
             path,
@@ -188,12 +481,282 @@ class _WindowsPathApi:
             self.close(handle)
             raise
 
-    def _open(self, path: Path, *, access: int, flags: int) -> int:
+    def open_directory_for_rename(self, path: Path) -> int:
+        handle = self._open(
+            path,
+            access=_DELETE | _FILE_READ_ATTRIBUTES,
+            flags=_FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+        )
+        try:
+            info = self.information(handle)
+            if (
+                int(info.attributes) & _FILE_ATTRIBUTE_REPARSE_POINT
+                or not int(info.attributes) & _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("repository path is not a regular directory")
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
+    def open_quarantine_parent(self, path: Path) -> int:
+        """Open a fixed destination namespace with only child-add rights."""
+
+        handle = self._open(
+            path,
+            access=(
+                _FILE_LIST_DIRECTORY
+                | _FILE_ADD_SUBDIRECTORY
+                | _FILE_READ_ATTRIBUTES
+                | _READ_CONTROL
+            ),
+            flags=_FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+        )
+        try:
+            info = self.information(handle)
+            if (
+                int(info.attributes) & _FILE_ATTRIBUTE_REPARSE_POINT
+                or not int(info.attributes) & _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("repository quarantine root is not a directory")
+            self.verify_owner_only_dacl(handle)
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
+    def open_mutation_lock(self, path: Path) -> int:
+        """Create/open the exact repository mutation lock without sharing."""
+
+        ctypes.set_last_error(0)
+        raw = self._create_file(
+            str(path),
+            _GENERIC_READ | _GENERIC_WRITE,
+            0,
+            None,
+            _OPEN_ALWAYS,
+            _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        try:
+            handle = self._value(raw)
+        except OSError:
+            raise RepositoryAccessDenied("Git worktree operation is busy") from None
+        try:
+            info = self.information(handle)
+            if int(info.attributes) & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY):
+                raise RepositoryAccessDenied("Git worktree lock is not a regular file")
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
+    def create_secure_directory(self, path: Path) -> bool:
+        """Create one quarantine root with an atomically applied owner-only DACL."""
+
+        descriptor: int | None = None
+        try:
+            descriptor = self._create_owner_only_security_descriptor()
+            attributes = _SecurityAttributes(
+                ctypes.sizeof(_SecurityAttributes), ctypes.c_void_p(descriptor), False
+            )
+            ctypes.set_last_error(0)
+            if self._create_directory(str(path), ctypes.byref(attributes)):
+                return True
+            if ctypes.get_last_error() == _ERROR_ALREADY_EXISTS:
+                return False
+            raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            if descriptor is not None:
+                self._local_free(ctypes.c_void_p(descriptor))
+
+    def verify_owner_only_dacl(self, handle: int) -> None:
+        """Verify a retained directory handle has exactly the expected protected DACL."""
+
+        _user_buffer, user_sid = self._current_user_sid()
+        user_sid_text = self._sid_to_string(user_sid)
+        owner = ctypes.c_void_p()
+        dacl = ctypes.c_void_p()
+        descriptor = ctypes.c_void_p()
+        result = int(
+            self._get_security_info(
+                handle,
+                _SE_FILE_OBJECT,
+                _OWNER_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION,
+                ctypes.byref(owner),
+                None,
+                ctypes.byref(dacl),
+                None,
+                ctypes.byref(descriptor),
+            )
+        )
+        if result != 0:
+            if descriptor.value:
+                self._local_free(descriptor)
+            raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
+        try:
+            if not owner.value or not dacl.value or not descriptor.value:
+                raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
+            control = wintypes.WORD()
+            revision = wintypes.WORD()
+            if (
+                not self._get_security_descriptor_control(
+                    descriptor, ctypes.byref(control), ctypes.byref(revision)
+                )
+                or not int(control.value) & _SE_DACL_PROTECTED
+            ):
+                raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
+            present = wintypes.BOOL()
+            defaulted = wintypes.BOOL()
+            dacl_from_descriptor = ctypes.c_void_p()
+            if (
+                not self._get_security_descriptor_dacl(
+                    descriptor,
+                    ctypes.byref(present),
+                    ctypes.byref(dacl_from_descriptor),
+                    ctypes.byref(defaulted),
+                )
+                or not present.value
+                or defaulted.value
+                or dacl_from_descriptor.value != dacl.value
+            ):
+                raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
+            if self._sid_to_string(int(owner.value)) != user_sid_text:
+                raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
+            acl = ctypes.cast(dacl, ctypes.POINTER(_AclHeader)).contents
+            if acl.ace_count != 2:
+                raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
+            sid_texts: list[str] = []
+            for index in range(int(acl.ace_count)):
+                ace = ctypes.c_void_p()
+                if not self._get_ace(dacl, index, ctypes.byref(ace)) or not ace.value:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine root permissions are unsafe"
+                    )
+                header = ctypes.string_at(ace.value, 8)
+                ace_type = header[0]
+                ace_flags = header[1]
+                ace_size = int.from_bytes(header[2:4], "little")
+                mask = int.from_bytes(header[4:8], "little")
+                if (
+                    ace_type != _ACCESS_ALLOWED_ACE_TYPE
+                    or ace_flags & _INHERITED_ACE
+                    or ace_flags != 0
+                    or ace_size < 8
+                    or mask != _FILE_ALL_ACCESS
+                ):
+                    raise RepositoryAccessDenied(
+                        "repository quarantine root permissions are unsafe"
+                    )
+                sid_texts.append(self._sid_to_string(ace.value + 8))
+            if set(sid_texts) != {user_sid_text, _LOCAL_SYSTEM_SID}:
+                raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
+        finally:
+            self._local_free(descriptor)
+
+    def _current_user_sid(self) -> tuple[Any, int]:
+        token = ctypes.c_void_p()
+        if not self._open_process_token(
+            self._get_current_process(), _TOKEN_QUERY, ctypes.byref(token)
+        ):
+            raise RepositoryAccessDenied("repository quarantine security is unavailable")
+        try:
+            required = wintypes.DWORD()
+            self._get_token_information(token, _TOKEN_USER, None, 0, ctypes.byref(required))
+            if not required.value:
+                raise RepositoryAccessDenied("repository quarantine security is unavailable")
+            buffer = ctypes.create_string_buffer(required.value)
+            if not self._get_token_information(
+                token,
+                _TOKEN_USER,
+                ctypes.cast(buffer, ctypes.c_void_p),
+                required,
+                ctypes.byref(required),
+            ):
+                raise RepositoryAccessDenied("repository quarantine security is unavailable")
+            sid = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents.user.sid
+            if not sid:
+                raise RepositoryAccessDenied("repository quarantine security is unavailable")
+            return buffer, int(sid)
+        finally:
+            if token.value not in (None, _INVALID_HANDLE_VALUE):
+                self._close_handle(token)
+
+    def _sid_to_string(self, sid: int) -> str:
+        result = ctypes.c_void_p()
+        if not self._convert_sid_to_string(ctypes.c_void_p(sid), ctypes.byref(result)):
+            if result.value:
+                self._local_free(result)
+            raise RepositoryAccessDenied("repository quarantine security is unavailable")
+        try:
+            if not result.value:
+                raise RepositoryAccessDenied("repository quarantine security is unavailable")
+            return ctypes.wstring_at(result.value)
+        finally:
+            self._local_free(result)
+
+    def _create_owner_only_security_descriptor(self) -> int:
+        _user_buffer, user_sid = self._current_user_sid()
+        user_sid_text = self._sid_to_string(user_sid)
+        sddl = f"O:{user_sid_text}D:P(A;;FA;;;SY)(A;;FA;;;{user_sid_text})"
+        descriptor = ctypes.c_void_p()
+        descriptor_size = wintypes.ULONG()
+        try:
+            if (
+                not self._convert_string_security_descriptor(
+                    sddl,
+                    _SECURITY_DESCRIPTOR_REVISION,
+                    ctypes.byref(descriptor),
+                    ctypes.byref(descriptor_size),
+                )
+                or not descriptor.value
+            ):
+                raise RepositoryAccessDenied("repository quarantine security is unavailable")
+            return int(descriptor.value)
+        except BaseException:
+            if descriptor.value:
+                self._local_free(descriptor)
+            raise
+
+    def rename_directory(self, handle: int, parent_handle: int, name: str) -> None:
+        encoded = name.encode("utf-16-le")
+        if len(encoded) > 255 * 2:
+            raise RepositoryAccessDenied("repository quarantine name is too long")
+        info_size = _FILE_RENAME_NAME_OFFSET
+        info_buffer = ctypes.create_string_buffer(ctypes.sizeof(_FileRenameInfo) + len(encoded) + 2)
+        info = _FileRenameInfo.from_buffer(info_buffer)
+        info.replace_if_exists = 0
+        info.root_directory = wintypes.HANDLE(parent_handle)
+        info.file_name_length = len(encoded)
+        ctypes.memmove(ctypes.addressof(info_buffer) + info_size, encoded, len(encoded))
+        io_status = _IoStatusBlock()
+        status = int(
+            self._nt_set_file_information(
+                handle,
+                ctypes.byref(io_status),
+                ctypes.cast(info_buffer, ctypes.c_void_p),
+                len(info_buffer),
+                _FILE_RENAME_INFORMATION_CLASS,
+            )
+        )
+        if status == 0:
+            return
+        dos_error = int(self._rtl_nt_status_to_dos_error(status))
+        raise OSError(dos_error or 1, "native quarantine rename failed")
+
+    def _open(
+        self,
+        path: Path,
+        *,
+        access: int,
+        flags: int,
+        share: int = _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+    ) -> int:
         ctypes.set_last_error(0)
         raw = self._create_file(
             str(path),
             access,
-            _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+            share,
             None,
             _OPEN_EXISTING,
             flags,
@@ -375,6 +938,500 @@ class CanonicalRoot:
             finally:
                 object.__setattr__(access, "_live", False)
                 _ACTIVE_DIRECTORY_ACCESS.reset(active_token)
+
+    @contextlib.contextmanager
+    def _open_worktree_quarantine(
+        self, target_leaf: str, registration_basename: str
+    ) -> Iterator[_QuarantineAccess]:
+        """Pin one target and registration for exact, one-way quarantine moves."""
+
+        target_name = _validate_quarantine_component(target_leaf)
+        registration_name = _validate_quarantine_component(registration_basename)
+        self._revalidate_root()
+        if os.name == "nt":
+            with self._open_windows_worktree_quarantine(target_name, registration_name) as access:
+                try:
+                    yield access
+                finally:
+                    access._release(self._windows.close if self._windows else os.close)
+            return
+        with self._open_posix_worktree_quarantine(target_name, registration_name) as access:
+            try:
+                yield access
+            finally:
+                access._release(os.close)
+
+    def _accept_quarantine_access(self, access: _QuarantineAccess) -> _QuarantineAccess:
+        """Accept only this root's live, owner-sealed quarantine capability."""
+
+        if (
+            not isinstance(access, _QuarantineAccess)
+            or not access._live
+            or access._owner is not self._access_owner
+        ):
+            raise RepositoryAccessDenied("repository quarantine capability is not trusted")
+        try:
+            self._revalidate_root()
+            for label, pinned in (
+                ("repository root", access._root),
+                ("Git metadata", access._git),
+                ("worktree parent", access._worktree_parent),
+                ("metadata parent", access._metadata_parent),
+                ("target quarantine parent", access._target_quarantine_parent),
+                (
+                    "registration quarantine parent",
+                    access._registration_quarantine_parent,
+                ),
+            ):
+                self._verify_quarantine_handle(label, pinned)
+            if os.name == "nt":
+                self._verify_windows_quarantine_parent(
+                    access._target_quarantine_path.parent,
+                    access._target_quarantine_parent,
+                )
+                self._verify_windows_quarantine_parent(
+                    access._registration_quarantine_path.parent,
+                    access._registration_quarantine_parent,
+                )
+            self._verify_quarantine_handle("target", access._target.handle)
+            self._verify_quarantine_handle("registration", access._registration.handle)
+            if access._target_quarantine is not None:
+                self._verify_quarantine_handle(
+                    "target quarantine", access._target_quarantine.handle
+                )
+            if access._registration_quarantine is not None:
+                self._verify_quarantine_handle(
+                    "registration quarantine", access._registration_quarantine.handle
+                )
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository quarantine capability is stale") from None
+        return access
+
+    def _verify_quarantine_handle(self, label: str, pinned: _QuarantineHandle) -> None:
+        try:
+            if os.name == "nt":
+                api = self._windows
+                if api is None:
+                    raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+                identity = tuple(api.identity(pinned.capability))
+            else:
+                metadata = os.fstat(pinned.capability)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise RepositoryAccessDenied(f"{label} capability is not a directory")
+                identity = (int(metadata.st_dev), int(metadata.st_ino))
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied(f"{label} capability is stale") from None
+        if identity != pinned.identity:
+            raise RepositoryAccessDenied(f"{label} identity changed")
+
+    def _quarantine_target(self, access: _QuarantineAccess) -> None:
+        """Move the exact opened target into its deterministic quarantine root."""
+
+        access = self._accept_quarantine_access(access)
+        if access._target_moved or access._target_quarantine is not None:
+            raise RepositoryAccessDenied("target quarantine transition already completed")
+        if os.name == "nt":
+            self._quarantine_windows_entry(
+                access,
+                access._target,
+                access._target_quarantine_parent,
+                access._target_quarantine_path,
+            )
+        else:
+            self._quarantine_posix_entry(
+                access,
+                access._target,
+                access._target_quarantine_parent,
+                access._target_quarantine_path,
+            )
+        object.__setattr__(access, "_target_moved", True)
+
+    def _quarantine_registration(self, access: _QuarantineAccess) -> None:
+        """Move the exact registration only after the live target is absent."""
+
+        access = self._accept_quarantine_access(access)
+        if not access._target_moved:
+            raise RepositoryAccessDenied("target quarantine has not completed")
+        if access._registration_moved or access._registration_quarantine is not None:
+            raise RepositoryAccessDenied("registration quarantine transition already completed")
+        if os.name == "nt":
+            if os.path.lexists(access.registration_path):
+                self._quarantine_windows_entry(
+                    access,
+                    access._registration,
+                    access._registration_quarantine_parent,
+                    access._registration_quarantine_path,
+                )
+            else:
+                raise RepositoryAccessDenied("Git worktree registration is absent")
+        else:
+            self._assert_posix_entry_present(access._registration)
+            self._quarantine_posix_entry(
+                access,
+                access._registration,
+                access._registration_quarantine_parent,
+                access._registration_quarantine_path,
+            )
+        object.__setattr__(access, "_registration_moved", True)
+
+    def _quarantine_posix_entry(
+        self,
+        access: _QuarantineAccess,
+        source: _QuarantineEntry,
+        quarantine_parent: _QuarantineHandle,
+        quarantine_path: Path,
+    ) -> None:
+        self._assert_posix_entry_present(source)
+        self._assert_posix_entry_absent(quarantine_parent, source.name)
+        try:
+            os.rename(
+                source.name,
+                source.name,
+                src_dir_fd=source.parent.capability,
+                dst_dir_fd=quarantine_parent.capability,
+            )
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine rename failed") from None
+        self._assert_posix_entry_absent(source.parent, source.name)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                source.name,
+                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                dir_fd=quarantine_parent.capability,
+            )
+            identity = _fd_identity(descriptor)
+            if identity != source.handle.identity:
+                raise RepositoryAccessDenied("repository quarantine identity changed")
+        except OSError, ValueError:
+            if descriptor is not None:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            raise RepositoryAccessDenied(
+                "repository quarantine destination is unavailable"
+            ) from None
+        except RepositoryAccessDenied:
+            if descriptor is not None:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            raise
+        access._retain(descriptor)
+        entry = _QuarantineEntry(
+            source.name,
+            quarantine_path,
+            quarantine_parent,
+            _QuarantineHandle(descriptor, source.handle.identity),
+        )
+        if source is access._target:
+            object.__setattr__(access, "_target_quarantine", entry)
+        else:
+            object.__setattr__(access, "_registration_quarantine", entry)
+
+    def _quarantine_windows_entry(
+        self,
+        access: _QuarantineAccess,
+        source: _QuarantineEntry,
+        quarantine_parent: _QuarantineHandle,
+        quarantine_path: Path,
+    ) -> None:
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        self._verify_quarantine_handle(source.name, source.handle)
+        if os.path.lexists(quarantine_path):
+            raise RepositoryAccessDenied("repository quarantine destination already exists")
+        self._verify_windows_quarantine_parent(quarantine_path.parent, quarantine_parent)
+        try:
+            api.rename_directory(
+                source.handle.capability,
+                quarantine_parent.capability,
+                source.name,
+            )
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository quarantine rename failed") from None
+        self._verify_windows_quarantine_parent(quarantine_path.parent, quarantine_parent)
+        if os.path.lexists(source.path):
+            raise RepositoryAccessDenied("repository quarantine source is still present")
+        descriptor: int | None = None
+        try:
+            descriptor = api.open_directory_for_verification(quarantine_path)
+            identity = tuple(api.identity(descriptor))
+            if identity != source.handle.identity:
+                raise RepositoryAccessDenied("repository quarantine identity changed")
+        except OSError, RepositoryAccessDenied, ValueError:
+            if descriptor is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    api.close(descriptor)
+            raise RepositoryAccessDenied(
+                "repository quarantine destination is unavailable"
+            ) from None
+        if descriptor is None:
+            raise RepositoryAccessDenied("repository quarantine destination is unavailable")
+        access._retain(descriptor)
+        entry = _QuarantineEntry(
+            source.name,
+            quarantine_path,
+            quarantine_parent,
+            _QuarantineHandle(descriptor, source.handle.identity),
+        )
+        if source is access._target:
+            object.__setattr__(access, "_target_quarantine", entry)
+        else:
+            object.__setattr__(access, "_registration_quarantine", entry)
+
+    def _verify_windows_quarantine_parent(self, path: Path, expected: _QuarantineHandle) -> None:
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        del path
+        try:
+            identity = tuple(api.identity(expected.capability))
+            api.verify_owner_only_dacl(expected.capability)
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository quarantine root identity changed") from None
+        if identity != expected.identity:
+            raise RepositoryAccessDenied("repository quarantine root identity changed")
+
+    def _assert_posix_entry_present(self, entry: _QuarantineEntry) -> None:
+        try:
+            metadata = os.stat(
+                entry.name,
+                dir_fd=entry.parent.capability,
+                follow_symlinks=False,
+            )
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine source is absent") from None
+        identity = (int(metadata.st_dev), int(metadata.st_ino))
+        if identity != entry.handle.identity or not stat.S_ISDIR(metadata.st_mode):
+            raise RepositoryAccessDenied("repository quarantine source identity changed")
+
+    @staticmethod
+    def _assert_posix_entry_absent(parent: _QuarantineHandle, name: str) -> None:
+        try:
+            os.stat(name, dir_fd=parent.capability, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        except OSError:
+            raise RepositoryAccessDenied(
+                "repository quarantine source state is unavailable"
+            ) from None
+        raise RepositoryAccessDenied("repository quarantine source is still present")
+
+    @contextlib.contextmanager
+    def _open_posix_worktree_quarantine(
+        self, target_name: str, registration_name: str
+    ) -> Iterator[_QuarantineAccess]:
+        if not _O_DIRECTORY or not _O_NOFOLLOW:
+            raise RepositoryAccessDenied("safe POSIX path capabilities are unavailable")
+        resources: list[int] = []
+        access: _QuarantineAccess | None = None
+        try:
+            root_descriptor = os.open(
+                self._path,
+                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+            )
+            resources.append(root_descriptor)
+            root_identity = _fd_identity(root_descriptor)
+            if root_identity != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+            git_descriptor = _open_posix_directory_at(root_descriptor, ".git")
+            resources.append(git_descriptor)
+            lock_descriptor = _open_posix_mutation_lock(git_descriptor)
+            resources.append(lock_descriptor)
+            worktree_parent_descriptor = _open_posix_directory_at(root_descriptor, ".worktrees")
+            resources.append(worktree_parent_descriptor)
+            target_path = self._path / ".worktrees" / target_name
+            target_descriptor = _open_posix_directory_at(worktree_parent_descriptor, target_name)
+            resources.append(target_descriptor)
+            metadata_parent_descriptor = _open_posix_directory_at(git_descriptor, "worktrees")
+            resources.append(metadata_parent_descriptor)
+            registration_path = self._path / ".git" / "worktrees" / registration_name
+            registration_descriptor = _open_posix_directory_at(
+                metadata_parent_descriptor, registration_name
+            )
+            resources.append(registration_descriptor)
+            _reject_posix_registration_lock(registration_descriptor)
+            _verify_posix_gitdir(registration_descriptor)
+            target_quarantine_parent = _open_or_create_posix_directory_at(
+                worktree_parent_descriptor, _TARGET_QUARANTINE_NAME
+            )
+            resources.append(target_quarantine_parent)
+            registration_quarantine_parent = _open_or_create_posix_directory_at(
+                git_descriptor, _REGISTRATION_QUARANTINE_NAME
+            )
+            resources.append(registration_quarantine_parent)
+            _verify_quarantine_parent(target_quarantine_parent)
+            _verify_quarantine_parent(registration_quarantine_parent)
+            _reject_posix_destination(target_quarantine_parent, target_name)
+            _reject_posix_destination(registration_quarantine_parent, registration_name)
+            _require_same_posix_volume(
+                root_descriptor,
+                git_descriptor,
+                worktree_parent_descriptor,
+                target_descriptor,
+                metadata_parent_descriptor,
+                registration_descriptor,
+                target_quarantine_parent,
+                registration_quarantine_parent,
+            )
+            self._revalidate_root()
+            access = _QuarantineAccess(
+                seal=_QUARANTINE_SEAL,
+                owner=self._access_owner,
+                resources=resources,
+                root=_QuarantineHandle(root_descriptor, root_identity),
+                git=_QuarantineHandle(git_descriptor, _fd_identity(git_descriptor)),
+                worktree_parent=_QuarantineHandle(
+                    worktree_parent_descriptor, _fd_identity(worktree_parent_descriptor)
+                ),
+                metadata_parent=_QuarantineHandle(
+                    metadata_parent_descriptor, _fd_identity(metadata_parent_descriptor)
+                ),
+                target=_QuarantineEntry(
+                    target_name,
+                    target_path,
+                    _QuarantineHandle(
+                        worktree_parent_descriptor, _fd_identity(worktree_parent_descriptor)
+                    ),
+                    _QuarantineHandle(target_descriptor, _fd_identity(target_descriptor)),
+                ),
+                registration=_QuarantineEntry(
+                    registration_name,
+                    registration_path,
+                    _QuarantineHandle(
+                        metadata_parent_descriptor, _fd_identity(metadata_parent_descriptor)
+                    ),
+                    _QuarantineHandle(
+                        registration_descriptor, _fd_identity(registration_descriptor)
+                    ),
+                ),
+                target_quarantine_parent=_QuarantineHandle(
+                    target_quarantine_parent, _fd_identity(target_quarantine_parent)
+                ),
+                registration_quarantine_parent=_QuarantineHandle(
+                    registration_quarantine_parent, _fd_identity(registration_quarantine_parent)
+                ),
+                target_quarantine_path=self._path
+                / ".worktrees"
+                / _TARGET_QUARANTINE_NAME
+                / target_name,
+                registration_quarantine_path=self._path
+                / ".git"
+                / _REGISTRATION_QUARANTINE_NAME
+                / registration_name,
+            )
+            yield access
+            self._revalidate_root()
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository quarantine is unavailable") from None
+        finally:
+            if access is None:
+                for descriptor in reversed(resources):
+                    with contextlib.suppress(OSError):
+                        os.close(descriptor)
+
+    @contextlib.contextmanager
+    def _open_windows_worktree_quarantine(
+        self, target_name: str, registration_name: str
+    ) -> Iterator[_QuarantineAccess]:
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        resources: list[int] = []
+        access: _QuarantineAccess | None = None
+        try:
+            root_path = self._path
+            root_handle = api.open_directory(root_path)
+            resources.append(root_handle)
+            root_identity = tuple(api.identity(root_handle))
+            if root_identity != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+            git_path = root_path / ".git"
+            git_handle = api.open_directory(git_path)
+            resources.append(git_handle)
+            lock_handle = api.open_mutation_lock(git_path / "forge-worktree.lock")
+            resources.append(lock_handle)
+            worktree_parent_path = root_path / ".worktrees"
+            worktree_parent_handle = api.open_directory(worktree_parent_path)
+            resources.append(worktree_parent_handle)
+            target_path = worktree_parent_path / target_name
+            target_handle = api.open_directory_for_rename(target_path)
+            resources.append(target_handle)
+            metadata_parent_path = git_path / "worktrees"
+            metadata_parent_handle = api.open_directory(metadata_parent_path)
+            resources.append(metadata_parent_handle)
+            registration_path = metadata_parent_path / registration_name
+            registration_handle = api.open_directory_for_rename(registration_path)
+            resources.append(registration_handle)
+            if os.path.lexists(registration_path / "locked"):
+                raise RepositoryAccessDenied("Git worktree registration is locked")
+            gitdir_handle = api.open_regular(registration_path / "gitdir")
+            api.close(gitdir_handle)
+            target_quarantine_path = worktree_parent_path / _TARGET_QUARANTINE_NAME
+            target_quarantine_parent = _open_or_create_windows_directory(
+                api, target_quarantine_path, quarantine_parent=True
+            )
+            resources.append(target_quarantine_parent)
+            registration_quarantine_path = git_path / _REGISTRATION_QUARANTINE_NAME
+            registration_quarantine_parent = _open_or_create_windows_directory(
+                api, registration_quarantine_path, quarantine_parent=True
+            )
+            resources.append(registration_quarantine_parent)
+            if os.path.lexists(target_quarantine_path / target_name):
+                raise RepositoryAccessDenied("target quarantine destination already exists")
+            if os.path.lexists(registration_quarantine_path / registration_name):
+                raise RepositoryAccessDenied("registration quarantine destination already exists")
+            identities = (
+                tuple(api.identity(git_handle)),
+                tuple(api.identity(worktree_parent_handle)),
+                tuple(api.identity(target_handle)),
+                tuple(api.identity(metadata_parent_handle)),
+                tuple(api.identity(registration_handle)),
+                tuple(api.identity(target_quarantine_parent)),
+                tuple(api.identity(registration_quarantine_parent)),
+            )
+            if any(identity[0] != root_identity[0] for identity in identities):
+                raise RepositoryAccessDenied("repository quarantine crosses a volume")
+            self._revalidate_root()
+            access = _QuarantineAccess(
+                seal=_QUARANTINE_SEAL,
+                owner=self._access_owner,
+                resources=resources,
+                root=_QuarantineHandle(root_handle, root_identity),
+                git=_QuarantineHandle(git_handle, identities[0]),
+                worktree_parent=_QuarantineHandle(worktree_parent_handle, identities[1]),
+                metadata_parent=_QuarantineHandle(metadata_parent_handle, identities[3]),
+                target=_QuarantineEntry(
+                    target_name,
+                    target_path,
+                    _QuarantineHandle(worktree_parent_handle, identities[1]),
+                    _QuarantineHandle(target_handle, identities[2]),
+                ),
+                registration=_QuarantineEntry(
+                    registration_name,
+                    registration_path,
+                    _QuarantineHandle(metadata_parent_handle, identities[3]),
+                    _QuarantineHandle(registration_handle, identities[4]),
+                ),
+                target_quarantine_parent=_QuarantineHandle(target_quarantine_parent, identities[5]),
+                registration_quarantine_parent=_QuarantineHandle(
+                    registration_quarantine_parent, identities[6]
+                ),
+                target_quarantine_path=target_quarantine_path / target_name,
+                registration_quarantine_path=registration_quarantine_path / registration_name,
+            )
+            yield access
+            self._revalidate_root()
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository quarantine is unavailable") from None
+        finally:
+            if access is None:
+                for handle in reversed(resources):
+                    api.close(handle)
 
     def _active_directory_access(self, normalized: str) -> _DirectoryAccess | None:
         """Return the live operation capability for this exact root and cwd."""
@@ -699,6 +1756,11 @@ class CanonicalRoot:
             handles.append(root_handle)
             if tuple(api.identity(root_handle)) != self._identity:
                 raise RepositoryAccessDenied("repository root identity changed")
+            git_path = self._path / ".git"
+            git_handle = api.open_directory(git_path)
+            handles.append(git_handle)
+            lock_handle = api.open_mutation_lock(git_path / "forge-worktree.lock")
+            handles.append(lock_handle)
             current = self._path
             for part in () if normalized_parent == "." else normalized_parent.split("/"):
                 current = current / part
@@ -714,9 +1776,6 @@ class CanonicalRoot:
                 raise RepositoryAccessDenied("repository directory already exists") from None
             leaf_handle = api.open_directory(leaf_path)
             handles.append(leaf_handle)
-            git_path = self._path / ".git"
-            git_handle = api.open_directory(git_path)
-            handles.append(git_handle)
             metadata_path = git_path / "worktrees"
             try:
                 metadata_path.mkdir()
@@ -1029,6 +2088,139 @@ def _reject_link_components(path: Path) -> None:
 def _fd_identity(descriptor: int) -> tuple[int, int]:
     metadata = os.fstat(descriptor)
     return (int(metadata.st_dev), int(metadata.st_ino))
+
+
+def _validate_quarantine_component(value: str) -> str:
+    if not isinstance(value, str) or not value or value in {".", ".."}:
+        raise PathEscape("repository quarantine name is invalid")
+    if any(character in value for character in ("/", "\\", "\x00", ":")):
+        raise PathEscape("repository quarantine name is invalid")
+    if len(os.fsencode(value)) > 255:
+        raise PathEscape("repository quarantine name is too long")
+    if os.name == "nt" and value.rstrip(" .") != value:
+        raise PathEscape("repository quarantine name is invalid")
+    return value
+
+
+def _open_posix_directory_at(parent: int, name: str) -> int:
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+            dir_fd=parent,
+        )
+    except OSError:
+        raise RepositoryAccessDenied("repository directory is unavailable") from None
+    try:
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise RepositoryAccessDenied("repository path is not a directory")
+        return descriptor
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        raise
+
+
+def _open_or_create_posix_directory_at(parent: int, name: str) -> int:
+    try:
+        return _open_posix_directory_at(parent, name)
+    except RepositoryAccessDenied:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine root is unavailable") from None
+        return _open_posix_directory_at(parent, name)
+
+
+def _open_posix_mutation_lock(git_descriptor: int) -> int:
+    fcntl_api: Any = __import__("fcntl")
+    try:
+        descriptor = os.open(
+            "forge-worktree.lock",
+            os.O_CREAT | os.O_RDWR | _O_NOFOLLOW | _O_CLOEXEC,
+            mode=0o600,
+            dir_fd=git_descriptor,
+        )
+    except OSError:
+        raise RepositoryAccessDenied("Git worktree lock is unavailable") from None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RepositoryAccessDenied("Git worktree lock is not a regular file")
+        fcntl_api.flock(descriptor, fcntl_api.LOCK_EX | fcntl_api.LOCK_NB)
+        return descriptor
+    except RepositoryAccessDenied:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        raise
+    except OSError, ValueError:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        raise RepositoryAccessDenied("Git worktree operation is busy") from None
+
+
+def _reject_posix_registration_lock(registration: int) -> None:
+    try:
+        os.stat("locked", dir_fd=registration, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise RepositoryAccessDenied("Git worktree registration lock is unavailable") from None
+    raise RepositoryAccessDenied("Git worktree registration is locked")
+
+
+def _verify_posix_gitdir(registration: int) -> None:
+    try:
+        descriptor = os.open(
+            "gitdir",
+            os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC,
+            dir_fd=registration,
+        )
+    except OSError:
+        raise RepositoryAccessDenied("Git worktree registration is malformed") from None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RepositoryAccessDenied("Git worktree registration is malformed")
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+
+
+def _verify_quarantine_parent(descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
+
+
+def _reject_posix_destination(parent: int, name: str) -> None:
+    try:
+        os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise RepositoryAccessDenied("repository quarantine destination is unavailable") from None
+    raise RepositoryAccessDenied("repository quarantine destination already exists")
+
+
+def _require_same_posix_volume(*descriptors: int) -> None:
+    devices = {int(os.fstat(descriptor).st_dev) for descriptor in descriptors}
+    if len(devices) != 1:
+        raise RepositoryAccessDenied("repository quarantine crosses a volume")
+
+
+def _open_or_create_windows_directory(
+    api: _WindowsPathApi, path: Path, *, quarantine_parent: bool = False
+) -> int:
+    opener = api.open_quarantine_parent if quarantine_parent else api.open_directory
+    try:
+        return opener(path)
+    except RepositoryAccessDenied:
+        try:
+            api.create_secure_directory(path)
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine root is unavailable") from None
+        return opener(path)
 
 
 __all__ = ["CanonicalRoot", "PathEscape", "RepositoryAccessDenied"]
