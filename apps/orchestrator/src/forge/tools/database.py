@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import hashlib
 import re
 from collections.abc import Awaitable, Callable, Mapping
@@ -30,6 +29,7 @@ from forge.domain.operation import (
 )
 from forge.domain.policy import DatabaseProvisioningPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity
+from forge.tools.runner import await_deferred_cancellation
 from forge.tools.secrets import SecretAlreadyExistsError
 
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -45,6 +45,13 @@ _INTEGRITY_ERROR = "database resource identity is invalid"
 _REFERENCE_ERROR = "database administrator reference is invalid"
 _URL_ERROR = "database administrator URL is invalid"
 _RECONCILIATION_ERROR = "database resource requires reconciliation"
+_ROW_MISSING = object()
+_SAFE_QUERY_OPTIONS = {
+    "sslmode": frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}),
+    "target_session_attrs": frozenset(
+        {"any", "primary", "standby", "read-write", "read-only", "prefer-standby"}
+    ),
+}
 
 
 def _sanitize_error(error: DatabaseProvisionerError) -> DatabaseProvisionerError:
@@ -80,7 +87,12 @@ FROM pg_catalog.pg_roles r
 WHERE r.rolname = $1
 """
 _DATABASE_QUERY = """
-SELECT d.datname, owner_role.rolname AS owner
+SELECT d.datname,
+       owner_role.rolname AS owner,
+       EXISTS (
+           SELECT 1 FROM pg_catalog.pg_db_role_setting s
+           WHERE s.setdatabase = d.oid
+       ) AS has_database_settings
 FROM pg_catalog.pg_database d
 LEFT JOIN pg_catalog.pg_roles owner_role ON owner_role.oid = d.datdba
 WHERE d.datname = $1
@@ -142,7 +154,13 @@ class _ObservedState:
         if self.database is None:
             return None
         owner = _row_value(self.database, "owner")
-        return None if owner is None else str(owner)
+        return owner if isinstance(owner, str) else None
+
+    @property
+    def database_safe(self) -> bool:
+        return self.database is not None and (
+            _as_bool(self.database, "has_database_settings") is False
+        )
 
     @property
     def role_safe(self) -> bool:
@@ -173,6 +191,7 @@ class _ObservedState:
             and database is not None
             and _row_value(database, "datname") == database_name
             and self.database_owner == role_name
+            and self.database_safe
             and self.secret_exists
         )
 
@@ -207,6 +226,7 @@ class _ProvisionAdapter:
         url = await self._resolve_admin_url()
         connection: _AsyncPostgresConnection | None = None
         failure: DatabaseProvisionerError | None = None
+        caller_cancelled = False
         try:
             database_name = _require_name(self._identity.database_name)
             role_name = _require_name(self._identity.database_role)
@@ -252,15 +272,20 @@ class _ProvisionAdapter:
                 secret_id=self._secret_id,
             )
         except asyncio.CancelledError:
-            raise
+            caller_cancelled = True
         except DatabaseProvisionerError as error:
             failure = _sanitize_error(error)
         except Exception:  # noqa: BLE001 - external driver failures are redacted
             failure = DatabaseProvisionerError(_ERROR)
         finally:
-            await self._owner._close(connection)
+            caller_cancelled = await self._owner._close(
+                connection, already_cancelled=caller_cancelled
+            )
+            if caller_cancelled:
+                raise asyncio.CancelledError()
         if failure is not None:
             raise failure
+        raise AssertionError("database provision adapter returned no outcome")
 
     async def _resolve_admin_url(self) -> URL:
         if self.normalized_admin_url is None:
@@ -309,6 +334,7 @@ class _TeardownAdapter:
         url = await self._resolve_admin_url()
         connection: _AsyncPostgresConnection | None = None
         failure: DatabaseProvisionerError | None = None
+        caller_cancelled = False
         try:
             connection = await self._owner._connect(url)
             database_name = _require_name(self._identity.database_name)
@@ -360,15 +386,20 @@ class _TeardownAdapter:
                 secret_id=None,
             )
         except asyncio.CancelledError:
-            raise
+            caller_cancelled = True
         except DatabaseProvisionerError as error:
             failure = _sanitize_error(error)
         except Exception:  # noqa: BLE001 - external driver failures are redacted
             failure = DatabaseProvisionerError(_ERROR)
         finally:
-            await self._owner._close(connection)
+            caller_cancelled = await self._owner._close(
+                connection, already_cancelled=caller_cancelled
+            )
+            if caller_cancelled:
+                raise asyncio.CancelledError()
         if failure is not None:
             raise failure
+        raise AssertionError("database teardown adapter returned no outcome")
 
     async def _resolve_admin_url(self) -> URL:
         if self.normalized_admin_url is None:
@@ -519,11 +550,27 @@ class DatabaseProvisioner(DatabaseProvisionerPort):
             raise failure
         raise AssertionError("connection factory returned no connection")
 
-    async def _close(self, connection: _AsyncPostgresConnection | None) -> None:
+    async def _close(
+        self,
+        connection: _AsyncPostgresConnection | None,
+        *,
+        already_cancelled: bool,
+    ) -> bool:
         if connection is None:
-            return
-        with contextlib.suppress(Exception):
-            await connection.close()
+            return already_cancelled
+        failure: DatabaseProvisionerError | None = None
+        try:
+            _, caller_cancelled = await await_deferred_cancellation(
+                connection.close(), already_cancelled=already_cancelled
+            )
+            return caller_cancelled
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - driver cleanup failures are redacted
+            failure = DatabaseProvisionerError(_ERROR)
+        if failure is not None:
+            raise failure
+        raise AssertionError("connection cleanup returned no result")
 
     async def _inspect(
         self,
@@ -580,6 +627,7 @@ class DatabaseProvisioner(DatabaseProvisionerPort):
                 and _row_value(observed.role, "rolname") == role_name
                 and _row_value(database, "datname") == database_name
                 and observed.database_owner == role_name
+                and observed.database_safe
                 and observed.secret_exists
             )
         if observed.role is not None:
@@ -784,7 +832,13 @@ def _normalize_admin_url(value: str) -> URL:
         if not parsed.host or not parsed.username or not parsed.password:
             raise ValueError
         _ = parsed.port
-        return parsed.set(drivername="postgresql", database="postgres")
+        safe_query: dict[str, str] = {}
+        for key, values in parsed.normalized_query.items():
+            allowed_values = _SAFE_QUERY_OPTIONS.get(key)
+            if allowed_values is None or len(values) != 1 or values[0] not in allowed_values:
+                raise ValueError
+            safe_query[key] = values[0]
+        return parsed.set(drivername="postgresql", database="postgres", query=safe_query)
     except Exception:  # noqa: BLE001 - URL parser failures are redacted
         failure = DatabaseProvisionerError(_URL_ERROR)
     if failure is not None:
@@ -809,13 +863,7 @@ def _scoped_url(admin_url: URL, identity: WorktreeIdentity, password: str) -> st
 
 
 def _quote_identifier(value: str) -> str:
-    if (
-        not isinstance(value, str)
-        or _IDENTIFIER.fullmatch(value) is None
-        or len(value.encode("utf-8")) > 63
-    ):
-        raise DatabaseIntegrityError(_INTEGRITY_ERROR)
-    return f'"{value.replace(chr(34), chr(34) * 2)}"'
+    return f'"{_require_name(value)}"'
 
 
 def _quote_literal(value: bytes) -> str:
@@ -855,28 +903,30 @@ def _require_reference(policy: DatabaseProvisioningPolicy) -> str:
     return reference
 
 
-def _row_value(row: Mapping[str, object], key: str) -> object | None:
+def _raw_row_value(row: Mapping[str, object], key: str) -> object:
     try:
-        return row.get(key)
-    except AttributeError:
-        try:
-            return row[key]
-        except KeyError, IndexError:
-            return None
+        return row[key]
+    except KeyError, IndexError, TypeError, AttributeError:
+        return _ROW_MISSING
 
 
-def _as_bool(row: Mapping[str, object], key: str) -> bool:
-    value = _row_value(row, key)
-    return value if type(value) is bool else False
+def _row_value(row: Mapping[str, object], key: str) -> object | None:
+    value = _raw_row_value(row, key)
+    return None if value is _ROW_MISSING else value
+
+
+def _as_bool(row: Mapping[str, object], key: str) -> bool | None:
+    value = _raw_row_value(row, key)
+    return value if type(value) is bool else None
 
 
 def _as_int(row: Mapping[str, object], key: str) -> int:
-    value = _row_value(row, key)
+    value = _raw_row_value(row, key)
     return value if type(value) is int else -2
 
 
 def _as_optional_datetime(row: Mapping[str, object], key: str) -> datetime | None:
-    value = _row_value(row, key)
+    value = _raw_row_value(row, key)
     return (
         value
         if isinstance(value, datetime)
@@ -887,7 +937,7 @@ def _as_optional_datetime(row: Mapping[str, object], key: str) -> datetime | Non
 
 
 def _as_setting_empty(row: Mapping[str, object], key: str) -> bool:
-    value = _row_value(row, key)
+    value = _raw_row_value(row, key)
     return value is None or value == [] or value == ()
 
 

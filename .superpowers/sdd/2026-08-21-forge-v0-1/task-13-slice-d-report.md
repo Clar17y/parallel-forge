@@ -72,3 +72,32 @@ those same validated names and parameterized session termination.
 
 The integration test is intentionally guarded and skips when the local PostgreSQL endpoint is absent;
 the current environment had `127.0.0.1:5435` available and exercised it successfully.
+
+## Controller review repair
+
+The first committed candidate was held after controller review found that arbitrary administrator-URL
+query parameters could survive into the scoped runner URL and that database-wide PostgreSQL settings
+were not part of the destructive-safety proof. The repair also hardened connection cleanup and direct
+environment diagnostics before independent review:
+
+- Administrator URLs now retain only single-valued, enumerated `sslmode` and
+  `target_session_attrs` options. Unknown, duplicate, secret-bearing, target-overriding, or invalid
+  query data is rejected with the static URL category.
+- Database inspection now checks every `pg_db_role_setting` entry for the exact database. Missing or
+  wrongly typed role/database inspection fields fail closed instead of becoming safe false/null values.
+- Connection close is attempted exactly once through deferred cancellation. Cancellation first arriving
+  during close, and repeated cancellation, wait for close to reach terminal state; close failures surface
+  only the static database error.
+- The transient environment remains immutable and key-readable, while its direct `repr` exposes keys
+  only. Identifier quoting reuses the single existing identifier validator.
+
+The regression subset was RED before production changes: the first unsafe query case failed because no
+exception was raised. After the repair, all `18` new adversarial cases passed. Fresh repair checks were:
+
+- Focused database provisioner suite, including the guarded integration case: `70 passed`.
+- Exact live PostgreSQL integration node: `1 passed in 4.71s` (not skipped).
+- Operation-intent/recovery and local-secret suites: `54 passed, 15 skipped`.
+- Ruff check: passed for all orchestrator source plus the touched test; Ruff format check: all three
+  touched files formatted.
+- Mypy: no issues in all `107` orchestrator source files.
+- `git diff --check`: passed.

@@ -9,7 +9,6 @@ import secrets
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -57,12 +56,19 @@ class _FakeConnection:
     events: list[str]
     roles: dict[str, dict[str, Any]] = field(default_factory=dict)
     databases: dict[str, str] = field(default_factory=dict)
+    database_settings: set[str] = field(default_factory=set)
+    database_row_omissions: set[str] = field(default_factory=set)
     statements: list[tuple[str, tuple[object, ...]]] = field(default_factory=list)
     closed: bool = False
     close_calls: int = 0
     failure_marker: str | None = None
     fetch_started: asyncio.Event | None = None
     fetch_release: asyncio.Event | None = None
+    close_started: asyncio.Event | None = None
+    close_release: asyncio.Event | None = None
+    close_failure: Exception | None = None
+    cancel_task_on_close: asyncio.Task[Any] | None = None
+    close_cancel_sent: bool = False
 
     async def execute(self, statement: str, *parameters: object) -> str:
         self.statements.append((statement, parameters))
@@ -106,7 +112,16 @@ class _FakeConnection:
         if "pg_database" in lower:
             name = str(parameters[0]) if parameters else ""
             owner = self.databases.get(name)
-            return None if owner is None else {"datname": name, "owner": owner}
+            if owner is None:
+                return None
+            row: dict[str, Any] = {
+                "datname": name,
+                "owner": owner,
+                "has_database_settings": name in self.database_settings,
+            }
+            for key in self.database_row_omissions:
+                row.pop(key, None)
+            return row
         if "pg_roles" in lower:
             name = str(parameters[0]) if parameters else ""
             return self.roles.get(name)
@@ -119,6 +134,15 @@ class _FakeConnection:
 
     async def close(self) -> None:
         self.close_calls += 1
+        if self.close_started is not None:
+            self.close_started.set()
+        if self.cancel_task_on_close is not None and not self.close_cancel_sent:
+            self.close_cancel_sent = True
+            self.cancel_task_on_close.cancel()
+        if self.close_release is not None:
+            await self.close_release.wait()
+        if self.close_failure is not None:
+            raise self.close_failure
         self.closed = True
         self.events.append("connection-close")
 
@@ -385,6 +409,7 @@ def _safe_role(name: str, **overrides: object) -> dict[str, Any]:
         "rolbypassrls": False,
         "rolconnlimit": -1,
         "rolvaliduntil": None,
+        "rolconfig": None,
         "has_memberships": False,
         "has_settings": False,
     }
@@ -465,7 +490,7 @@ async def test_disabled_provision_and_teardown_make_zero_dependency_calls(tmp_pa
     assert binding.database_name is None
     assert binding.database_role is None
     assert binding.secret_id is None
-    assert binding.environment == MappingProxyType({})
+    assert not binding.environment
     assert removed == binding
     assert not events
     assert not resolver.calls
@@ -490,7 +515,7 @@ async def test_enabled_provision_persists_only_safe_binding_and_builds_encoded_u
     assert binding.database_name == identity.database_name
     assert binding.database_role == identity.database_role
     assert binding.secret_id == _secret_id_for(identity)
-    assert isinstance(binding.environment, MappingProxyType)
+    assert tuple(binding.environment) == ("FORGE_DATABASE_URL",)
     scoped_url = binding.environment["FORGE_DATABASE_URL"]
     assert isinstance(scoped_url, str)
     assert "%" in scoped_url
@@ -623,6 +648,37 @@ def test_structured_admin_url_normalization_and_scoped_round_trip() -> None:
     assert parsed.password == "abc+/=="
     assert parsed.database == identity.database_name
     assert parsed.query == normalized.query
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "password=ADMIN_SENTINEL",
+        "host=attacker.example",
+        "sslmode=require&sslmode=prefer",
+        "SSLMode=require",
+        "sslmode=REQUIRE",
+        "target_session_attrs=READ-WRITE",
+    ],
+)
+def test_admin_url_rejects_unknown_duplicate_and_invalid_query_options(query: str) -> None:
+    from forge.tools.database import _normalize_admin_url
+
+    with pytest.raises(DatabaseProvisionerError, match="database administrator URL is invalid"):
+        _normalize_admin_url(f"postgresql://admin:password@db.example/postgres?{query}")
+
+
+def test_admin_url_query_rejection_is_static_and_redacted() -> None:
+    from forge.tools.database import _normalize_admin_url
+
+    with pytest.raises(DatabaseProvisionerError) as error:
+        _normalize_admin_url(
+            "postgresql://admin:password@db.example/postgres?password=ADMIN_SENTINEL"
+        )
+    assert str(error.value) == "database administrator URL is invalid"
+    assert "ADMIN_SENTINEL" not in repr(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
 
 
 @pytest.mark.parametrize(
@@ -796,6 +852,86 @@ async def test_teardown_failure_after_database_drop_is_stable_and_truthful(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "omitted",
+    ["rolsuper", "rolvaliduntil", "rolconfig", "has_memberships", "has_settings"],
+)
+async def test_missing_required_role_field_blocks_teardown(tmp_path: Path, omitted: str) -> None:
+    events: list[str] = []
+    identity = _identity()
+    assert identity.database_name is not None
+    assert identity.database_role is not None
+    role = _safe_role(identity.database_role)
+    role.pop(omitted)
+    connection = _FakeConnection(events)
+    connection.roles[identity.database_role] = role
+    connection.databases[identity.database_name] = identity.database_role
+    secret_id = _secret_id_for(identity)
+    store = _MemorySecretStore({secret_id: base64.urlsafe_b64encode(bytes(range(32)))})
+    provisioner, _resolver, _source, connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=_enabled_policy(),
+        events=events,
+        connection=connection,
+        secret_store=store,
+    )
+
+    with pytest.raises(DatabaseReconciliationRequired):
+        await provisioner.teardown(
+            identity,
+            _enabled_policy(),
+            _active_resource(identity),
+            policy_version=1,
+        )
+    assert not any(
+        statement.lstrip().startswith(("SELECT pg_catalog.pg_terminate_backend", "DROP"))
+        for statement, _ in connection.statements
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("database_row_omissions", [set(), {"has_database_settings"}])
+async def test_database_settings_are_required_and_must_be_absent(
+    tmp_path: Path, database_row_omissions: set[str]
+) -> None:
+    events: list[str] = []
+    identity = _identity()
+    assert identity.database_name is not None
+    assert identity.database_role is not None
+    connection = _FakeConnection(
+        events,
+        database_row_omissions=database_row_omissions,
+    )
+    connection.roles[identity.database_role] = _safe_role(identity.database_role)
+    connection.databases[identity.database_name] = identity.database_role
+    if not database_row_omissions:
+        connection.database_settings.add(identity.database_name)
+    secret_id = _secret_id_for(identity)
+    store = _MemorySecretStore({secret_id: base64.urlsafe_b64encode(bytes(range(32)))})
+    provisioner, _resolver, _source, connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=_enabled_policy(),
+        events=events,
+        connection=connection,
+        secret_store=store,
+    )
+
+    with pytest.raises(DatabaseReconciliationRequired):
+        await provisioner.teardown(
+            identity,
+            _enabled_policy(),
+            _active_resource(identity),
+            policy_version=1,
+        )
+    assert not any(
+        statement.lstrip().startswith(("SELECT pg_catalog.pg_terminate_backend", "DROP"))
+        for statement, _ in connection.statements
+    )
+
+
+@pytest.mark.asyncio
 async def test_secret_create_race_never_creates_postgres_resources(tmp_path: Path) -> None:
     events: list[str] = []
     identity = _identity()
@@ -843,6 +979,122 @@ async def test_cancellation_closes_connected_postgres_handle_once(tmp_path: Path
     assert resolver.calls == ["secret://forge/postgres-admin"]
     assert not source.calls
     assert executor.requests
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_is_deferred_until_close_reaches_terminal_state(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    fetch_started = asyncio.Event()
+    fetch_release = asyncio.Event()
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+    connection = _FakeConnection(
+        events,
+        fetch_started=fetch_started,
+        fetch_release=fetch_release,
+        close_started=close_started,
+        close_release=close_release,
+    )
+    identity = _identity()
+    provisioner, _resolver, _source, connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=_enabled_policy(),
+        events=events,
+        connection=connection,
+    )
+
+    task = asyncio.create_task(provisioner.provision(identity, _enabled_policy(), policy_version=1))
+    await asyncio.wait_for(fetch_started.wait(), timeout=1)
+    task.cancel()
+    await asyncio.wait_for(close_started.wait(), timeout=5)
+    task.cancel()
+    close_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert connection.close_calls == 1
+    assert connection.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cancellation_arriving_during_close_is_deferred_until_close_completes(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+    connection = _FakeConnection(
+        events,
+        close_started=close_started,
+        close_release=close_release,
+    )
+    identity = _identity()
+    provisioner, _resolver, _source, connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=_enabled_policy(),
+        events=events,
+        connection=connection,
+    )
+
+    task = asyncio.create_task(provisioner.provision(identity, _enabled_policy(), policy_version=1))
+    connection.cancel_task_on_close = task
+    await asyncio.wait_for(close_started.wait(), timeout=5)
+    close_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert connection.close_calls == 1
+    assert connection.closed is True
+
+
+@pytest.mark.asyncio
+async def test_close_failure_after_success_is_stable_and_redacted(tmp_path: Path) -> None:
+    events: list[str] = []
+    connection = _FakeConnection(
+        events,
+        close_failure=RuntimeError("CLOSE_SENTINEL"),
+    )
+    identity = _identity()
+    provisioner, _resolver, _source, connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=_enabled_policy(),
+        events=events,
+        connection=connection,
+    )
+
+    with pytest.raises(DatabaseProvisionerError) as error:
+        await provisioner.provision(identity, _enabled_policy(), policy_version=1)
+    assert str(error.value) == "database operation failed"
+    assert "CLOSE_SENTINEL" not in repr(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert connection.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_binding_environment_repr_is_redacted_but_values_remain_immutable(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    identity = _identity()
+    provisioner, _resolver, source, _connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=_enabled_policy(),
+        events=events,
+    )
+
+    binding = await provisioner.provision(identity, _enabled_policy(), policy_version=1)
+    scoped_url = binding.environment["FORGE_DATABASE_URL"]
+    assert scoped_url not in repr(binding.environment)
+    assert source.value.decode(errors="ignore") not in repr(binding.environment)
+    with pytest.raises(TypeError):
+        binding.environment["FORGE_DATABASE_URL"] = "replacement"  # type: ignore[index]
 
 
 @pytest.mark.asyncio

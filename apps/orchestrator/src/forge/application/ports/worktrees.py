@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
@@ -14,6 +14,27 @@ from forge.domain.policy import DatabaseProvisioningPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity, validate_resource_shape
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
+
+
+class _RedactedEnvironment(Mapping[str, str]):
+    """Immutable environment values whose diagnostic form reveals keys only."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Mapping[str, str] | None = None) -> None:
+        self._values = MappingProxyType(dict(values or {}))
+
+    def __getitem__(self, key: str) -> str:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(keys={tuple(sorted(self._values))!r})"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -146,7 +167,7 @@ class DatabaseBinding:
     database_name: str | None = None
     database_role: str | None = None
     secret_id: str | None = None
-    environment: Mapping[str, str] = MappingProxyType({})
+    environment: Mapping[str, str] = field(default_factory=_RedactedEnvironment)
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, ResourceState):
@@ -164,7 +185,7 @@ class DatabaseBinding:
             for key, value in self.environment.items()
         ):
             raise TypeError("database binding environment must contain string values")
-        object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
+        object.__setattr__(self, "environment", _RedactedEnvironment(self.environment))
 
     def __repr__(self) -> str:
         """Redact transient environment values from diagnostic representations."""
