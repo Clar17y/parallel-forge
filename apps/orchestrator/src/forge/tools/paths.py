@@ -26,6 +26,9 @@ _QUARANTINE_SEAL = object()
 _QUARANTINE_MAX_DEPTH = 128
 _QUARANTINE_MAX_ENTRIES = 100_000
 _QUARANTINE_MAX_COMPONENT_BYTES = 255
+_REMOVAL_LIVE = "live"
+_REMOVAL_STALE_REGISTRATION = "stale-registration"
+_REMOVAL_ABSENT = "absent"
 
 _LINUX_AT_EMPTY_PATH = 0x1000
 _LINUX_STATX_MNT_ID = 0x1000
@@ -92,7 +95,9 @@ class _QuarantineAccess:
         "_owner",
         "_registration",
         "_registration_deleted",
+        "_registration_initially_present",
         "_registration_moved",
+        "_registration_path",
         "_registration_quarantine",
         "_registration_quarantine_parent",
         "_registration_quarantine_path",
@@ -102,7 +107,9 @@ class _QuarantineAccess:
         "_sealed",
         "_target",
         "_target_deleted",
+        "_target_initially_present",
         "_target_moved",
+        "_target_path",
         "_target_quarantine",
         "_target_quarantine_parent",
         "_target_quarantine_path",
@@ -120,12 +127,16 @@ class _QuarantineAccess:
         git: _QuarantineHandle,
         worktree_parent: _QuarantineHandle,
         metadata_parent: _QuarantineHandle,
-        target: _QuarantineEntry,
-        registration: _QuarantineEntry,
+        target_path: Path,
+        registration_path: Path | None,
+        target: _QuarantineEntry | None,
+        registration: _QuarantineEntry | None,
+        target_initially_present: bool,
+        registration_initially_present: bool,
         target_quarantine_parent: _QuarantineHandle,
         registration_quarantine_parent: _QuarantineHandle,
         target_quarantine_path: Path,
-        registration_quarantine_path: Path,
+        registration_quarantine_path: Path | None,
     ) -> None:
         if seal is not _QUARANTINE_SEAL:
             raise TypeError("quarantine capability is internal")
@@ -135,8 +146,12 @@ class _QuarantineAccess:
         self._git = git
         self._worktree_parent = worktree_parent
         self._metadata_parent = metadata_parent
+        self._target_path = target_path
+        self._registration_path = registration_path
         self._target = target
         self._registration = registration
+        self._target_initially_present = target_initially_present
+        self._registration_initially_present = registration_initially_present
         self._target_quarantine_parent = target_quarantine_parent
         self._registration_quarantine_parent = registration_quarantine_parent
         self._target_quarantine_path = target_quarantine_path
@@ -159,11 +174,13 @@ class _QuarantineAccess:
 
     @property
     def target_path(self) -> Path:
-        return self._target.path
+        return self._target_path
 
     @property
     def registration_path(self) -> Path:
-        return self._registration.path
+        if self._registration_path is None:
+            raise RepositoryAccessDenied("registration source is unavailable")
+        return self._registration_path
 
     @property
     def target_quarantine_path(self) -> Path:
@@ -171,6 +188,8 @@ class _QuarantineAccess:
 
     @property
     def registration_quarantine_path(self) -> Path:
+        if self._registration_quarantine_path is None:
+            raise RepositoryAccessDenied("registration quarantine is unavailable")
         return self._registration_quarantine_path
 
     def _retain(self, capability: int) -> None:
@@ -183,13 +202,13 @@ class _QuarantineAccess:
             self._resources.remove(capability)
 
     def _retire_target_root(self, capability: int) -> None:
-        if capability != self._target.handle.capability:
+        if self._target is None or capability != self._target.handle.capability:
             raise RepositoryAccessDenied("repository quarantine root capability is invalid")
         self._retire(capability)
         object.__setattr__(self, "_target_root_retired", True)
 
     def _retire_registration_root(self, capability: int) -> None:
-        if capability != self._registration.handle.capability:
+        if self._registration is None or capability != self._registration.handle.capability:
             raise RepositoryAccessDenied("repository quarantine root capability is invalid")
         self._retire(capability)
         object.__setattr__(self, "_registration_root_retired", True)
@@ -276,6 +295,8 @@ if os.name == "nt":
     _FILE_SHARE_DELETE = 0x00000004
     _OPEN_EXISTING = 3
     _OPEN_ALWAYS = 4
+    _ERROR_FILE_NOT_FOUND = 2
+    _ERROR_PATH_NOT_FOUND = 3
     _ERROR_ALREADY_EXISTS = 183
     _FILE_ATTRIBUTE_NORMAL = 0x00000080
     _FILE_ATTRIBUTE_DIRECTORY = 0x00000010
@@ -1025,6 +1046,38 @@ class _WindowsPathApi:
                 self.close(int(raw_value))
             raise
 
+    def assert_child_absent(self, parent_handle: int, name: str) -> None:
+        """Prove one validated child is absent relative to a retained parent."""
+
+        handle: int | None = None
+        try:
+            handle = self.open_child(parent_handle, name)
+        except OSError as error:
+            if error.errno in {_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND}:
+                return
+            raise RepositoryAccessDenied("native child absence is unavailable") from None
+        except RepositoryAccessDenied:
+            raise RepositoryAccessDenied("native child absence is unavailable") from None
+        finally:
+            if handle is not None:
+                self.close(handle)
+        raise RepositoryAccessDenied("native child is still present")
+
+    def verify_regular_child(self, parent_handle: int, name: str) -> None:
+        """Verify one normal child through a retained parent handle."""
+
+        handle: int | None = None
+        try:
+            handle = self.open_child(parent_handle, name)
+            info = self.information(handle)
+            if int(info.attributes) & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY):
+                raise RepositoryAccessDenied("native child is not a regular file")
+        except OSError:
+            raise RepositoryAccessDenied("native regular child is unavailable") from None
+        finally:
+            if handle is not None:
+                self.close(handle)
+
     def dispose(self, handle: int) -> None:
         """Mark one already-opened exact handle for POSIX-style deletion."""
 
@@ -1266,6 +1319,92 @@ class CanonicalRoot:
             finally:
                 access._release(os.close)
 
+    @contextlib.contextmanager
+    def _open_stale_registration_quarantine(
+        self, target_leaf: str, registration_basename: str
+    ) -> Iterator[_QuarantineAccess]:
+        """Pin one exact stale registration while its target remains absent."""
+
+        target_name = _validate_quarantine_component(target_leaf)
+        registration_name = _validate_quarantine_component(registration_basename)
+        self._revalidate_root()
+        if os.name == "nt":
+            with self._open_windows_worktree_removal(
+                target_name, registration_name, mode=_REMOVAL_STALE_REGISTRATION
+            ) as access:
+                try:
+                    yield access
+                    self._verify_worktree_removal_state(access)
+                finally:
+                    access._release(self._windows.close if self._windows else os.close)
+            return
+        with self._open_posix_worktree_removal(
+            target_name, registration_name, mode=_REMOVAL_STALE_REGISTRATION
+        ) as access:
+            try:
+                yield access
+                self._verify_worktree_removal_state(access)
+            finally:
+                access._release(os.close)
+
+    @contextlib.contextmanager
+    def _inspect_absent_worktree_removal(self, target_leaf: str) -> Iterator[_QuarantineAccess]:
+        """Inspect one exact absent target under the retained mutation lock."""
+
+        target_name = _validate_quarantine_component(target_leaf)
+        self._revalidate_root()
+        if os.name == "nt":
+            with self._open_windows_worktree_removal(
+                target_name, None, mode=_REMOVAL_ABSENT
+            ) as access:
+                try:
+                    yield access
+                    self._verify_worktree_removal_state(access)
+                finally:
+                    access._release(self._windows.close if self._windows else os.close)
+            return
+        with self._open_posix_worktree_removal(target_name, None, mode=_REMOVAL_ABSENT) as access:
+            try:
+                yield access
+                self._verify_worktree_removal_state(access)
+            finally:
+                access._release(os.close)
+
+    def _verify_worktree_removal_state(self, access: _QuarantineAccess) -> _QuarantineAccess:
+        """Revalidate one sealed removal state and its authoritative absences."""
+
+        access = self._accept_quarantine_access(access)
+        if access._target_initially_present and not access._target_deleted:
+            return access
+        if os.name == "nt":
+            api = self._windows
+            if api is None:
+                raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+            api.assert_child_absent(access._worktree_parent.capability, access._target_path.name)
+            api.assert_child_absent(
+                access._target_quarantine_parent.capability, access._target_path.name
+            )
+        else:
+            self._assert_posix_name_absent(
+                access._worktree_parent.capability, access._target_path.name
+            )
+            self._assert_posix_name_absent(
+                access._target_quarantine_parent.capability, access._target_path.name
+            )
+        return access
+
+    def _verify_windows_registration_state(self, access: _QuarantineAccess) -> None:
+        """Revalidate one pinned Windows registration without reopening its path."""
+
+        if access._registration is None:
+            raise RepositoryAccessDenied("registration source is unavailable")
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        registration_handle = access._registration.handle.capability
+        api.assert_child_absent(registration_handle, "locked")
+        api.verify_regular_child(registration_handle, "gitdir")
+
     def _accept_quarantine_access(self, access: _QuarantineAccess) -> _QuarantineAccess:
         """Accept only this root's live, owner-sealed quarantine capability."""
 
@@ -1295,12 +1434,18 @@ class CanonicalRoot:
                     access._target_quarantine_parent,
                 )
                 self._verify_windows_quarantine_parent(
-                    access._registration_quarantine_path.parent,
+                    (
+                        access._registration_quarantine_path.parent
+                        if access._registration_quarantine_path is not None
+                        else self._path / ".git" / _REGISTRATION_QUARANTINE_NAME
+                    ),
                     access._registration_quarantine_parent,
                 )
-            if os.name != "nt" or not access._target_root_retired:
+            if access._target is not None and (os.name != "nt" or not access._target_root_retired):
                 self._verify_quarantine_handle("target", access._target.handle)
-            if os.name != "nt" or not access._registration_root_retired:
+            if access._registration is not None and (
+                os.name != "nt" or not access._registration_root_retired
+            ):
                 self._verify_quarantine_handle("registration", access._registration.handle)
             if access._target_quarantine is not None:
                 self._verify_quarantine_handle(
@@ -1335,6 +1480,8 @@ class CanonicalRoot:
         """Move the exact opened target into its deterministic quarantine root."""
 
         access = self._accept_quarantine_access(access)
+        if not access._target_initially_present or access._target is None:
+            raise RepositoryAccessDenied("target source is unavailable")
         if access._target_moved or access._target_quarantine is not None:
             raise RepositoryAccessDenied("target quarantine transition already completed")
         if os.name == "nt":
@@ -1357,19 +1504,23 @@ class CanonicalRoot:
         """Move the exact registration only after the live target is absent."""
 
         access = self._accept_quarantine_access(access)
-        if not access._target_moved:
-            raise RepositoryAccessDenied("target quarantine has not completed")
-        if not access._target_deleted:
+        if access._registration is None or not access._registration_initially_present:
+            raise RepositoryAccessDenied("registration source is unavailable")
+        if not access._target_deleted and access._target_initially_present:
             raise RepositoryAccessDenied("target quarantine deletion has not completed")
+        self._verify_worktree_removal_state(access)
+        if os.name == "nt" and not access._target_initially_present:
+            self._verify_windows_registration_state(access)
         if access._registration_moved or access._registration_quarantine is not None:
             raise RepositoryAccessDenied("registration quarantine transition already completed")
+        registration_quarantine_path = access.registration_quarantine_path
         if os.name == "nt":
             if os.path.lexists(access.registration_path):
                 self._quarantine_windows_entry(
                     access,
                     access._registration,
                     access._registration_quarantine_parent,
-                    access._registration_quarantine_path,
+                    registration_quarantine_path,
                 )
             else:
                 raise RepositoryAccessDenied("Git worktree registration is absent")
@@ -1379,7 +1530,7 @@ class CanonicalRoot:
                 access,
                 access._registration,
                 access._registration_quarantine_parent,
-                access._registration_quarantine_path,
+                registration_quarantine_path,
             )
         object.__setattr__(access, "_registration_moved", True)
 
@@ -1389,7 +1540,7 @@ class CanonicalRoot:
         access = self._accept_quarantine_access(access)
         if access._target_deleted:
             return
-        if not access._target_moved or access._target_quarantine is None:
+        if access._target is None or not access._target_moved or access._target_quarantine is None:
             raise RepositoryAccessDenied("target quarantine has not completed")
         if os.name == "nt":
             self._delete_windows_quarantine(
@@ -1413,10 +1564,15 @@ class CanonicalRoot:
         access = self._accept_quarantine_access(access)
         if access._registration_deleted:
             return
-        if not access._target_deleted:
+        if access._registration is None or not access._registration_initially_present:
+            raise RepositoryAccessDenied("registration source is unavailable")
+        if not access._target_deleted and access._target_initially_present:
             raise RepositoryAccessDenied("target quarantine deletion has not completed")
         if not access._registration_moved or access._registration_quarantine is None:
             raise RepositoryAccessDenied("registration quarantine has not completed")
+        self._verify_worktree_removal_state(access)
+        if os.name == "nt" and not access._target_initially_present:
+            self._verify_windows_registration_state(access)
         if os.name == "nt":
             self._delete_windows_quarantine(
                 access._registration_quarantine,
@@ -2173,8 +2329,25 @@ class CanonicalRoot:
     def _open_posix_worktree_quarantine(
         self, target_name: str, registration_name: str
     ) -> Iterator[_QuarantineAccess]:
+        with self._open_posix_worktree_removal(
+            target_name, registration_name, mode=_REMOVAL_LIVE
+        ) as access:
+            yield access
+
+    @contextlib.contextmanager
+    def _open_posix_worktree_removal(
+        self,
+        target_name: str,
+        registration_name: str | None,
+        *,
+        mode: str,
+    ) -> Iterator[_QuarantineAccess]:
         if not _O_DIRECTORY or not _O_NOFOLLOW:
             raise RepositoryAccessDenied("safe POSIX path capabilities are unavailable")
+        if mode not in {_REMOVAL_LIVE, _REMOVAL_STALE_REGISTRATION, _REMOVAL_ABSENT}:
+            raise RepositoryAccessDenied("repository removal mode is invalid")
+        if mode != _REMOVAL_ABSENT and registration_name is None:
+            raise RepositoryAccessDenied("registration source is unavailable")
         resources: list[int] = []
         access: _QuarantineAccess | None = None
         try:
@@ -2193,17 +2366,26 @@ class CanonicalRoot:
             worktree_parent_descriptor = _open_posix_directory_at(root_descriptor, ".worktrees")
             resources.append(worktree_parent_descriptor)
             target_path = self._path / ".worktrees" / target_name
-            target_descriptor = _open_posix_directory_at(worktree_parent_descriptor, target_name)
-            resources.append(target_descriptor)
+            target_descriptor: int | None = None
+            if mode == _REMOVAL_LIVE:
+                target_descriptor = _open_posix_directory_at(
+                    worktree_parent_descriptor, target_name
+                )
+                resources.append(target_descriptor)
+            else:
+                self._assert_posix_name_absent(worktree_parent_descriptor, target_name)
             metadata_parent_descriptor = _open_posix_directory_at(git_descriptor, "worktrees")
             resources.append(metadata_parent_descriptor)
-            registration_path = self._path / ".git" / "worktrees" / registration_name
-            registration_descriptor = _open_posix_directory_at(
-                metadata_parent_descriptor, registration_name
-            )
-            resources.append(registration_descriptor)
-            _reject_posix_registration_lock(registration_descriptor)
-            _verify_posix_gitdir(registration_descriptor)
+            registration_path: Path | None = None
+            registration_descriptor: int | None = None
+            if registration_name is not None:
+                registration_path = self._path / ".git" / "worktrees" / registration_name
+                registration_descriptor = _open_posix_directory_at(
+                    metadata_parent_descriptor, registration_name
+                )
+                resources.append(registration_descriptor)
+                _reject_posix_registration_lock(registration_descriptor)
+                _verify_posix_gitdir(registration_descriptor)
             target_quarantine_parent = _open_or_create_posix_directory_at(
                 worktree_parent_descriptor, _TARGET_QUARANTINE_NAME
             )
@@ -2215,17 +2397,21 @@ class CanonicalRoot:
             _verify_quarantine_parent(target_quarantine_parent)
             _verify_quarantine_parent(registration_quarantine_parent)
             _reject_posix_destination(target_quarantine_parent, target_name)
-            _reject_posix_destination(registration_quarantine_parent, registration_name)
-            _require_same_posix_volume(
+            if registration_name is not None:
+                _reject_posix_destination(registration_quarantine_parent, registration_name)
+            volume_descriptors = [
                 root_descriptor,
                 git_descriptor,
                 worktree_parent_descriptor,
-                target_descriptor,
                 metadata_parent_descriptor,
-                registration_descriptor,
                 target_quarantine_parent,
                 registration_quarantine_parent,
-            )
+            ]
+            if target_descriptor is not None:
+                volume_descriptors.append(target_descriptor)
+            if registration_descriptor is not None:
+                volume_descriptors.append(registration_descriptor)
+            _require_same_posix_volume(*volume_descriptors)
             self._revalidate_root()
             access = _QuarantineAccess(
                 seal=_QUARANTINE_SEAL,
@@ -2239,24 +2425,39 @@ class CanonicalRoot:
                 metadata_parent=_QuarantineHandle(
                     metadata_parent_descriptor, _fd_identity(metadata_parent_descriptor)
                 ),
-                target=_QuarantineEntry(
-                    target_name,
-                    target_path,
-                    _QuarantineHandle(
-                        worktree_parent_descriptor, _fd_identity(worktree_parent_descriptor)
-                    ),
-                    _QuarantineHandle(target_descriptor, _fd_identity(target_descriptor)),
+                target_path=target_path,
+                registration_path=registration_path,
+                target=(
+                    _QuarantineEntry(
+                        target_name,
+                        target_path,
+                        _QuarantineHandle(
+                            worktree_parent_descriptor, _fd_identity(worktree_parent_descriptor)
+                        ),
+                        _QuarantineHandle(target_descriptor, _fd_identity(target_descriptor)),
+                    )
+                    if target_descriptor is not None
+                    else None
                 ),
-                registration=_QuarantineEntry(
-                    registration_name,
-                    registration_path,
-                    _QuarantineHandle(
-                        metadata_parent_descriptor, _fd_identity(metadata_parent_descriptor)
-                    ),
-                    _QuarantineHandle(
-                        registration_descriptor, _fd_identity(registration_descriptor)
-                    ),
+                registration=(
+                    _QuarantineEntry(
+                        registration_name,
+                        registration_path,
+                        _QuarantineHandle(
+                            metadata_parent_descriptor,
+                            _fd_identity(metadata_parent_descriptor),
+                        ),
+                        _QuarantineHandle(
+                            registration_descriptor, _fd_identity(registration_descriptor)
+                        ),
+                    )
+                    if registration_name is not None
+                    and registration_path is not None
+                    and registration_descriptor is not None
+                    else None
                 ),
+                target_initially_present=mode == _REMOVAL_LIVE,
+                registration_initially_present=registration_descriptor is not None,
                 target_quarantine_parent=_QuarantineHandle(
                     target_quarantine_parent, _fd_identity(target_quarantine_parent)
                 ),
@@ -2267,10 +2468,11 @@ class CanonicalRoot:
                 / ".worktrees"
                 / _TARGET_QUARANTINE_NAME
                 / target_name,
-                registration_quarantine_path=self._path
-                / ".git"
-                / _REGISTRATION_QUARANTINE_NAME
-                / registration_name,
+                registration_quarantine_path=(
+                    self._path / ".git" / _REGISTRATION_QUARANTINE_NAME / registration_name
+                    if registration_name is not None
+                    else None
+                ),
             )
             yield access
             self._revalidate_root()
@@ -2288,9 +2490,26 @@ class CanonicalRoot:
     def _open_windows_worktree_quarantine(
         self, target_name: str, registration_name: str
     ) -> Iterator[_QuarantineAccess]:
+        with self._open_windows_worktree_removal(
+            target_name, registration_name, mode=_REMOVAL_LIVE
+        ) as access:
+            yield access
+
+    @contextlib.contextmanager
+    def _open_windows_worktree_removal(
+        self,
+        target_name: str,
+        registration_name: str | None,
+        *,
+        mode: str,
+    ) -> Iterator[_QuarantineAccess]:
         api = self._windows
         if api is None:
             raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        if mode not in {_REMOVAL_LIVE, _REMOVAL_STALE_REGISTRATION, _REMOVAL_ABSENT}:
+            raise RepositoryAccessDenied("repository removal mode is invalid")
+        if mode != _REMOVAL_ABSENT and registration_name is None:
+            raise RepositoryAccessDenied("registration source is unavailable")
         resources: list[int] = []
         access: _QuarantineAccess | None = None
         try:
@@ -2309,18 +2528,23 @@ class CanonicalRoot:
             worktree_parent_handle = api.open_directory(worktree_parent_path)
             resources.append(worktree_parent_handle)
             target_path = worktree_parent_path / target_name
-            target_handle = api.open_directory_for_rename(target_path)
-            resources.append(target_handle)
+            target_handle: int | None = None
+            if mode == _REMOVAL_LIVE:
+                target_handle = api.open_directory_for_rename(target_path)
+                resources.append(target_handle)
+            else:
+                api.assert_child_absent(worktree_parent_handle, target_name)
             metadata_parent_path = git_path / "worktrees"
             metadata_parent_handle = api.open_directory(metadata_parent_path)
             resources.append(metadata_parent_handle)
-            registration_path = metadata_parent_path / registration_name
-            registration_handle = api.open_directory_for_rename(registration_path)
-            resources.append(registration_handle)
-            if os.path.lexists(registration_path / "locked"):
-                raise RepositoryAccessDenied("Git worktree registration is locked")
-            gitdir_handle = api.open_regular(registration_path / "gitdir")
-            api.close(gitdir_handle)
+            registration_path: Path | None = None
+            registration_handle: int | None = None
+            if registration_name is not None:
+                registration_path = metadata_parent_path / registration_name
+                registration_handle = api.open_directory_for_rename(registration_path)
+                resources.append(registration_handle)
+                api.assert_child_absent(registration_handle, "locked")
+                api.verify_regular_child(registration_handle, "gitdir")
             target_quarantine_path = worktree_parent_path / _TARGET_QUARANTINE_NAME
             target_quarantine_parent = _open_or_create_windows_directory(
                 api, target_quarantine_path, quarantine_parent=True
@@ -2331,18 +2555,32 @@ class CanonicalRoot:
                 api, registration_quarantine_path, quarantine_parent=True
             )
             resources.append(registration_quarantine_parent)
-            if os.path.lexists(target_quarantine_path / target_name):
-                raise RepositoryAccessDenied("target quarantine destination already exists")
-            if os.path.lexists(registration_quarantine_path / registration_name):
-                raise RepositoryAccessDenied("registration quarantine destination already exists")
+            api.assert_child_absent(target_quarantine_parent, target_name)
+            if registration_name is not None:
+                api.assert_child_absent(registration_quarantine_parent, registration_name)
+            git_identity = tuple(api.identity(git_handle))
+            worktree_parent_identity = tuple(api.identity(worktree_parent_handle))
+            metadata_parent_identity = tuple(api.identity(metadata_parent_handle))
+            target_quarantine_parent_identity = tuple(api.identity(target_quarantine_parent))
+            registration_quarantine_parent_identity = tuple(
+                api.identity(registration_quarantine_parent)
+            )
+            target_identity = (
+                tuple(api.identity(target_handle)) if target_handle is not None else None
+            )
+            registration_identity = (
+                tuple(api.identity(registration_handle))
+                if registration_handle is not None
+                else None
+            )
             identities = (
-                tuple(api.identity(git_handle)),
-                tuple(api.identity(worktree_parent_handle)),
-                tuple(api.identity(target_handle)),
-                tuple(api.identity(metadata_parent_handle)),
-                tuple(api.identity(registration_handle)),
-                tuple(api.identity(target_quarantine_parent)),
-                tuple(api.identity(registration_quarantine_parent)),
+                git_identity,
+                worktree_parent_identity,
+                metadata_parent_identity,
+                target_quarantine_parent_identity,
+                registration_quarantine_parent_identity,
+                *((target_identity,) if target_identity is not None else ()),
+                *((registration_identity,) if registration_identity is not None else ()),
             )
             if any(identity[0] != root_identity[0] for identity in identities):
                 raise RepositoryAccessDenied("repository quarantine crosses a volume")
@@ -2352,27 +2590,49 @@ class CanonicalRoot:
                 owner=self._access_owner,
                 resources=resources,
                 root=_QuarantineHandle(root_handle, root_identity),
-                git=_QuarantineHandle(git_handle, identities[0]),
-                worktree_parent=_QuarantineHandle(worktree_parent_handle, identities[1]),
-                metadata_parent=_QuarantineHandle(metadata_parent_handle, identities[3]),
-                target=_QuarantineEntry(
-                    target_name,
-                    target_path,
-                    _QuarantineHandle(worktree_parent_handle, identities[1]),
-                    _QuarantineHandle(target_handle, identities[2]),
+                git=_QuarantineHandle(git_handle, git_identity),
+                worktree_parent=_QuarantineHandle(worktree_parent_handle, worktree_parent_identity),
+                metadata_parent=_QuarantineHandle(metadata_parent_handle, metadata_parent_identity),
+                target_path=target_path,
+                registration_path=registration_path,
+                target=(
+                    _QuarantineEntry(
+                        target_name,
+                        target_path,
+                        _QuarantineHandle(worktree_parent_handle, worktree_parent_identity),
+                        _QuarantineHandle(target_handle, target_identity),
+                    )
+                    if target_handle is not None and target_identity is not None
+                    else None
                 ),
-                registration=_QuarantineEntry(
-                    registration_name,
-                    registration_path,
-                    _QuarantineHandle(metadata_parent_handle, identities[3]),
-                    _QuarantineHandle(registration_handle, identities[4]),
+                registration=(
+                    _QuarantineEntry(
+                        registration_name,
+                        registration_path,
+                        _QuarantineHandle(metadata_parent_handle, metadata_parent_identity),
+                        _QuarantineHandle(registration_handle, registration_identity),
+                    )
+                    if registration_name is not None
+                    and registration_path is not None
+                    and registration_handle is not None
+                    and registration_identity is not None
+                    else None
                 ),
-                target_quarantine_parent=_QuarantineHandle(target_quarantine_parent, identities[5]),
+                target_initially_present=mode == _REMOVAL_LIVE,
+                registration_initially_present=registration_handle is not None,
+                target_quarantine_parent=_QuarantineHandle(
+                    target_quarantine_parent, target_quarantine_parent_identity
+                ),
                 registration_quarantine_parent=_QuarantineHandle(
-                    registration_quarantine_parent, identities[6]
+                    registration_quarantine_parent,
+                    registration_quarantine_parent_identity,
                 ),
                 target_quarantine_path=target_quarantine_path / target_name,
-                registration_quarantine_path=registration_quarantine_path / registration_name,
+                registration_quarantine_path=(
+                    registration_quarantine_path / registration_name
+                    if registration_name is not None
+                    else None
+                ),
             )
             yield access
             self._revalidate_root()

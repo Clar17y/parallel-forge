@@ -33,6 +33,12 @@ def _make_quarantine_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     return root, target, registration, tmp_path / "outside"
 
 
+def _remove_flat_directory(path: Path) -> None:
+    for entry in path.iterdir():
+        entry.unlink()
+    path.rmdir()
+
+
 def _make_symlink(link: Path, target: Path, *, directory: bool) -> None:
     try:
         link.symlink_to(target, target_is_directory=directory)
@@ -229,6 +235,48 @@ def test_windows_native_opens_normal_directory_and_reparse_children_relative_to_
         for child in reversed(children):
             api.close(child)
         api.close(parent)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native regular-child validation")
+def test_windows_native_regular_child_validation_rejects_directory_and_reparse_and_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path = _make_root(tmp_path)
+    (root_path / "normal.txt").write_text("normal", encoding="utf-8")
+    (root_path / "directory").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _make_junction(root_path / "junction", outside)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    opened: list[int] = []
+    closed: list[int] = []
+    original_open_child = api.open_child
+    original_close = api.close
+
+    def open_child_spy(parent: int, name: str, *, list_handle: bool = False) -> int:
+        handle = original_open_child(parent, name, list_handle=list_handle)
+        opened.append(handle)
+        return handle
+
+    def close_spy(handle: int) -> None:
+        closed.append(handle)
+        original_close(handle)
+
+    monkeypatch.setattr(api, "open_child", open_child_spy)
+    monkeypatch.setattr(api, "close", close_spy)
+    parent = api.open_directory(root_path)
+    try:
+        api.verify_regular_child(parent, "normal.txt")
+        with pytest.raises(RepositoryAccessDenied):
+            api.verify_regular_child(parent, "directory")
+        with pytest.raises(RepositoryAccessDenied):
+            api.verify_regular_child(parent, "junction")
+    finally:
+        api.close(parent)
+
+    assert all(handle in closed for handle in opened)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native handle disposition")
@@ -555,6 +603,328 @@ def test_quarantine_moves_exact_target_then_registration(tmp_path: Path) -> None
         assert (access.registration_quarantine_path / "gitdir").is_file()
 
 
+def test_stale_registration_quarantine_accepts_absent_target_and_deletes_exact_metadata(
+    tmp_path: Path,
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    root = CanonicalRoot(root_path)
+
+    with root._open_stale_registration_quarantine(target.name, registration.name) as access:
+        assert access._target_initially_present is False
+        assert access._target_moved is False
+        assert access._target_deleted is False
+
+        root._quarantine_registration(access)
+        assert not registration.exists()
+        assert (access.registration_quarantine_path / "gitdir").is_file()
+
+        root._delete_registration_quarantine(access)
+        assert access._registration_deleted is True
+        assert not access.registration_quarantine_path.exists()
+
+
+@pytest.mark.parametrize("reappeared", ("target", "target-quarantine"))
+def test_stale_registration_revalidates_target_absence_before_move(
+    tmp_path: Path, reappeared: str
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    root = CanonicalRoot(root_path)
+
+    with root._open_stale_registration_quarantine(target.name, registration.name) as access:
+        unexpected = target if reappeared == "target" else access.target_quarantine_path
+        unexpected.mkdir()
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_registration(access)
+        assert registration.is_dir()
+        assert not access.registration_quarantine_path.exists()
+        unexpected.rmdir()
+
+
+@pytest.mark.parametrize("reappeared", ("target", "target-quarantine"))
+def test_stale_registration_revalidates_target_absence_before_delete(
+    tmp_path: Path, reappeared: str
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    root = CanonicalRoot(root_path)
+
+    with root._open_stale_registration_quarantine(target.name, registration.name) as access:
+        root._quarantine_registration(access)
+        unexpected = target if reappeared == "target" else access.target_quarantine_path
+        unexpected.mkdir()
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_registration_quarantine(access)
+        assert access.registration_quarantine_path.is_dir()
+        assert (access.registration_quarantine_path / "gitdir").is_file()
+        unexpected.rmdir()
+        root._delete_registration_quarantine(access)
+
+
+def test_stale_registration_refuses_locked_or_malformed_registration_without_mutation(
+    tmp_path: Path,
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    root = CanonicalRoot(root_path)
+    locked = registration / "locked"
+    locked.write_text("locked\n", encoding="utf-8")
+
+    with (
+        pytest.raises(RepositoryAccessDenied),
+        root._open_stale_registration_quarantine(target.name, registration.name),
+    ):
+        pass
+    assert registration.is_dir()
+
+    locked.unlink()
+    (registration / "gitdir").unlink()
+    (registration / "gitdir").mkdir()
+    with (
+        pytest.raises(RepositoryAccessDenied),
+        root._open_stale_registration_quarantine(target.name, registration.name),
+    ):
+        pass
+    assert registration.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows retained registration validation")
+@pytest.mark.parametrize("stale", (False, True))
+def test_windows_removal_validates_registration_children_through_retained_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale: bool
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    if stale:
+        _remove_flat_directory(target)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    original_open_child = api.open_child
+    original_lexists = paths.os.path.lexists
+    opened_children: list[tuple[int, str]] = []
+
+    def open_child_spy(parent: int, name: str, *, list_handle: bool = False) -> int:
+        opened_children.append((parent, name))
+        return original_open_child(parent, name, list_handle=list_handle)
+
+    def reject_lexical_registration_children(path: Path | str) -> bool:
+        if Path(path) in {registration / "locked", registration / "gitdir"}:
+            raise AssertionError("registration children must use the retained handle")
+        return original_lexists(path)
+
+    def reject_lexical_regular_open(_path: Path) -> int:
+        raise AssertionError("registration gitdir must use the retained handle")
+
+    monkeypatch.setattr(api, "open_child", open_child_spy)
+    monkeypatch.setattr(paths.os.path, "lexists", reject_lexical_registration_children)
+    monkeypatch.setattr(api, "open_regular", reject_lexical_regular_open)
+    opener = root._open_stale_registration_quarantine if stale else root._open_worktree_quarantine
+
+    with opener(target.name, registration.name) as access:
+        registration_entry = access._registration
+        assert registration_entry is not None
+        registration_handle = registration_entry.handle.capability
+        assert (registration_handle, "locked") in opened_children
+        assert (registration_handle, "gitdir") in opened_children
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows retained registration validation")
+def test_windows_stale_registration_rechecks_a_new_lock_without_mutation(tmp_path: Path) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    root = CanonicalRoot(root_path)
+
+    with root._open_stale_registration_quarantine(target.name, registration.name) as access:
+        locked = registration / "locked"
+        locked.write_text("locked\n", encoding="utf-8")
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_registration(access)
+        assert registration.is_dir()
+        assert not access.registration_quarantine_path.exists()
+        locked.unlink()
+
+
+def test_stale_registration_refuses_linked_registration_without_following(
+    tmp_path: Path,
+) -> None:
+    root_path, target, registration, outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    outside.mkdir()
+    moved = outside / "registration"
+    registration.rename(moved)
+    _make_symlink(registration, moved, directory=True)
+    root = CanonicalRoot(root_path)
+
+    with (
+        pytest.raises(RepositoryAccessDenied),
+        root._open_stale_registration_quarantine(target.name, registration.name),
+    ):
+        pass
+    assert (moved / "gitdir").is_file()
+
+
+@pytest.mark.parametrize("collision_scope", ("target", "registration"))
+def test_stale_registration_refuses_exact_quarantine_collision_without_mutation(
+    tmp_path: Path, collision_scope: str
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    root = CanonicalRoot(root_path)
+    with root._inspect_absent_worktree_removal(target.name):
+        pass
+    collision = (
+        root_path / ".worktrees" / ".forge-quarantine" / target.name
+        if collision_scope == "target"
+        else root_path / ".git" / ".forge-worktree-quarantine" / registration.name
+    )
+    collision.mkdir()
+
+    with (
+        pytest.raises(RepositoryAccessDenied),
+        root._open_stale_registration_quarantine(target.name, registration.name),
+    ):
+        pass
+    assert registration.is_dir()
+
+
+def test_absent_removal_inspection_has_no_sources_or_mutation_surface(tmp_path: Path) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    _remove_flat_directory(registration)
+    root = CanonicalRoot(root_path)
+
+    with root._inspect_absent_worktree_removal(target.name) as access:
+        assert access._target_initially_present is False
+        assert access._registration_initially_present is False
+        assert access._target is None
+        assert access._registration is None
+        with pytest.raises(RepositoryAccessDenied):
+            _ = access.registration_path
+        with pytest.raises(RepositoryAccessDenied):
+            _ = access.registration_quarantine_path
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_target(access)
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_registration(access)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_registration_quarantine(access)
+
+
+@pytest.mark.parametrize("present_scope", ("target", "target-quarantine"))
+def test_absent_removal_inspection_refuses_initial_exact_presence(
+    tmp_path: Path, present_scope: str
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    if present_scope == "target-quarantine":
+        _remove_flat_directory(target)
+        _remove_flat_directory(registration)
+        with root._inspect_absent_worktree_removal(target.name):
+            pass
+        (root_path / ".worktrees" / ".forge-quarantine" / target.name).mkdir()
+
+    with pytest.raises(RepositoryAccessDenied), root._inspect_absent_worktree_removal(target.name):
+        pass
+
+
+@pytest.mark.parametrize("reappeared", ("target", "target-quarantine"))
+def test_absent_removal_inspection_revalidates_absence_before_return(
+    tmp_path: Path, reappeared: str
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    _remove_flat_directory(registration)
+    root = CanonicalRoot(root_path)
+
+    with (
+        pytest.raises(RepositoryAccessDenied),
+        root._inspect_absent_worktree_removal(target.name) as access,
+    ):
+        unexpected = target if reappeared == "target" else access.target_quarantine_path
+        unexpected.mkdir()
+
+
+@pytest.mark.parametrize("mode", ("stale-registration", "absent"))
+def test_removal_state_capability_rejects_foreign_released_and_competing_use(
+    tmp_path: Path, mode: str
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    if mode == "absent":
+        _remove_flat_directory(registration)
+    root = CanonicalRoot(root_path)
+    foreign = CanonicalRoot(root_path)
+
+    def open_for(owner: CanonicalRoot) -> Any:
+        if mode == "stale-registration":
+            return owner._open_stale_registration_quarantine(target.name, registration.name)
+        return owner._inspect_absent_worktree_removal(target.name)
+
+    with open_for(root) as access:
+        with pytest.raises(RepositoryAccessDenied):
+            foreign._verify_worktree_removal_state(access)
+        with pytest.raises(RepositoryAccessDenied), open_for(foreign):
+            pass
+
+    with pytest.raises(RepositoryAccessDenied):
+        root._verify_worktree_removal_state(access)
+    with open_for(foreign):
+        pass
+
+
+def test_stale_registration_rejects_substituted_retained_identity_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, registration, outside = _make_quarantine_fixture(tmp_path)
+    _remove_flat_directory(target)
+    outside.mkdir()
+    root = CanonicalRoot(root_path)
+
+    with root._open_stale_registration_quarantine(target.name, registration.name) as access:
+        registration_entry = access._registration
+        assert registration_entry is not None
+        capability = registration_entry.handle.capability
+        if os.name == "nt":
+            api = root._windows
+            assert api is not None
+            original_identity = api.identity
+
+            def substituted_identity(handle: int) -> object:
+                identity = tuple(original_identity(handle))
+                if handle == capability:
+                    return (identity[0], identity[1], identity[2] + 1)
+                return identity
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(api, "identity", substituted_identity)
+                with pytest.raises(RepositoryAccessDenied):
+                    root._quarantine_registration(access)
+        else:
+            saved_registration = os.dup(capability)
+            os.close(capability)
+            replacement: int | None = None
+            try:
+                replacement = os.open(
+                    outside,
+                    os.O_RDONLY | paths._O_DIRECTORY | paths._O_NOFOLLOW | paths._O_CLOEXEC,
+                )
+                if replacement != capability:
+                    os.dup2(replacement, capability)
+                with pytest.raises(RepositoryAccessDenied):
+                    root._quarantine_registration(access)
+            finally:
+                os.dup2(saved_registration, capability)
+                os.close(saved_registration)
+                if replacement is not None and replacement != capability:
+                    os.close(replacement)
+
+        assert registration.is_dir()
+        assert not access.registration_quarantine_path.exists()
+
+
 def test_quarantine_delete_requires_a_moved_target_and_keeps_registration_order(
     tmp_path: Path,
 ) -> None:
@@ -618,9 +988,12 @@ def test_windows_quarantine_delete_is_proof_last_for_target_and_registration(
         return handle
 
     def dispose_spy(handle: int) -> None:
-        if handle == access._target.handle.capability:
+        if handle == access._target.handle.capability and not access._target_root_retired:
             dispose_order.append("target-root")
-        elif handle == access._registration.handle.capability:
+        elif (
+            handle == access._registration.handle.capability
+            and not access._registration_root_retired
+        ):
             dispose_order.append("registration-root")
         else:
             dispose_order.append(opened_names.get(handle, "unknown"))
