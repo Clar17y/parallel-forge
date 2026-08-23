@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
-from forge.domain.resource import WorktreeIdentity
+from forge.domain.policy import DatabaseProvisioningPolicy
+from forge.domain.resource import ResourceState, WorktreeIdentity, validate_resource_shape
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -128,6 +131,74 @@ class SecretStorePort(Protocol):
     def delete(self, secret_id: str) -> None: ...
 
 
+@runtime_checkable
+class AdminSecretResolverPort(Protocol):
+    """Trusted server-side administrator-secret lookup boundary."""
+
+    async def resolve(self, reference: str) -> str: ...
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DatabaseBinding:
+    """Persistable database identity plus a transient, immutable environment."""
+
+    state: ResourceState
+    database_name: str | None = None
+    database_role: str | None = None
+    secret_id: str | None = None
+    environment: Mapping[str, str] = MappingProxyType({})
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, ResourceState):
+            raise TypeError("database binding state must be a ResourceState")
+        validate_resource_shape(
+            self.state,
+            self.database_name,
+            self.database_role,
+            self.secret_id,
+        )
+        if not isinstance(self.environment, Mapping):
+            raise TypeError("database binding environment must be a mapping")
+        if any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in self.environment.items()
+        ):
+            raise TypeError("database binding environment must contain string values")
+        object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
+
+    def __repr__(self) -> str:
+        """Redact transient environment values from diagnostic representations."""
+
+        return (
+            f"{type(self).__name__}(state={self.state.value!r}, "
+            f"database_name={self.database_name!r}, database_role={self.database_role!r}, "
+            f"secret_id={self.secret_id!r}, "
+            f"environment_keys={tuple(sorted(self.environment))!r})"
+        )
+
+
+@runtime_checkable
+class DatabaseProvisionerPort(Protocol):
+    """Isolated database lifecycle contract consumed by later orchestration."""
+
+    async def provision(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding: ...
+
+    async def teardown(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding: ...
+
+
 # Keep the port aliases discoverable to later worktree lifecycle slices while
 # exposing only the exact managed-worktree operations above.
 ManagedWorktreePort = ControlledGitPort
@@ -138,7 +209,10 @@ GitCommitResult = GitCommit
 
 
 __all__ = [
+    "AdminSecretResolverPort",
     "ControlledGitPort",
+    "DatabaseBinding",
+    "DatabaseProvisionerPort",
     "GitCommit",
     "GitCommitResult",
     "GitDiff",
