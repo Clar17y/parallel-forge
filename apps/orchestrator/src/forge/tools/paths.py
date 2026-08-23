@@ -77,6 +77,11 @@ class _QuarantineEntry(NamedTuple):
     handle: _QuarantineHandle
 
 
+class _WindowsQuarantineNode(NamedTuple):
+    identity: tuple[int, ...]
+    kind: str
+
+
 class _QuarantineAccess:
     """Owner-sealed capabilities for one exact, one-way quarantine operation."""
 
@@ -91,6 +96,7 @@ class _QuarantineAccess:
         "_registration_quarantine",
         "_registration_quarantine_parent",
         "_registration_quarantine_path",
+        "_registration_root_retired",
         "_resources",
         "_root",
         "_sealed",
@@ -100,6 +106,7 @@ class _QuarantineAccess:
         "_target_quarantine",
         "_target_quarantine_parent",
         "_target_quarantine_path",
+        "_target_root_retired",
         "_worktree_parent",
     )
 
@@ -138,8 +145,10 @@ class _QuarantineAccess:
         self._registration_quarantine: _QuarantineEntry | None = None
         self._target_moved = False
         self._target_deleted = False
+        self._target_root_retired = False
         self._registration_moved = False
         self._registration_deleted = False
+        self._registration_root_retired = False
         self._live = True
         object.__setattr__(self, "_sealed", True)
 
@@ -166,6 +175,24 @@ class _QuarantineAccess:
 
     def _retain(self, capability: int) -> None:
         self._resources.append(capability)
+
+    def _retire(self, capability: int) -> None:
+        """Forget one handle that was deliberately closed after disposition."""
+
+        with contextlib.suppress(ValueError):
+            self._resources.remove(capability)
+
+    def _retire_target_root(self, capability: int) -> None:
+        if capability != self._target.handle.capability:
+            raise RepositoryAccessDenied("repository quarantine root capability is invalid")
+        self._retire(capability)
+        object.__setattr__(self, "_target_root_retired", True)
+
+    def _retire_registration_root(self, capability: int) -> None:
+        if capability != self._registration.handle.capability:
+            raise RepositoryAccessDenied("repository quarantine root capability is invalid")
+        self._retire(capability)
+        object.__setattr__(self, "_registration_root_retired", True)
 
     def _release(self, close: Any) -> None:
         object.__setattr__(self, "_live", False)
@@ -1271,8 +1298,10 @@ class CanonicalRoot:
                     access._registration_quarantine_path.parent,
                     access._registration_quarantine_parent,
                 )
-            self._verify_quarantine_handle("target", access._target.handle)
-            self._verify_quarantine_handle("registration", access._registration.handle)
+            if os.name != "nt" or not access._target_root_retired:
+                self._verify_quarantine_handle("target", access._target.handle)
+            if os.name != "nt" or not access._registration_root_retired:
+                self._verify_quarantine_handle("registration", access._registration.handle)
             if access._target_quarantine is not None:
                 self._verify_quarantine_handle(
                     "target quarantine", access._target_quarantine.handle
@@ -1330,6 +1359,8 @@ class CanonicalRoot:
         access = self._accept_quarantine_access(access)
         if not access._target_moved:
             raise RepositoryAccessDenied("target quarantine has not completed")
+        if not access._target_deleted:
+            raise RepositoryAccessDenied("target quarantine deletion has not completed")
         if access._registration_moved or access._registration_quarantine is not None:
             raise RepositoryAccessDenied("registration quarantine transition already completed")
         if os.name == "nt":
@@ -1361,11 +1392,19 @@ class CanonicalRoot:
         if not access._target_moved or access._target_quarantine is None:
             raise RepositoryAccessDenied("target quarantine has not completed")
         if os.name == "nt":
-            raise RepositoryAccessDenied("native Windows quarantine deletion is unavailable")
-        self._delete_posix_quarantine(
-            access._target_quarantine,
-            proof_name=".git",
-        )
+            self._delete_windows_quarantine(
+                access._target_quarantine,
+                root_pin=access._target.handle,
+                quarantine_parent=access._target_quarantine_parent,
+                proof_name=".git",
+                retire_root=access._retire_target_root,
+                root_retired=access._target_root_retired,
+            )
+        else:
+            self._delete_posix_quarantine(
+                access._target_quarantine,
+                proof_name=".git",
+            )
         object.__setattr__(access, "_target_deleted", True)
 
     def _delete_registration_quarantine(self, access: _QuarantineAccess) -> None:
@@ -1379,12 +1418,357 @@ class CanonicalRoot:
         if not access._registration_moved or access._registration_quarantine is None:
             raise RepositoryAccessDenied("registration quarantine has not completed")
         if os.name == "nt":
-            raise RepositoryAccessDenied("native Windows quarantine deletion is unavailable")
-        self._delete_posix_quarantine(
-            access._registration_quarantine,
-            proof_name="gitdir",
-        )
+            self._delete_windows_quarantine(
+                access._registration_quarantine,
+                root_pin=access._registration.handle,
+                quarantine_parent=access._registration_quarantine_parent,
+                proof_name="gitdir",
+                retire_root=access._retire_registration_root,
+                root_retired=access._registration_root_retired,
+            )
+        else:
+            self._delete_posix_quarantine(
+                access._registration_quarantine,
+                proof_name="gitdir",
+            )
         object.__setattr__(access, "_registration_deleted", True)
+
+    @staticmethod
+    def _windows_quarantine_names(api: _WindowsPathApi, handle: int) -> tuple[str, ...]:
+        try:
+            names = tuple(api.enumerate_names(handle))
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository quarantine enumeration failed") from None
+        seen: set[str] = set()
+        for name in names:
+            try:
+                _validate_quarantine_component(name)
+            except PathEscape, UnicodeError, ValueError:
+                raise RepositoryAccessDenied(
+                    "repository quarantine entry name is invalid"
+                ) from None
+            if name in seen:
+                raise RepositoryAccessDenied("repository quarantine enumeration is duplicated")
+            seen.add(name)
+        return names
+
+    @staticmethod
+    def _windows_quarantine_kind(
+        api: _WindowsPathApi, handle: int, root_volume: int
+    ) -> _WindowsQuarantineNode:
+        try:
+            identity = tuple(api.identity(handle))
+            information = api.information(handle)
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied(
+                "repository quarantine entry state is unavailable"
+            ) from None
+        if not identity or identity[0] != root_volume:
+            raise RepositoryAccessDenied("repository quarantine crosses a volume")
+        attributes = int(information.attributes)
+        if attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+            kind = "reparse"
+        elif attributes & _FILE_ATTRIBUTE_DIRECTORY:
+            kind = "directory"
+        else:
+            kind = "normal"
+        return _WindowsQuarantineNode(identity, kind)
+
+    @staticmethod
+    def _close_windows_handle(api: _WindowsPathApi, handle: int | None) -> None:
+        if handle is not None:
+            with contextlib.suppress(OSError, ValueError):
+                api.close(handle)
+
+    @classmethod
+    def _windows_quarantine_preflight(
+        cls,
+        api: _WindowsPathApi,
+        parent_handle: int,
+        *,
+        path: tuple[str, ...],
+        depth: int,
+        root_volume: int,
+        proof_name: str,
+        budget: list[int],
+        snapshot: dict[tuple[str, ...], dict[str, _WindowsQuarantineNode]],
+    ) -> None:
+        if depth > _QUARANTINE_MAX_DEPTH:
+            raise RepositoryAccessDenied("repository quarantine depth limit exceeded")
+        names = cls._windows_quarantine_names(api, parent_handle)
+        children = snapshot.setdefault(path, {})
+        for name in names:
+            budget[0] += 1
+            if budget[0] > _QUARANTINE_MAX_ENTRIES:
+                raise RepositoryAccessDenied("repository quarantine entry limit exceeded")
+            if depth == 0 and name == proof_name:
+                continue
+            if name in children:
+                raise RepositoryAccessDenied("repository quarantine enumeration is duplicated")
+            child_handle: int | None = None
+            list_handle: int | None = None
+            try:
+                try:
+                    child_handle = api.open_child(parent_handle, name)
+                except OSError, RepositoryAccessDenied, ValueError:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine child open failed"
+                    ) from None
+                node = cls._windows_quarantine_kind(api, child_handle, root_volume)
+                children[name] = node
+                if node.kind != "directory":
+                    continue
+                child_depth = depth + 1
+                if child_depth > _QUARANTINE_MAX_DEPTH:
+                    raise RepositoryAccessDenied("repository quarantine depth limit exceeded")
+                try:
+                    list_handle = api.open_child(parent_handle, name, list_handle=True)
+                except OSError, RepositoryAccessDenied, ValueError:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine directory list open failed"
+                    ) from None
+                list_node = cls._windows_quarantine_kind(api, list_handle, root_volume)
+                if list_node.kind != "directory" or list_node.identity != node.identity:
+                    raise RepositoryAccessDenied("repository quarantine directory identity changed")
+                cls._windows_quarantine_preflight(
+                    api,
+                    list_handle,
+                    path=(*path, name),
+                    depth=child_depth,
+                    root_volume=root_volume,
+                    proof_name=proof_name,
+                    budget=budget,
+                    snapshot=snapshot,
+                )
+            finally:
+                cls._close_windows_handle(api, list_handle)
+                cls._close_windows_handle(api, child_handle)
+
+    @classmethod
+    def _windows_quarantine_delete_children(
+        cls,
+        api: _WindowsPathApi,
+        parent_handle: int,
+        *,
+        path: tuple[str, ...],
+        depth: int,
+        root_volume: int,
+        proof_name: str,
+        snapshot: dict[tuple[str, ...], dict[str, _WindowsQuarantineNode]],
+    ) -> None:
+        if depth > _QUARANTINE_MAX_DEPTH:
+            raise RepositoryAccessDenied("repository quarantine depth limit exceeded")
+        names = cls._windows_quarantine_names(api, parent_handle)
+        expected = snapshot.get(path)
+        if expected is None:
+            raise RepositoryAccessDenied("repository quarantine tree changed")
+        remaining_names = {name for name in names if not (depth == 0 and name == proof_name)}
+        if remaining_names != set(expected) or len(remaining_names) != len(names) - (
+            1 if depth == 0 and proof_name in names else 0
+        ):
+            raise RepositoryAccessDenied("repository quarantine tree changed")
+        for name in names:
+            if depth == 0 and name == proof_name:
+                continue
+            node = expected.get(name)
+            if node is None:
+                raise RepositoryAccessDenied("repository quarantine tree changed")
+            child_handle: int | None = None
+            list_handle: int | None = None
+            try:
+                try:
+                    child_handle = api.open_child(parent_handle, name)
+                except OSError, RepositoryAccessDenied, ValueError:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine child open failed"
+                    ) from None
+                current = cls._windows_quarantine_kind(api, child_handle, root_volume)
+                if current != node:
+                    raise RepositoryAccessDenied("repository quarantine entry identity changed")
+                if node.kind == "directory":
+                    try:
+                        list_handle = api.open_child(parent_handle, name, list_handle=True)
+                    except OSError, RepositoryAccessDenied, ValueError:
+                        raise RepositoryAccessDenied(
+                            "repository quarantine directory list open failed"
+                        ) from None
+                    list_node = cls._windows_quarantine_kind(api, list_handle, root_volume)
+                    if list_node.kind != "directory" or list_node.identity != node.identity:
+                        raise RepositoryAccessDenied(
+                            "repository quarantine directory identity changed"
+                        )
+                    child_path = (*path, name)
+                    cls._windows_quarantine_delete_children(
+                        api,
+                        list_handle,
+                        path=child_path,
+                        depth=depth + 1,
+                        root_volume=root_volume,
+                        proof_name=proof_name,
+                        snapshot=snapshot,
+                    )
+                    cls._close_windows_handle(api, list_handle)
+                    list_handle = None
+                try:
+                    api.dispose(child_handle)
+                except OSError, RepositoryAccessDenied, ValueError:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine entry deletion failed"
+                    ) from None
+                # Windows keeps a POSIX-dispositioned entry visible until the
+                # delete pin is closed. Release that exact pin before the
+                # final handle-relative absence check; keeping it open would
+                # make a successful disposition look like a failed deletion
+                # and would also block the enclosing directory.
+                cls._close_windows_handle(api, child_handle)
+                child_handle = None
+            finally:
+                cls._close_windows_handle(api, list_handle)
+                cls._close_windows_handle(api, child_handle)
+        final_names = cls._windows_quarantine_names(api, parent_handle)
+        allowed_names = {proof_name} if depth == 0 else set()
+        if set(final_names) != allowed_names:
+            raise RepositoryAccessDenied("repository quarantine tree changed")
+
+    def _delete_windows_quarantine(
+        self,
+        quarantine: _QuarantineEntry,
+        *,
+        root_pin: _QuarantineHandle,
+        quarantine_parent: _QuarantineHandle,
+        proof_name: str,
+        retire_root: Any | None = None,
+        root_retired: bool = False,
+    ) -> None:
+        """Delete one exact quarantine through retained Windows handles only."""
+
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        _require_windows_native_pointer_size()
+
+        def retire_root_pin() -> None:
+            self._close_windows_handle(api, root_pin.capability)
+            if retire_root is not None:
+                retire_root(root_pin.capability)
+
+        try:
+            list_identity = tuple(api.identity(quarantine.handle.capability))
+            parent_identity = tuple(api.identity(quarantine_parent.capability))
+            root_identity = (
+                root_pin.identity if root_retired else tuple(api.identity(root_pin.capability))
+            )
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository quarantine capability is stale") from None
+        if (
+            not root_identity
+            or not list_identity
+            or not parent_identity
+            or root_identity != root_pin.identity
+            or list_identity != quarantine.handle.identity
+            or parent_identity != quarantine_parent.identity
+        ):
+            raise RepositoryAccessDenied("repository quarantine identity changed")
+        if root_identity != list_identity:
+            raise RepositoryAccessDenied("repository quarantine identity changed")
+        if not root_identity or parent_identity[0] != root_identity[0]:
+            raise RepositoryAccessDenied("repository quarantine crosses a volume")
+        list_node = self._windows_quarantine_kind(
+            api, quarantine.handle.capability, root_identity[0]
+        )
+        if list_node.kind != "directory" or list_node.identity != root_identity:
+            raise RepositoryAccessDenied("repository quarantine identity changed")
+        if root_retired:
+            if self._windows_quarantine_names(api, quarantine.handle.capability):
+                raise RepositoryAccessDenied(
+                    "repository quarantine root is nonempty after disposition"
+                )
+            if quarantine.name in self._windows_quarantine_names(api, quarantine_parent.capability):
+                raise RepositoryAccessDenied("repository quarantine root is still present")
+            return
+
+        root_node = self._windows_quarantine_kind(api, root_pin.capability, root_identity[0])
+        if root_node.kind != "directory" or list_node != root_node:
+            raise RepositoryAccessDenied("repository quarantine identity changed")
+
+        root_names = self._windows_quarantine_names(api, quarantine.handle.capability)
+        if proof_name not in root_names:
+            if root_names:
+                raise RepositoryAccessDenied(
+                    "repository quarantine proof is absent while content remains"
+                )
+            if quarantine.name not in self._windows_quarantine_names(
+                api, quarantine_parent.capability
+            ):
+                # The retained root pin is no longer useful once its exact
+                # namespace entry is already absent.  Release it so the
+                # caller can safely retire the capability before any handle
+                # value is reused by a later child open.
+                retire_root_pin()
+                return
+            try:
+                api.dispose(root_pin.capability)
+            except OSError, RepositoryAccessDenied, ValueError:
+                raise RepositoryAccessDenied("repository quarantine root deletion failed") from None
+            retire_root_pin()
+            if quarantine.name in self._windows_quarantine_names(api, quarantine_parent.capability):
+                raise RepositoryAccessDenied("repository quarantine root is still present")
+            return
+
+        proof_handle: int | None = None
+        try:
+            try:
+                proof_handle = api.open_child(quarantine.handle.capability, proof_name)
+            except OSError, RepositoryAccessDenied, ValueError:
+                raise RepositoryAccessDenied("repository quarantine proof is unavailable") from None
+            proof_node = self._windows_quarantine_kind(api, proof_handle, root_identity[0])
+            if proof_node.kind != "normal":
+                raise RepositoryAccessDenied("repository quarantine proof is not regular")
+            snapshot: dict[tuple[str, ...], dict[str, _WindowsQuarantineNode]] = {}
+            self._windows_quarantine_preflight(
+                api,
+                quarantine.handle.capability,
+                path=(),
+                depth=0,
+                root_volume=root_identity[0],
+                proof_name=proof_name,
+                budget=[0],
+                snapshot=snapshot,
+            )
+            self._windows_quarantine_delete_children(
+                api,
+                quarantine.handle.capability,
+                path=(),
+                depth=0,
+                root_volume=root_identity[0],
+                proof_name=proof_name,
+                snapshot=snapshot,
+            )
+            current_proof = self._windows_quarantine_kind(api, proof_handle, root_identity[0])
+            if current_proof != proof_node:
+                raise RepositoryAccessDenied("repository quarantine proof changed")
+            try:
+                api.dispose(proof_handle)
+            except OSError, RepositoryAccessDenied, ValueError:
+                raise RepositoryAccessDenied(
+                    "repository quarantine proof deletion failed"
+                ) from None
+            self._close_windows_handle(api, proof_handle)
+            proof_handle = None
+            if proof_name in self._windows_quarantine_names(api, quarantine.handle.capability):
+                raise RepositoryAccessDenied("repository quarantine proof is still present")
+        finally:
+            self._close_windows_handle(api, proof_handle)
+
+        if self._windows_quarantine_names(api, quarantine.handle.capability):
+            raise RepositoryAccessDenied("repository quarantine is nonempty after proof deletion")
+        try:
+            api.dispose(root_pin.capability)
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository quarantine root deletion failed") from None
+        retire_root_pin()
+        if quarantine.name in self._windows_quarantine_names(api, quarantine_parent.capability):
+            raise RepositoryAccessDenied("repository quarantine root is still present")
 
     def _delete_posix_quarantine(
         self,

@@ -544,6 +544,11 @@ def test_quarantine_moves_exact_target_then_registration(tmp_path: Path) -> None
         assert access.target_quarantine_path.is_dir()
         assert (access.target_quarantine_path / "outside-marker").is_file()
 
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_registration(access)
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+
         root._quarantine_registration(access)
         assert not registration.exists()
         assert access.registration_quarantine_path.is_dir()
@@ -562,12 +567,411 @@ def test_quarantine_delete_requires_a_moved_target_and_keeps_registration_order(
         root._quarantine_target(access)
         with pytest.raises(RepositoryAccessDenied):
             root._delete_registration_quarantine(access)
-        if os.name == "nt":
-            with pytest.raises(RepositoryAccessDenied):
-                root._delete_target_quarantine(access)
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native quarantine deletion")
+def test_windows_quarantine_delete_handles_nested_readonly_hardlink_and_junction(
+    tmp_path: Path,
+) -> None:
+    root_path, target, _registration, outside = _make_quarantine_fixture(tmp_path)
+    nested = target / "nested"
+    nested.mkdir()
+    readonly = nested / "readonly.txt"
+    readonly.write_text("readonly\n", encoding="utf-8")
+    os.chmod(readonly, 0o444)
+    outside.mkdir()
+    outside_marker = outside / "outside-marker"
+    outside_marker.write_text("outside\n", encoding="utf-8")
+    os.link(outside_marker, target / "hardlink")
+    _make_junction(target / "linked", outside)
+    root = CanonicalRoot(root_path)
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+        assert not os.path.lexists(access.target_quarantine_path)
+
+    assert outside_marker.read_text(encoding="utf-8") == "outside\n"
+    assert outside.is_dir()
+    assert not (outside / "readonly.txt").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native proof-last deletion")
+def test_windows_quarantine_delete_is_proof_last_for_target_and_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+    opened_names: dict[int, str] = {}
+    dispose_order: list[str] = []
+    original_open_child = api.open_child
+    original_dispose = api.dispose
+
+    def open_child_spy(parent: int, name: str, *, list_handle: bool = False) -> int:
+        handle = original_open_child(parent, name, list_handle=list_handle)
+        opened_names[handle] = name
+        return handle
+
+    def dispose_spy(handle: int) -> None:
+        if handle == access._target.handle.capability:
+            dispose_order.append("target-root")
+        elif handle == access._registration.handle.capability:
+            dispose_order.append("registration-root")
         else:
+            dispose_order.append(opened_names.get(handle, "unknown"))
+        original_dispose(handle)
+
+    with root._open_worktree_quarantine(target.name, registration.name) as access:
+        root._quarantine_target(access)
+        monkeypatch.setattr(api, "open_child", open_child_spy)
+        monkeypatch.setattr(api, "dispose", dispose_spy)
+        with pytest.raises(RepositoryAccessDenied):
+            root._quarantine_registration(access)
+        root._delete_target_quarantine(access)
+        assert dispose_order[-2:] == [".git", "target-root"]
+        root._quarantine_registration(access)
+        root._delete_registration_quarantine(access)
+        assert dispose_order[-2:] == ["gitdir", "registration-root"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native missing-proof retry")
+def test_windows_quarantine_delete_missing_proof_refuses_nonempty_then_retries_empty(
+    tmp_path: Path,
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        (access.target_quarantine_path / ".git").unlink()
+        with pytest.raises(RepositoryAccessDenied):
             root._delete_target_quarantine(access)
-            assert access._target_deleted is True
+        assert access._target_deleted is False
+        assert (access.target_quarantine_path / "outside-marker").is_file()
+        (access.target_quarantine_path / "outside-marker").unlink()
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+        root._delete_target_quarantine(access)
+    assert not os.path.lexists(access.target_quarantine_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native locked-child retry")
+def test_windows_quarantine_delete_locked_child_fails_then_retries(tmp_path: Path) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        lock = api.open_child(access._target_quarantine.handle.capability, "outside-marker")
+        try:
+            with pytest.raises((OSError, RepositoryAccessDenied)):
+                root._delete_target_quarantine(access)
+            assert access._target_deleted is False
+            assert (access.target_quarantine_path / ".git").is_file()
+        finally:
+            api.close(lock)
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native proof failure retry")
+def test_windows_quarantine_delete_proof_failure_preserves_evidence_and_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        probe = api.open_child(access._target_quarantine.handle.capability, ".git")
+        try:
+            proof_identity = tuple(api.identity(probe))
+        finally:
+            api.close(probe)
+        original_dispose = api.dispose
+        failures = 0
+
+        def fail_proof_once(handle: int) -> None:
+            nonlocal failures
+            if tuple(api.identity(handle)) == proof_identity and failures == 0:
+                failures += 1
+                raise RepositoryAccessDenied("injected proof disposition failure")
+            original_dispose(handle)
+
+        monkeypatch.setattr(api, "dispose", fail_proof_once)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        assert failures == 1
+        assert access._target_deleted is False
+        assert (access.target_quarantine_path / ".git").is_file()
+        monkeypatch.undo()
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native nested-directory failure retry")
+def test_windows_quarantine_delete_nested_directory_failure_closes_handles_and_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    nested = target / "nested"
+    nested.mkdir()
+    (nested / "child.txt").write_text("child\n", encoding="utf-8")
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        probe = api.open_child(access._target_quarantine.handle.capability, "nested")
+        try:
+            nested_identity = tuple(api.identity(probe))
+        finally:
+            api.close(probe)
+        opened: set[int] = set()
+        closed: set[int] = set()
+        original_open_child = api.open_child
+        original_close = api.close
+        original_dispose = api.dispose
+        failures = 0
+
+        def open_child_spy(parent: int, name: str, *, list_handle: bool = False) -> int:
+            handle = original_open_child(parent, name, list_handle=list_handle)
+            opened.add(handle)
+            return handle
+
+        def close_spy(handle: int) -> None:
+            if handle in opened:
+                closed.add(handle)
+            original_close(handle)
+
+        def fail_nested_once(handle: int) -> None:
+            nonlocal failures
+            if tuple(api.identity(handle)) == nested_identity and failures == 0:
+                failures += 1
+                raise RepositoryAccessDenied("injected nested disposition failure")
+            original_dispose(handle)
+
+        monkeypatch.setattr(api, "open_child", open_child_spy)
+        monkeypatch.setattr(api, "close", close_spy)
+        monkeypatch.setattr(api, "dispose", fail_nested_once)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        assert failures == 1
+        assert opened <= closed
+        assert access._target_deleted is False
+        assert (access.target_quarantine_path / ".git").is_file()
+        assert (access.target_quarantine_path / "nested").is_dir()
+        assert not any((access.target_quarantine_path / "nested").iterdir())
+        monkeypatch.undo()
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native root-disposition retry")
+def test_windows_quarantine_delete_root_failure_allows_exact_empty_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        original_dispose = api.dispose
+        failures = 0
+
+        def fail_root_once(handle: int) -> None:
+            nonlocal failures
+            if handle == access._target.handle.capability and failures == 0:
+                failures += 1
+                raise RepositoryAccessDenied("injected root disposition failure")
+            original_dispose(handle)
+
+        monkeypatch.setattr(api, "dispose", fail_root_once)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        assert failures == 1
+        assert access._target_deleted is False
+        assert access.target_quarantine_path.is_dir()
+        assert not os.path.lexists(access.target_quarantine_path / ".git")
+        assert not os.path.lexists(access.target_quarantine_path / "outside-marker")
+        monkeypatch.undo()
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows final absence retry")
+def test_windows_quarantine_delete_retries_after_uncertain_root_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        original_enumerate = api.enumerate_names
+        failures = 0
+
+        def fail_final_absence(handle: int) -> tuple[str, ...]:
+            nonlocal failures
+            names = original_enumerate(handle)
+            if handle == access._target_quarantine_parent.capability and failures == 0:
+                failures += 1
+                raise RepositoryAccessDenied("injected final absence failure")
+            return names
+
+        monkeypatch.setattr(api, "enumerate_names", fail_final_absence)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        assert failures == 1
+        assert access._target_deleted is False
+
+        monkeypatch.undo()
+        root._delete_target_quarantine(access)
+        assert access._target_deleted is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows bounded quarantine enumeration")
+def test_windows_quarantine_delete_does_not_reenumerate_parent_per_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    (target / "outside-marker").unlink()
+    for index in range(8):
+        (target / f"entry-{index}").write_text("entry\n", encoding="utf-8")
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        root_list_handle = access._target_quarantine.handle.capability
+        original_enumerate = api.enumerate_names
+        calls: dict[int, int] = {}
+
+        def count_enumerations(handle: int) -> tuple[str, ...]:
+            calls[handle] = calls.get(handle, 0) + 1
+            return original_enumerate(handle)
+
+        monkeypatch.setattr(api, "enumerate_names", count_enumerations)
+        root._delete_target_quarantine(access)
+
+        assert calls[root_list_handle] <= 6
+        assert sum(calls.values()) <= 7
+        assert access._target_deleted is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native identity-bound deletion")
+def test_windows_quarantine_delete_refuses_child_identity_change_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    nested = target / "nested"
+    nested.mkdir()
+    (nested / "child.txt").write_text("child\n", encoding="utf-8")
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        original_open_child = api.open_child
+        original_identity = api.identity
+        child_pins: set[int] = set()
+
+        def open_child_spy(parent: int, name: str, *, list_handle: bool = False) -> int:
+            handle = original_open_child(parent, name, list_handle=list_handle)
+            if name == "nested" and not list_handle:
+                child_pins.add(handle)
+            return handle
+
+        def mismatched_identity(handle: int) -> object:
+            identity = tuple(original_identity(handle))
+            if handle in child_pins:
+                return (identity[0] + 1, *identity[1:])
+            return identity
+
+        monkeypatch.setattr(api, "open_child", open_child_spy)
+        monkeypatch.setattr(api, "identity", mismatched_identity)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        assert child_pins
+        assert access._target_deleted is False
+        assert (access.target_quarantine_path / ".git").is_file()
+        assert (access.target_quarantine_path / "nested" / "child.txt").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native quarantine bounds")
+def test_windows_quarantine_delete_enforces_depth_and_entry_bounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    nested = target / "nested"
+    nested.mkdir()
+    (nested / "deep").mkdir()
+    root = CanonicalRoot(root_path)
+
+    monkeypatch.setattr(paths, "_QUARANTINE_MAX_DEPTH", 1)
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        assert access._target_deleted is False
+        assert (access.target_quarantine_path / ".git").is_file()
+
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path / "entries")
+    for index in range(3):
+        (target / f"entry-{index}").write_text("entry\n", encoding="utf-8")
+    root = CanonicalRoot(root_path)
+    monkeypatch.setattr(paths, "_QUARANTINE_MAX_DEPTH", 128)
+    monkeypatch.setattr(paths, "_QUARANTINE_MAX_ENTRIES", 2)
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        assert access._target_deleted is False
+        assert (access.target_quarantine_path / ".git").is_file()
+        assert (access.target_quarantine_path / "entry-0").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native malformed enumeration")
+def test_windows_quarantine_delete_rejects_malformed_enumeration_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, _registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    api = root._windows
+    assert api is not None
+
+    with root._open_worktree_quarantine(target.name, "opaque-registration") as access:
+        root._quarantine_target(access)
+        original_enumerate = api.enumerate_names
+
+        def malformed(handle: int) -> tuple[str, ...]:
+            names = original_enumerate(handle)
+            if handle == access._target_quarantine.handle.capability:
+                return (*names, "invalid/name")
+            return names
+
+        monkeypatch.setattr(api, "enumerate_names", malformed)
+        with pytest.raises(RepositoryAccessDenied):
+            root._delete_target_quarantine(access)
+        assert access._target_deleted is False
+        assert (access.target_quarantine_path / ".git").is_file()
+        assert (access.target_quarantine_path / "outside-marker").is_file()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX fd-relative quarantine deletion")
@@ -1061,6 +1465,9 @@ def test_quarantine_swap_interposer_cannot_redirect_move(tmp_path: Path, scope: 
             pass
         root._quarantine_target(access)
         if scope == "metadata":
+            with pytest.raises(RepositoryAccessDenied):
+                root._quarantine_registration(access)
+            root._delete_target_quarantine(access)
             root._quarantine_registration(access)
 
     assert swapped is True
@@ -1334,6 +1741,7 @@ def test_quarantine_root_swap_interposer_cannot_redirect_move(tmp_path: Path, sc
             assert swapped is True
         root._quarantine_target(access)
         if scope == "metadata":
+            root._delete_target_quarantine(access)
             root._quarantine_registration(access)
 
     assert not outside.exists() or not any(outside.iterdir())
