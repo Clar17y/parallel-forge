@@ -1048,6 +1048,34 @@ def test_remove_live_validation_uses_target_git_only_before_quarantine_bind(
     assert runner.target_git_after_bind is False
 
 
+def test_remove_live_rejects_registration_gitdir_substitution_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+    registration = _registration_for(handle.path)
+    alternate = repository / ".worktrees" / "alternate-target"
+    alternate.mkdir()
+    (alternate / ".git").write_text("alternate\n", encoding="utf-8")
+    branch_ref = f"refs/heads/{identity.branch}"
+
+    original_bind = controlled._repository._bind_worktree_quarantine
+
+    def substitute_before_bind(access: object) -> None:
+        (registration / "gitdir").write_bytes(f"{alternate / '.git'}\n".encode())
+        original_bind(access)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(controlled._repository, "_bind_worktree_quarantine", substitute_before_bind)
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+    assert (repository / ".git" / branch_ref).is_file()
+
+
 def test_remove_refuses_missing_branch_before_any_quarantine_mutation(tmp_path: Path) -> None:
     repository, identity, handle = _managed_repository(tmp_path)
     registration = _registration_for(handle.path)

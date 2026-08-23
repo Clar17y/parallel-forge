@@ -26,6 +26,7 @@ _QUARANTINE_SEAL = object()
 _QUARANTINE_MAX_DEPTH = 128
 _QUARANTINE_MAX_ENTRIES = 100_000
 _QUARANTINE_MAX_COMPONENT_BYTES = 255
+_GITDIR_MAX_BYTES = 4096
 _REMOVAL_LIVE = "live"
 _REMOVAL_STALE_REGISTRATION = "stale-registration"
 _REMOVAL_ABSENT = "absent"
@@ -96,6 +97,9 @@ class _QuarantineAccess:
         "_owner",
         "_registration",
         "_registration_deleted",
+        "_registration_gitdir_content",
+        "_registration_gitdir_proof",
+        "_registration_gitdir_proof_retired",
         "_registration_initially_present",
         "_registration_moved",
         "_registration_path",
@@ -140,6 +144,8 @@ class _QuarantineAccess:
         registration_quarantine_parent: _QuarantineHandle,
         target_quarantine_path: Path,
         registration_quarantine_path: Path | None,
+        registration_gitdir_content: bytes | None = None,
+        registration_gitdir_proof: _QuarantineHandle | None = None,
         mutation_bound: bool = True,
         target_probe: _QuarantineHandle | None = None,
         registration_probe: _QuarantineHandle | None = None,
@@ -160,6 +166,9 @@ class _QuarantineAccess:
         self._registration_probe = registration_probe
         self._target_initially_present = target_initially_present
         self._registration_initially_present = registration_initially_present
+        self._registration_gitdir_content = registration_gitdir_content
+        self._registration_gitdir_proof = registration_gitdir_proof
+        self._registration_gitdir_proof_retired = False
         self._target_quarantine_parent = target_quarantine_parent
         self._registration_quarantine_parent = registration_quarantine_parent
         self._target_quarantine_path = target_quarantine_path
@@ -445,6 +454,23 @@ class _WindowsPathApi:
         self._close_handle = kernel32.CloseHandle
         self._close_handle.argtypes = (ctypes.c_void_p,)
         self._close_handle.restype = ctypes.c_int
+        self._read_file = kernel32.ReadFile
+        self._read_file.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        )
+        self._read_file.restype = wintypes.BOOL
+        self._set_file_pointer_ex = kernel32.SetFilePointerEx
+        self._set_file_pointer_ex.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_longlong,
+            ctypes.POINTER(ctypes.c_longlong),
+            wintypes.DWORD,
+        )
+        self._set_file_pointer_ex.restype = wintypes.BOOL
         self._get_file_information = kernel32.GetFileInformationByHandle
         self._get_file_information.argtypes = (
             ctypes.c_void_p,
@@ -999,6 +1025,34 @@ class _WindowsPathApi:
     def open_child(self, parent_handle: int, name: str, *, list_handle: bool = False) -> int:
         """Open one validated child relative to a retained directory handle."""
 
+        return self._open_child(
+            parent_handle,
+            name,
+            access=(
+                _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+                if list_handle
+                else _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+            ),
+            share=(
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE
+                if list_handle
+                else _FILE_SHARE_READ | _FILE_SHARE_WRITE
+            ),
+        )
+
+    def open_proof_child(self, parent_handle: int, name: str) -> int:
+        """Open one regular proof child for read/delete sharing only."""
+
+        return self._open_child(
+            parent_handle,
+            name,
+            access=_FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+            share=_FILE_SHARE_READ | _FILE_SHARE_DELETE,
+        )
+
+    def _open_child(self, parent_handle: int, name: str, *, access: int, share: int) -> int:
+        """Open one validated child with an explicit native capability policy."""
+
         try:
             name = _validate_quarantine_component(name)
             encoded = name.encode("utf-16-le", errors="strict")
@@ -1019,16 +1073,6 @@ class _WindowsPathApi:
             _OBJ_CASE_INSENSITIVE,
             None,
             None,
-        )
-        access = (
-            _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
-            if list_handle
-            else _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
-        )
-        share = (
-            _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE
-            if list_handle
-            else _FILE_SHARE_READ | _FILE_SHARE_WRITE
         )
         options = _FILE_OPEN_REPARSE_POINT | _FILE_SYNCHRONOUS_IO_NONALERT
         raw_handle = ctypes.c_void_p()
@@ -1145,6 +1189,36 @@ class _WindowsPathApi:
         return _WindowsIdentity(
             int(info.volume_serial), int(info.file_index_high), int(info.file_index_low)
         )
+
+    def read_bounded(self, handle: int, maximum: int = _GITDIR_MAX_BYTES) -> bytes:
+        """Read one opened regular file without reopening its lexical path."""
+
+        info = self.information(handle)
+        size = (int(info.size_high) << 32) | int(info.size_low)
+        if size > maximum:
+            raise RepositoryAccessDenied("repository proof is oversized")
+        if size == 0:
+            return b""
+        if not self._set_file_pointer_ex(handle, 0, None, 0):
+            raise RepositoryAccessDenied("repository proof is unavailable")
+        buffer = ctypes.create_string_buffer(size)
+        read = wintypes.DWORD()
+        if (
+            not self._read_file(
+                handle,
+                ctypes.cast(buffer, ctypes.c_void_p),
+                size,
+                ctypes.byref(read),
+                None,
+            )
+            or int(read.value) != size
+        ):
+            raise RepositoryAccessDenied("repository proof is unavailable")
+        after = self.information(handle)
+        after_size = (int(after.size_high) << 32) | int(after.size_low)
+        if after_size != size:
+            raise RepositoryAccessDenied("repository proof changed")
+        return bytes(buffer.raw[:size])
 
     def close(self, handle: int) -> None:
         if handle != _INVALID_HANDLE_VALUE:
@@ -1514,16 +1588,116 @@ class CanonicalRoot:
         return access
 
     def _verify_windows_registration_state(self, access: _QuarantineAccess) -> None:
-        """Revalidate one pinned Windows registration without reopening its path."""
+        """Revalidate one pinned Windows registration and its exact marker content."""
 
-        if access._registration is None:
+        if (
+            access._registration is None
+            or access._registration_gitdir_proof is None
+            or access._registration_gitdir_content is None
+        ):
             raise RepositoryAccessDenied("registration source is unavailable")
         api = self._windows
         if api is None:
             raise RepositoryAccessDenied("Windows path capabilities are unavailable")
         registration_handle = access._registration.handle.capability
         api.assert_child_absent(registration_handle, "locked")
-        api.verify_regular_child(registration_handle, "gitdir")
+        proof_handle = access._registration_gitdir_proof.capability
+        reopened: int | None = None
+        try:
+            reopened = api.open_proof_child(registration_handle, "gitdir")
+            reopened_info = api.information(reopened)
+            if int(reopened_info.attributes) & (
+                _FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("repository proof is not a regular file")
+            if tuple(api.identity(reopened)) != access._registration_gitdir_proof.identity:
+                raise RepositoryAccessDenied("repository proof identity changed")
+            proof_info = api.information(proof_handle)
+            if int(proof_info.attributes) & (
+                _FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("repository proof is not a regular file")
+            content = api.read_bounded(proof_handle)
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository proof is unavailable") from None
+        finally:
+            if reopened is not None:
+                api.close(reopened)
+        if content != access._registration_gitdir_content:
+            raise RepositoryAccessDenied("repository proof changed")
+        _validate_gitdir_content(
+            content,
+            access.registration_path,
+            access._target_path / ".git",
+        )
+
+    def _retire_windows_registration_gitdir_proof(self, access: _QuarantineAccess) -> None:
+        """Close the leaf proof only after the final handle-relative recheck."""
+
+        proof = access._registration_gitdir_proof
+        if proof is None or access._registration_gitdir_proof_retired:
+            raise RepositoryAccessDenied("repository proof capability is unavailable")
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        try:
+            api.close(proof.capability)
+        except OSError:
+            raise RepositoryAccessDenied("repository proof capability cleanup failed") from None
+        access._retire(proof.capability)
+        object.__setattr__(access, "_registration_gitdir_proof", None)
+        object.__setattr__(access, "_registration_gitdir_proof_retired", True)
+
+    def _reacquire_windows_registration_gitdir_proof(
+        self,
+        access: _QuarantineAccess,
+        expected_identity: tuple[int, ...],
+    ) -> None:
+        """Restore a retired proof after a registration move failed before completion."""
+
+        if (
+            access._registration is None
+            or access._registration_gitdir_content is None
+            or access._registration_gitdir_proof is not None
+            or not access._registration_gitdir_proof_retired
+        ):
+            raise RepositoryAccessDenied("repository proof recovery state is invalid")
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        proof_handle: int | None = None
+        try:
+            proof_handle = api.open_proof_child(
+                access._registration.handle.capability,
+                "gitdir",
+            )
+            proof_info = api.information(proof_handle)
+            if int(proof_info.attributes) & (
+                _FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("repository proof is not a regular file")
+            proof_identity = tuple(api.identity(proof_handle))
+            if proof_identity != expected_identity:
+                raise RepositoryAccessDenied("repository proof identity changed")
+            content = api.read_bounded(proof_handle)
+            if content != access._registration_gitdir_content:
+                raise RepositoryAccessDenied("repository proof changed")
+            _validate_gitdir_content(
+                content,
+                access.registration_path,
+                access._target_path / ".git",
+            )
+        except OSError, RepositoryAccessDenied, ValueError:
+            if proof_handle is not None:
+                api.close(proof_handle)
+            raise RepositoryAccessDenied("repository proof recovery failed") from None
+        access._retain(proof_handle)
+        object.__setattr__(
+            access,
+            "_registration_gitdir_proof",
+            _QuarantineHandle(proof_handle, proof_identity),
+        )
+        object.__setattr__(access, "_registration_gitdir_proof_retired", False)
 
     def _reject_posix_live_collisions(self, access: _QuarantineAccess) -> None:
         self._assert_posix_name_absent(
@@ -1537,10 +1711,30 @@ class CanonicalRoot:
 
     @staticmethod
     def _verify_posix_registration_state(access: _QuarantineAccess) -> None:
-        if access._registration is None:
+        if (
+            access._registration is None
+            or access._registration_gitdir_proof is None
+            or access._registration_gitdir_content is None
+        ):
             raise RepositoryAccessDenied("registration source is unavailable")
         _reject_posix_registration_lock(access._registration.handle.capability)
-        _verify_posix_gitdir(access._registration.handle.capability)
+        reopened: int | None = None
+        try:
+            reopened = _open_posix_gitdir(access._registration.handle.capability)
+            if _fd_identity(reopened) != access._registration_gitdir_proof.identity:
+                raise RepositoryAccessDenied("repository proof identity changed")
+            content = _read_posix_bounded(access._registration_gitdir_proof.capability)
+        finally:
+            if reopened is not None:
+                with contextlib.suppress(OSError):
+                    os.close(reopened)
+        if content != access._registration_gitdir_content:
+            raise RepositoryAccessDenied("repository proof changed")
+        _validate_gitdir_content(
+            content,
+            access.registration_path,
+            access._target_path / ".git",
+        )
 
     def _accept_quarantine_access(self, access: _QuarantineAccess) -> _QuarantineAccess:
         """Accept only this root's live, owner-sealed quarantine capability."""
@@ -1588,6 +1782,15 @@ class CanonicalRoot:
                 self._verify_quarantine_handle("target probe", access._target_probe)
             if access._registration_probe is not None:
                 self._verify_quarantine_handle("registration probe", access._registration_probe)
+            if access._registration_gitdir_proof is not None:
+                self._verify_quarantine_file_handle(
+                    "registration gitdir proof", access._registration_gitdir_proof
+                )
+            elif (
+                access._registration_initially_present
+                and not access._registration_gitdir_proof_retired
+            ):
+                raise RepositoryAccessDenied("registration gitdir proof is unavailable")
             if access._target_quarantine is not None:
                 self._verify_quarantine_handle(
                     "target quarantine", access._target_quarantine.handle
@@ -1611,6 +1814,28 @@ class CanonicalRoot:
                 metadata = os.fstat(pinned.capability)
                 if not stat.S_ISDIR(metadata.st_mode):
                     raise RepositoryAccessDenied(f"{label} capability is not a directory")
+                identity = (int(metadata.st_dev), int(metadata.st_ino))
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied(f"{label} capability is stale") from None
+        if identity != pinned.identity:
+            raise RepositoryAccessDenied(f"{label} identity changed")
+
+    def _verify_quarantine_file_handle(self, label: str, pinned: _QuarantineHandle) -> None:
+        try:
+            if os.name == "nt":
+                api = self._windows
+                if api is None:
+                    raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+                info = api.information(pinned.capability)
+                if int(info.attributes) & (
+                    _FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY
+                ):
+                    raise RepositoryAccessDenied(f"{label} capability is not a regular file")
+                identity = tuple(api.identity(pinned.capability))
+            else:
+                metadata = os.fstat(pinned.capability)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise RepositoryAccessDenied(f"{label} capability is not a regular file")
                 identity = (int(metadata.st_dev), int(metadata.st_ino))
         except OSError, RepositoryAccessDenied, ValueError:
             raise RepositoryAccessDenied(f"{label} capability is stale") from None
@@ -1650,19 +1875,32 @@ class CanonicalRoot:
         if not access._target_deleted and access._target_initially_present:
             raise RepositoryAccessDenied("target quarantine deletion has not completed")
         self._verify_worktree_removal_state(access)
-        if os.name == "nt" and not access._target_initially_present:
+        if os.name == "nt":
             self._verify_windows_registration_state(access)
+        else:
+            self._verify_posix_registration_state(access)
         if access._registration_moved or access._registration_quarantine is not None:
             raise RepositoryAccessDenied("registration quarantine transition already completed")
         registration_quarantine_path = access.registration_quarantine_path
         if os.name == "nt":
             if os.path.lexists(access.registration_path):
-                self._quarantine_windows_entry(
-                    access,
-                    access._registration,
-                    access._registration_quarantine_parent,
-                    registration_quarantine_path,
-                )
+                proof = access._registration_gitdir_proof
+                if proof is None:
+                    raise RepositoryAccessDenied("registration source is unavailable")
+                self._retire_windows_registration_gitdir_proof(access)
+                try:
+                    self._quarantine_windows_entry(
+                        access,
+                        access._registration,
+                        access._registration_quarantine_parent,
+                        registration_quarantine_path,
+                    )
+                except RepositoryAccessDenied:
+                    self._reacquire_windows_registration_gitdir_proof(
+                        access,
+                        proof.identity,
+                    )
+                    raise
             else:
                 raise RepositoryAccessDenied("Git worktree registration is absent")
         else:
@@ -1712,7 +1950,11 @@ class CanonicalRoot:
         if not access._registration_moved or access._registration_quarantine is None:
             raise RepositoryAccessDenied("registration quarantine has not completed")
         self._verify_worktree_removal_state(access)
-        if os.name == "nt" and not access._target_initially_present:
+        if (
+            os.name == "nt"
+            and not access._target_initially_present
+            and not (access._registration_gitdir_proof_retired)
+        ):
             self._verify_windows_registration_state(access)
         if os.name == "nt":
             self._delete_windows_quarantine(
@@ -2520,6 +2762,8 @@ class CanonicalRoot:
             resources.append(metadata_parent_descriptor)
             registration_path: Path | None = None
             registration_descriptor: int | None = None
+            registration_gitdir_descriptor: int | None = None
+            registration_gitdir_content: bytes | None = None
             if registration_name is not None:
                 registration_path = self._path / ".git" / "worktrees" / registration_name
                 registration_descriptor = _open_posix_directory_at(
@@ -2527,7 +2771,13 @@ class CanonicalRoot:
                 )
                 resources.append(registration_descriptor)
                 _reject_posix_registration_lock(registration_descriptor)
-                _verify_posix_gitdir(registration_descriptor)
+                registration_gitdir_descriptor = _open_posix_gitdir(registration_descriptor)
+                resources.append(registration_gitdir_descriptor)
+                registration_gitdir_content = _validate_gitdir_content(
+                    _read_posix_bounded(registration_gitdir_descriptor),
+                    registration_path,
+                    target_path / ".git",
+                )
             target_quarantine_parent = _open_or_create_posix_directory_at(
                 worktree_parent_descriptor, _TARGET_QUARANTINE_NAME
             )
@@ -2553,6 +2803,8 @@ class CanonicalRoot:
                 volume_descriptors.append(target_descriptor)
             if registration_descriptor is not None:
                 volume_descriptors.append(registration_descriptor)
+            if registration_gitdir_descriptor is not None:
+                volume_descriptors.append(registration_gitdir_descriptor)
             _require_same_posix_volume(*volume_descriptors)
             self._revalidate_root()
             access = _QuarantineAccess(
@@ -2613,6 +2865,15 @@ class CanonicalRoot:
                 registration_quarantine_path=(
                     self._path / ".git" / _REGISTRATION_QUARANTINE_NAME / registration_name
                     if registration_name is not None
+                    else None
+                ),
+                registration_gitdir_content=registration_gitdir_content,
+                registration_gitdir_proof=(
+                    _QuarantineHandle(
+                        registration_gitdir_descriptor,
+                        _fd_identity(registration_gitdir_descriptor),
+                    )
+                    if registration_gitdir_descriptor is not None
                     else None
                 ),
                 mutation_bound=mode != _REMOVAL_LIVE or not prepared,
@@ -2702,6 +2963,8 @@ class CanonicalRoot:
             resources.append(metadata_parent_handle)
             registration_path: Path | None = None
             registration_handle: int | None = None
+            registration_gitdir_handle: int | None = None
+            registration_gitdir_content: bytes | None = None
             if registration_name is not None:
                 registration_path = metadata_parent_path / registration_name
                 registration_handle = (
@@ -2711,7 +2974,18 @@ class CanonicalRoot:
                 )
                 resources.append(registration_handle)
                 api.assert_child_absent(registration_handle, "locked")
-                api.verify_regular_child(registration_handle, "gitdir")
+                registration_gitdir_handle = api.open_proof_child(registration_handle, "gitdir")
+                resources.append(registration_gitdir_handle)
+                proof_info = api.information(registration_gitdir_handle)
+                if int(proof_info.attributes) & (
+                    _FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY
+                ):
+                    raise RepositoryAccessDenied("repository proof is not a regular file")
+                registration_gitdir_content = _validate_gitdir_content(
+                    api.read_bounded(registration_gitdir_handle),
+                    registration_path,
+                    target_path / ".git",
+                )
             target_quarantine_path = worktree_parent_path / _TARGET_QUARANTINE_NAME
             target_quarantine_parent = _open_or_create_windows_directory(
                 api, target_quarantine_path, quarantine_parent=True
@@ -2740,6 +3014,11 @@ class CanonicalRoot:
                 if registration_handle is not None
                 else None
             )
+            registration_gitdir_identity = (
+                tuple(api.identity(registration_gitdir_handle))
+                if registration_gitdir_handle is not None
+                else None
+            )
             identities = (
                 git_identity,
                 worktree_parent_identity,
@@ -2748,6 +3027,11 @@ class CanonicalRoot:
                 registration_quarantine_parent_identity,
                 *((target_identity,) if target_identity is not None else ()),
                 *((registration_identity,) if registration_identity is not None else ()),
+                *(
+                    (registration_gitdir_identity,)
+                    if registration_gitdir_identity is not None
+                    else ()
+                ),
             )
             if any(identity[0] != root_identity[0] for identity in identities):
                 raise RepositoryAccessDenied("repository quarantine crosses a volume")
@@ -2798,6 +3082,16 @@ class CanonicalRoot:
                 registration_quarantine_path=(
                     registration_quarantine_path / registration_name
                     if registration_name is not None
+                    else None
+                ),
+                registration_gitdir_content=registration_gitdir_content,
+                registration_gitdir_proof=(
+                    _QuarantineHandle(
+                        registration_gitdir_handle,
+                        registration_gitdir_identity,
+                    )
+                    if registration_gitdir_handle is not None
+                    and registration_gitdir_identity is not None
                     else None
                 ),
                 mutation_bound=mode != _REMOVAL_LIVE or not prepared,
@@ -3599,7 +3893,92 @@ def _reject_posix_registration_lock(registration: int) -> None:
     raise RepositoryAccessDenied("Git worktree registration is locked")
 
 
-def _verify_posix_gitdir(registration: int) -> None:
+def _read_posix_bounded(descriptor: int) -> bytes:
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RepositoryAccessDenied("repository proof is not a regular file")
+        size = int(metadata.st_size)
+        if size > _GITDIR_MAX_BYTES:
+            raise RepositoryAccessDenied("repository proof is oversized")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        content = os.read(descriptor, size)
+        after = os.fstat(descriptor)
+    except RepositoryAccessDenied:
+        raise
+    except OSError:
+        raise RepositoryAccessDenied("repository proof is unavailable") from None
+    if not stat.S_ISREG(after.st_mode) or int(after.st_size) != size or len(content) != size:
+        raise RepositoryAccessDenied("repository proof changed")
+    return content
+
+
+def _reject_existing_link_components(path: Path) -> None:
+    """Reject links/reparses in the existing prefix of one marker target."""
+
+    if not path.is_absolute() or not path.anchor:
+        raise RepositoryAccessDenied("repository proof path is invalid")
+    current = Path(path.anchor)
+    missing = False
+    for component in path.parts[1:]:
+        if component in {"", "."}:
+            continue
+        if component == "..":
+            current = current.parent
+            continue
+        current /= component
+        if missing:
+            continue
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            missing = True
+            continue
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository proof path is unavailable") from None
+        if stat.S_ISLNK(metadata.st_mode) or bool(
+            getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            raise RepositoryAccessDenied("repository proof path contains a link")
+
+
+def _normalise_gitdir_path(path: Path) -> Path:
+    try:
+        _reject_existing_link_components(path)
+        return Path(os.path.normpath(os.fspath(path)))
+    except RepositoryAccessDenied:
+        raise
+    except OSError, RuntimeError, TypeError, ValueError:
+        raise RepositoryAccessDenied("repository proof path is unavailable") from None
+
+
+def _validate_gitdir_content(
+    content: bytes, registration_path: Path, expected_target: Path
+) -> bytes:
+    """Validate one bounded Git registration marker against the exact target."""
+
+    if len(content) > _GITDIR_MAX_BYTES:
+        raise RepositoryAccessDenied("repository proof is oversized")
+    try:
+        record = content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise RepositoryAccessDenied("repository proof is malformed") from None
+    if not record.endswith("\n") or record.count("\n") != 1:
+        raise RepositoryAccessDenied("repository proof is malformed")
+    registered = record[:-1]
+    if not registered or "\r" in registered or "\x00" in registered:
+        raise RepositoryAccessDenied("repository proof is malformed")
+    registered_path = Path(registered)
+    if not registered_path.is_absolute():
+        registered_path = registration_path / registered_path
+    registered_path = _normalise_gitdir_path(registered_path)
+    expected_path = _normalise_gitdir_path(expected_target)
+    if os.path.normcase(os.fspath(registered_path)) != os.path.normcase(os.fspath(expected_path)):
+        raise RepositoryAccessDenied("repository proof targets a different repository")
+    return content
+
+
+def _open_posix_gitdir(registration: int) -> int:
     try:
         descriptor = os.open(
             "gitdir",
@@ -3607,13 +3986,16 @@ def _verify_posix_gitdir(registration: int) -> None:
             dir_fd=registration,
         )
     except OSError:
-        raise RepositoryAccessDenied("Git worktree registration is malformed") from None
+        raise RepositoryAccessDenied("repository proof is unavailable") from None
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise RepositoryAccessDenied("Git worktree registration is malformed")
-    finally:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RepositoryAccessDenied("repository proof is not a regular file")
+        return descriptor
+    except BaseException:
         with contextlib.suppress(OSError):
             os.close(descriptor)
+        raise
 
 
 def _verify_quarantine_parent(descriptor: int) -> None:
