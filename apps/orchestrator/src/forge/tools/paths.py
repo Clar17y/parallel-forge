@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import ctypes
 import os
 import re
 import stat
 from collections.abc import Iterator
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import BinaryIO, NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
 from forge.application.ports.repository import PathEscape, RepositoryAccessDenied
 
@@ -26,10 +27,66 @@ class _WindowsIdentity(NamedTuple):
     file_index_low: int
 
 
-class _DirectoryAccess(NamedTuple):
-    path: Path
-    launch_path: str
-    capability: int
+_ACCESS_SEAL = object()
+
+
+class _DirectoryAccess:
+    """An owner-sealed, live capability retained for one controlled operation."""
+
+    __slots__ = (
+        "_live",
+        "_owner",
+        "_sealed",
+        "capability",
+        "git_capability",
+        "git_identity",
+        "git_path",
+        "identity",
+        "normalized",
+        "path",
+        "root_identity",
+        "root_path",
+    )
+
+    def __init__(
+        self,
+        *,
+        seal: object,
+        owner: object,
+        path: Path,
+        capability: int,
+        root_path: Path,
+        root_identity: tuple[int, ...],
+        identity: tuple[int, ...],
+        normalized: str,
+        git_path: Path | None = None,
+        git_capability: int | None = None,
+        git_identity: tuple[int, ...] | None = None,
+    ) -> None:
+        if seal is not _ACCESS_SEAL:
+            raise TypeError("directory capability is internal")
+        self._owner = owner
+        self.path = path
+        self.capability = capability
+        self.root_path = root_path
+        self.root_identity = root_identity
+        self.identity = identity
+        self.normalized = normalized
+        self.git_path = git_path
+        self.git_capability = git_capability
+        self.git_identity = git_identity
+        self._live = True
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("directory capability is immutable")
+        object.__setattr__(self, name, value)
+
+
+_ACTIVE_DIRECTORY_ACCESS: contextvars.ContextVar[_DirectoryAccess | None] = contextvars.ContextVar(
+    "forge_active_directory_access", default=None
+)
 
 
 if os.name == "nt":
@@ -189,6 +246,7 @@ class CanonicalRoot:
             raise RepositoryAccessDenied("repository root is not a directory")
         _reject_link_components(canonical)
         self._path = canonical
+        self._access_owner = object()
         self._windows = _WindowsPathApi() if os.name == "nt" else None
         try:
             self._identity = self._identity_for_path()
@@ -282,6 +340,184 @@ class CanonicalRoot:
         with self._open_directory(normalized) as access:
             yield access.path
 
+    @contextlib.contextmanager
+    def _create_directory(
+        self, parent: str | os.PathLike[str], leaf: str
+    ) -> Iterator[_DirectoryAccess]:
+        """Create one exact directory below a pinned parent and retain its capability.
+
+        This is intentionally an internal primitive for controlled Git creation.  It
+        creates missing parent directories only below this canonical root, refuses an
+        existing final leaf, and keeps the root, parent, and final directory handles
+        open until the caller releases the context.
+        """
+
+        normalized_parent = self.normalize(parent, allow_root=True)
+        if not leaf or any(part in {"", ".", ".."} for part in leaf.split("/")):
+            raise PathEscape("repository directory leaf is invalid")
+        if "\\" in leaf or "/" in leaf or "\x00" in leaf:
+            raise PathEscape("repository directory leaf is invalid")
+        normalized = leaf if normalized_parent == "." else f"{normalized_parent}/{leaf}"
+        self.normalize(normalized)
+        if os.name == "nt":
+            with self._create_windows_directory(normalized_parent, leaf, normalized) as access:
+                active_token = _ACTIVE_DIRECTORY_ACCESS.set(access)
+                try:
+                    yield access
+                finally:
+                    object.__setattr__(access, "_live", False)
+                    _ACTIVE_DIRECTORY_ACCESS.reset(active_token)
+            return
+        with self._create_posix_directory(normalized_parent, leaf, normalized) as access:
+            active_token = _ACTIVE_DIRECTORY_ACCESS.set(access)
+            try:
+                yield access
+            finally:
+                object.__setattr__(access, "_live", False)
+                _ACTIVE_DIRECTORY_ACCESS.reset(active_token)
+
+    def _active_directory_access(self, normalized: str) -> _DirectoryAccess | None:
+        """Return the live operation capability for this exact root and cwd."""
+
+        access = _ACTIVE_DIRECTORY_ACCESS.get()
+        if access is None:
+            return None
+        if access.root_path != self._path:
+            return None
+        return self._accept_directory_access(normalized, access)
+
+    def _accept_directory_access(
+        self, normalized: str, access: _DirectoryAccess
+    ) -> _DirectoryAccess:
+        """Validate a live owner-sealed capability for this root identity."""
+
+        if (
+            not isinstance(access, _DirectoryAccess)
+            or not access._live
+            or access._owner is not self._access_owner
+            or access.root_path != self._path
+            or access.root_identity != self._identity
+            or access.normalized != normalized
+            or access.path != self._path.joinpath(*normalized.split("/"))
+        ):
+            raise RepositoryAccessDenied("repository directory capability is not trusted")
+        if access.git_capability is not None:
+            try:
+                if os.name == "nt":
+                    api = self._windows
+                    git_identity = tuple(api.identity(access.git_capability)) if api else None
+                else:
+                    git_identity = _fd_identity(access.git_capability)
+            except OSError, RepositoryAccessDenied, ValueError:
+                raise RepositoryAccessDenied("Git metadata capability is not trusted") from None
+            if git_identity != access.git_identity:
+                raise RepositoryAccessDenied("Git metadata identity changed")
+        return access
+
+    def _verify_directory_access(
+        self, normalized: str, access: _DirectoryAccess
+    ) -> _DirectoryAccess:
+        """Verify the retained target handle still has its pinned identity."""
+
+        access = self._accept_directory_access(normalized, access)
+        try:
+            self._revalidate_root()
+            if os.name == "nt":
+                api = self._windows
+                if api is None:
+                    raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+                identity = tuple(api.identity(access.capability))
+            else:
+                metadata = os.fstat(access.capability)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise RepositoryAccessDenied(
+                        "repository directory capability is not a directory"
+                    )
+                identity = (int(metadata.st_dev), int(metadata.st_ino))
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository directory capability is stale") from None
+        if identity != access.identity:
+            raise RepositoryAccessDenied("repository directory identity changed")
+        try:
+            if os.name == "nt":
+                api = self._windows
+                if api is None:
+                    raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+                path_handle = api.open_directory(access.path)
+                try:
+                    path_identity = tuple(api.identity(path_handle))
+                finally:
+                    api.close(path_handle)
+            else:
+                metadata = os.stat(access.path, follow_symlinks=False)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise RepositoryAccessDenied("repository path is not a directory")
+                path_identity = (int(metadata.st_dev), int(metadata.st_ino))
+        except OSError, RepositoryAccessDenied, ValueError:
+            raise RepositoryAccessDenied("repository directory path is stale") from None
+        if path_identity != access.identity:
+            raise RepositoryAccessDenied("repository directory path identity changed")
+        return access
+
+    def _launch_path_for_access(
+        self, normalized: str, access: _DirectoryAccess, *, require_fd: bool = False
+    ) -> str:
+        """Derive a process cwd from the retained capability, never caller data."""
+
+        access = self._accept_directory_access(normalized, access)
+        if os.name == "nt":
+            return str(access.path)
+        proc_fd_root = Path("/proc/self/fd")
+        if access.capability < 0:
+            raise RepositoryAccessDenied("safe POSIX directory launch is unavailable")
+        if not proc_fd_root.is_dir():
+            if require_fd:
+                raise RepositoryAccessDenied("safe POSIX directory launch is unavailable")
+            return str(access.path)
+        return str(proc_fd_root / str(access.capability))
+
+    def _pass_fds_for_access(self, normalized: str, access: _DirectoryAccess) -> tuple[int, ...]:
+        """Return only the retained metadata descriptor needed by POSIX Git."""
+
+        access = self._accept_directory_access(normalized, access)
+        if os.name == "nt" or access.git_capability is None:
+            return ()
+        return (access.git_capability,)
+
+    def _git_directory_for_access(self, normalized: str, access: _DirectoryAccess) -> str:
+        """Return the exact retained source ``.git`` path for Git's environment."""
+
+        access = self._accept_directory_access(normalized, access)
+        if access.git_path is None or access.git_capability is None:
+            raise RepositoryAccessDenied("Git metadata capability is unavailable")
+        if os.name == "nt":
+            return str(access.git_path)
+        proc_fd_root = Path("/proc/self/fd")
+        if not proc_fd_root.is_dir():
+            raise RepositoryAccessDenied("safe POSIX metadata launch is unavailable")
+        return str(proc_fd_root / str(access.git_capability))
+
+    def _directory_access_matches_path(self, access: _DirectoryAccess) -> bool:
+        """Check that the named target still identifies the retained directory."""
+
+        try:
+            self._verify_directory_access(access.normalized, access)
+            return True
+        except OSError, RuntimeError, ValueError, RepositoryAccessDenied:
+            return False
+
+    def _directory_access_is_empty(self, access: _DirectoryAccess) -> bool:
+        """Check one retained directory without following a replaced pathname."""
+
+        try:
+            access = self._verify_directory_access(access.normalized, access)
+            if os.name == "nt":
+                with os.scandir(access.path) as entries:
+                    return next(entries, None) is None
+            return not os.listdir(access.capability)
+        except OSError, RuntimeError, TypeError, ValueError:
+            return False
+
     def list_directory(
         self, value: str | os.PathLike[str] = "."
     ) -> tuple[tuple[str, os.stat_result], ...]:
@@ -314,6 +550,205 @@ class CanonicalRoot:
                 )
             except OSError, TypeError, ValueError:
                 raise RepositoryAccessDenied("repository directory enumeration failed") from None
+
+    @contextlib.contextmanager
+    def _create_posix_directory(
+        self, normalized_parent: str, leaf: str, normalized: str
+    ) -> Iterator[_DirectoryAccess]:
+        if not _O_DIRECTORY or not _O_NOFOLLOW:
+            raise RepositoryAccessDenied("safe POSIX path capabilities are unavailable")
+        self._revalidate_root()
+        root_descriptor: int | None = None
+        directory_descriptors: list[int] = []
+        try:
+            root_descriptor = os.open(
+                self._path,
+                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+            )
+            if _fd_identity(root_descriptor) != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+            current = root_descriptor
+            directory_descriptors.append(root_descriptor)
+            git_descriptor = os.open(
+                ".git",
+                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                dir_fd=root_descriptor,
+            )
+            if not stat.S_ISDIR(os.fstat(git_descriptor).st_mode):
+                os.close(git_descriptor)
+                raise RepositoryAccessDenied("Git metadata path is not a directory")
+            directory_descriptors.append(git_descriptor)
+            if os.name != "nt":
+                # This lock serializes cooperating Forge controllers; raw same-UID
+                # namespace changes remain outside the control-plane boundary.
+                fcntl_api: Any = __import__("fcntl")
+
+                lock_descriptor = os.open(
+                    "forge-worktree.lock",
+                    os.O_CREAT | os.O_RDWR | _O_NOFOLLOW | _O_CLOEXEC,
+                    mode=0o600,
+                    dir_fd=git_descriptor,
+                )
+                if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+                    os.close(lock_descriptor)
+                    raise RepositoryAccessDenied("Git worktree lock is not a regular file")
+                try:
+                    fcntl_api.flock(lock_descriptor, fcntl_api.LOCK_EX | fcntl_api.LOCK_NB)
+                except OSError, ValueError:
+                    os.close(lock_descriptor)
+                    raise RepositoryAccessDenied("Git worktree operation is busy") from None
+                directory_descriptors.append(lock_descriptor)
+            for part in () if normalized_parent == "." else normalized_parent.split("/"):
+                try:
+                    child = os.open(
+                        part,
+                        os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                        dir_fd=current,
+                    )
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=current)
+                    except FileExistsError:
+                        pass
+                    child = os.open(
+                        part,
+                        os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                        dir_fd=current,
+                    )
+                if not stat.S_ISDIR(os.fstat(child).st_mode):
+                    os.close(child)
+                    raise RepositoryAccessDenied("repository path is not a directory")
+                directory_descriptors.append(child)
+                current = child
+
+            try:
+                os.mkdir(leaf, mode=0o700, dir_fd=current)
+            except FileExistsError:
+                raise RepositoryAccessDenied("repository directory already exists") from None
+            leaf_descriptor = os.open(
+                leaf,
+                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                dir_fd=current,
+            )
+            if not stat.S_ISDIR(os.fstat(leaf_descriptor).st_mode):
+                os.close(leaf_descriptor)
+                raise RepositoryAccessDenied("repository path is not a directory")
+            directory_descriptors.append(leaf_descriptor)
+            try:
+                metadata_descriptor = os.open(
+                    "worktrees",
+                    os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                    dir_fd=git_descriptor,
+                )
+            except FileNotFoundError:
+                try:
+                    os.mkdir("worktrees", mode=0o700, dir_fd=git_descriptor)
+                except FileExistsError:
+                    pass
+                metadata_descriptor = os.open(
+                    "worktrees",
+                    os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                    dir_fd=git_descriptor,
+                )
+            if not stat.S_ISDIR(os.fstat(metadata_descriptor).st_mode):
+                os.close(metadata_descriptor)
+                raise RepositoryAccessDenied("Git worktree metadata is not a directory")
+            metadata_identity = _fd_identity(metadata_descriptor)
+            directory_descriptors.append(metadata_descriptor)
+            proc_fd_root = Path("/proc/self/fd")
+            if not proc_fd_root.is_dir():
+                raise RepositoryAccessDenied("safe POSIX directory launch is unavailable")
+            self._revalidate_root()
+            access = _DirectoryAccess(
+                seal=_ACCESS_SEAL,
+                owner=self._access_owner,
+                path=self._path.joinpath(*normalized.split("/")),
+                capability=leaf_descriptor,
+                root_path=self._path,
+                root_identity=self._identity,
+                identity=_fd_identity(leaf_descriptor),
+                normalized=normalized,
+                git_path=self._path / ".git",
+                git_capability=git_descriptor,
+                git_identity=_fd_identity(git_descriptor),
+            )
+            yield access
+            if _fd_identity(metadata_descriptor) != metadata_identity:
+                raise RepositoryAccessDenied("Git worktree metadata identity changed")
+            self._revalidate_root()
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository directory is unavailable") from None
+        finally:
+            for descriptor in reversed(directory_descriptors):
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+
+    @contextlib.contextmanager
+    def _create_windows_directory(
+        self, normalized_parent: str, leaf: str, normalized: str
+    ) -> Iterator[_DirectoryAccess]:
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        self._revalidate_root()
+        handles: list[int] = []
+        try:
+            root_handle = api.open_directory(self._path)
+            handles.append(root_handle)
+            if tuple(api.identity(root_handle)) != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+            current = self._path
+            for part in () if normalized_parent == "." else normalized_parent.split("/"):
+                current = current / part
+                try:
+                    current.mkdir()
+                except FileExistsError:
+                    pass
+                handles.append(api.open_directory(current))
+            leaf_path = current / leaf
+            try:
+                leaf_path.mkdir()
+            except FileExistsError:
+                raise RepositoryAccessDenied("repository directory already exists") from None
+            leaf_handle = api.open_directory(leaf_path)
+            handles.append(leaf_handle)
+            git_path = self._path / ".git"
+            git_handle = api.open_directory(git_path)
+            handles.append(git_handle)
+            metadata_path = git_path / "worktrees"
+            try:
+                metadata_path.mkdir()
+            except FileExistsError:
+                pass
+            metadata_handle = api.open_directory(metadata_path)
+            handles.append(metadata_handle)
+            metadata_identity = tuple(api.identity(metadata_handle))
+            self._revalidate_root()
+            yield _DirectoryAccess(
+                seal=_ACCESS_SEAL,
+                owner=self._access_owner,
+                path=leaf_path,
+                capability=leaf_handle,
+                root_path=self._path,
+                root_identity=self._identity,
+                identity=tuple(api.identity(leaf_handle)),
+                normalized=normalized,
+                git_path=git_path,
+                git_capability=git_handle,
+                git_identity=tuple(api.identity(git_handle)),
+            )
+            if tuple(api.identity(metadata_handle)) != metadata_identity:
+                raise RepositoryAccessDenied("Git worktree metadata identity changed")
+            self._revalidate_root()
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository directory is unavailable") from None
+        finally:
+            for handle in reversed(handles):
+                api.close(handle)
 
     @contextlib.contextmanager
     def _open_directory(self, normalized: str) -> Iterator[_DirectoryAccess]:
@@ -379,9 +814,16 @@ class CanonicalRoot:
                     current = child
             self._revalidate_root()
             path = self._path if normalized == "." else self._path.joinpath(*normalized.split("/"))
-            proc_fd_root = Path("/proc/self/fd")
-            launch_path = str(proc_fd_root / str(current)) if proc_fd_root.is_dir() else str(path)
-            yield _DirectoryAccess(path, launch_path, current)
+            yield _DirectoryAccess(
+                seal=_ACCESS_SEAL,
+                owner=self._access_owner,
+                path=path,
+                capability=current,
+                root_path=self._path,
+                root_identity=self._identity,
+                identity=_fd_identity(current),
+                normalized=normalized,
+            )
             self._revalidate_root()
         except OSError, ValueError:
             raise RepositoryAccessDenied("repository directory is unavailable") from None
@@ -470,7 +912,16 @@ class CanonicalRoot:
                     current = current / part
                     handles.append(api.open_directory(current))
             self._revalidate_root()
-            yield _DirectoryAccess(current, str(current), handles[-1])
+            yield _DirectoryAccess(
+                seal=_ACCESS_SEAL,
+                owner=self._access_owner,
+                path=current,
+                capability=handles[-1],
+                root_path=self._path,
+                root_identity=self._identity,
+                identity=tuple(api.identity(handles[-1])),
+                normalized=normalized,
+            )
             self._revalidate_root()
         except OSError, ValueError:
             raise RepositoryAccessDenied("repository directory is unavailable") from None

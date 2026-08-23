@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from forge.application.ports.repository import ProcessExecutionError
+from forge.tools import paths as paths_module
 from forge.tools.paths import CanonicalRoot, RepositoryAccessDenied
 from forge.tools.process import ProcessRunner
 
@@ -168,6 +169,66 @@ def test_run_rejects_linked_cwd(tmp_path: Path) -> None:
 
     with pytest.raises(RepositoryAccessDenied):
         _runner(root).run_argv(_python("print('unexpected')"), cwd="linked", environment={})
+
+
+def test_directory_capability_rejects_forgery_mutation_and_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path = _root(tmp_path)
+    (root_path / ".git" / "worktrees").mkdir(parents=True)
+    root = CanonicalRoot(root_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with pytest.raises(TypeError):
+        paths_module._DirectoryAccess(
+            seal=object(),
+            path=outside,
+            capability=0,
+            root_path=root.path,
+            root_identity=root.identity,
+            identity=root.identity,
+            normalized="work",
+            owner=object(),
+        )
+
+    with root._create_directory(".", "created") as access:
+        result = ProcessRunner(root).run_argv(
+            _python("import os; print(os.getcwd())"),
+            cwd=str(access.path),
+            environment={},
+        )
+        assert result.return_code == 0
+        assert Path(result.stdout.strip()).resolve() == access.path.resolve()
+
+        foreign_root = CanonicalRoot(root_path)
+        with pytest.raises(RepositoryAccessDenied):
+            foreign_root._launch_path_for_access("created", access, require_fd=True)
+        with pytest.raises(AttributeError):
+            access.path = outside  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            access._live = False  # type: ignore[misc]
+
+        if os.name == "nt":
+            api = root._windows
+            assert api is not None
+            original_identity = api.identity
+
+            def substituted_identity(handle: int) -> tuple[int, ...]:
+                if handle == access.capability:
+                    return (0, 0, 0)
+                return tuple(original_identity(handle))
+
+            monkeypatch.setattr(api, "identity", substituted_identity)
+        else:
+            outside_descriptor = os.open(outside, os.O_RDONLY)
+            os.dup2(outside_descriptor, access.capability)
+            os.close(outside_descriptor)
+        with pytest.raises(RepositoryAccessDenied):
+            root._verify_directory_access("created", access)
+
+    with pytest.raises(RepositoryAccessDenied):
+        root._launch_path_for_access("created", access, require_fd=True)
 
 
 def test_run_rejects_root_replacement(tmp_path: Path) -> None:

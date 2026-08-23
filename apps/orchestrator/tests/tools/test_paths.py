@@ -119,6 +119,19 @@ def test_open_directory_blocks_rename_until_capability_is_released(tmp_path: Pat
     assert moved.is_dir()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory lock semantics are platform-specific")
+def test_create_directory_capability_serializes_git_mutations(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    (root_path / ".git").mkdir()
+    root = CanonicalRoot(root_path)
+
+    with root._create_directory(".", "first"):
+        competing = CanonicalRoot(root_path)
+        with pytest.raises(RepositoryAccessDenied), competing._create_directory(".", "second"):
+            pass
+        assert not (root_path / "second").exists()
+
+
 def test_open_read_rejects_a_symlinked_intermediate_component(tmp_path: Path) -> None:
     root_path = _make_root(tmp_path)
     outside = tmp_path / "outside"

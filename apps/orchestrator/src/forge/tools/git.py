@@ -50,6 +50,10 @@ class ControlledGit:
     ) -> None:
         if not isinstance(repository, CanonicalRoot):
             raise TypeError("controlled git requires a canonical repository root")
+        if runner is not None:
+            runner_root = getattr(runner, "_root", None)
+            if isinstance(runner_root, CanonicalRoot) and runner_root is not repository:
+                raise TypeError("controlled git runner root does not match repository")
         _validate_branch(default_branch)
         self._repository = repository
         self._default_branch = default_branch
@@ -95,30 +99,37 @@ class ControlledGit:
         if expected_metadata is not None:
             raise ControlledGitError()
 
-        managed_root = _prepare_directory(self._managed_root)
-        expected_path = managed_root / identity.worktree_name
-        if _path_key(expected_path) != _path_key(self._managed_root / identity.worktree_name):
-            raise ControlledGitError()
-        if os.path.lexists(expected_path):
-            _reject_links(expected_path)
-            raise ControlledGitError()
-        self._run(
-            self._repository.path,
-            (
-                "worktree",
-                "add",
-                "-b",
-                identity.branch,
-                str(expected_path),
-                base_sha,
-            ),
-        )
-
-        handle = ManagedWorktree(identity=identity, path=expected_path, base_sha=base_sha)
-        self._validate_handle(handle)
-        if self.head_sha(handle) != base_sha or not self.is_ancestor(handle):
-            raise ControlledGitError()
-        return handle
+        expected_path = self._managed_root / identity.worktree_name
+        try:
+            with self._repository._create_directory(".worktrees", identity.worktree_name) as access:
+                if not self._repository._directory_access_is_empty(access):
+                    raise ControlledGitError()
+                self._run(
+                    expected_path,
+                    (
+                        "worktree",
+                        "add",
+                        "-b",
+                        identity.branch,
+                        ".",
+                        base_sha,
+                    ),
+                    omit_cwd_prefix=True,
+                    git_directory=self._repository._git_directory_for_access(
+                        f".worktrees/{identity.worktree_name}", access
+                    ),
+                )
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                handle = ManagedWorktree(identity=identity, path=expected_path, base_sha=base_sha)
+                self._validate_handle(handle)
+                if self._head_sha(handle) != base_sha or not self._is_ancestor(handle):
+                    raise ControlledGitError()
+                return handle
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, TypeError, ValueError:
+            raise ControlledGitError() from None
 
     def remove_worktree(self, worktree: ManagedWorktree) -> None:
         """Remove one exact registered worktree and retain its branch."""
@@ -216,6 +227,9 @@ class ControlledGit:
         """Return the lowercase, complete HEAD commit SHA."""
 
         self._validate_handle(worktree)
+        return self._head_sha(worktree)
+
+    def _head_sha(self, worktree: ManagedWorktree) -> str:
         result = self._run(worktree.path, ("rev-parse", "--verify", "HEAD^{commit}"))
         return _parse_sha(result)
 
@@ -223,6 +237,9 @@ class ControlledGit:
         """Return whether an exact commit is an ancestor of the handle's HEAD."""
 
         self._validate_handle(worktree)
+        return self._is_ancestor(worktree)
+
+    def _is_ancestor(self, worktree: ManagedWorktree) -> bool:
         ancestor = worktree.base_sha
         result = self._run(
             worktree.path,
@@ -249,7 +266,12 @@ class ControlledGit:
         _validate_sha(worktree.base_sha)
         return identity, expected
 
-    def _validate_handle(self, worktree: ManagedWorktree, *, verify_branch: bool = True) -> None:
+    def _validate_handle(
+        self,
+        worktree: ManagedWorktree,
+        *,
+        verify_branch: bool = True,
+    ) -> None:
         identity, expected = self._validate_handle_shape(worktree)
         try:
             _reject_links(worktree.path)
@@ -294,10 +316,15 @@ class ControlledGit:
         arguments: Sequence[str],
         *,
         allow_return_codes: tuple[int, ...] = (0,),
+        omit_cwd_prefix: bool = False,
+        git_directory: str | None = None,
     ) -> ProcessResult:
         self._assert_trusted_state()
-        argv = [*self._prefix(worktree), *arguments]
-        environment = self._environment()
+        argv = [
+            *self._prefix(worktree, include_cwd=not omit_cwd_prefix),
+            *arguments,
+        ]
+        environment = self._environment(git_directory=git_directory)
         cwd = str(worktree)
         try:
             result = self._runner.run_argv(
@@ -316,37 +343,40 @@ class ControlledGit:
             raise ControlledGitError()
         return result
 
-    def _prefix(self, worktree: Path) -> tuple[str, ...]:
-        return (
-            str(self._git_executable),
-            "-C",
-            str(worktree),
-            "--no-pager",
-            "-c",
-            f"core.hooksPath={self._hooks_path}",
-            "-c",
-            "commit.gpgSign=false",
-            "-c",
-            "tag.gpgSign=false",
-            "-c",
-            "credential.helper=",
-            "-c",
-            "credential.interactive=false",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-            "-c",
-            "diff.external=",
-            "-c",
-            f"core.attributesFile={self._global_attributes_path}",
-            "-c",
-            f"user.name={_FORGE_NAME}",
-            "-c",
-            f"user.email={_FORGE_EMAIL}",
+    def _prefix(self, worktree: Path, *, include_cwd: bool = True) -> tuple[str, ...]:
+        prefix = [str(self._git_executable)]
+        if include_cwd:
+            prefix.extend(("-C", str(worktree)))
+        prefix.extend(
+            (
+                "--no-pager",
+                "-c",
+                f"core.hooksPath={self._hooks_path}",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.interactive=false",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-c",
+                "diff.external=",
+                "-c",
+                f"core.attributesFile={self._global_attributes_path}",
+                "-c",
+                f"user.name={_FORGE_NAME}",
+                "-c",
+                f"user.email={_FORGE_EMAIL}",
+            )
         )
+        return tuple(prefix)
 
-    def _environment(self) -> dict[str, str]:
+    def _environment(self, *, git_directory: str | None = None) -> dict[str, str]:
         allowed_names = {
             "PATH",
             "LANG",
@@ -379,6 +409,9 @@ class ControlledGit:
                 "GIT_EDITOR": "",
             }
         )
+        if git_directory is not None:
+            environment["GIT_DIR"] = git_directory
+            environment["GIT_COMMON_DIR"] = git_directory
         return environment
 
     def _assert_trusted_state(self) -> None:

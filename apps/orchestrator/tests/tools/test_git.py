@@ -120,7 +120,8 @@ class TruncatedHeadRunner(CapturingRunner):
 
 class RecordingRunner:
     def __init__(self, repository: Path) -> None:
-        self._delegate = ProcessRunner(CanonicalRoot(repository))
+        self._root = CanonicalRoot(repository)
+        self._delegate = ProcessRunner(self._root)
         self.calls: list[tuple[tuple[str, ...], str, dict[str, str]]] = []
 
     def run_argv(
@@ -134,6 +135,59 @@ class RecordingRunner:
         command = tuple(argv)
         self.calls.append((command, cwd, dict(environment)))
         return self._delegate.run_argv(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+class NamespaceSwapRunner(RecordingRunner):
+    def __init__(self, repository: Path, target: Path, outside: Path) -> None:
+        super().__init__(repository)
+        self._target = target
+        self._outside = outside
+        self.swap_attempted = False
+        self.swap_succeeded = False
+        self.redirect_created = False
+
+    def run_argv(
+        self,
+        argv: tuple[str, ...] | list[str],
+        *,
+        cwd: str,
+        environment: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> ProcessResult:
+        command = tuple(argv)
+        if command[-6:-5] == ("worktree",) and not self.swap_attempted:
+            self.swap_attempted = True
+            try:
+                self._target.rename(self._target.with_name(f"{self._target.name}-moved"))
+                self.swap_succeeded = True
+                self._outside.mkdir()
+                try:
+                    self._target.symlink_to(self._outside, target_is_directory=True)
+                    self.redirect_created = True
+                except OSError, NotImplementedError:
+                    if os.name == "nt":
+                        result = subprocess.run(
+                            [
+                                "cmd.exe",
+                                "/c",
+                                "mklink",
+                                "/J",
+                                str(self._target),
+                                str(self._outside),
+                            ],
+                            capture_output=True,
+                            check=False,
+                            shell=False,
+                        )
+                        self.redirect_created = result.returncode == 0 and self._target.is_dir()
+            except OSError, NotImplementedError:
+                pass
+        return super().run_argv(
             command,
             cwd=cwd,
             environment=environment,
@@ -199,8 +253,12 @@ def _source_repository(tmp_path: Path, *, ignored: bool = True) -> tuple[Path, s
 
 
 def _controlled(repository: Path, state_root: Path, runner: object | None = None) -> ControlledGit:
+    root = getattr(runner, "_root", None)
+    if not isinstance(root, CanonicalRoot):
+        root = CanonicalRoot(repository)
+    assert root.path == repository.resolve()
     return ControlledGit(
-        CanonicalRoot(repository),
+        root,
         default_branch="main",
         state_root=state_root,
         git_executable=TRUSTED_GIT,
@@ -666,9 +724,73 @@ def test_create_worktree_uses_exact_add_argv_and_verifies_identity(tmp_path: Pat
         "add",
         "-b",
         identity.branch,
-        str(expected_path),
+        ".",
         base_sha,
     )
+    assert "-C" not in add_call
+    add_cwd, add_environment = next(
+        (cwd, environment) for argv, cwd, environment in runner.calls if argv == add_call
+    )
+    assert add_cwd == str(expected_path)
+    assert add_environment["GIT_DIR"]
+    assert add_environment["GIT_COMMON_DIR"] == add_environment["GIT_DIR"]
+    if os.name == "nt":
+        assert add_environment["GIT_DIR"] == str(repository / ".git")
+    else:
+        assert add_environment["GIT_DIR"].startswith("/proc/self/fd/")
+
+
+@pytest.mark.parametrize("swap_scope", ("root", "leaf"))
+def test_create_keeps_git_on_retained_leaf_when_namespace_is_swapped(
+    tmp_path: Path, swap_scope: str
+) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    expected_path = repository / ".worktrees" / identity.worktree_name
+    target = expected_path.parent if swap_scope == "root" else expected_path
+    outside = tmp_path / f"outside-{swap_scope}"
+    runner = NamespaceSwapRunner(repository, target, outside)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    if os.name == "nt":
+        handle = controlled.create_worktree(identity, base_sha)
+        assert handle.path.is_dir()
+        assert runner.swap_succeeded is False
+    else:
+        with pytest.raises(ControlledGitError):
+            controlled.create_worktree(identity, base_sha)
+        assert runner.swap_succeeded is True
+
+    assert runner.swap_attempted is True
+    if runner.swap_succeeded:
+        assert runner.redirect_created is True
+    outside_target = outside / identity.worktree_name if swap_scope == "root" else outside
+    assert not (outside_target / ".git").exists()
+
+
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="POSIX same-UID metadata renames are outside the advisory-lock boundary",
+)
+def test_create_binds_git_metadata_to_retained_repository_directory(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
+    )
+    metadata_root = repository / ".git" / "worktrees"
+    outside = tmp_path / "outside-metadata"
+    runner = NamespaceSwapRunner(repository, metadata_root, outside)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    handle = controlled.create_worktree(identity, base_sha)
+    assert handle.path.is_dir()
+
+    assert runner.swap_attempted is True
+    assert runner.swap_succeeded is False
+    assert runner.redirect_created is False
+    assert not outside.exists() or not any(outside.iterdir())
 
 
 def test_create_refuses_nonignored_root_without_creating_it(tmp_path: Path) -> None:

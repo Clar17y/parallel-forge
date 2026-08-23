@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import IO
 
 from forge.application.ports.repository import ProcessExecutionError, ProcessResult
-from forge.tools.paths import CanonicalRoot, PathEscape, RepositoryAccessDenied
+from forge.tools.paths import (
+    CanonicalRoot,
+    PathEscape,
+    RepositoryAccessDenied,
+    _DirectoryAccess,
+)
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _DEFAULT_STREAM_LIMIT = 1024 * 1024
@@ -78,31 +83,89 @@ class ProcessRunner:
             self._timeout_seconds if timeout_seconds is None else _positive_timeout(timeout_seconds)
         )
         normalized_cwd = _normalize_cwd(self._root, cwd)
+        active_access = self._root._active_directory_access(normalized_cwd)
+        if active_access is not None:
+            return self._run_with_access(
+                command,
+                normalized_cwd,
+                active_access,
+                env,
+                timeout,
+                pass_fds=self._root._pass_fds_for_access(normalized_cwd, active_access),
+            )
 
-        process: subprocess.Popen[bytes] | None = None
         try:
             with self._root._open_directory(normalized_cwd) as access:
-                try:
-                    process = subprocess.Popen(
-                        command,
-                        cwd=access.launch_path,
-                        env=env,
-                        shell=False,
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                    )
-                except OSError, subprocess.SubprocessError, ValueError, TypeError:
-                    raise ProcessExecutionError() from None
-                return _collect(process, timeout, self._stdout_max_bytes, self._stderr_max_bytes)
+                return self._run_with_access(
+                    command,
+                    normalized_cwd,
+                    access,
+                    env,
+                    timeout,
+                )
         except RepositoryAccessDenied, PathEscape:
-            if process is not None:
-                _terminate_and_reap(process)
             raise
         except OSError, subprocess.SubprocessError, ValueError, TypeError:
-            if process is not None:
-                _terminate_and_reap(process)
             raise ProcessExecutionError() from None
+
+    def _run_with_access(
+        self,
+        command: tuple[str, ...],
+        normalized_cwd: str,
+        access: _DirectoryAccess,
+        environment: dict[str, str],
+        timeout: float,
+        *,
+        pass_fds: tuple[int, ...] = (),
+    ) -> ProcessResult:
+        retained_access = self._root._verify_directory_access(normalized_cwd, access)
+        try:
+            return self._run_in_directory(
+                command,
+                self._root._launch_path_for_access(
+                    normalized_cwd, retained_access, require_fd=bool(pass_fds)
+                ),
+                environment,
+                timeout,
+                pass_fds=pass_fds,
+            )
+        finally:
+            self._root._verify_directory_access(normalized_cwd, retained_access)
+
+    def _run_in_directory(
+        self,
+        command: tuple[str, ...],
+        cwd: str,
+        environment: dict[str, str],
+        timeout: float,
+        pass_fds: tuple[int, ...] = (),
+    ) -> ProcessResult:
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            if os.name != "nt" and pass_fds:
+                process = subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=environment,
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    pass_fds=pass_fds,
+                )
+            else:
+                process = subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=environment,
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+        except OSError, subprocess.SubprocessError, ValueError, TypeError:
+            raise ProcessExecutionError() from None
+        return _collect(process, timeout, self._stdout_max_bytes, self._stderr_max_bytes)
 
 
 def _validate_argv(argv: Sequence[str]) -> tuple[str, ...]:
