@@ -11,7 +11,7 @@ from uuid import UUID
 
 import pytest
 from forge.application.ports.repository import ProcessResult
-from forge.application.ports.worktrees import ManagedWorktree
+from forge.application.ports.worktrees import GitCommit, ManagedWorktree
 from forge.domain.resource import WorktreeIdentity
 from forge.tools import git as git_module
 from forge.tools.git import ControlledGit, ControlledGitError
@@ -123,6 +123,7 @@ class RecordingRunner:
         self._root = CanonicalRoot(repository)
         self._delegate = ProcessRunner(self._root)
         self.calls: list[tuple[tuple[str, ...], str, dict[str, str]]] = []
+        self.completed_calls: list[tuple[tuple[str, ...], str, dict[str, str]]] = []
 
     def run_argv(
         self,
@@ -133,8 +134,78 @@ class RecordingRunner:
         timeout_seconds: float | None = None,
     ) -> ProcessResult:
         command = tuple(argv)
-        self.calls.append((command, cwd, dict(environment)))
-        return self._delegate.run_argv(
+        call = (command, cwd, dict(environment))
+        self.calls.append(call)
+        result = self._delegate.run_argv(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+        self.completed_calls.append(call)
+        return result
+
+
+class FailingCommitRunner(RecordingRunner):
+    def run_argv(
+        self,
+        argv: tuple[str, ...] | list[str],
+        *,
+        cwd: str,
+        environment: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> ProcessResult:
+        command = tuple(argv)
+        if command[-6:-5] == ("commit",):
+            self.calls.append((command, cwd, dict(environment)))
+            return ProcessResult(
+                return_code=1,
+                stdout="",
+                stderr="commit rejected",
+                timed_out=False,
+                stdout_original_byte_count=0,
+                stderr_original_byte_count=len("commit rejected"),
+                stdout_truncated=False,
+                stderr_truncated=False,
+            )
+        return super().run_argv(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+class CommitProofSwapRunner(RecordingRunner):
+    def __init__(
+        self, repository: Path, worktree: Path, mode: str, trigger: tuple[str, ...]
+    ) -> None:
+        super().__init__(repository)
+        self._worktree = worktree
+        self._mode = mode
+        self._trigger = trigger
+        self.swapped = False
+
+    def run_argv(
+        self,
+        argv: tuple[str, ...] | list[str],
+        *,
+        cwd: str,
+        environment: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> ProcessResult:
+        command = tuple(argv)
+        if not self.swapped and command[-len(self._trigger) :] == tuple(self._trigger):
+            self.swapped = True
+            marker = self._worktree / ".git"
+            registration = _registration_for(self._worktree)
+            if self._mode == "marker":
+                marker.write_text("gitdir: /foreign/registration\n", encoding="utf-8")
+            else:
+                (registration / "gitdir").write_text(
+                    f"{self._worktree / 'foreign.git'}\n", encoding="utf-8"
+                )
+        return super().run_argv(
             command,
             cwd=cwd,
             environment=environment,
@@ -206,12 +277,24 @@ def _git(repository: Path, *arguments: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def _git_show(repository: Path, commit: str) -> str:
+    result = subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(repository), "show", "-s", "--format=%s", commit],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    )
+    return result.stdout
+
+
 def _managed_repository(tmp_path: Path) -> tuple[Path, WorktreeIdentity, ManagedWorktree]:
     repository = tmp_path / "repository"
     repository.mkdir()
     _git(repository, "init", "-b", "main")
     _git(repository, "config", "user.name", "Forge Test")
     _git(repository, "config", "user.email", "forge@example.test")
+    _git(repository, "config", "core.autocrlf", "false")
     (repository / "README.md").write_text("forge\n", encoding="utf-8")
     _git(repository, "add", "README.md")
     _git(repository, "commit", "-m", "initial")
@@ -627,6 +710,298 @@ def test_identity_sha_decisions_fail_on_truncated_or_malformed_output(tmp_path: 
     )
     with pytest.raises(ControlledGitError):
         controlled.head_sha(handle)
+
+
+def test_git_commit_result_is_immutable_and_lowercase_sha_bound(tmp_path: Path) -> None:
+    result = GitCommit(previous_sha="a" * 40, new_sha="b" * 40)
+
+    assert result.previous_sha == "a" * 40
+    assert result.new_sha == "b" * 40
+    with pytest.raises((AttributeError, TypeError)):
+        result.new_sha = "c" * 40  # type: ignore[misc]
+    with pytest.raises(ValueError):
+        GitCommit(previous_sha="A" * 40, new_sha="b" * 40)
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "",
+        "   ",
+        "line\nfeed",
+        "carriage\rreturn",
+        "tab\ttext",
+        "escape\x1btext",
+        "bidi\u202eoverride",
+        "zero\u200dwidth",
+        "x" * 4097,
+    ),
+)
+def test_commit_rejects_unbounded_or_control_message_before_git(
+    tmp_path: Path, message: str
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    with pytest.raises(ControlledGitError):
+        controlled.commit(handle, message)
+
+    assert not any(argv[-3:] == ("add", "-A", "--") for argv, _cwd, _env in runner.calls)
+
+
+def test_commit_stages_new_modified_and_deleted_files_and_verifies_ancestry(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "README.md").write_text("updated\n", encoding="utf-8")
+    (handle.path / "new.txt").write_text("new\n", encoding="utf-8")
+    (handle.path / "README.md").replace(handle.path / "renamed.txt")
+
+    controlled = _controlled(repository, tmp_path / "state")
+    result = controlled.commit(handle, "  capture all changes  ")
+
+    assert result.previous_sha == handle.base_sha
+    assert result.new_sha != result.previous_sha
+    assert len(result.new_sha) == 40
+    assert result.new_sha == result.new_sha.lower()
+    assert controlled.head_sha(handle) == result.new_sha
+    assert (handle.path / "renamed.txt").read_text(encoding="utf-8") == "updated\n"
+    assert not (handle.path / "README.md").exists()
+    assert (handle.path / "new.txt").read_text(encoding="utf-8") == "new\n"
+    assert _git_show(repository, result.new_sha).endswith("capture all changes\n")
+
+
+def test_commit_refuses_no_change_without_creating_a_commit(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    with pytest.raises(ControlledGitError):
+        controlled.commit(handle, "nothing to commit")
+
+    assert controlled.head_sha(handle) == handle.base_sha
+    assert any(argv[-3:] == ("add", "-A", "--") for argv, _cwd, _env in runner.calls)
+    assert not any(argv[-6:-5] == ("commit",) for argv, _cwd, _env in runner.calls)
+
+
+def test_commit_uses_exact_add_and_commit_argv_and_isolated_identity_controls(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    controlled.commit(handle, "one argument")
+
+    add_call, add_environment = next(
+        (argv, environment)
+        for argv, _cwd, environment in runner.calls
+        if argv[-3:] == ("add", "-A", "--")
+    )
+    commit_call, commit_environment = next(
+        (argv, environment)
+        for argv, _cwd, environment in runner.calls
+        if argv[-6:] == ("commit", "--no-verify", "--no-gpg-sign", "-m", "one argument", "--")
+    )
+    assert add_call[-3:] == ("add", "-A", "--")
+    assert commit_call[-6:] == (
+        "commit",
+        "--no-verify",
+        "--no-gpg-sign",
+        "-m",
+        "one argument",
+        "--",
+    )
+    assert commit_call.count("one argument") == 1
+    assert "commit.gpgSign=false" in commit_call
+    assert "user.name=Forge" in commit_call
+    assert "user.email=forge@example.test" in commit_call
+    assert commit_environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert commit_environment["GIT_TERMINAL_PROMPT"] == "0"
+    assert commit_environment["GIT_ASKPASS"] == ""
+    assert commit_environment["GIT_EDITOR"] == ""
+    assert commit_environment["GIT_PAGER"] == ""
+    assert commit_environment["GIT_DIR"] != commit_environment["GIT_COMMON_DIR"]
+    if os.name == "nt":
+        assert commit_environment["GIT_WORK_TREE"] == str(handle.path)
+        assert commit_environment["GIT_DIR"] == str(_registration_for(handle.path))
+        assert commit_environment["GIT_COMMON_DIR"] == str(repository / ".git")
+    else:
+        assert commit_environment["GIT_DIR"].startswith("/proc/self/fd/")
+        assert commit_environment["GIT_COMMON_DIR"].startswith("/proc/self/fd/")
+        assert commit_environment["GIT_WORK_TREE"].startswith("/proc/self/fd/")
+        assert (
+            len(
+                {
+                    commit_environment["GIT_DIR"],
+                    commit_environment["GIT_COMMON_DIR"],
+                    commit_environment["GIT_WORK_TREE"],
+                }
+            )
+            == 3
+        )
+    assert add_environment["GIT_CONFIG_GLOBAL"] == commit_environment["GIT_CONFIG_GLOBAL"]
+
+
+def test_commit_accepts_opaque_registration_basename(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    _rename_registration(handle.path, "opaque-registration")
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+
+    result = _controlled(repository, tmp_path / "state").commit(handle, "opaque proof")
+
+    assert result.new_sha != result.previous_sha
+
+
+@pytest.mark.parametrize("mode", ("marker", "registration"))
+@pytest.mark.parametrize(
+    "trigger",
+    (("add", "-A", "--"), ("commit", "--no-verify", "--no-gpg-sign", "-m", "proof swap", "--")),
+)
+def test_commit_fails_closed_when_bound_proof_is_substituted_before_process(
+    tmp_path: Path, mode: str, trigger: tuple[str, ...]
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    runner = CommitProofSwapRunner(repository, handle.path, mode, trigger)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+    proof_path = (
+        handle.path / ".git" if mode == "marker" else _registration_for(handle.path) / "gitdir"
+    )
+    original_proof = proof_path.read_bytes()
+
+    try:
+        with pytest.raises(ControlledGitError):
+            controlled.commit(handle, "proof swap")
+    finally:
+        if os.name == "nt":
+            assert proof_path.read_bytes() == original_proof
+        else:
+            proof_path.write_bytes(original_proof)
+
+    assert runner.swapped is True
+    assert not any(
+        argv[-6:] == ("commit", "--no-verify", "--no-gpg-sign", "-m", "proof swap", "--")
+        for argv, _cwd, _environment in runner.completed_calls
+    )
+    assert controlled.head_sha(handle) == handle.base_sha
+    if trigger[0] == "commit":
+        staged = subprocess.run(
+            [str(TRUSTED_GIT), "-C", str(handle.path), "diff", "--cached", "--name-only"],
+            check=True,
+            capture_output=True,
+            shell=False,
+            text=True,
+        ).stdout.splitlines()
+        assert staged == ["change.txt"]
+
+
+def test_commit_does_not_run_repository_hook(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    marker = tmp_path / "hook-marker"
+    hook = repository / ".git" / "hooks" / "pre-commit"
+    hook.write_text(
+        f"#!/bin/sh\nprintf executed > '{marker}'\nexit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.commit(handle, "hook bypass")
+
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("filter_key", ("clean", "smudge", "process"))
+def test_commit_refuses_configured_filter_before_staging(tmp_path: Path, filter_key: str) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    marker = tmp_path / f"{filter_key}-marker"
+    command = f"\"{sys.executable}\" -c \"open(r'{marker}', 'w').write('executed')\""
+    _git(repository, "config", f"filter.evil.{filter_key}", command)
+    (handle.path / ".gitattributes").write_text("*.txt filter=evil\n", encoding="utf-8")
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    with pytest.raises(ControlledGitError):
+        controlled.commit(handle, "unsafe filter")
+
+    assert not marker.exists()
+    assert not any(argv[-3:] == ("add", "-A", "--") for argv, _cwd, _env in runner.calls)
+
+
+def test_commit_refuses_wrong_branch_default_branch_and_diverged_base(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    _git(handle.path, "switch", "-c", "other")
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    with pytest.raises(ControlledGitError):
+        controlled.commit(handle, "wrong branch")
+
+    default_root = tmp_path / "default"
+    default_root.mkdir()
+    repository, _identity, handle = _managed_repository(default_root)
+    default_identity = replace(handle.identity, branch="main")
+    default_handle = replace(handle, identity=default_identity)
+    with pytest.raises(ControlledGitError):
+        _controlled(repository, tmp_path / "default-state").commit(default_handle, "default")
+
+    diverged_root = tmp_path / "diverged"
+    diverged_root.mkdir()
+    repository, _identity, handle = _managed_repository(diverged_root)
+    _git(repository, "commit", "--allow-empty", "-m", "diverging main")
+    diverged_sha = subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.strip()
+    diverged_handle = replace(handle, base_sha=diverged_sha)
+    with pytest.raises(ControlledGitError):
+        _controlled(repository, tmp_path / "diverged-state").commit(
+            diverged_handle, "diverged base"
+        )
+
+
+def test_commit_failure_preserves_staged_index_for_reconciliation(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    runner = FailingCommitRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    with pytest.raises(ControlledGitError):
+        controlled.commit(handle, "preserve staged state")
+
+    staged = subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(handle.path), "diff", "--cached", "--name-only"],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.splitlines()
+    assert staged == ["change.txt"]
+    assert controlled.head_sha(handle) == handle.base_sha
+
+
+def test_controlled_git_has_no_dangerous_public_commit_neighbors() -> None:
+    for method in (
+        "add",
+        "amend",
+        "branch_delete",
+        "checkout",
+        "clean",
+        "push",
+        "rebase",
+        "remote",
+        "reset",
+    ):
+        assert not hasattr(ControlledGit, method)
 
 
 @pytest.mark.parametrize(

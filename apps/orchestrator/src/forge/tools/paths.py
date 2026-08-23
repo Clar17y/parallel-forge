@@ -251,10 +251,30 @@ class _DirectoryAccess:
         "git_identity",
         "git_path",
         "identity",
+        "lock_capability",
+        "lock_identity",
+        "lock_path",
+        "metadata_capability",
+        "metadata_identity",
+        "metadata_path",
         "normalized",
         "path",
+        "registration_capability",
+        "registration_gitdir_capability",
+        "registration_gitdir_content",
+        "registration_gitdir_identity",
+        "registration_gitdir_path",
+        "registration_identity",
+        "registration_path",
         "root_identity",
         "root_path",
+        "target_git_capability",
+        "target_git_content",
+        "target_git_identity",
+        "target_git_path",
+        "worktree_parent_capability",
+        "worktree_parent_identity",
+        "worktree_parent_path",
     )
 
     def __init__(
@@ -271,6 +291,26 @@ class _DirectoryAccess:
         git_path: Path | None = None,
         git_capability: int | None = None,
         git_identity: tuple[int, ...] | None = None,
+        lock_path: Path | None = None,
+        lock_capability: int | None = None,
+        lock_identity: tuple[int, ...] | None = None,
+        worktree_parent_path: Path | None = None,
+        worktree_parent_capability: int | None = None,
+        worktree_parent_identity: tuple[int, ...] | None = None,
+        target_git_path: Path | None = None,
+        target_git_capability: int | None = None,
+        target_git_identity: tuple[int, ...] | None = None,
+        target_git_content: bytes | None = None,
+        metadata_path: Path | None = None,
+        metadata_capability: int | None = None,
+        metadata_identity: tuple[int, ...] | None = None,
+        registration_path: Path | None = None,
+        registration_capability: int | None = None,
+        registration_identity: tuple[int, ...] | None = None,
+        registration_gitdir_path: Path | None = None,
+        registration_gitdir_capability: int | None = None,
+        registration_gitdir_identity: tuple[int, ...] | None = None,
+        registration_gitdir_content: bytes | None = None,
     ) -> None:
         if seal is not _ACCESS_SEAL:
             raise TypeError("directory capability is internal")
@@ -284,6 +324,26 @@ class _DirectoryAccess:
         self.git_path = git_path
         self.git_capability = git_capability
         self.git_identity = git_identity
+        self.lock_path = lock_path
+        self.lock_capability = lock_capability
+        self.lock_identity = lock_identity
+        self.worktree_parent_path = worktree_parent_path
+        self.worktree_parent_capability = worktree_parent_capability
+        self.worktree_parent_identity = worktree_parent_identity
+        self.target_git_path = target_git_path
+        self.target_git_capability = target_git_capability
+        self.target_git_identity = target_git_identity
+        self.target_git_content = target_git_content
+        self.metadata_path = metadata_path
+        self.metadata_capability = metadata_capability
+        self.metadata_identity = metadata_identity
+        self.registration_path = registration_path
+        self.registration_capability = registration_capability
+        self.registration_identity = registration_identity
+        self.registration_gitdir_path = registration_gitdir_path
+        self.registration_gitdir_capability = registration_gitdir_capability
+        self.registration_gitdir_identity = registration_gitdir_identity
+        self.registration_gitdir_content = registration_gitdir_content
         self._live = True
         object.__setattr__(self, "_sealed", True)
 
@@ -1050,6 +1110,45 @@ class _WindowsPathApi:
             share=_FILE_SHARE_READ | _FILE_SHARE_DELETE,
         )
 
+    def open_managed_proof_child(self, parent_handle: int, name: str) -> int:
+        """Open one retained proof child while denying write and delete sharing."""
+
+        handle = self._open_child(
+            parent_handle,
+            name,
+            access=_GENERIC_READ | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+            share=_FILE_SHARE_READ,
+        )
+        try:
+            info = self.information(handle)
+            if int(info.attributes) & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY):
+                raise RepositoryAccessDenied("repository proof is not a regular file")
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
+    def open_managed_directory_child(self, parent_handle: int, name: str) -> int:
+        """Open one retained directory child while denying delete sharing."""
+
+        handle = self._open_child(
+            parent_handle,
+            name,
+            access=_FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+            share=_FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        )
+        try:
+            info = self.information(handle)
+            if (
+                int(info.attributes) & _FILE_ATTRIBUTE_REPARSE_POINT
+                or not int(info.attributes) & _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("repository directory is not a regular directory")
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
     def _open_child(self, parent_handle: int, name: str, *, access: int, share: int) -> int:
         """Open one validated child with an explicit native capability policy."""
 
@@ -1376,6 +1475,28 @@ class CanonicalRoot:
             active_token = _ACTIVE_DIRECTORY_ACCESS.set(access)
             try:
                 yield access
+            finally:
+                object.__setattr__(access, "_live", False)
+                _ACTIVE_DIRECTORY_ACCESS.reset(active_token)
+
+    @contextlib.contextmanager
+    def _open_managed_worktree(
+        self, leaf: str, registration_basename: str
+    ) -> Iterator[_DirectoryAccess]:
+        """Retain one exact managed worktree and its linked Git registration."""
+
+        target_name = _validate_quarantine_component(leaf)
+        registration_name = _validate_quarantine_component(registration_basename)
+        normalized = f".worktrees/{target_name}"
+        if os.name == "nt":
+            opener = self._open_windows_managed_worktree
+        else:
+            opener = self._open_posix_managed_worktree
+        with opener(target_name, registration_name, normalized) as access:
+            active_token = _ACTIVE_DIRECTORY_ACCESS.set(access)
+            try:
+                yield access
+                self._verify_directory_access(normalized, access)
             finally:
                 object.__setattr__(access, "_live", False)
                 _ACTIVE_DIRECTORY_ACCESS.reset(active_token)
@@ -2904,6 +3025,249 @@ class CanonicalRoot:
                         os.close(descriptor)
 
     @contextlib.contextmanager
+    def _open_windows_managed_worktree(
+        self, target_name: str, registration_name: str, normalized: str
+    ) -> Iterator[_DirectoryAccess]:
+        """Retain a Windows worktree, registration, proofs, and mutation lock."""
+
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        resources: list[int] = []
+        access: _DirectoryAccess | None = None
+        try:
+            root_path = self._path
+            root_handle = api.open_directory(root_path)
+            resources.append(root_handle)
+            root_identity = tuple(api.identity(root_handle))
+            if root_identity != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+
+            git_path = root_path / ".git"
+            git_handle = api.open_directory(git_path)
+            resources.append(git_handle)
+            lock_path = git_path / "forge-worktree.lock"
+            lock_handle = api.open_mutation_lock(lock_path)
+            resources.append(lock_handle)
+
+            worktree_parent_path = root_path / ".worktrees"
+            worktree_parent_handle = api.open_directory(worktree_parent_path)
+            resources.append(worktree_parent_handle)
+            target_path = worktree_parent_path / target_name
+            target_handle = api.open_directory(target_path)
+            resources.append(target_handle)
+            target_git_path = target_path / ".git"
+            target_git_handle = api.open_managed_proof_child(target_handle, ".git")
+            resources.append(target_git_handle)
+            target_git_content = _validate_worktree_marker_content(
+                api.read_bounded(target_git_handle),
+                target_path,
+                git_path / "worktrees" / registration_name,
+            )
+
+            metadata_path = git_path / "worktrees"
+            metadata_handle = api.open_directory(metadata_path)
+            resources.append(metadata_handle)
+            registration_path = metadata_path / registration_name
+            registration_handle = api.open_directory(registration_path)
+            resources.append(registration_handle)
+            api.assert_child_absent(registration_handle, "locked")
+            registration_gitdir_path = registration_path / "gitdir"
+            registration_gitdir_handle = api.open_managed_proof_child(registration_handle, "gitdir")
+            resources.append(registration_gitdir_handle)
+            registration_gitdir_content = _validate_gitdir_content(
+                api.read_bounded(registration_gitdir_handle), registration_path, target_git_path
+            )
+
+            identities = {
+                "root": root_identity,
+                "git": tuple(api.identity(git_handle)),
+                "lock": tuple(api.identity(lock_handle)),
+                "worktree parent": tuple(api.identity(worktree_parent_handle)),
+                "target": tuple(api.identity(target_handle)),
+                "target marker": tuple(api.identity(target_git_handle)),
+                "metadata": tuple(api.identity(metadata_handle)),
+                "registration": tuple(api.identity(registration_handle)),
+                "registration proof": tuple(api.identity(registration_gitdir_handle)),
+            }
+            if any(identity[0] != root_identity[0] for identity in identities.values()):
+                raise RepositoryAccessDenied("managed worktree crosses a volume")
+            self._revalidate_root()
+            access = _DirectoryAccess(
+                seal=_ACCESS_SEAL,
+                owner=self._access_owner,
+                path=target_path,
+                capability=target_handle,
+                root_path=root_path,
+                root_identity=root_identity,
+                identity=identities["target"],
+                normalized=normalized,
+                git_path=git_path,
+                git_capability=git_handle,
+                git_identity=identities["git"],
+                lock_path=lock_path,
+                lock_capability=lock_handle,
+                lock_identity=identities["lock"],
+                worktree_parent_path=worktree_parent_path,
+                worktree_parent_capability=worktree_parent_handle,
+                worktree_parent_identity=identities["worktree parent"],
+                target_git_path=target_git_path,
+                target_git_capability=target_git_handle,
+                target_git_identity=identities["target marker"],
+                target_git_content=target_git_content,
+                metadata_path=metadata_path,
+                metadata_capability=metadata_handle,
+                metadata_identity=identities["metadata"],
+                registration_path=registration_path,
+                registration_capability=registration_handle,
+                registration_identity=identities["registration"],
+                registration_gitdir_path=registration_gitdir_path,
+                registration_gitdir_capability=registration_gitdir_handle,
+                registration_gitdir_identity=identities["registration proof"],
+                registration_gitdir_content=registration_gitdir_content,
+            )
+            self._revalidate_root()
+            yield access
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("managed worktree is unavailable") from None
+        finally:
+            for handle in reversed(resources):
+                with contextlib.suppress(OSError):
+                    api.close(handle)
+
+    @contextlib.contextmanager
+    def _open_posix_managed_worktree(
+        self, target_name: str, registration_name: str, normalized: str
+    ) -> Iterator[_DirectoryAccess]:
+        """Retain a POSIX worktree, registration, proofs, and mutation lock."""
+
+        if not _O_DIRECTORY or not _O_NOFOLLOW:
+            raise RepositoryAccessDenied("safe POSIX path capabilities are unavailable")
+        if not Path("/proc/self/fd").is_dir():
+            raise RepositoryAccessDenied("safe POSIX directory launch is unavailable")
+        self._revalidate_root()
+        resources: list[int] = []
+        access: _DirectoryAccess | None = None
+        try:
+            root_descriptor = os.open(
+                self._path,
+                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+            )
+            resources.append(root_descriptor)
+            root_identity = _fd_identity(root_descriptor)
+            if root_identity != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+
+            git_path = self._path / ".git"
+            git_descriptor = _open_posix_directory_at(root_descriptor, ".git")
+            resources.append(git_descriptor)
+            lock_path = git_path / "forge-worktree.lock"
+            lock_descriptor = _open_posix_mutation_lock(git_descriptor)
+            resources.append(lock_descriptor)
+
+            worktree_parent_path = self._path / ".worktrees"
+            worktree_parent_descriptor = _open_posix_directory_at(root_descriptor, ".worktrees")
+            resources.append(worktree_parent_descriptor)
+            target_path = worktree_parent_path / target_name
+            target_descriptor = _open_posix_directory_at(worktree_parent_descriptor, target_name)
+            resources.append(target_descriptor)
+            target_git_path = target_path / ".git"
+            target_git_descriptor = _open_posix_regular_at(target_descriptor, ".git")
+            resources.append(target_git_descriptor)
+
+            metadata_path = git_path / "worktrees"
+            metadata_descriptor = _open_posix_directory_at(git_descriptor, "worktrees")
+            resources.append(metadata_descriptor)
+            registration_path = metadata_path / registration_name
+            registration_descriptor = _open_posix_directory_at(
+                metadata_descriptor, registration_name
+            )
+            resources.append(registration_descriptor)
+            _reject_posix_registration_lock(registration_descriptor)
+            registration_gitdir_path = registration_path / "gitdir"
+            registration_gitdir_descriptor = _open_posix_gitdir(registration_descriptor)
+            resources.append(registration_gitdir_descriptor)
+
+            target_git_content = _validate_worktree_marker_content(
+                _read_posix_bounded(target_git_descriptor),
+                target_path,
+                registration_path,
+            )
+            registration_gitdir_content = _validate_gitdir_content(
+                _read_posix_bounded(registration_gitdir_descriptor),
+                registration_path,
+                target_git_path,
+            )
+            identities = {
+                "root": root_identity,
+                "git": _fd_identity(git_descriptor),
+                "lock": _fd_identity(lock_descriptor),
+                "worktree parent": _fd_identity(worktree_parent_descriptor),
+                "target": _fd_identity(target_descriptor),
+                "target marker": _fd_identity(target_git_descriptor),
+                "metadata": _fd_identity(metadata_descriptor),
+                "registration": _fd_identity(registration_descriptor),
+                "registration proof": _fd_identity(registration_gitdir_descriptor),
+            }
+            _require_same_posix_volume(
+                root_descriptor,
+                git_descriptor,
+                lock_descriptor,
+                worktree_parent_descriptor,
+                target_descriptor,
+                target_git_descriptor,
+                metadata_descriptor,
+                registration_descriptor,
+                registration_gitdir_descriptor,
+            )
+            self._revalidate_root()
+            access = _DirectoryAccess(
+                seal=_ACCESS_SEAL,
+                owner=self._access_owner,
+                path=target_path,
+                capability=target_descriptor,
+                root_path=self._path,
+                root_identity=identities["root"],
+                identity=identities["target"],
+                normalized=normalized,
+                git_path=git_path,
+                git_capability=git_descriptor,
+                git_identity=identities["git"],
+                lock_path=lock_path,
+                lock_capability=lock_descriptor,
+                lock_identity=identities["lock"],
+                worktree_parent_path=worktree_parent_path,
+                worktree_parent_capability=worktree_parent_descriptor,
+                worktree_parent_identity=identities["worktree parent"],
+                target_git_path=target_git_path,
+                target_git_capability=target_git_descriptor,
+                target_git_identity=identities["target marker"],
+                target_git_content=target_git_content,
+                metadata_path=metadata_path,
+                metadata_capability=metadata_descriptor,
+                metadata_identity=identities["metadata"],
+                registration_path=registration_path,
+                registration_capability=registration_descriptor,
+                registration_identity=identities["registration"],
+                registration_gitdir_path=registration_gitdir_path,
+                registration_gitdir_capability=registration_gitdir_descriptor,
+                registration_gitdir_identity=identities["registration proof"],
+                registration_gitdir_content=registration_gitdir_content,
+            )
+            self._verify_directory_access(normalized, access)
+            yield access
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("managed worktree is unavailable") from None
+        finally:
+            for descriptor in reversed(resources):
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+
+    @contextlib.contextmanager
     def _open_windows_worktree_quarantine(
         self, target_name: str, registration_name: str
     ) -> Iterator[_QuarantineAccess]:
@@ -3161,6 +3525,326 @@ class CanonicalRoot:
                 raise RepositoryAccessDenied("Git metadata identity changed")
         return access
 
+    def _verify_windows_managed_retained_handles(self, access: _DirectoryAccess) -> None:
+        """Check every retained Windows managed-worktree handle identity and type."""
+
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        retained = (
+            ("Git metadata", access.git_capability, access.git_identity, True),
+            ("Git worktree lock", access.lock_capability, access.lock_identity, False),
+            (
+                "worktree parent",
+                access.worktree_parent_capability,
+                access.worktree_parent_identity,
+                True,
+            ),
+            ("target", access.capability, access.identity, True),
+            ("metadata parent", access.metadata_capability, access.metadata_identity, True),
+            ("registration", access.registration_capability, access.registration_identity, True),
+            ("target marker", access.target_git_capability, access.target_git_identity, False),
+            (
+                "registration proof",
+                access.registration_gitdir_capability,
+                access.registration_gitdir_identity,
+                False,
+            ),
+        )
+        for label, handle, expected, directory in retained:
+            if handle is None or expected is None:
+                raise RepositoryAccessDenied(f"{label} capability is unavailable")
+            try:
+                info = api.information(handle)
+                attributes = int(info.attributes)
+                if directory:
+                    if (
+                        attributes & _FILE_ATTRIBUTE_REPARSE_POINT
+                        or not attributes & _FILE_ATTRIBUTE_DIRECTORY
+                    ):
+                        raise RepositoryAccessDenied(f"{label} is not a directory")
+                elif attributes & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY):
+                    raise RepositoryAccessDenied(f"{label} is not a regular file")
+                identity = tuple(api.identity(handle))
+            except RepositoryAccessDenied:
+                raise
+            except OSError, ValueError:
+                raise RepositoryAccessDenied(f"{label} capability is stale") from None
+            if identity != expected:
+                raise RepositoryAccessDenied(f"{label} identity changed")
+
+    def _verify_windows_managed_access(self, access: _DirectoryAccess) -> None:
+        """Reopen all managed-worktree children and re-prove both link directions."""
+
+        if access.registration_path is None:
+            return
+        api = self._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        if (
+            access.git_path is None
+            or access.lock_path is None
+            or access.worktree_parent_path is None
+            or access.target_git_path is None
+            or access.metadata_path is None
+            or access.registration_gitdir_path is None
+            or access.target_git_content is None
+            or access.registration_gitdir_content is None
+        ):
+            raise RepositoryAccessDenied("managed worktree proof is unavailable")
+        self._verify_windows_managed_retained_handles(access)
+        git_capability = access.git_capability
+        worktree_parent_capability = access.worktree_parent_capability
+        metadata_capability = access.metadata_capability
+        registration_capability = access.registration_capability
+        target_git_capability = access.target_git_capability
+        registration_gitdir_capability = access.registration_gitdir_capability
+        if (
+            git_capability is None
+            or worktree_parent_capability is None
+            or metadata_capability is None
+            or registration_capability is None
+            or target_git_capability is None
+            or registration_gitdir_capability is None
+        ):
+            raise RepositoryAccessDenied("managed worktree capability is unavailable")
+        reopened: list[int] = []
+        try:
+            git_handle = api.open_directory(access.git_path)
+            reopened.append(git_handle)
+            worktree_parent_handle = api.open_directory(access.worktree_parent_path)
+            reopened.append(worktree_parent_handle)
+            target_handle = api.open_managed_directory_child(
+                worktree_parent_capability, access.path.name
+            )
+            reopened.append(target_handle)
+            target_git_handle = api.open_managed_proof_child(target_handle, ".git")
+            reopened.append(target_git_handle)
+            metadata_handle = api.open_managed_directory_child(git_capability, "worktrees")
+            reopened.append(metadata_handle)
+            registration_handle = api.open_managed_directory_child(
+                metadata_capability, access.registration_path.name
+            )
+            reopened.append(registration_handle)
+            api.assert_child_absent(registration_capability, "locked")
+            api.assert_child_absent(registration_handle, "locked")
+            registration_gitdir_handle = api.open_managed_proof_child(registration_handle, "gitdir")
+            reopened.append(registration_gitdir_handle)
+
+            expected = (
+                ("Git metadata", git_handle, access.git_identity),
+                ("worktree parent", worktree_parent_handle, access.worktree_parent_identity),
+                ("target", target_handle, access.identity),
+                ("metadata parent", metadata_handle, access.metadata_identity),
+                ("registration", registration_handle, access.registration_identity),
+                ("target marker", target_git_handle, access.target_git_identity),
+                (
+                    "registration proof",
+                    registration_gitdir_handle,
+                    access.registration_gitdir_identity,
+                ),
+            )
+            for label, handle, identity in expected:
+                if identity is None or tuple(api.identity(handle)) != identity:
+                    raise RepositoryAccessDenied(f"{label} lexical identity changed")
+
+            target_content = api.read_bounded(target_git_capability)
+            reopened_target_content = api.read_bounded(target_git_handle)
+            registration_content = api.read_bounded(registration_gitdir_capability)
+            reopened_registration_content = api.read_bounded(registration_gitdir_handle)
+            _validate_worktree_marker_content(target_content, access.path, access.registration_path)
+            _validate_worktree_marker_content(
+                reopened_target_content, access.path, access.registration_path
+            )
+            _validate_gitdir_content(
+                registration_content, access.registration_path, access.target_git_path
+            )
+            _validate_gitdir_content(
+                reopened_registration_content,
+                access.registration_path,
+                access.target_git_path,
+            )
+            if (
+                target_content != access.target_git_content
+                or target_content != reopened_target_content
+            ):
+                raise RepositoryAccessDenied("target marker proof changed")
+            if (
+                registration_content != access.registration_gitdir_content
+                or registration_content != reopened_registration_content
+            ):
+                raise RepositoryAccessDenied("registration proof changed")
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("managed worktree proof is unavailable") from None
+        finally:
+            for handle in reversed(reopened):
+                with contextlib.suppress(OSError):
+                    api.close(handle)
+
+    def _verify_posix_managed_retained_handles(self, access: _DirectoryAccess) -> None:
+        """Check every retained POSIX managed-worktree descriptor identity and type."""
+
+        retained = (
+            ("Git metadata", access.git_capability, access.git_identity, True),
+            ("Git worktree lock", access.lock_capability, access.lock_identity, False),
+            (
+                "worktree parent",
+                access.worktree_parent_capability,
+                access.worktree_parent_identity,
+                True,
+            ),
+            ("target", access.capability, access.identity, True),
+            ("metadata parent", access.metadata_capability, access.metadata_identity, True),
+            ("registration", access.registration_capability, access.registration_identity, True),
+            (
+                "target marker",
+                access.target_git_capability,
+                access.target_git_identity,
+                False,
+            ),
+            (
+                "registration proof",
+                access.registration_gitdir_capability,
+                access.registration_gitdir_identity,
+                False,
+            ),
+        )
+        for label, descriptor, expected, directory in retained:
+            if descriptor is None or expected is None:
+                raise RepositoryAccessDenied(f"{label} capability is unavailable")
+            try:
+                metadata = os.fstat(descriptor)
+                if directory and not stat.S_ISDIR(metadata.st_mode):
+                    raise RepositoryAccessDenied(f"{label} is not a directory")
+                if not directory and not stat.S_ISREG(metadata.st_mode):
+                    raise RepositoryAccessDenied(f"{label} is not a regular file")
+                identity = (int(metadata.st_dev), int(metadata.st_ino))
+            except RepositoryAccessDenied:
+                raise
+            except OSError, ValueError:
+                raise RepositoryAccessDenied(f"{label} capability is stale") from None
+            if identity != expected:
+                raise RepositoryAccessDenied(f"{label} identity changed")
+
+    def _verify_posix_managed_access(self, access: _DirectoryAccess) -> None:
+        """Reopen all managed-worktree children and re-prove both link directions."""
+
+        if access.registration_path is None:
+            return
+        if (
+            access.git_path is None
+            or access.lock_path is None
+            or access.worktree_parent_path is None
+            or access.target_git_path is None
+            or access.metadata_path is None
+            or access.registration_gitdir_path is None
+            or access.target_git_content is None
+            or access.registration_gitdir_content is None
+        ):
+            raise RepositoryAccessDenied("managed worktree proof is unavailable")
+        self._verify_posix_managed_retained_handles(access)
+        git_capability = access.git_capability
+        worktree_parent_capability = access.worktree_parent_capability
+        metadata_capability = access.metadata_capability
+        registration_capability = access.registration_capability
+        target_git_capability = access.target_git_capability
+        registration_gitdir_capability = access.registration_gitdir_capability
+        if (
+            git_capability is None
+            or worktree_parent_capability is None
+            or metadata_capability is None
+            or registration_capability is None
+            or target_git_capability is None
+            or registration_gitdir_capability is None
+        ):
+            raise RepositoryAccessDenied("managed worktree capability is unavailable")
+        reopened: list[int] = []
+        try:
+            root_descriptor = os.open(
+                self._path,
+                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+            )
+            reopened.append(root_descriptor)
+            if _fd_identity(root_descriptor) != self._identity:
+                raise RepositoryAccessDenied("repository root identity changed")
+            git_descriptor = _open_posix_directory_at(root_descriptor, ".git")
+            reopened.append(git_descriptor)
+            lock_descriptor = _open_posix_regular_at(git_descriptor, access.lock_path.name)
+            reopened.append(lock_descriptor)
+            worktree_parent_descriptor = _open_posix_directory_at(root_descriptor, ".worktrees")
+            reopened.append(worktree_parent_descriptor)
+            target_descriptor = _open_posix_directory_at(
+                worktree_parent_descriptor, access.path.name
+            )
+            reopened.append(target_descriptor)
+            target_git_descriptor = _open_posix_regular_at(target_descriptor, ".git")
+            reopened.append(target_git_descriptor)
+            metadata_descriptor = _open_posix_directory_at(git_descriptor, "worktrees")
+            reopened.append(metadata_descriptor)
+            registration_descriptor = _open_posix_directory_at(
+                metadata_descriptor, access.registration_path.name
+            )
+            reopened.append(registration_descriptor)
+            _reject_posix_registration_lock(registration_capability)
+            _reject_posix_registration_lock(registration_descriptor)
+            registration_gitdir_descriptor = _open_posix_gitdir(registration_descriptor)
+            reopened.append(registration_gitdir_descriptor)
+
+            expected = (
+                ("Git metadata", git_descriptor, access.git_identity),
+                ("Git worktree lock", lock_descriptor, access.lock_identity),
+                ("worktree parent", worktree_parent_descriptor, access.worktree_parent_identity),
+                ("target", target_descriptor, access.identity),
+                ("metadata parent", metadata_descriptor, access.metadata_identity),
+                ("registration", registration_descriptor, access.registration_identity),
+                ("target marker", target_git_descriptor, access.target_git_identity),
+                (
+                    "registration proof",
+                    registration_gitdir_descriptor,
+                    access.registration_gitdir_identity,
+                ),
+            )
+            for label, descriptor, identity in expected:
+                if identity is None or _fd_identity(descriptor) != identity:
+                    raise RepositoryAccessDenied(f"{label} lexical identity changed")
+
+            target_content = _read_posix_bounded(target_git_capability)
+            reopened_target_content = _read_posix_bounded(target_git_descriptor)
+            registration_content = _read_posix_bounded(registration_gitdir_capability)
+            reopened_registration_content = _read_posix_bounded(registration_gitdir_descriptor)
+            _validate_worktree_marker_content(target_content, access.path, access.registration_path)
+            _validate_worktree_marker_content(
+                reopened_target_content, access.path, access.registration_path
+            )
+            _validate_gitdir_content(
+                registration_content, access.registration_path, access.target_git_path
+            )
+            _validate_gitdir_content(
+                reopened_registration_content,
+                access.registration_path,
+                access.target_git_path,
+            )
+            if (
+                target_content != access.target_git_content
+                or target_content != reopened_target_content
+            ):
+                raise RepositoryAccessDenied("target marker proof changed")
+            if (
+                registration_content != access.registration_gitdir_content
+                or registration_content != reopened_registration_content
+            ):
+                raise RepositoryAccessDenied("registration proof changed")
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("managed worktree proof is unavailable") from None
+        finally:
+            for descriptor in reversed(reopened):
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+
     def _verify_directory_access(
         self, normalized: str, access: _DirectoryAccess
     ) -> _DirectoryAccess:
@@ -3204,6 +3888,10 @@ class CanonicalRoot:
             raise RepositoryAccessDenied("repository directory path is stale") from None
         if path_identity != access.identity:
             raise RepositoryAccessDenied("repository directory path identity changed")
+        if os.name == "nt":
+            self._verify_windows_managed_access(access)
+        else:
+            self._verify_posix_managed_access(access)
         return access
 
     def _launch_path_for_access(
@@ -3224,17 +3912,35 @@ class CanonicalRoot:
         return str(proc_fd_root / str(access.capability))
 
     def _pass_fds_for_access(self, normalized: str, access: _DirectoryAccess) -> tuple[int, ...]:
-        """Return only the retained metadata descriptor needed by POSIX Git."""
+        """Return every retained POSIX descriptor referenced by a bound launch."""
 
         access = self._accept_directory_access(normalized, access)
-        if os.name == "nt" or access.git_capability is None:
+        if os.name == "nt":
             return ()
-        return (access.git_capability,)
+        descriptors = (
+            (access.capability, access.registration_capability, access.git_capability)
+            if access.registration_capability is not None
+            else (access.git_capability,)
+        )
+        if any(descriptor is None for descriptor in descriptors):
+            raise RepositoryAccessDenied("POSIX launch capability is unavailable")
+        return tuple(
+            dict.fromkeys(descriptor for descriptor in descriptors if descriptor is not None)
+        )
 
     def _git_directory_for_access(self, normalized: str, access: _DirectoryAccess) -> str:
         """Return the exact retained source ``.git`` path for Git's environment."""
 
         access = self._accept_directory_access(normalized, access)
+        if access.registration_path is not None:
+            if access.registration_capability is None:
+                raise RepositoryAccessDenied("Git registration capability is unavailable")
+            if os.name == "nt":
+                return str(access.registration_path)
+            proc_fd_root = Path("/proc/self/fd")
+            if not proc_fd_root.is_dir():
+                raise RepositoryAccessDenied("safe POSIX metadata launch is unavailable")
+            return str(proc_fd_root / str(access.registration_capability))
         if access.git_path is None or access.git_capability is None:
             raise RepositoryAccessDenied("Git metadata capability is unavailable")
         if os.name == "nt":
@@ -3243,6 +3949,24 @@ class CanonicalRoot:
         if not proc_fd_root.is_dir():
             raise RepositoryAccessDenied("safe POSIX metadata launch is unavailable")
         return str(proc_fd_root / str(access.git_capability))
+
+    def _git_common_directory_for_access(self, normalized: str, access: _DirectoryAccess) -> str:
+        """Return the retained main repository ``.git`` path."""
+
+        access = self._accept_directory_access(normalized, access)
+        if access.git_path is None or access.git_capability is None:
+            raise RepositoryAccessDenied("Git common metadata capability is unavailable")
+        if os.name == "nt":
+            return str(access.git_path)
+        proc_fd_root = Path("/proc/self/fd")
+        if not proc_fd_root.is_dir():
+            raise RepositoryAccessDenied("safe POSIX metadata launch is unavailable")
+        return str(proc_fd_root / str(access.git_capability))
+
+    def _git_work_tree_for_access(self, normalized: str, access: _DirectoryAccess) -> str:
+        """Return the retained target path for Git's ``GIT_WORK_TREE``."""
+
+        return self._launch_path_for_access(normalized, access, require_fd=True)
 
     def _directory_access_matches_path(self, access: _DirectoryAccess) -> bool:
         """Check that the named target still identifies the retained directory."""
@@ -3978,12 +4702,62 @@ def _validate_gitdir_content(
     return content
 
 
+def _validate_worktree_marker_content(
+    content: bytes, target_path: Path, expected_registration: Path
+) -> bytes:
+    """Validate a linked worktree marker against one exact registration path."""
+
+    if len(content) > _GITDIR_MAX_BYTES:
+        raise RepositoryAccessDenied("repository proof is oversized")
+    try:
+        record = content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise RepositoryAccessDenied("repository proof is malformed") from None
+    if not record.endswith("\n") or record.count("\n") != 1:
+        raise RepositoryAccessDenied("repository proof is malformed")
+    if not record.startswith("gitdir: "):
+        raise RepositoryAccessDenied("repository proof is malformed")
+    registered = record[:-1][8:]
+    if not registered or "\r" in registered or "\x00" in registered:
+        raise RepositoryAccessDenied("repository proof is malformed")
+    registered_path = Path(registered)
+    if not registered_path.is_absolute():
+        registered_path = target_path / registered_path
+    registered_path = _normalise_gitdir_path(registered_path)
+    expected_path = _normalise_gitdir_path(expected_registration)
+    if os.path.normcase(os.fspath(registered_path)) != os.path.normcase(os.fspath(expected_path)):
+        raise RepositoryAccessDenied("repository proof targets a different registration")
+    return content
+
+
 def _open_posix_gitdir(registration: int) -> int:
     try:
         descriptor = os.open(
             "gitdir",
             os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC,
             dir_fd=registration,
+        )
+    except OSError:
+        raise RepositoryAccessDenied("repository proof is unavailable") from None
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RepositoryAccessDenied("repository proof is not a regular file")
+        return descriptor
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        raise
+
+
+def _open_posix_regular_at(parent: int, name: str) -> int:
+    """Open one regular child relative to a retained POSIX directory."""
+
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC,
+            dir_fd=parent,
         )
     except OSError:
         raise RepositoryAccessDenied("repository proof is unavailable") from None

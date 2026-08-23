@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -44,6 +45,50 @@ def _make_directory_link(link: Path, target: Path) -> None:
         if result.returncode == 0 and link.is_dir():
             return
     pytest.skip("the current host cannot create a directory link or junction")
+
+
+def _make_managed_worktree_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    git = shutil.which("git") or "git"
+    root = tmp_path / "repository"
+    root.mkdir()
+    for arguments in (
+        ("init", "-b", "main"),
+        ("config", "user.name", "Forge Test"),
+        ("config", "user.email", "forge@example.test"),
+    ):
+        result = subprocess.run(
+            [git, "-C", str(root), *arguments],
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+    (root / "README.md").write_text("forge\n", encoding="utf-8")
+    for arguments in (("add", "README.md"), ("commit", "-m", "initial")):
+        result = subprocess.run(
+            [git, "-C", str(root), *arguments],
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+    target = root / ".worktrees" / "target"
+    target.parent.mkdir()
+    result = subprocess.run(
+        [git, "-C", str(root), "worktree", "add", "-b", "feature", str(target), "HEAD"],
+        capture_output=True,
+        check=False,
+        shell=False,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    registration = next((root / ".git" / "worktrees").iterdir())
+    opaque = registration.with_name("opaque-registration")
+    marker = target / ".git"
+    marker.chmod(0o600)
+    marker.unlink()
+    marker.write_bytes(f"gitdir: {opaque}\n".encode())
+    registration.rename(opaque)
+    return root, target, opaque
 
 
 def test_run_rejects_empty_nontext_or_nul_argv(tmp_path: Path) -> None:
@@ -169,6 +214,34 @@ def test_run_rejects_linked_cwd(tmp_path: Path) -> None:
 
     with pytest.raises(RepositoryAccessDenied):
         _runner(root).run_argv(_python("print('unexpected')"), cwd="linked", environment={})
+
+
+@pytest.mark.parametrize("proof", ("marker", "registration"))
+def test_run_fails_closed_when_managed_worktree_proof_changes_before_launch(
+    tmp_path: Path, proof: str
+) -> None:
+    root_path, target, registration = _make_managed_worktree_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    runner = ProcessRunner(root)
+
+    with root._open_managed_worktree(target.name, registration.name):
+        if proof == "marker":
+            proof_path = target / ".git"
+            replacement = b"gitdir: /foreign/registration\n"
+        else:
+            proof_path = registration / "gitdir"
+            replacement = f"{target / 'foreign.git'}\n".encode()
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                proof_path.write_bytes(replacement)
+            return
+        original = proof_path.read_bytes()
+        proof_path.write_bytes(replacement)
+        try:
+            with pytest.raises(RepositoryAccessDenied):
+                runner.run_argv(_python("print('unexpected')"), cwd=str(target), environment={})
+        finally:
+            proof_path.write_bytes(original)
 
 
 def test_directory_capability_rejects_forgery_mutation_and_reuse(

@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import re
 import stat
+import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
 
 from forge.application.ports.repository import ProcessResult, RepositoryAccessDenied
-from forge.application.ports.worktrees import GitDiff, GitStatus, ManagedWorktree
+from forge.application.ports.worktrees import GitCommit, GitDiff, GitStatus, ManagedWorktree
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.paths import CanonicalRoot
 from forge.tools.process import ProcessRunner
@@ -19,6 +20,7 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_METADATA_BYTES = 4096
 _MAX_METADATA_ENTRIES = 256
 _MAX_BRANCH_LENGTH = 255
+_MAX_COMMIT_MESSAGE_BYTES = 4096
 
 _FORGE_NAME = "Forge"
 _FORGE_EMAIL = "forge@example.test"
@@ -323,6 +325,79 @@ class ControlledGit:
             truncated=_truncated(result, "stdout"),
         )
 
+    def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit:
+        """Stage and create one verified local commit for an exact worktree."""
+
+        try:
+            commit_message = _validate_commit_message(message)
+            identity, _expected = self._validate_handle_shape(worktree)
+            self._assert_trusted_state()
+            self._validate_handle(worktree)
+            registration = self._registration_metadata(identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                identity.worktree_name, registration.name
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                return self._commit_bound(worktree, commit_message)
+        except ControlledGitError:
+            raise
+        except (
+            OSError,
+            RepositoryAccessDenied,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ):
+            raise ControlledGitError() from None
+
+    def _commit_bound(self, worktree: ManagedWorktree, message: str) -> GitCommit:
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        previous_sha = self._head_sha(worktree)
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+
+        self._run(worktree.path, ("add", "-A", "--"))
+        self._require_staged_changes(worktree)
+
+        # Revalidate the registration, safety configuration, branch, HEAD, and
+        # base ancestry immediately before the mutation that creates the commit.
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        if self._head_sha(worktree) != previous_sha:
+            raise ControlledGitError()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        self._require_staged_changes(worktree)
+
+        result = self._run(
+            worktree.path,
+            ("commit", "--no-verify", "--no-gpg-sign", "-m", message, "--"),
+        )
+        _require_complete_result(result)
+
+        new_sha = self._head_sha(worktree)
+        if new_sha == previous_sha:
+            raise ControlledGitError()
+        self._validate_handle(worktree)
+        self._verify_ancestor_sha(worktree, previous_sha)
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        if self._head_sha(worktree) != new_sha:
+            raise ControlledGitError()
+        return GitCommit(previous_sha=previous_sha, new_sha=new_sha)
+
+    def _require_staged_changes(self, worktree: ManagedWorktree) -> None:
+        result = self._run(
+            worktree.path,
+            ("diff", "--cached", "--quiet", "--"),
+            allow_return_codes=(0, 1),
+        )
+        _require_complete_result(result)
+        if _return_code(result) != 1:
+            raise ControlledGitError()
+
     def branch_exists(self, worktree: ManagedWorktree) -> bool:
         """Return whether the handle's exact branch exists locally."""
 
@@ -357,7 +432,14 @@ class ControlledGit:
         return self._is_ancestor(worktree)
 
     def _is_ancestor(self, worktree: ManagedWorktree) -> bool:
-        ancestor = worktree.base_sha
+        return self._has_ancestor(worktree, worktree.base_sha)
+
+    def _verify_ancestor_sha(self, worktree: ManagedWorktree, ancestor: str) -> None:
+        if not self._has_ancestor(worktree, ancestor):
+            raise ControlledGitError()
+
+    def _has_ancestor(self, worktree: ManagedWorktree, ancestor: str) -> bool:
+        _validate_sha(ancestor)
         result = self._run(
             worktree.path,
             ("merge-base", "--is-ancestor", ancestor, "HEAD"),
@@ -438,11 +520,40 @@ class ControlledGit:
         git_directory: str | None = None,
     ) -> ProcessResult:
         self._assert_trusted_state()
+        normalized: str | None = None
+        active_access = None
+        try:
+            relative = Path(worktree).relative_to(self._repository.path)
+        except ValueError:
+            pass
+        else:
+            normalized = self._repository.normalize(relative, allow_root=True)
+            active_access = self._repository._active_directory_access(normalized)
+        launch_worktree = worktree
+        environment = self._environment(git_directory=git_directory)
+        if active_access is not None:
+            if normalized is None:
+                raise ControlledGitError()
+            bound_worktree = self._repository._launch_path_for_access(
+                normalized, active_access, require_fd=True
+            )
+            launch_worktree = Path(bound_worktree)
+            if active_access.registration_path is not None:
+                environment = self._environment(
+                    git_directory=self._repository._git_directory_for_access(
+                        normalized, active_access
+                    ),
+                    git_common_directory=self._repository._git_common_directory_for_access(
+                        normalized, active_access
+                    ),
+                    git_work_tree=self._repository._git_work_tree_for_access(
+                        normalized, active_access
+                    ),
+                )
         argv = [
-            *self._prefix(worktree, include_cwd=not omit_cwd_prefix),
+            *self._prefix(launch_worktree, include_cwd=not omit_cwd_prefix),
             *arguments,
         ]
-        environment = self._environment(git_directory=git_directory)
         cwd = str(worktree)
         try:
             result = self._runner.run_argv(
@@ -494,7 +605,13 @@ class ControlledGit:
         )
         return tuple(prefix)
 
-    def _environment(self, *, git_directory: str | None = None) -> dict[str, str]:
+    def _environment(
+        self,
+        *,
+        git_directory: str | None = None,
+        git_common_directory: str | None = None,
+        git_work_tree: str | None = None,
+    ) -> dict[str, str]:
         allowed_names = {
             "PATH",
             "LANG",
@@ -527,9 +644,15 @@ class ControlledGit:
                 "GIT_EDITOR": "",
             }
         )
+        common_directory = (
+            git_common_directory if git_common_directory is not None else git_directory
+        )
         if git_directory is not None:
             environment["GIT_DIR"] = git_directory
-            environment["GIT_COMMON_DIR"] = git_directory
+        if common_directory is not None:
+            environment["GIT_COMMON_DIR"] = common_directory
+        if git_work_tree is not None:
+            environment["GIT_WORK_TREE"] = git_work_tree
         return environment
 
     def _assert_trusted_state(self) -> None:
@@ -898,6 +1021,34 @@ def _unsafe_local_key(key: str) -> bool:
         "interactive.difffilter",
     )
     return any(fragment in lowered for fragment in blocked_fragments)
+
+
+def _validate_commit_message(value: object) -> str:
+    if not isinstance(value, str):
+        raise ControlledGitError()
+    if len(value.encode("utf-8")) > _MAX_COMMIT_MESSAGE_BYTES:
+        raise ControlledGitError()
+    if any(
+        character == "\x7f"
+        or ord(character) < 0x20
+        or unicodedata.category(character) in {"Cc", "Cf"}
+        for character in value
+    ):
+        raise ControlledGitError()
+    message = value.strip()
+    if not message or len(message.encode("utf-8")) > _MAX_COMMIT_MESSAGE_BYTES:
+        raise ControlledGitError()
+    return message
+
+
+def _require_complete_result(result: ProcessResult) -> None:
+    if (
+        _truncated(result, "stdout")
+        or _truncated(result, "stderr")
+        or "\ufffd" in result.stdout
+        or "\ufffd" in result.stderr
+    ):
+        raise ControlledGitError()
 
 
 def _valid_result(result: object) -> bool:

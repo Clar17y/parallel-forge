@@ -78,6 +78,19 @@ class GitDiff(GitOutput):
     """Bounded binary-safe diff output."""
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GitCommit:
+    """The verified parent and result of one controlled local commit."""
+
+    previous_sha: str
+    new_sha: str
+
+    def __post_init__(self) -> None:
+        for value in (self.previous_sha, self.new_sha):
+            if not isinstance(value, str) or _SHA.fullmatch(value) is None:
+                raise ValueError("Git commit SHA must be lowercase hexadecimal")
+
+
 class ControlledGitPort(Protocol):
     """Exact managed-worktree operations exposed to the application layer."""
 
@@ -99,17 +112,22 @@ class ControlledGitPort(Protocol):
 
     def is_ancestor(self, worktree: ManagedWorktree) -> bool: ...
 
+    def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit: ...
 
-# Keep the port name discoverable to the later worktree lifecycle slices without
-# exposing any additional operation in this isolated read-only slice.
+
+# Keep the port aliases discoverable to later worktree lifecycle slices while
+# exposing only the exact managed-worktree operations above.
 ManagedWorktreePort = ControlledGitPort
 GitPort = ControlledGitPort
 GitStatusResult = GitStatus
 GitDiffResult = GitDiff
+GitCommitResult = GitCommit
 
 
 __all__ = [
     "ControlledGitPort",
+    "GitCommit",
+    "GitCommitResult",
     "GitDiff",
     "GitDiffResult",
     "GitOutput",

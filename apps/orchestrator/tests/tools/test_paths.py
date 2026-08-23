@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from forge.tools import paths
 from forge.tools.paths import CanonicalRoot, PathEscape, RepositoryAccessDenied
+from forge.tools.process import ProcessRunner
 
 
 def _make_root(tmp_path: Path) -> Path:
@@ -70,6 +71,17 @@ def _make_real_quarantine_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     metadata = next((root / ".git" / "worktrees").iterdir())
     return root, target, metadata
+
+
+def _make_opaque_real_quarantine_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    root, target, registration = _make_real_quarantine_fixture(tmp_path)
+    opaque = registration.with_name("opaque-registration")
+    marker = target / ".git"
+    marker.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    marker.unlink()
+    marker.write_bytes(f"gitdir: {opaque}\n".encode())
+    registration.rename(opaque)
+    return root, target, opaque
 
 
 def _remove_flat_directory(path: Path) -> None:
@@ -132,6 +144,111 @@ def test_canonical_root_rejects_a_symlinked_root(tmp_path: Path) -> None:
 
     with pytest.raises(RepositoryAccessDenied):
         CanonicalRoot(linked)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX namespace swap proof")
+def test_managed_worktree_access_remains_bound_when_lexical_target_is_replaced(
+    tmp_path: Path,
+) -> None:
+    root_path, target, registration = _make_real_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    moved = target.with_name("target-moved")
+    replacement = target
+
+    with (
+        pytest.raises(RepositoryAccessDenied),
+        root._open_managed_worktree(target.name, registration.name) as access,
+    ):
+        assert root._active_directory_access(access.normalized) is access
+        target.rename(moved)
+        replacement.mkdir()
+        (replacement / "outside-marker").write_text("replacement\n", encoding="utf-8")
+        assert root._directory_access_matches_path(access) is False
+        assert access.path == target
+        assert moved.is_dir()
+        assert (moved / "outside-marker").read_text(encoding="utf-8") == "target\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX active descriptor launch proof")
+def test_process_runner_uses_the_retained_managed_worktree_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, registration = _make_real_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    runner = ProcessRunner(root)
+    seen: list[object] = []
+    original = root._launch_path_for_access
+
+    def launch(normalized: str, access: object, *, require_fd: bool = False) -> str:
+        seen.append(access)
+        return original(normalized, access, require_fd=require_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(root, "_launch_path_for_access", launch)
+    with root._open_managed_worktree(target.name, registration.name) as access:
+        result = runner.run_argv(
+            [shutil.which("git") or "git", "--version"],
+            cwd=str(target),
+            environment={"PATH": os.environ.get("PATH", "")},
+        )
+        assert result.return_code == 0
+        assert seen == [access]
+
+
+def test_managed_worktree_access_binds_target_registration_and_common_git_paths(
+    tmp_path: Path,
+) -> None:
+    root_path, target, registration = _make_opaque_real_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+
+    with root._open_managed_worktree(target.name, registration.name) as access:
+        normalized = f".worktrees/{target.name}"
+        assert access.normalized == normalized
+        assert access.registration_path == registration
+        assert root._active_directory_access(normalized) is access
+
+        worktree_path = root._launch_path_for_access(normalized, access, require_fd=True)
+        git_dir = root._git_directory_for_access(normalized, access)
+        common_dir = root._git_common_directory_for_access(normalized, access)
+        work_tree = root._git_work_tree_for_access(normalized, access)
+
+        assert git_dir != common_dir
+        if os.name == "nt":
+            assert worktree_path == str(target)
+            assert git_dir == str(registration)
+            assert common_dir == str(root_path / ".git")
+            assert work_tree == str(target)
+        else:
+            assert worktree_path == f"/proc/self/fd/{access.capability}"
+            assert git_dir == f"/proc/self/fd/{access.registration_capability}"
+            assert common_dir == f"/proc/self/fd/{access.git_capability}"
+            assert work_tree == worktree_path
+            assert Path(worktree_path).resolve() == target.resolve()
+            assert Path(git_dir).resolve() == registration.resolve()
+            assert Path(common_dir).resolve() == (root_path / ".git").resolve()
+
+        fds = root._pass_fds_for_access(normalized, access)
+        if os.name == "nt":
+            assert fds == ()
+        else:
+            assert fds == (access.capability, access.registration_capability, access.git_capability)
+            assert len(set(fds)) == 3
+
+
+def test_managed_worktree_access_rejects_foreign_and_retired_capabilities(
+    tmp_path: Path,
+) -> None:
+    root_path, target, registration = _make_opaque_real_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    foreign = CanonicalRoot(root_path)
+
+    with (
+        root._open_managed_worktree(target.name, registration.name) as access,
+        pytest.raises(RepositoryAccessDenied),
+    ):
+        foreign._verify_directory_access(access.normalized, access)
+
+    with pytest.raises(RepositoryAccessDenied):
+        root._pass_fds_for_access(access.normalized, access)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native ABI guard")
