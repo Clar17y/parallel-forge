@@ -3,18 +3,53 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from forge.application.services.recovery import RecoveryService
 from forge.domain.operation import OperationOutcome, OperationStatus
+from forge.domain.run import RunState
+from forge.persistence.models import OperationIntent as OperationIntentRecord
+from forge.persistence.models import RunEvent as RunEventRecord
+from forge.persistence.repositories.events import PostgresEventRepository
 from forge.persistence.repositories.operations import IdempotencyConflict, OperationLeaseError
 from forge.persistence.repositories.runs import PersistenceDataError
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 REQUEST_DIGEST = "a" * 64
+
+
+async def _stored_operation_pair(session_factory, *, run_id, idempotency_key):
+    async with session_factory() as session:
+        intents = (
+            (
+                await session.execute(
+                    select(OperationIntentRecord).where(
+                        OperationIntentRecord.idempotency_key == idempotency_key
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        events = (
+            (
+                await session.execute(
+                    select(RunEventRecord)
+                    .where(
+                        RunEventRecord.run_id == run_id,
+                        RunEventRecord.event_type == "operation.intent_created",
+                    )
+                    .order_by(RunEventRecord.sequence)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return intents, events
 
 
 def test_operation_executor_rejects_subsecond_execution_leases() -> None:
@@ -53,6 +88,172 @@ async def test_duplicate_operation_begin_returns_same_intent_and_conflicts_on_mi
             request_digest="b" * 64,
             request_payload={"repository": "Clar17y/Parallel", "branch": "other"},
         )
+
+
+@pytest.mark.integration
+async def test_new_operation_begin_appends_one_safe_causal_event(
+    operation_repository, persisted_run, session_factory, uow, monkeypatch
+) -> None:
+    async with uow:
+        current = await uow.runs.transition(
+            persisted_run.id,
+            expected_version=0,
+            target=RunState.PLANNING,
+            event_type="run.planning_started",
+            event_payload={},
+        )
+        await uow.commit()
+
+    occurred_at = datetime(2026, 8, 23, 10, 30, tzinfo=UTC)
+    monkeypatch.setattr("forge.persistence.repositories.operations._utc_now", lambda: occurred_at)
+    request = _request(persisted_run.id)
+    request["idempotency_key"] = "operation:IDEMPOTENCY_SENTINEL"
+    request["request_payload"] = {
+        "admin_reference": "ADMIN_REFERENCE_SENTINEL",
+        "worktree_path": "/managed/PATH_SENTINEL",
+        "endpoint": "postgresql://db.example/URL_SENTINEL",
+        "environment": {"FORGE_DATABASE_URL": "ENVIRONMENT_SENTINEL"},
+        "opaque_marker": "TOP_SECRET_SENTINEL",
+    }
+
+    intent = await operation_repository.begin(**request)
+
+    intents, events = await _stored_operation_pair(
+        session_factory,
+        run_id=persisted_run.id,
+        idempotency_key=request["idempotency_key"],
+    )
+    assert [record.id for record in intents] == [intent.id]
+    assert len(events) == 1
+    event = events[0]
+    assert event.run_version == current.version
+    assert event.actor_class == "system"
+    assert event.payload_schema_version == 1
+    assert event.occurred_at == occurred_at
+    assert event.payload == {
+        "operation_intent_id": str(intent.id),
+        "operation_kind": intent.kind,
+        "request_digest": intent.request_digest,
+        "request_schema_version": intent.request_schema_version,
+    }
+    durable_event = json.dumps(event.payload, sort_keys=True)
+    for marker in (
+        "IDEMPOTENCY_SENTINEL",
+        "ADMIN_REFERENCE_SENTINEL",
+        "PATH_SENTINEL",
+        "URL_SENTINEL",
+        "ENVIRONMENT_SENTINEL",
+        "TOP_SECRET_SENTINEL",
+        "request_payload",
+        "idempotency_key",
+    ):
+        assert marker not in durable_event
+
+
+@pytest.mark.integration
+async def test_duplicate_begin_preserves_owner_and_lease_without_another_event(
+    operation_repository, persisted_run, session_factory
+) -> None:
+    request = _request(persisted_run.id)
+    first = await operation_repository.begin(
+        **request,
+        execution_owner="worker-a",
+        execution_lease_seconds=30,
+    )
+    duplicate = await operation_repository.begin(
+        **request,
+        execution_owner="worker-b",
+        execution_lease_seconds=90,
+    )
+
+    assert first.is_new is True
+    assert duplicate.is_new is False
+    assert duplicate.id == first.id
+    assert duplicate.execution_owner == first.execution_owner == "worker-a"
+    assert duplicate.execution_lease_expires_at == first.execution_lease_expires_at
+    assert duplicate.attempt == first.attempt == 1
+    intents, events = await _stored_operation_pair(
+        session_factory,
+        run_id=persisted_run.id,
+        idempotency_key=request["idempotency_key"],
+    )
+    assert len(intents) == 1
+    assert len(events) == 1
+
+
+@pytest.mark.integration
+async def test_event_append_failure_rolls_back_pair_and_retry_creates_one_pair(
+    operation_repository, persisted_run, session_factory, monkeypatch
+) -> None:
+    request = _request(persisted_run.id)
+    original_append = PostgresEventRepository.append
+    append_calls = 0
+
+    async def append_then_fail_once(repository, event):
+        nonlocal append_calls
+        stored = await original_append(repository, event)
+        append_calls += 1
+        if append_calls == 1:
+            raise RuntimeError("injected operation event failure")
+        return stored
+
+    monkeypatch.setattr(PostgresEventRepository, "append", append_then_fail_once)
+
+    with pytest.raises(RuntimeError, match="operation event failure"):
+        await operation_repository.begin(**request)
+    intents, events = await _stored_operation_pair(
+        session_factory,
+        run_id=persisted_run.id,
+        idempotency_key=request["idempotency_key"],
+    )
+    assert intents == []
+    assert events == []
+
+    intent = await operation_repository.begin(**request)
+    intents, events = await _stored_operation_pair(
+        session_factory,
+        run_id=persisted_run.id,
+        idempotency_key=request["idempotency_key"],
+    )
+    assert [record.id for record in intents] == [intent.id]
+    assert len(events) == 1
+    assert events[0].payload["operation_intent_id"] == str(intent.id)
+    assert append_calls == 2
+
+
+@pytest.mark.integration
+async def test_concurrent_same_key_begins_create_one_intent_event_pair(
+    operation_repository, persisted_run, session_factory
+) -> None:
+    request = _request(persisted_run.id)
+
+    first, second = await asyncio.gather(
+        operation_repository.begin(
+            **request,
+            execution_owner="worker-a",
+            execution_lease_seconds=30,
+        ),
+        operation_repository.begin(
+            **request,
+            execution_owner="worker-b",
+            execution_lease_seconds=90,
+        ),
+    )
+
+    assert first.id == second.id
+    assert sum(intent.is_new for intent in (first, second)) == 1
+    assert first.execution_owner == second.execution_owner
+    assert first.execution_owner in {"worker-a", "worker-b"}
+    assert first.execution_lease_expires_at == second.execution_lease_expires_at
+    assert first.attempt == second.attempt == 1
+    intents, events = await _stored_operation_pair(
+        session_factory,
+        run_id=persisted_run.id,
+        idempotency_key=request["idempotency_key"],
+    )
+    assert len(intents) == 1
+    assert len(events) == 1
+    assert events[0].payload["operation_intent_id"] == str(first.id)
 
 
 @dataclass

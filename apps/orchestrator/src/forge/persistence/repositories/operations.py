@@ -10,6 +10,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from forge.domain.event import RunEvent
 from forge.domain.lease import validate_lease_seconds
 from forge.domain.operation import (
     OperationExecutionClaim,
@@ -22,7 +23,8 @@ from forge.domain.operation import (
 )
 from forge.domain.payload import redact_durable_text
 from forge.persistence.models import OperationIntent as OperationIntentRecord
-from forge.persistence.repositories.runs import PersistenceDataError
+from forge.persistence.repositories.events import PostgresEventRepository
+from forge.persistence.repositories.runs import PersistenceDataError, PostgresRunRepository
 
 
 class OperationError(RuntimeError):
@@ -105,6 +107,7 @@ class PostgresOperationRepository:
             is_new=True,
         )
         async with self._session_factory() as session, session.begin():
+            run = await PostgresRunRepository(session).get_for_update(request.run_id)
             inserted = await session.execute(
                 insert(OperationIntentRecord)
                 .values(
@@ -126,6 +129,23 @@ class PostgresOperationRepository:
                 .returning(OperationIntentRecord.id)
             )
             inserted_id = inserted.scalar_one_or_none()
+            if inserted_id is not None:
+                await PostgresEventRepository(session).append(
+                    RunEvent(
+                        run_id=request.run_id,
+                        run_version=run.version,
+                        event_type="operation.intent_created",
+                        actor_class="system",
+                        payload_schema_version=1,
+                        occurred_at=now,
+                        payload={
+                            "operation_intent_id": str(candidate.id),
+                            "operation_kind": candidate.kind,
+                            "request_digest": candidate.request_digest,
+                            "request_schema_version": candidate.request_schema_version,
+                        },
+                    )
+                )
             record = await session.get(OperationIntentRecord, inserted_id or candidate.id)
             if record is None:
                 record = (
