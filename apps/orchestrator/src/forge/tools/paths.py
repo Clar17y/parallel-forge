@@ -8,6 +8,7 @@ import ctypes
 import os
 import re
 import stat
+import sys
 from collections.abc import Iterator
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, BinaryIO, NamedTuple
@@ -22,6 +23,31 @@ _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 _TARGET_QUARANTINE_NAME = ".forge-quarantine"
 _REGISTRATION_QUARANTINE_NAME = ".forge-worktree-quarantine"
 _QUARANTINE_SEAL = object()
+_QUARANTINE_MAX_DEPTH = 128
+_QUARANTINE_MAX_ENTRIES = 100_000
+_QUARANTINE_MAX_COMPONENT_BYTES = 255
+
+_LINUX_AT_EMPTY_PATH = 0x1000
+_LINUX_STATX_MNT_ID = 0x1000
+_LINUX_STATX_BUFFER_SIZE = 256
+_LINUX_STATX_MASK_OFFSET = 0
+_LINUX_STATX_MNT_ID_OFFSET = 144
+
+if sys.platform == "linux":
+    try:
+        _LINUX_STATX = ctypes.CDLL(None, use_errno=True).statx
+        _LINUX_STATX.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+        ]
+        _LINUX_STATX.restype = ctypes.c_int
+    except AttributeError, OSError:
+        _LINUX_STATX = None
+else:
+    _LINUX_STATX = None
 
 
 def _require_windows_native_pointer_size(pointer_size: int | None = None) -> None:
@@ -60,6 +86,7 @@ class _QuarantineAccess:
         "_metadata_parent",
         "_owner",
         "_registration",
+        "_registration_deleted",
         "_registration_moved",
         "_registration_quarantine",
         "_registration_quarantine_parent",
@@ -68,6 +95,7 @@ class _QuarantineAccess:
         "_root",
         "_sealed",
         "_target",
+        "_target_deleted",
         "_target_moved",
         "_target_quarantine",
         "_target_quarantine_parent",
@@ -109,7 +137,9 @@ class _QuarantineAccess:
         self._target_quarantine: _QuarantineEntry | None = None
         self._registration_quarantine: _QuarantineEntry | None = None
         self._target_moved = False
+        self._target_deleted = False
         self._registration_moved = False
+        self._registration_deleted = False
         self._live = True
         object.__setattr__(self, "_sealed", True)
 
@@ -996,8 +1026,10 @@ class _WindowsPathApi:
         *,
         access: int,
         flags: int,
-        share: int = _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        share: int | None = None,
     ) -> int:
+        if share is None:
+            share = _FILE_SHARE_READ | _FILE_SHARE_WRITE
         ctypes.set_last_error(0)
         raw = self._create_file(
             str(path),
@@ -1320,6 +1352,292 @@ class CanonicalRoot:
             )
         object.__setattr__(access, "_registration_moved", True)
 
+    def _delete_target_quarantine(self, access: _QuarantineAccess) -> None:
+        """Delete a moved target quarantine while retaining its proof entry last."""
+
+        access = self._accept_quarantine_access(access)
+        if access._target_deleted:
+            return
+        if not access._target_moved or access._target_quarantine is None:
+            raise RepositoryAccessDenied("target quarantine has not completed")
+        if os.name == "nt":
+            raise RepositoryAccessDenied("native Windows quarantine deletion is unavailable")
+        self._delete_posix_quarantine(
+            access._target_quarantine,
+            proof_name=".git",
+        )
+        object.__setattr__(access, "_target_deleted", True)
+
+    def _delete_registration_quarantine(self, access: _QuarantineAccess) -> None:
+        """Delete a moved registration quarantine after target deletion completes."""
+
+        access = self._accept_quarantine_access(access)
+        if access._registration_deleted:
+            return
+        if not access._target_deleted:
+            raise RepositoryAccessDenied("target quarantine deletion has not completed")
+        if not access._registration_moved or access._registration_quarantine is None:
+            raise RepositoryAccessDenied("registration quarantine has not completed")
+        if os.name == "nt":
+            raise RepositoryAccessDenied("native Windows quarantine deletion is unavailable")
+        self._delete_posix_quarantine(
+            access._registration_quarantine,
+            proof_name="gitdir",
+        )
+        object.__setattr__(access, "_registration_deleted", True)
+
+    def _delete_posix_quarantine(
+        self,
+        quarantine: _QuarantineEntry,
+        *,
+        proof_name: str,
+    ) -> None:
+        """Delete one exact quarantine using only retained POSIX directory fds."""
+
+        if not _O_DIRECTORY or not _O_NOFOLLOW:
+            raise RepositoryAccessDenied("safe POSIX path capabilities are unavailable")
+        root_descriptor = quarantine.handle.capability
+        try:
+            root_metadata = os.fstat(root_descriptor)
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine capability is stale") from None
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            raise RepositoryAccessDenied("repository quarantine is not a directory")
+        root_identity = (int(root_metadata.st_dev), int(root_metadata.st_ino))
+        if root_identity != quarantine.handle.identity:
+            raise RepositoryAccessDenied("repository quarantine identity changed")
+        root_mount_id = _posix_mount_id(root_descriptor)
+
+        proof_descriptor: int | None = None
+        try:
+            try:
+                proof_entry = os.stat(
+                    proof_name,
+                    dir_fd=root_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                if not self._posix_quarantine_is_empty(root_descriptor):
+                    raise RepositoryAccessDenied(
+                        "repository quarantine proof is absent while content remains"
+                    )
+                self._remove_posix_quarantine_root(quarantine)
+                return
+            except OSError:
+                raise RepositoryAccessDenied("repository quarantine proof is unavailable") from None
+            if not stat.S_ISREG(proof_entry.st_mode):
+                raise RepositoryAccessDenied("repository quarantine proof is not regular")
+            if int(proof_entry.st_dev) != root_identity[0]:
+                raise RepositoryAccessDenied("repository quarantine proof crosses a volume")
+            try:
+                proof_descriptor = os.open(
+                    proof_name,
+                    os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC,
+                    dir_fd=root_descriptor,
+                )
+            except FileNotFoundError:
+                raise RepositoryAccessDenied("repository quarantine proof changed") from None
+            except OSError:
+                raise RepositoryAccessDenied("repository quarantine proof is unavailable") from None
+
+            try:
+                proof_metadata = os.fstat(proof_descriptor)
+                if not stat.S_ISREG(proof_metadata.st_mode):
+                    raise RepositoryAccessDenied("repository quarantine proof is not regular")
+                if int(proof_metadata.st_dev) != root_identity[0]:
+                    raise RepositoryAccessDenied("repository quarantine proof crosses a volume")
+                proof_identity = (int(proof_metadata.st_dev), int(proof_metadata.st_ino))
+                if proof_identity != (int(proof_entry.st_dev), int(proof_entry.st_ino)):
+                    raise RepositoryAccessDenied("repository quarantine proof changed")
+                budget = [0]
+                self._delete_posix_quarantine_children(
+                    root_descriptor,
+                    proof_name=proof_name,
+                    depth=0,
+                    root_device=root_identity[0],
+                    root_mount_id=root_mount_id,
+                    budget=budget,
+                    validate_only=True,
+                )
+                self._delete_posix_quarantine_children(
+                    root_descriptor,
+                    proof_name=proof_name,
+                    depth=0,
+                    root_device=root_identity[0],
+                    root_mount_id=root_mount_id,
+                    budget=budget,
+                    validate_only=False,
+                )
+                try:
+                    current_proof = os.stat(
+                        proof_name,
+                        dir_fd=root_descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError:
+                    raise RepositoryAccessDenied("repository quarantine proof changed") from None
+                if (
+                    not stat.S_ISREG(current_proof.st_mode)
+                    or (int(current_proof.st_dev), int(current_proof.st_ino)) != proof_identity
+                ):
+                    raise RepositoryAccessDenied("repository quarantine proof changed")
+                try:
+                    os.unlink(proof_name, dir_fd=root_descriptor)
+                except OSError:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine proof deletion failed"
+                    ) from None
+                self._assert_posix_entry_absent(quarantine.handle, proof_name)
+            finally:
+                with contextlib.suppress(OSError, ValueError):
+                    os.close(proof_descriptor)
+                proof_descriptor = None
+
+            if not self._posix_quarantine_is_empty(root_descriptor):
+                raise RepositoryAccessDenied(
+                    "repository quarantine is nonempty after proof deletion"
+                )
+            self._remove_posix_quarantine_root(quarantine)
+        finally:
+            if proof_descriptor is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    os.close(proof_descriptor)
+
+    def _delete_posix_quarantine_children(
+        self,
+        parent_descriptor: int,
+        *,
+        proof_name: str | None,
+        depth: int,
+        root_device: int,
+        root_mount_id: int,
+        budget: list[int],
+        validate_only: bool,
+    ) -> None:
+        try:
+            entries = os.scandir(parent_descriptor)
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine enumeration failed") from None
+        try:
+            for entry in entries:
+                name = entry.name
+                try:
+                    _validate_quarantine_component(name)
+                except PathEscape, UnicodeError, ValueError:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine entry name is invalid"
+                    ) from None
+                if validate_only:
+                    budget[0] += 1
+                    if budget[0] > _QUARANTINE_MAX_ENTRIES:
+                        raise RepositoryAccessDenied("repository quarantine entry limit exceeded")
+                if proof_name is not None and depth == 0 and name == proof_name:
+                    continue
+                try:
+                    metadata = os.stat(
+                        name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine entry state is unavailable"
+                    ) from None
+                if int(metadata.st_dev) != root_device:
+                    raise RepositoryAccessDenied("repository quarantine crosses a volume")
+                mode = metadata.st_mode
+                if stat.S_ISDIR(mode):
+                    child_depth = depth + 1
+                    if child_depth > _QUARANTINE_MAX_DEPTH:
+                        raise RepositoryAccessDenied("repository quarantine depth limit exceeded")
+                    child_descriptor: int | None = None
+                    try:
+                        try:
+                            child_descriptor = os.open(
+                                name,
+                                os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                                dir_fd=parent_descriptor,
+                            )
+                        except OSError:
+                            raise RepositoryAccessDenied(
+                                "repository quarantine directory open failed"
+                            ) from None
+                        child_metadata = os.fstat(child_descriptor)
+                        if not stat.S_ISDIR(child_metadata.st_mode):
+                            raise RepositoryAccessDenied(
+                                "repository quarantine directory identity changed"
+                            )
+                        child_identity = (
+                            int(child_metadata.st_dev),
+                            int(child_metadata.st_ino),
+                        )
+                        if child_identity != (
+                            int(metadata.st_dev),
+                            int(metadata.st_ino),
+                        ):
+                            raise RepositoryAccessDenied(
+                                "repository quarantine directory identity changed"
+                            )
+                        if _posix_mount_id(child_descriptor) != root_mount_id:
+                            raise RepositoryAccessDenied("repository quarantine crosses a mount")
+                        self._delete_posix_quarantine_children(
+                            child_descriptor,
+                            proof_name=None,
+                            depth=child_depth,
+                            root_device=root_device,
+                            root_mount_id=root_mount_id,
+                            budget=budget,
+                            validate_only=validate_only,
+                        )
+                    finally:
+                        if child_descriptor is not None:
+                            with contextlib.suppress(OSError, ValueError):
+                                os.close(child_descriptor)
+                    if not validate_only:
+                        try:
+                            os.rmdir(name, dir_fd=parent_descriptor)
+                        except OSError:
+                            raise RepositoryAccessDenied(
+                                "repository quarantine directory deletion failed"
+                            ) from None
+                        self._assert_posix_name_absent(parent_descriptor, name)
+                elif stat.S_ISREG(mode) or stat.S_ISLNK(mode):
+                    if not validate_only:
+                        try:
+                            os.unlink(name, dir_fd=parent_descriptor)
+                        except OSError:
+                            raise RepositoryAccessDenied(
+                                "repository quarantine entry deletion failed"
+                            ) from None
+                        self._assert_posix_name_absent(parent_descriptor, name)
+                else:
+                    raise RepositoryAccessDenied(
+                        "repository quarantine contains an unsupported entry"
+                    )
+        except RepositoryAccessDenied:
+            raise
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine enumeration failed") from None
+        finally:
+            with contextlib.suppress(OSError, ValueError):
+                entries.close()
+
+    @staticmethod
+    def _posix_quarantine_is_empty(descriptor: int) -> bool:
+        try:
+            with os.scandir(descriptor) as entries:
+                return next(entries, None) is None
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine enumeration failed") from None
+
+    def _remove_posix_quarantine_root(self, quarantine: _QuarantineEntry) -> None:
+        self._assert_posix_entry_present(quarantine)
+        try:
+            os.rmdir(quarantine.name, dir_fd=quarantine.parent.capability)
+        except OSError:
+            raise RepositoryAccessDenied("repository quarantine root deletion failed") from None
+        self._assert_posix_entry_absent(quarantine.parent, quarantine.name)
+
     def _quarantine_posix_entry(
         self,
         access: _QuarantineAccess,
@@ -1453,8 +1771,12 @@ class CanonicalRoot:
 
     @staticmethod
     def _assert_posix_entry_absent(parent: _QuarantineHandle, name: str) -> None:
+        CanonicalRoot._assert_posix_name_absent(parent.capability, name)
+
+    @staticmethod
+    def _assert_posix_name_absent(parent: int, name: str) -> None:
         try:
-            os.stat(name, dir_fd=parent.capability, follow_symlinks=False)
+            os.stat(name, dir_fd=parent, follow_symlinks=False)
         except FileNotFoundError:
             return
         except OSError:
@@ -2336,12 +2658,45 @@ def _fd_identity(descriptor: int) -> tuple[int, int]:
     return (int(metadata.st_dev), int(metadata.st_ino))
 
 
+def _posix_mount_id(descriptor: int) -> int:
+    """Return the kernel mount identity for one open POSIX directory fd."""
+
+    if sys.platform != "linux" or _LINUX_STATX is None:
+        raise RepositoryAccessDenied("POSIX mount identity is unavailable")
+    result = ctypes.create_string_buffer(_LINUX_STATX_BUFFER_SIZE)
+    try:
+        status = _LINUX_STATX(
+            descriptor,
+            b"",
+            _LINUX_AT_EMPTY_PATH,
+            _LINUX_STATX_MNT_ID,
+            ctypes.byref(result),
+        )
+    except OSError:
+        raise RepositoryAccessDenied("POSIX mount identity is unavailable") from None
+    if status != 0:
+        raise RepositoryAccessDenied("POSIX mount identity is unavailable")
+    mask = int.from_bytes(
+        result.raw[_LINUX_STATX_MASK_OFFSET : _LINUX_STATX_MASK_OFFSET + 4],
+        "little",
+    )
+    if not mask & _LINUX_STATX_MNT_ID:
+        raise RepositoryAccessDenied("POSIX mount identity is unavailable")
+    mount_id = int.from_bytes(
+        result.raw[_LINUX_STATX_MNT_ID_OFFSET : _LINUX_STATX_MNT_ID_OFFSET + 8],
+        "little",
+    )
+    if mount_id == 0:
+        raise RepositoryAccessDenied("POSIX mount identity is unavailable")
+    return mount_id
+
+
 def _validate_quarantine_component(value: str) -> str:
     if not isinstance(value, str) or not value or value in {".", ".."}:
         raise PathEscape("repository quarantine name is invalid")
     if any(character in value for character in ("/", "\\", "\x00", ":")):
         raise PathEscape("repository quarantine name is invalid")
-    if len(os.fsencode(value)) > 255:
+    if len(os.fsencode(value)) > _QUARANTINE_MAX_COMPONENT_BYTES:
         raise PathEscape("repository quarantine name is too long")
     if os.name == "nt" and value.rstrip(" .") != value:
         raise PathEscape("repository quarantine name is invalid")
