@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, BinaryIO, NamedTuple
@@ -368,14 +369,21 @@ if os.name == "nt":
     _FILE_LIST_DIRECTORY = 0x00000001
     _FILE_ADD_SUBDIRECTORY = 0x00000004
     _READ_CONTROL = 0x00020000
+    _WRITE_DAC = 0x00040000
+    _WRITE_OWNER = 0x00080000
     _FILE_SHARE_READ = 0x00000001
     _FILE_SHARE_WRITE = 0x00000002
     _FILE_SHARE_DELETE = 0x00000004
+    _CREATE_NEW = 1
     _OPEN_EXISTING = 3
     _OPEN_ALWAYS = 4
     _ERROR_FILE_NOT_FOUND = 2
     _ERROR_PATH_NOT_FOUND = 3
+    _ERROR_INVALID_FUNCTION = 1
+    _ERROR_NOT_SUPPORTED = 50
+    _ERROR_FILE_EXISTS = 80
     _ERROR_ALREADY_EXISTS = 183
+    _ERROR_SHARING_VIOLATION = 32
     _FILE_ATTRIBUTE_NORMAL = 0x00000080
     _FILE_ATTRIBUTE_DIRECTORY = 0x00000010
     _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
@@ -405,6 +413,7 @@ if os.name == "nt":
     _SE_FILE_OBJECT = 1
     _OWNER_SECURITY_INFORMATION = 0x00000001
     _DACL_SECURITY_INFORMATION = 0x00000004
+    _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
     _SE_DACL_PROTECTED = 0x1000
     _ACCESS_ALLOWED_ACE_TYPE = 0
     _INHERITED_ACE = 0x10
@@ -523,6 +532,25 @@ class _WindowsPathApi:
             ctypes.c_void_p,
         )
         self._read_file.restype = wintypes.BOOL
+        self._write_file = kernel32.WriteFile
+        self._write_file.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        )
+        self._write_file.restype = wintypes.BOOL
+        self._flush_file_buffers = kernel32.FlushFileBuffers
+        self._flush_file_buffers.argtypes = (ctypes.c_void_p,)
+        self._flush_file_buffers.restype = wintypes.BOOL
+        self._create_hard_link = kernel32.CreateHardLinkW
+        self._create_hard_link.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_void_p,
+        )
+        self._create_hard_link.restype = wintypes.BOOL
         self._set_file_pointer_ex = kernel32.SetFilePointerEx
         self._set_file_pointer_ex.argtypes = (
             ctypes.c_void_p,
@@ -594,6 +622,18 @@ class _WindowsPathApi:
             ctypes.POINTER(ctypes.c_void_p),
         )
         self._get_security_info.restype = wintypes.DWORD
+        self._set_security_info = advapi32.SetSecurityInfo
+        self._set_security_info.argtypes = (
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )
+        self._set_security_info.restype = wintypes.DWORD
         self._get_security_descriptor_control = advapi32.GetSecurityDescriptorControl
         self._get_security_descriptor_control.argtypes = (
             ctypes.c_void_p,
@@ -601,6 +641,13 @@ class _WindowsPathApi:
             ctypes.POINTER(wintypes.WORD),
         )
         self._get_security_descriptor_control.restype = ctypes.c_int
+        self._get_security_descriptor_owner = advapi32.GetSecurityDescriptorOwner
+        self._get_security_descriptor_owner.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL),
+        )
+        self._get_security_descriptor_owner.restype = ctypes.c_int
         self._get_security_descriptor_dacl = advapi32.GetSecurityDescriptorDacl
         self._get_security_descriptor_dacl.argtypes = (
             ctypes.c_void_p,
@@ -678,7 +725,7 @@ class _WindowsPathApi:
     def open_directory(self, path: Path) -> int:
         handle = self._open(
             path,
-            access=_FILE_LIST_DIRECTORY,
+            access=_FILE_LIST_DIRECTORY | _READ_CONTROL,
             flags=_FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
         )
         try:
@@ -688,6 +735,68 @@ class _WindowsPathApi:
                 or not int(info.attributes) & _FILE_ATTRIBUTE_DIRECTORY
             ):
                 raise RepositoryAccessDenied("repository directory is not a regular directory")
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
+    def open_secret_directory(self, path: Path) -> int:
+        """Open and verify one protected Forge secret directory."""
+
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                handle = self._open(
+                    path,
+                    access=(
+                        _GENERIC_WRITE
+                        | _FILE_LIST_DIRECTORY
+                        | _FILE_READ_ATTRIBUTES
+                        | _READ_CONTROL
+                    ),
+                    flags=_FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+                    share=_FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                )
+                break
+            except RepositoryAccessDenied:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.005)
+        try:
+            info = self.information(handle)
+            if (
+                int(info.attributes) & _FILE_ATTRIBUTE_REPARSE_POINT
+                or not int(info.attributes) & _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("secret path is not a directory")
+            self.verify_owner_only_dacl(handle)
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
+    def open_secret_directory_for_repair(self, path: Path) -> int:
+        """Open an existing secret directory with the rights needed to repair its ACL."""
+
+        handle = self._open(
+            path,
+            access=(
+                _FILE_LIST_DIRECTORY
+                | _FILE_READ_ATTRIBUTES
+                | _READ_CONTROL
+                | _WRITE_DAC
+                | _WRITE_OWNER
+            ),
+            flags=_FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+            share=_FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        )
+        try:
+            info = self.information(handle)
+            if (
+                int(info.attributes) & _FILE_ATTRIBUTE_REPARSE_POINT
+                or not int(info.attributes) & _FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise RepositoryAccessDenied("secret path is not a directory")
             return handle
         except BaseException:
             self.close(handle)
@@ -901,6 +1010,57 @@ class _WindowsPathApi:
                 raise RepositoryAccessDenied("repository quarantine root permissions are unsafe")
         finally:
             self._local_free(descriptor)
+
+    def repair_owner_only_dacl(self, handle: int) -> None:
+        """Apply the established protected owner+SYSTEM DACL to one retained handle."""
+
+        descriptor_value = self._create_owner_only_security_descriptor()
+        descriptor = ctypes.c_void_p(descriptor_value)
+        try:
+            owner = ctypes.c_void_p()
+            owner_defaulted = wintypes.BOOL()
+            if (
+                not self._get_security_descriptor_owner(
+                    descriptor, ctypes.byref(owner), ctypes.byref(owner_defaulted)
+                )
+                or not owner.value
+                or owner_defaulted.value
+            ):
+                raise RepositoryAccessDenied("repository quarantine security is unavailable")
+            present = wintypes.BOOL()
+            defaulted = wintypes.BOOL()
+            dacl = ctypes.c_void_p()
+            if (
+                not self._get_security_descriptor_dacl(
+                    descriptor,
+                    ctypes.byref(present),
+                    ctypes.byref(dacl),
+                    ctypes.byref(defaulted),
+                )
+                or not present.value
+                or defaulted.value
+                or not dacl.value
+            ):
+                raise RepositoryAccessDenied("repository quarantine security is unavailable")
+            result = int(
+                self._set_security_info(
+                    handle,
+                    _SE_FILE_OBJECT,
+                    _OWNER_SECURITY_INFORMATION
+                    | _DACL_SECURITY_INFORMATION
+                    | _PROTECTED_DACL_SECURITY_INFORMATION,
+                    owner,
+                    None,
+                    dacl,
+                    None,
+                    None,
+                )
+            )
+            if result != 0:
+                raise RepositoryAccessDenied("repository quarantine security is unavailable")
+        finally:
+            self._local_free(descriptor)
+        self.verify_owner_only_dacl(handle)
 
     def _current_user_sid(self) -> tuple[Any, int]:
         token = ctypes.c_void_p()
@@ -1148,6 +1308,145 @@ class _WindowsPathApi:
         except BaseException:
             self.close(handle)
             raise
+
+    def open_secret_entry(
+        self,
+        parent_handle: int,
+        name: str,
+        *,
+        access: int,
+        missing_ok: bool,
+    ) -> int | None:
+        """Open one Forge secret entry relative to its retained directory."""
+
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                handle = self._open_child(parent_handle, name, access=access, share=0)
+                break
+            except OSError as error:
+                if missing_ok and error.errno in {_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND}:
+                    return None
+                if error.errno != _ERROR_SHARING_VIOLATION or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.005)
+        try:
+            info = self.information(handle)
+            if int(info.attributes) & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY):
+                raise RepositoryAccessDenied("secret path is not a regular file")
+            self.verify_owner_only_dacl(handle)
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
+    def open_secret_file(
+        self, parent_handle: int, name: str, *, access: int, missing_ok: bool
+    ) -> int | None:
+        """Open one regular, owner-sealed, single-link secret file."""
+
+        handle = self.open_secret_entry(
+            parent_handle,
+            name,
+            access=access,
+            missing_ok=missing_ok,
+        )
+        if handle is None:
+            return None
+        try:
+            if int(self.information(handle).link_count) != 1:
+                raise RepositoryAccessDenied("secret path has unexpected links")
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
+    def create_secret_file(self, path: Path, name: str) -> int:
+        """Create one secure regular temp file with no inherited access."""
+
+        name = _validate_quarantine_component(name)
+        descriptor = self._create_owner_only_security_descriptor()
+        attributes = _SecurityAttributes(
+            ctypes.sizeof(_SecurityAttributes), ctypes.c_void_p(descriptor), False
+        )
+        ctypes.set_last_error(0)
+        try:
+            raw = self._create_file(
+                str(path),
+                _GENERIC_READ | _GENERIC_WRITE | _DELETE | _READ_CONTROL,
+                0,
+                ctypes.byref(attributes),
+                _CREATE_NEW,
+                _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
+                None,
+            )
+            handle = self._value(raw)
+        finally:
+            self._local_free(ctypes.c_void_p(descriptor))
+        try:
+            info = self.information(handle)
+            if int(info.attributes) & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY):
+                raise RepositoryAccessDenied("secret temp file is not regular")
+            self.verify_owner_only_dacl(handle)
+            return handle
+        except BaseException:
+            try:
+                self.dispose(handle)
+            finally:
+                self.close(handle)
+            raise
+
+    def write_secret(self, handle: int, data: bytes) -> None:
+        """Write and flush one newly-created secret file handle."""
+
+        if not self._set_file_pointer_ex(handle, 0, None, 0):
+            raise RepositoryAccessDenied("secret file seek failed")
+        view = memoryview(data)
+        offset = 0
+        while offset < len(view):
+            chunk = bytes(view[offset : offset + 1024 * 1024])
+            buffer = ctypes.create_string_buffer(chunk)
+            written = wintypes.DWORD()
+            if not self._write_file(
+                handle,
+                ctypes.cast(buffer, ctypes.c_void_p),
+                len(chunk),
+                ctypes.byref(written),
+                None,
+            ):
+                raise RepositoryAccessDenied("secret file write failed")
+            if written.value <= 0:
+                raise RepositoryAccessDenied("secret file write made no progress")
+            offset += int(written.value)
+        if not self._flush_file_buffers(handle):
+            raise RepositoryAccessDenied("secret file flush failed")
+
+    def read_secret(self, handle: int, maximum: int) -> bytes:
+        """Read one bounded secret from its already-opened handle."""
+
+        return self.read_bounded(handle, maximum)
+
+    def link_secret(self, source: Path, target: Path) -> None:
+        """Publish one same-directory temp file as an exclusive hard link."""
+
+        ctypes.set_last_error(0)
+        if self._create_hard_link(str(target), str(source), None):
+            return
+        error = ctypes.get_last_error()
+        if error in {_ERROR_FILE_EXISTS, _ERROR_ALREADY_EXISTS}:
+            raise FileExistsError(error, "secret target already exists")
+        raise OSError(error, "secret hard-link publication failed")
+
+    def flush_secret_directory(self, handle: int) -> None:
+        """Flush the secret namespace when the Windows filesystem supports it."""
+
+        ctypes.set_last_error(0)
+        if self._flush_file_buffers(handle):
+            return
+        error = ctypes.get_last_error()
+        if error in {_ERROR_INVALID_FUNCTION, _ERROR_NOT_SUPPORTED}:
+            return
+        raise OSError(error or 1, "secret directory flush failed")
 
     def _open_child(self, parent_handle: int, name: str, *, access: int, share: int) -> int:
         """Open one validated child with an explicit native capability policy."""

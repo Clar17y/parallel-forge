@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from forge.domain.resource import WorktreeIdentity
 
@@ -115,6 +115,19 @@ class ControlledGitPort(Protocol):
     def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit: ...
 
 
+@runtime_checkable
+class SecretStorePort(Protocol):
+    """Minimal exact-ID local secret storage exposed to the application layer."""
+
+    def create(self, secret_id: str, secret: bytes) -> None: ...
+
+    def read(self, secret_id: str) -> bytes: ...
+
+    def exists(self, secret_id: str) -> bool: ...
+
+    def delete(self, secret_id: str) -> None: ...
+
+
 # Keep the port aliases discoverable to later worktree lifecycle slices while
 # exposing only the exact managed-worktree operations above.
 ManagedWorktreePort = ControlledGitPort
@@ -136,4 +149,5 @@ __all__ = [
     "GitStatusResult",
     "ManagedWorktree",
     "ManagedWorktreePort",
+    "SecretStorePort",
 ]
