@@ -58,3 +58,15 @@ After the minimal repository change, the exact four nodes passed together:
 
 None. The disposable PostgreSQL-backed persistence suite was available and exercised the sequential,
 rollback/retry, and concurrent unique-key paths.
+
+## Final independent gates
+
+- Independent specification and quality review at
+  `9ae02f1c8cd32479fad75fa471843ef2eac33b65`: approved with no P0-P2 findings.
+- Independent concurrency and atomicity audit: no findings. The run-before-insert lock ordering,
+  winner-only event creation, rollback behavior, and duplicate claim preservation were confirmed.
+- Fresh exact-candidate operation-intent module: `19 passed in 21.96s`.
+- Fresh exact-candidate full suite: `1347 passed, 46 skipped in 321.01s`.
+- Ruff check passed; candidate-scoped Ruff format check passed (`2 files already formatted`).
+- Mypy passed (`107 source files`); range `git diff --check` passed.
+- HEAD, worktree, and index remained exact and clean, with no lingering Python or Git processes.
