@@ -893,7 +893,7 @@ def test_create_refuses_unsafe_local_filter_before_add(tmp_path: Path) -> None:
     assert not (repository / ".worktrees" / identity.worktree_name).exists()
 
 
-def test_remove_is_exact_force_idempotent_and_keeps_branch(tmp_path: Path) -> None:
+def test_remove_is_exact_quarantine_idempotent_and_keeps_branch(tmp_path: Path) -> None:
     repository, base_sha = _source_repository(tmp_path)
     identity = WorktreeIdentity.for_run(
         PROJECT_ID, RUN_ID, branch="feature/new", database_enabled=False
@@ -901,6 +901,7 @@ def test_remove_is_exact_force_idempotent_and_keeps_branch(tmp_path: Path) -> No
     runner = RecordingRunner(repository)
     controlled = _controlled(repository, tmp_path / "state", runner)
     handle = controlled.create_worktree(identity, base_sha)
+    _rename_registration(handle.path, "non-identity-registration")
 
     controlled.remove_worktree(handle)
     controlled.remove_worktree(handle)
@@ -923,9 +924,472 @@ def test_remove_is_exact_force_idempotent_and_keeps_branch(tmp_path: Path) -> No
         ).returncode
         == 0
     )
-    remove_calls = [argv for argv, _cwd, _environment in runner.calls if argv[-4:-3] == ("remove",)]
-    assert remove_calls
-    assert remove_calls[0][-4:] == ("remove", "--force", "--", str(handle.path))
+    assert not any(
+        "worktree" in argv and ("remove" in argv or "prune" in argv)
+        for argv, _cwd, _environment in runner.calls
+    )
+    metadata_root = repository / ".git" / "worktrees"
+    assert not metadata_root.exists() or not any(metadata_root.iterdir())
+    registration_quarantine = repository / ".git" / ".forge-worktree-quarantine"
+    assert not registration_quarantine.exists() or not any(registration_quarantine.iterdir())
+    target_quarantine = repository / ".worktrees" / ".forge-quarantine"
+    assert not target_quarantine.exists() or not any(target_quarantine.iterdir())
+
+
+def test_remove_stale_registration_is_exact_and_preserves_unrelated_metadata(
+    tmp_path: Path,
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    metadata = _registration_for(handle.path)
+    unrelated_target = repository / ".worktrees" / "unrelated-worktree" / ".git"
+    unrelated = _add_registration_candidate(
+        repository / ".git" / "worktrees", "unrelated-registration", unrelated_target
+    )
+    shutil.rmtree(handle.path)
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    controlled.remove_worktree(handle)
+
+    assert not metadata.exists()
+    assert unrelated.is_dir()
+    assert not any(
+        "worktree" in argv and ("remove" in argv or "prune" in argv)
+        for argv, _cwd, _environment in runner.calls
+    )
+    assert (
+        subprocess.run(
+            [
+                str(TRUSTED_GIT),
+                "-C",
+                str(repository),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{identity.branch}",
+            ],
+            check=False,
+            capture_output=True,
+            shell=False,
+        ).returncode
+        == 0
+    )
+
+
+def test_remove_fully_absent_is_idempotent_without_git_or_metadata_mutation(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    metadata = _registration_for(handle.path)
+    shutil.rmtree(handle.path)
+    shutil.rmtree(metadata)
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    controlled.remove_worktree(handle)
+    controlled.remove_worktree(handle)
+
+    assert not handle.path.exists()
+    assert not metadata.exists()
+    metadata_root = repository / ".git" / "worktrees"
+    assert not metadata_root.exists() or not any(metadata_root.iterdir())
+    registration_quarantine = repository / ".git" / ".forge-worktree-quarantine"
+    assert not registration_quarantine.exists() or not any(registration_quarantine.iterdir())
+    target_quarantine = repository / ".worktrees" / ".forge-quarantine"
+    assert not target_quarantine.exists() or not any(target_quarantine.iterdir())
+    assert not any(
+        "worktree" in argv and ("remove" in argv or "prune" in argv)
+        for argv, _cwd, _environment in runner.calls
+    )
+
+
+def test_remove_live_validation_uses_target_git_only_before_quarantine_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    runner = RecordingRunner(repository)
+    runner.bound = False
+    runner.target_git_after_bind = False
+    target = handle.path.resolve()
+    original_run = runner.run_argv
+
+    def run_argv(
+        argv: tuple[str, ...] | list[str],
+        *,
+        cwd: str,
+        environment: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> ProcessResult:
+        if runner.bound and Path(cwd).resolve() == target:
+            runner.target_git_after_bind = True
+        return original_run(
+            argv,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+
+    monkeypatch.setattr(runner, "run_argv", run_argv)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+    original_bind = controlled._repository._bind_worktree_quarantine
+
+    def bind(access: object) -> None:
+        original_bind(access)  # type: ignore[arg-type]
+        runner.bound = True
+
+    monkeypatch.setattr(controlled._repository, "_bind_worktree_quarantine", bind)
+
+    controlled.remove_worktree(handle)
+
+    target_git_calls = [
+        (argv, cwd) for argv, cwd, _environment in runner.calls if Path(cwd).resolve() == target
+    ]
+    assert target_git_calls
+    assert runner.target_git_after_bind is False
+
+
+def test_remove_refuses_missing_branch_before_any_quarantine_mutation(tmp_path: Path) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    _git(repository, "update-ref", "-d", f"refs/heads/{identity.branch}")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+
+
+def test_remove_refuses_unsafe_local_filter_without_running_or_mutating_target(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    marker = tmp_path / "filter-marker"
+    command = f"\"{sys.executable}\" -c \"open(r'{marker}', 'w').write('executed')\""
+    _git(repository, "config", "filter.evil.clean", command)
+    registration = _registration_for(handle.path)
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert not marker.exists()
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+
+
+def test_remove_refuses_malformed_registration_without_mutation(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    (registration / "gitdir").write_bytes(b"/missing/target\n/second\n")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+
+
+def test_remove_refuses_duplicate_registration_proof_without_mutation(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    duplicate = registration.with_name("duplicate-registration")
+    shutil.copytree(registration, duplicate)
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+    assert duplicate.is_dir()
+
+
+def test_remove_refuses_linked_registration_without_mutation(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    moved = registration.with_name("registration-target")
+    registration.rename(moved)
+    try:
+        registration.symlink_to(moved, target_is_directory=True)
+    except OSError, NotImplementedError:
+        pytest.skip("symlinks are not available on this host")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert moved.is_dir()
+
+
+def test_remove_refuses_linked_target_without_mutation(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    outside = tmp_path / "outside-target"
+    outside.mkdir()
+    (outside / "outside-marker").write_text("untouched\n", encoding="utf-8")
+    registration = _registration_for(handle.path)
+    shutil.rmtree(handle.path)
+    try:
+        handle.path.symlink_to(outside, target_is_directory=True)
+    except OSError, NotImplementedError:
+        pytest.skip("symlinks are not available on this host")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_symlink()
+    assert (outside / "outside-marker").read_text(encoding="utf-8") == "untouched\n"
+    assert registration.is_dir()
+
+
+@pytest.mark.parametrize("collision", ("target", "registration"))
+def test_remove_refuses_exact_quarantine_collision_without_mutation(
+    tmp_path: Path, collision: str
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    if collision == "target":
+        destination = repository / ".worktrees" / ".forge-quarantine" / handle.path.name
+    else:
+        destination = repository / ".git" / ".forge-worktree-quarantine" / registration.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.mkdir()
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+    assert destination.is_dir()
+
+
+def test_remove_refuses_target_matched_registration_quarantine_evidence(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    evidence = repository / ".git" / ".forge-worktree-quarantine" / "retained-proof"
+    evidence.mkdir(parents=True)
+    (evidence / "gitdir").write_text(f"{handle.path / '.git'}\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+    assert evidence.is_dir()
+
+
+def test_remove_refuses_duplicate_registration_quarantine_proofs(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    quarantine_root = repository / ".git" / ".forge-worktree-quarantine"
+    for name in ("retained-one", "retained-two"):
+        evidence = quarantine_root / name
+        evidence.mkdir(parents=True)
+        (evidence / "gitdir").write_text(f"{handle.path / '.git'}\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+    assert all((quarantine_root / name).is_dir() for name in ("retained-one", "retained-two"))
+
+
+def test_remove_refuses_malformed_registration_quarantine_evidence(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    malformed = repository / ".git" / ".forge-worktree-quarantine" / "malformed-proof"
+    malformed.mkdir(parents=True)
+    (malformed / "unexpected").write_text("no gitdir proof\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert registration.is_dir()
+    assert malformed.is_dir()
+
+
+def test_remove_leaves_unrelated_well_formed_registration_quarantine_evidence(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    unrelated_target = repository / ".worktrees" / "foreign-worktree" / ".git"
+    registration = _registration_for(handle.path)
+    root = CanonicalRoot(repository)
+    with root._prepare_worktree_quarantine(handle.path.name, registration.name):
+        pass
+    quarantine_root = repository / ".git" / ".forge-worktree-quarantine"
+    evidence = _add_registration_candidate(
+        quarantine_root,
+        "foreign-proof",
+        unrelated_target,
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+
+    controlled.remove_worktree(handle)
+
+    assert not handle.path.exists()
+    assert evidence.is_dir()
+    assert (evidence / "gitdir").is_file()
+
+
+def test_remove_refuses_linked_registration_quarantine_evidence(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    outside = tmp_path / "outside-proof"
+    outside.mkdir()
+    (outside / "gitdir").write_text(f"{tmp_path / 'foreign' / '.git'}\n", encoding="utf-8")
+    evidence = repository / ".git" / ".forge-worktree-quarantine" / "linked-proof"
+    try:
+        evidence.symlink_to(outside, target_is_directory=True)
+    except OSError, NotImplementedError:
+        pytest.skip("symlinks are not available on this host")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert handle.path.is_dir()
+    assert evidence.is_symlink()
+
+
+@pytest.mark.parametrize(
+    "failure_stage",
+    (
+        "after-target-move",
+        "mid-target-deletion",
+        "after-target-deletion",
+        "after-registration-move",
+        "mid-registration-deletion",
+        "final-verification",
+    ),
+)
+def test_remove_failure_states_preserve_exact_evidence_and_retry_truthfully(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    target_quarantine = repository / ".worktrees" / ".forge-quarantine" / handle.path.name
+    registration_quarantine = repository / ".git" / ".forge-worktree-quarantine" / registration.name
+    controlled = _controlled(repository, tmp_path / "state")
+    root = controlled._repository
+
+    if failure_stage == "after-target-move":
+        original = root._quarantine_target
+
+        def fail_after_target_move(access: object) -> None:
+            original(access)  # type: ignore[arg-type]
+            raise RuntimeError("injected target move failure")
+
+        monkeypatch.setattr(root, "_quarantine_target", fail_after_target_move)
+    elif failure_stage == "mid-target-deletion":
+        original = root._delete_target_quarantine
+
+        def fail_mid_target_delete(access: object) -> None:
+            target_quarantine.joinpath("injected-child").write_text("retained\n", encoding="utf-8")
+            raise RuntimeError("injected target delete failure")
+
+        monkeypatch.setattr(root, "_delete_target_quarantine", fail_mid_target_delete)
+    elif failure_stage == "after-target-deletion":
+        original = root._quarantine_registration
+
+        def fail_before_registration_move(access: object) -> None:
+            raise RuntimeError("injected registration move failure")
+
+        monkeypatch.setattr(root, "_quarantine_registration", fail_before_registration_move)
+    elif failure_stage == "after-registration-move":
+        original = root._delete_registration_quarantine
+
+        def fail_before_registration_delete(access: object) -> None:
+            raise RuntimeError("injected registration delete failure")
+
+        monkeypatch.setattr(
+            root, "_delete_registration_quarantine", fail_before_registration_delete
+        )
+    elif failure_stage == "mid-registration-deletion":
+        original = root._delete_registration_quarantine
+
+        def fail_mid_registration_delete(access: object) -> None:
+            registration_quarantine.joinpath("injected-child").write_text(
+                "retained\n", encoding="utf-8"
+            )
+            raise RuntimeError("injected registration delete failure")
+
+        monkeypatch.setattr(root, "_delete_registration_quarantine", fail_mid_registration_delete)
+    else:
+        original = controlled._verify_removal_absent
+
+        def fail_final_verification(
+            exact_identity: WorktreeIdentity,
+            exact_path: Path,
+            basename: str | None,
+        ) -> None:
+            original(exact_identity, exact_path, basename)
+            raise RuntimeError("injected final verification failure")
+
+        monkeypatch.setattr(controlled, "_verify_removal_absent", fail_final_verification)
+
+    with pytest.raises(ControlledGitError):
+        controlled.remove_worktree(handle)
+
+    assert (
+        subprocess.run(
+            [
+                str(TRUSTED_GIT),
+                "-C",
+                str(repository),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{identity.branch}",
+            ],
+            check=False,
+            capture_output=True,
+            shell=False,
+        ).returncode
+        == 0
+    )
+    if failure_stage in {"after-target-move", "mid-target-deletion"}:
+        assert not handle.path.exists()
+        assert target_quarantine.is_dir()
+        assert registration.is_dir()
+        assert not registration_quarantine.exists()
+        with pytest.raises(ControlledGitError):
+            controlled.remove_worktree(handle)
+    elif failure_stage == "after-target-deletion":
+        assert not handle.path.exists()
+        assert not target_quarantine.exists()
+        assert registration.is_dir()
+        assert not registration_quarantine.exists()
+        monkeypatch.setattr(root, "_quarantine_registration", original)
+        controlled.remove_worktree(handle)
+        assert not registration.exists()
+    elif failure_stage in {"after-registration-move", "mid-registration-deletion"}:
+        assert not handle.path.exists()
+        assert not target_quarantine.exists()
+        assert not registration.exists()
+        assert registration_quarantine.is_dir()
+        with pytest.raises(ControlledGitError):
+            controlled.remove_worktree(handle)
+    else:
+        assert not handle.path.exists()
+        assert not target_quarantine.exists()
+        assert not registration.exists()
+        assert not registration_quarantine.exists()
+        monkeypatch.setattr(controlled, "_verify_removal_absent", original)
+        controlled.remove_worktree(handle)
 
 
 def test_remove_refuses_unregistered_or_wrong_branch_without_deletion(tmp_path: Path) -> None:

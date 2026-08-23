@@ -8,7 +8,7 @@ import stat
 from collections.abc import Sequence
 from pathlib import Path
 
-from forge.application.ports.repository import ProcessResult
+from forge.application.ports.repository import ProcessResult, RepositoryAccessDenied
 from forge.application.ports.worktrees import GitDiff, GitStatus, ManagedWorktree
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.paths import CanonicalRoot
@@ -134,29 +134,146 @@ class ControlledGit:
     def remove_worktree(self, worktree: ManagedWorktree) -> None:
         """Remove one exact registered worktree and retain its branch."""
 
-        identity, expected_path = self._validate_handle_shape(worktree)
-        metadata = self._registration_metadata(identity)
-        path_exists = os.path.lexists(expected_path)
-        if not path_exists:
-            if metadata is None:
-                return
+        try:
+            identity, expected_path = self._validate_handle_shape(worktree)
+            metadata = self._registration_metadata(identity)
+            target_exists = os.path.lexists(expected_path)
+            if target_exists:
+                if metadata is None:
+                    raise ControlledGitError()
+                self._remove_live_worktree(
+                    worktree,
+                    identity,
+                    expected_path,
+                    metadata.name,
+                )
+            elif metadata is not None:
+                self._remove_stale_registration(
+                    identity,
+                    expected_path,
+                    metadata.name,
+                )
+            else:
+                self._remove_absent_worktree(identity, expected_path)
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def _remove_live_worktree(
+        self,
+        worktree: ManagedWorktree,
+        identity: WorktreeIdentity,
+        expected_path: Path,
+        preflight_basename: str,
+    ) -> None:
+        """Validate a live target, then quarantine it without reopening its path."""
+
+        with self._repository._prepare_worktree_quarantine(
+            identity.worktree_name, preflight_basename
+        ) as access:
+            metadata = self._registration_metadata(identity)
+            if metadata is None or metadata.name != preflight_basename:
+                raise ControlledGitError()
+            if self._registration_quarantine_metadata(identity) is not None:
+                raise ControlledGitError()
+            _reject_links(expected_path)
+            if not expected_path.is_dir():
+                raise ControlledGitError()
+            self._scan_local_config(self._repository.path)
+            self._scan_local_config(expected_path)
+            self._verify_branch_format(identity.branch)
+            self._verify_registration(expected_path, identity)
+            self._verify_current_branch(worktree)
+            self._verify_branch_exists(identity.branch)
+
+            self._repository._bind_worktree_quarantine(access)
+            self._repository._quarantine_target(access)
+            self._repository._delete_target_quarantine(access)
+            self._repository._quarantine_registration(access)
+            self._repository._delete_registration_quarantine(access)
+            self._repository._verify_worktree_removal_state(access)
+            self._verify_removal_absent(
+                identity,
+                expected_path,
+                preflight_basename,
+            )
+            self._verify_branch_exists(identity.branch)
+
+    def _remove_stale_registration(
+        self,
+        identity: WorktreeIdentity,
+        expected_path: Path,
+        preflight_basename: str,
+    ) -> None:
+        """Remove one exact stale registration while its target stays absent."""
+
+        with self._repository._open_stale_registration_quarantine(
+            identity.worktree_name, preflight_basename
+        ) as access:
+            metadata = self._registration_metadata(identity)
+            if metadata is None or metadata.name != preflight_basename:
+                raise ControlledGitError()
+            if self._registration_quarantine_metadata(identity) is not None:
+                raise ControlledGitError()
             self._verify_metadata_target(metadata, expected_path / ".git")
-            self.prune()
+            self._scan_local_config(self._repository.path)
+            self._verify_branch_format(identity.branch)
+            self._verify_branch_exists(identity.branch)
+
+            self._repository._quarantine_registration(access)
+            self._repository._delete_registration_quarantine(access)
+            self._verify_removal_absent(
+                identity,
+                expected_path,
+                preflight_basename,
+            )
+            self._verify_branch_exists(identity.branch)
+
+    def _remove_absent_worktree(
+        self,
+        identity: WorktreeIdentity,
+        expected_path: Path,
+    ) -> None:
+        """Prove a fully absent handle is safe to treat as an idempotent success."""
+
+        with self._repository._inspect_absent_worktree_removal(identity.worktree_name) as access:
+            del access
             if self._registration_metadata(identity) is not None:
                 raise ControlledGitError()
-            return
+            if self._registration_quarantine_metadata(identity) is not None:
+                raise ControlledGitError()
+            self._scan_local_config(self._repository.path)
+            self._verify_branch_format(identity.branch)
+            self._verify_branch_exists(identity.branch)
+            self._verify_removal_absent(identity, expected_path, None)
+            self._verify_branch_exists(identity.branch)
 
-        _reject_links(expected_path)
-        if not expected_path.is_dir() or metadata is None:
+    def _verify_removal_absent(
+        self,
+        identity: WorktreeIdentity,
+        expected_path: Path,
+        registration_basename: str | None,
+    ) -> None:
+        """Verify exact lifecycle evidence has disappeared without guessing paths."""
+
+        if os.path.lexists(expected_path):
             raise ControlledGitError()
-        self._verify_registration(expected_path, identity)
-        self._verify_current_branch(worktree)
-        self._scan_local_config(expected_path)
-        self._run(
-            self._repository.path,
-            ("worktree", "remove", "--force", "--", str(expected_path)),
-        )
-        if os.path.lexists(expected_path) or self._registration_metadata(identity) is not None:
+        if self._registration_metadata(identity) is not None:
+            raise ControlledGitError()
+        target_quarantine = self._managed_root / ".forge-quarantine" / identity.worktree_name
+        if os.path.lexists(target_quarantine):
+            raise ControlledGitError()
+        if registration_basename is not None:
+            registration_quarantine = (
+                self._repository.path
+                / ".git"
+                / ".forge-worktree-quarantine"
+                / registration_basename
+            )
+            if os.path.lexists(registration_quarantine):
+                raise ControlledGitError()
+        if self._registration_quarantine_metadata(identity) is not None:
             raise ControlledGitError()
 
     def prune(self) -> None:
@@ -260,6 +377,7 @@ class ControlledGit:
             raise ControlledGitError() from None
         if _same_branch(identity.branch, self._default_branch):
             raise ControlledGitError()
+        _validate_worktree_component(identity.worktree_name)
         expected = self._managed_root / identity.worktree_name
         if _path_key(worktree.path) != _path_key(expected):
             raise ControlledGitError()
@@ -450,6 +568,10 @@ class ControlledGit:
         )
         return _return_code(result) == 0
 
+    def _verify_branch_exists(self, branch: str) -> None:
+        if not self._branch_exists_at(self._repository.path, branch):
+            raise ControlledGitError()
+
     def _registration_metadata(self, identity: WorktreeIdentity) -> Path | None:
         git_directory = self._repository.path / ".git"
         if os.path.lexists(git_directory):
@@ -467,6 +589,45 @@ class ControlledGit:
         matches: list[Path] = []
         try:
             for index, metadata in enumerate(metadata_root.iterdir()):
+                if index >= _MAX_METADATA_ENTRIES:
+                    raise ControlledGitError()
+                _reject_links(metadata)
+                metadata_stat = os.stat(metadata, follow_symlinks=False)
+                if not stat.S_ISDIR(metadata_stat.st_mode):
+                    raise ControlledGitError()
+                target = _read_metadata_target(metadata)
+                if _path_key(target) != _path_key(expected_target):
+                    continue
+                matches.append(_canonical_no_links(metadata))
+                if len(matches) > 1:
+                    raise ControlledGitError()
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, ValueError:
+            raise ControlledGitError() from None
+        return matches[0] if matches else None
+
+    def _registration_quarantine_metadata(self, identity: WorktreeIdentity) -> Path | None:
+        """Find exact target proof in registration quarantine, leaving foreign entries alone."""
+
+        git_directory = self._repository.path / ".git"
+        if not os.path.lexists(git_directory):
+            return None
+        _reject_links(git_directory)
+        if not git_directory.is_dir():
+            raise ControlledGitError()
+        quarantine_root = git_directory / ".forge-worktree-quarantine"
+        if not os.path.lexists(quarantine_root):
+            return None
+        _reject_links(quarantine_root)
+        if not quarantine_root.is_dir():
+            raise ControlledGitError()
+
+        expected_target = self._managed_root / identity.worktree_name / ".git"
+        expected_target = _canonical_no_links_allow_missing(expected_target)
+        matches: list[Path] = []
+        try:
+            for index, metadata in enumerate(quarantine_root.iterdir()):
                 if index >= _MAX_METADATA_ENTRIES:
                     raise ControlledGitError()
                 _reject_links(metadata)
@@ -684,6 +845,18 @@ def _same_branch(first: str, second: str) -> bool:
 
 def _validate_sha(value: object) -> None:
     if not isinstance(value, str) or _SHA.fullmatch(value) is None:
+        raise ControlledGitError()
+
+
+def _validate_worktree_component(value: object) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or any(character in value for character in ("/", "\\", "\x00", ":"))
+        or len(os.fsencode(value)) > 255
+        or (os.name == "nt" and value.rstrip(" .") != value)
+    ):
         raise ControlledGitError()
 
 
