@@ -77,6 +77,72 @@ class ControlledGit:
         _prepare_empty_file(self._global_attributes_path)
         self._runner = runner or ProcessRunner(repository)
 
+    @property
+    def repository_path(self) -> Path:
+        """Return the one canonical repository root owned by this adapter."""
+
+        return self._repository.path
+
+    def expected_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
+        """Derive one exact managed handle without inspecting or mutating Git."""
+
+        try:
+            _validate_identity(identity)
+            _validate_sha(base_sha)
+            if _same_branch(identity.branch, self._default_branch):
+                raise ControlledGitError()
+            return ManagedWorktree(
+                identity=identity,
+                path=self._managed_root / identity.worktree_name,
+                base_sha=base_sha,
+            )
+        except ControlledGitError:
+            raise
+        except TypeError, ValueError, OSError, RuntimeError:
+            raise ControlledGitError() from None
+
+    def inspect_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree | None:
+        """Inspect one generated worktree and never repair or mutate it."""
+
+        try:
+            expected = self.expected_worktree(identity, base_sha)
+            self._scan_local_config(self._repository.path)
+            self._verify_branch_format(identity.branch)
+            self._verify_managed_root_ignored()
+            if os.path.lexists(self._managed_root):
+                _reject_links(self._managed_root)
+                if not self._managed_root.is_dir():
+                    raise ControlledGitError()
+
+            target_exists = os.path.lexists(expected.path)
+            metadata = self._registration_metadata(identity)
+            quarantine_metadata = self._registration_quarantine_metadata(identity)
+            target_quarantine = self._managed_root / ".forge-quarantine" / identity.worktree_name
+            if os.path.lexists(target_quarantine):
+                _reject_links(target_quarantine)
+                raise ControlledGitError()
+
+            if target_exists:
+                if metadata is None or quarantine_metadata is not None:
+                    raise ControlledGitError()
+                _reject_locked_registration(metadata)
+                self._scan_local_config(expected.path)
+                self._validate_handle(expected)
+                self._head_sha(expected)
+                if not self._is_ancestor(expected):
+                    raise ControlledGitError()
+                return expected
+
+            if metadata is not None or quarantine_metadata is not None:
+                raise ControlledGitError()
+            if self._branch_exists_at(self._repository.path, identity.branch):
+                raise ControlledGitError()
+            return None
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
     def create_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
         """Create and verify one exact managed worktree without cleanup guesses."""
 
@@ -969,6 +1035,43 @@ def _same_branch(first: str, second: str) -> bool:
 def _validate_sha(value: object) -> None:
     if not isinstance(value, str) or _SHA.fullmatch(value) is None:
         raise ControlledGitError()
+
+
+def _validate_identity(identity: object) -> None:
+    if not isinstance(identity, WorktreeIdentity):
+        raise ControlledGitError()
+    try:
+        if identity.run_id is None:
+            expected = WorktreeIdentity.for_developer(
+                identity.project_id,
+                identity.branch,
+                identity.database_name is not None,
+            )
+        else:
+            expected = WorktreeIdentity.for_run(
+                identity.project_id,
+                identity.run_id,
+                identity.branch,
+                identity.database_name is not None,
+            )
+    except TypeError, ValueError:
+        raise ControlledGitError() from None
+    if expected != identity:
+        raise ControlledGitError()
+
+
+def _reject_locked_registration(metadata: Path) -> None:
+    locked = metadata / "locked"
+    if not os.path.lexists(locked):
+        return
+    try:
+        _reject_links(locked)
+        locked_stat = os.stat(locked, follow_symlinks=False)
+    except OSError, RuntimeError, ValueError:
+        raise ControlledGitError() from None
+    if not stat.S_ISREG(locked_stat.st_mode):
+        raise ControlledGitError()
+    raise ControlledGitError()
 
 
 def _validate_worktree_component(value: object) -> None:

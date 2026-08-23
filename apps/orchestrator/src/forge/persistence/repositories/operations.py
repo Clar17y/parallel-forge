@@ -215,6 +215,21 @@ class PostgresOperationRepository:
                 raise OperationNotFound(f"operation intent {intent_id} was not found")
             return _intent_from_record(record)
 
+    async def get_by_idempotency_key(self, idempotency_key: str) -> OperationIntent | None:
+        """Load one exact intent by its immutable idempotency key without locking."""
+
+        if not isinstance(idempotency_key, str) or not idempotency_key:
+            raise ValueError("operation idempotency key is invalid")
+        async with self._session_factory() as session:
+            record = (
+                await session.execute(
+                    select(OperationIntentRecord).where(
+                        OperationIntentRecord.idempotency_key == idempotency_key
+                    )
+                )
+            ).scalar_one_or_none()
+            return None if record is None else _intent_from_record(record)
+
     async def complete(
         self, intent_id: UUID, outcome: OperationOutcome, *, owner_id: str | None = None
     ) -> OperationIntent:

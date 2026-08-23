@@ -9,8 +9,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
+from uuid import UUID
 
-from forge.domain.policy import DatabaseProvisioningPolicy
+from forge.domain.operation import OperationIntent
+from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity, validate_resource_shape
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -118,6 +120,15 @@ class GitCommit:
 class ControlledGitPort(Protocol):
     """Exact managed-worktree operations exposed to the application layer."""
 
+    @property
+    def repository_path(self) -> Path: ...
+
+    def expected_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree: ...
+
+    def inspect_worktree(
+        self, identity: WorktreeIdentity, base_sha: str
+    ) -> ManagedWorktree | None: ...
+
     def create_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree: ...
 
     def remove_worktree(self, worktree: ManagedWorktree) -> None: ...
@@ -202,6 +213,19 @@ class DatabaseBinding:
 class DatabaseProvisionerPort(Protocol):
     """Isolated database lifecycle contract consumed by later orchestration."""
 
+    def validate_binding(
+        self, identity: WorktreeIdentity, binding: DatabaseBinding
+    ) -> DatabaseBinding: ...
+
+    async def verify_active(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> UUID: ...
+
     async def provision(
         self,
         identity: WorktreeIdentity,
@@ -218,6 +242,14 @@ class DatabaseProvisionerPort(Protocol):
         *,
         policy_version: int,
     ) -> DatabaseBinding: ...
+
+
+class WorktreeProvisionerPort(Protocol):
+    """Durable persisted-run worktree preparation and inspection recovery."""
+
+    async def prepare(self, run_id: UUID, policy: ProjectPolicy) -> ManagedWorktree: ...
+
+    async def reconcile(self, intent_id: UUID, policy: ProjectPolicy) -> OperationIntent: ...
 
 
 # Keep the port aliases discoverable to later worktree lifecycle slices while
@@ -245,4 +277,5 @@ __all__ = [
     "ManagedWorktree",
     "ManagedWorktreePort",
     "SecretStorePort",
+    "WorktreeProvisionerPort",
 ]

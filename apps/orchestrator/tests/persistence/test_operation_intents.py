@@ -91,6 +91,23 @@ async def test_duplicate_operation_begin_returns_same_intent_and_conflicts_on_mi
 
 
 @pytest.mark.integration
+async def test_operation_intent_can_be_loaded_by_exact_idempotency_key(
+    operation_repository, persisted_run
+) -> None:
+    request = _request(persisted_run.id)
+    request["idempotency_key"] = "worktree:v1:exact-lookup"
+    stored = await operation_repository.begin(**request)
+
+    loaded = await operation_repository.get_by_idempotency_key(request["idempotency_key"])
+    missing = await operation_repository.get_by_idempotency_key("worktree:v1:missing")
+
+    assert loaded == stored
+    assert missing is None
+    with pytest.raises(ValueError, match="idempotency key is invalid"):
+        await operation_repository.get_by_idempotency_key("")
+
+
+@pytest.mark.integration
 async def test_new_operation_begin_appends_one_safe_causal_event(
     operation_repository, persisted_run, session_factory, uow, monkeypatch
 ) -> None:

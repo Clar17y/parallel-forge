@@ -9,6 +9,7 @@ import secrets
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -265,6 +266,9 @@ class _MemoryOperationRepository:
     async def get(self, intent_id: UUID) -> OperationIntent:
         return self.by_id[intent_id]
 
+    async def get_by_idempotency_key(self, idempotency_key: str) -> OperationIntent | None:
+        return self.by_key.get(idempotency_key)
+
     async def claim_for_recovery(
         self, intent_id: UUID, *, owner_id: str, lease_seconds: float
     ) -> OperationExecutionClaim:
@@ -443,6 +447,7 @@ def _provisioner(
     password_source: _SpyPasswordSource | None = None,
     connection: _FakeConnection | None = None,
     executor: _ImmediateExecutor | None = None,
+    operation_repository: Any | None = None,
     secret_store: Any | None = None,
 ) -> tuple[
     DatabaseProvisioner, _SpyResolver, _SpyPasswordSource, _FakeConnection, _ImmediateExecutor
@@ -458,6 +463,7 @@ def _provisioner(
     return (
         DatabaseProvisioner(
             operation_executor=operation_executor,
+            operation_repository=operation_repository or _MemoryOperationRepository(),
             admin_secret_resolver=resolved,
             secret_store=store,
             password_source=source,
@@ -468,6 +474,136 @@ def _provisioner(
         database,
         operation_executor,
     )
+
+
+@pytest.mark.asyncio
+async def test_verify_active_requires_exact_succeeded_intent_and_only_inspects(
+    tmp_path: Path,
+) -> None:
+    from forge.application.services.recovery import OperationExecutor
+
+    events: list[str] = []
+    identity = _identity()
+    policy = _enabled_policy()
+    repository = _MemoryOperationRepository()
+    provisioner, _resolver, _source, connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=policy,
+        events=events,
+        executor=cast(Any, OperationExecutor(repository)),
+        operation_repository=repository,
+    )
+    binding = await provisioner.provision(identity, policy, policy_version=7)
+    intent = next(iter(repository.by_key.values()))
+    create_statements = tuple(
+        statement
+        for statement, _parameters in connection.statements
+        if statement.startswith("CREATE ")
+    )
+
+    verified_id = await provisioner.verify_active(
+        identity,
+        policy,
+        binding,
+        policy_version=7,
+    )
+
+    assert verified_id == intent.id
+    assert tuple(repository.by_key) == (intent.idempotency_key,)
+    assert (
+        tuple(
+            statement
+            for statement, _parameters in connection.statements
+            if statement.startswith("CREATE ")
+        )
+        == create_statements
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_active_rejects_non_active_binding_before_live_inspection(
+    tmp_path: Path,
+) -> None:
+    from forge.application.services.recovery import OperationExecutor
+
+    events: list[str] = []
+    identity = _identity()
+    policy = _enabled_policy()
+    repository = _MemoryOperationRepository()
+    provisioner, _resolver, _source, connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=policy,
+        events=events,
+        executor=cast(Any, OperationExecutor(repository)),
+        operation_repository=repository,
+    )
+    binding = await provisioner.provision(identity, policy, policy_version=7)
+    failed_binding = replace(binding, state=ResourceState.FAILED)
+    statements_before = len(connection.statements)
+
+    with pytest.raises(
+        DatabaseReconciliationRequired,
+        match="database resource requires reconciliation",
+    ):
+        await provisioner.verify_active(
+            identity,
+            policy,
+            failed_binding,
+            policy_version=7,
+        )
+
+    assert len(connection.statements) == statements_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ("request_schema_version", "outcome_schema_version"))
+async def test_verify_active_rejects_mismatched_schema_before_live_inspection(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    from forge.application.services.recovery import OperationExecutor
+
+    events: list[str] = []
+    identity = _identity()
+    policy = _enabled_policy()
+    repository = _MemoryOperationRepository()
+    provisioner, _resolver, _source, connection, _executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=policy,
+        events=events,
+        executor=cast(Any, OperationExecutor(repository)),
+        operation_repository=repository,
+    )
+    binding = await provisioner.provision(identity, policy, policy_version=7)
+    intent = next(iter(repository.by_key.values()))
+    values = {
+        "id": intent.id,
+        "run_id": intent.run_id,
+        "kind": intent.kind,
+        "idempotency_key": intent.idempotency_key,
+        "request_digest": intent.request_digest,
+        "request_payload": intent.request_payload,
+        "request_schema_version": intent.request_schema_version,
+        "status": intent.status,
+        "remote_resource_id": intent.remote_resource_id,
+        "outcome": intent.outcome,
+        "outcome_schema_version": intent.outcome_schema_version,
+    }
+    values[field] = 2
+    repository.by_key[intent.idempotency_key] = cast(Any, SimpleNamespace(**values))
+    statements_before = len(connection.statements)
+
+    with pytest.raises(
+        DatabaseReconciliationRequired,
+        match="database resource requires reconciliation",
+    ) as captured:
+        await provisioner.verify_active(identity, policy, binding, policy_version=7)
+
+    assert captured.value.__cause__ is None
+    assert len(connection.statements) == statements_before
 
 
 @pytest.mark.asyncio
@@ -1286,6 +1422,7 @@ async def test_real_postgres_scoped_connectivity_owner_and_session_termination(
 
     provisioner = DatabaseProvisioner(
         operation_executor=OperationExecutor(repository),
+        operation_repository=repository,
         admin_secret_resolver=resolver,
         secret_store=store,
         password_source=secrets,

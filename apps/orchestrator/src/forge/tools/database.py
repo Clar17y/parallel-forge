@@ -10,10 +10,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
+from uuid import UUID
 
 from sqlalchemy.engine import URL, make_url
 
-from forge.application.ports.operations import OperationAdapter
+from forge.application.ports.operations import OperationAdapter, OperationRepository
 from forge.application.ports.worktrees import (
     AdminSecretResolverPort,
     DatabaseBinding,
@@ -429,16 +430,127 @@ class DatabaseProvisioner(DatabaseProvisionerPort):
         self,
         *,
         operation_executor: _OperationExecutor,
+        operation_repository: OperationRepository,
         admin_secret_resolver: AdminSecretResolverPort,
         secret_store: SecretStorePort,
         password_source: _TokenBytesSource,
         connection_factory: _ConnectionFactory,
     ) -> None:
         self._operation_executor = operation_executor
+        self._operation_repository = operation_repository
         self._resolver = admin_secret_resolver
         self._secret_store = secret_store
         self._password_source = password_source
         self._connection_factory = connection_factory
+
+    def validate_binding(
+        self, identity: WorktreeIdentity, binding: DatabaseBinding
+    ) -> DatabaseBinding:
+        """Validate one exact persisted identity without contacting any dependency."""
+
+        try:
+            expected = _validate_identity(identity, enabled=True)
+            if not isinstance(binding, DatabaseBinding):
+                raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+            if binding.state not in {
+                ResourceState.PROVISIONING,
+                ResourceState.FAILED,
+                ResourceState.ACTIVE,
+            }:
+                raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+            expected_secret = _secret_id(expected)
+            for actual, wanted in (
+                (binding.database_name, expected.database_name),
+                (binding.database_role, expected.database_role),
+                (binding.secret_id, expected_secret),
+            ):
+                if actual is not None and actual != wanted:
+                    raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+            if binding.state is ResourceState.ACTIVE and (
+                binding.database_name != expected.database_name
+                or binding.database_role != expected.database_role
+                or binding.secret_id != expected_secret
+            ):
+                raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+            return binding
+        except DatabaseProvisionerError:
+            raise
+        except Exception:  # noqa: BLE001 - binding failures expose no adapter diagnostics
+            raise DatabaseIntegrityError(_INTEGRITY_ERROR) from None
+
+    async def verify_active(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> UUID:
+        """Prove one active binding's durable intent and live database state."""
+
+        _validate_policy_version(policy_version)
+        _validate_policy(policy)
+        if not policy.enabled:
+            raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+        expected = _validate_identity(identity, enabled=True)
+        self.validate_binding(expected, resource)
+        if resource.state is not ResourceState.ACTIVE:
+            raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        run_id = expected.run_id
+        if run_id is None:
+            raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        _validate_secret_reference(_require_reference(policy))
+        secret_id = _secret_id(expected)
+        request = _request(expected, policy_version, _PROVISION_KIND, ResourceState.ACTIVE)
+        failure: DatabaseProvisionerError | None = None
+        try:
+            intent = await self._operation_repository.get_by_idempotency_key(
+                request.idempotency_key
+            )
+            if intent is None:
+                raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+            if (
+                intent.run_id != run_id
+                or intent.kind != request.kind
+                or intent.idempotency_key != request.idempotency_key
+                or intent.request_digest != request.request_digest
+                or intent.request_schema_version != request.request_schema_version
+                or canonical_digest(intent.request_payload)
+                != canonical_digest(request.request_payload)
+                or intent.status is not OperationStatus.SUCCEEDED
+            ):
+                raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+            expected_outcome = self._outcome(
+                state=ResourceState.ACTIVE,
+                identity=expected,
+                secret_id=secret_id,
+            )
+            if (
+                intent.remote_resource_id != expected_outcome.remote_resource_id
+                or intent.outcome_schema_version != expected_outcome.outcome_schema_version
+                or canonical_digest(intent.outcome or {})
+                != canonical_digest(expected_outcome.payload)
+            ):
+                raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+            adapter = _ProvisionAdapter(self, expected, policy, secret_id)
+            live = await adapter._run(mutate=False)
+            if (
+                live.status is not OperationStatus.SUCCEEDED
+                or live.remote_resource_id != expected_outcome.remote_resource_id
+                or live.outcome_schema_version != expected_outcome.outcome_schema_version
+                or canonical_digest(live.payload) != canonical_digest(expected_outcome.payload)
+            ):
+                raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+            return intent.id
+        except asyncio.CancelledError:
+            raise
+        except DatabaseProvisionerError as error:
+            failure = _sanitize_error(error)
+        except Exception:  # noqa: BLE001 - verification failures use a static category
+            failure = DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        if failure is not None:
+            raise failure
+        raise AssertionError("database active verification returned no result")
 
     async def provision(
         self,

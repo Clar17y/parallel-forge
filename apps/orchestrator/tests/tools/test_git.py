@@ -1115,6 +1115,41 @@ def test_create_worktree_uses_exact_add_argv_and_verifies_identity(tmp_path: Pat
         assert add_environment["GIT_DIR"].startswith("/proc/self/fd/")
 
 
+def test_expected_and_inspected_worktree_prove_exact_absence_then_presence(
+    tmp_path: Path,
+) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/inspect", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    expected = controlled.expected_worktree(identity, base_sha)
+
+    assert expected.path == repository / ".worktrees" / identity.worktree_name
+    assert controlled.repository_path == repository.resolve()
+    assert controlled.inspect_worktree(identity, base_sha) is None
+
+    created = controlled.create_worktree(identity, base_sha)
+
+    assert controlled.inspect_worktree(identity, base_sha) == created == expected
+
+
+def test_inspect_worktree_rejects_locked_registration_without_mutation(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/inspect-locked", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    handle = controlled.create_worktree(identity, base_sha)
+    _git(repository, "worktree", "lock", str(handle.path))
+
+    with pytest.raises(ControlledGitError, match="controlled git operation failed"):
+        controlled.inspect_worktree(identity, base_sha)
+
+    assert handle.path.is_dir()
+    assert (_registration_for(handle.path) / "locked").is_file()
+
+
 @pytest.mark.parametrize("swap_scope", ("root", "leaf"))
 def test_create_keeps_git_on_retained_leaf_when_namespace_is_swapped(
     tmp_path: Path, swap_scope: str
