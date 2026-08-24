@@ -21,7 +21,12 @@ def test_environment_stager_exposes_a_redacted_plan_api() -> None:
     assert EnvironmentStager is not None
 
 
-def _environment_case(tmp_path):
+def _environment_case(
+    tmp_path,
+    *,
+    relative_path: str = "config/local.env",
+    source: bytes = b"TOKEN=SOURCE\n",
+):
     import subprocess
 
     from forge.domain.policy import RunnerMode
@@ -42,8 +47,9 @@ def _environment_case(tmp_path):
         capture_output=True,
         text=True,
     ).stdout.strip()
-    (repository / "config").mkdir()
-    (repository / "config" / "local.env").write_bytes(b"TOKEN=SOURCE\n")
+    source_path = repository.joinpath(*relative_path.split("/"))
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(source)
     identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
@@ -56,7 +62,7 @@ def _environment_case(tmp_path):
         default_branch="main",
         runner_mode=RunnerMode.TRUSTED_HOST,
         trusted_project=True,
-        allowed_environment_files=("config/local.env",),
+        allowed_environment_files=(relative_path,),
     )
     stager = EnvironmentStager(controlled)
     plan = stager.build_plan(worktree, policy, DatabaseBinding(state=ResourceState.DISABLED))
@@ -68,6 +74,24 @@ def test_environment_module_has_no_public_plan_registry_bypass() -> None:
 
     assert not hasattr(environment, "publish_plan")
     assert not hasattr(environment, "inspect_plan")
+
+
+def test_private_staging_records_have_digest_only_representations(tmp_path) -> None:
+    from forge.tools.environment import _PLAN_RECORDS
+
+    _repository, _controlled, _worktree, _policy, _stager, plan = _environment_case(
+        tmp_path,
+        relative_path="config/PATH_SENTINEL.env",
+        source=b"PASSWORD_SENTINEL=secret\nURL_SENTINEL=https://secret.example\n",
+    )
+    record = _PLAN_RECORDS[plan]
+
+    for value in (record, *record.files):
+        rendered = f"{value!r} {value!s}"
+        assert "PATH_SENTINEL" not in rendered
+        assert "PASSWORD_SENTINEL" not in rendered
+        assert "URL_SENTINEL" not in rendered
+        assert "secret.example" not in rendered
 
 
 def test_capability_publishes_and_inspects_its_registered_plan(tmp_path) -> None:

@@ -63,15 +63,18 @@ class EnvironmentReconciliationRequired(EnvironmentStagingError):
         super().__init__(_RECONCILIATION)
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, repr=False, slots=True, kw_only=True)
 class _StagedFile:
     path: str
     source: bytes
     output: bytes
     evidence: EnvironmentFileEvidence
 
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(evidence={self.evidence!r})"
 
-@dataclass(frozen=True, slots=True, weakref_slot=True, kw_only=True)
+
+@dataclass(frozen=True, repr=False, slots=True, weakref_slot=True, kw_only=True)
 class _PlanRecord:
     token: object
     stager_owner: object
@@ -81,6 +84,9 @@ class _PlanRecord:
     policy_version: int
     files: tuple[_StagedFile, ...]
     evidence: tuple[EnvironmentFileEvidence, ...]
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(file_count={len(self.files)}, evidence={self.evidence!r})"
 
 
 _PLAN_RECORDS: WeakKeyDictionary[EnvironmentStagingPlan, _PlanRecord] = WeakKeyDictionary()

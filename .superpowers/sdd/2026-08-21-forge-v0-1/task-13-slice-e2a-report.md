@@ -46,20 +46,22 @@ setup/orchestration remain deferred.
   operation-row mutation; disabled rematerialization rejects any nonempty
   environment before touching dependencies. Secret and URL values are absent
   from representations, evidence, and sanitized exception chains.
+- Private staged-file and plan-record representations are digest-only: their
+  `repr`/`str` omit raw paths, source bytes, output bytes, passwords, and URLs.
 
 ## Verification
 
 Windows focused and affected evidence:
 
-- `test_environment_staging.py`: `58 passed, 6 skipped` in 63.11 seconds.
+- `test_environment_staging.py`: `59 passed, 6 skipped` in 64.32 seconds.
 - `test_process.py`: `23 passed, 1 skipped` in 1.82 seconds.
 - Affected E2a suites (staging, process, paths, Git, database provisioner,
   policy, repository containment/inspection, secret-store, redaction, and
-  telemetry): `509 passed, 50 skipped` in 249.86 seconds.
+  telemetry): `510 passed, 50 skipped` in 250.59 seconds.
 - Candidate-scoped Ruff check: passed (`All checks passed!`).
 - Candidate-scoped Ruff format check: passed (`4 files already formatted`).
 - Mypy over `apps/orchestrator/src`: passed, no issues in 110 source files.
-- Full configured Windows pytest suite: `1435 passed, 53 skipped` in 366.02
+- Full configured Windows pytest suite: `1436 passed, 53 skipped` in 372.49
   seconds.
 
 WSL native proof used the disposable `/tmp/forge-e2a-venv` uv environment
@@ -68,13 +70,13 @@ project lock or dependency files were modified:
 
 ```text
 wsl.exe -d Ubuntu -- bash -lc 'cd "/mnt/d/Code/Parallel Forge/.worktrees/forge-v0-1" && PYTHONPATH=.:apps/orchestrator/src /tmp/forge-e2a-venv/bin/pytest -p no:cacheprovider -q apps/orchestrator/tests/tools/test_environment_staging.py'
-57 passed, 7 skipped in 6.28s
+58 passed, 7 skipped in 7.11s
 
-... test_environment_staging.py -k "linux_acl or linux_docker"
-4 passed, 60 deselected in 1.39s
+... test_environment_staging.py -k "linux_acl or linux_docker or private_staging_records"
+5 passed, 60 deselected in 1.98s
 
 ... test_process.py -k posix_launch_inherits
-1 passed, 23 deselected in 0.53s
+1 passed, 23 deselected in 0.65s
 ```
 
 The real Linux staging test published a Docker-mode file on a real filesystem,
@@ -103,6 +105,11 @@ uses plan-identity weak ownership with no record-to-plan strong reference,
 binds records to the exact stager and ControlledGit owner, routes both stager
 and direct capability calls through the private resolver, and repeats ignore,
 revalidation, and digest checks immediately before every staging write.
+
+The final security review found that the private dataclass-generated
+representations still included their payload fields. Both representations now
+render only file count and digest-only evidence; a real-plan regression covers
+path, source, output, password, and URL sentinel redaction.
 
 ## Platform and deferred limits
 
