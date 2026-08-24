@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import os
+import weakref
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +19,134 @@ def test_environment_stager_exposes_a_redacted_plan_api() -> None:
     from forge.tools.environment import EnvironmentStager
 
     assert EnvironmentStager is not None
+
+
+def _environment_case(tmp_path):
+    import subprocess
+
+    from forge.domain.policy import RunnerMode
+    from forge.tools.environment import EnvironmentStager
+    from test_git import _controlled, _source_repository
+
+    repository, _ = _source_repository(tmp_path)
+    (repository / ".gitignore").write_text(".worktrees/\nconfig/*.env\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", ".gitignore"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-m", "ignore env files"],
+        check=True,
+        capture_output=True,
+    )
+    base_sha = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repository / "config").mkdir()
+    (repository / "config" / "local.env").write_bytes(b"TOKEN=SOURCE\n")
+    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    controlled = _controlled(repository, tmp_path / "state")
+    worktree = controlled.create_worktree(identity, base_sha)
+    (worktree.path / "config").mkdir()
+    policy = ProjectPolicy(
+        id=uuid4(),
+        version=1,
+        repository_path=str(repository),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.TRUSTED_HOST,
+        trusted_project=True,
+        allowed_environment_files=("config/local.env",),
+    )
+    stager = EnvironmentStager(controlled)
+    plan = stager.build_plan(worktree, policy, DatabaseBinding(state=ResourceState.DISABLED))
+    return repository, controlled, worktree, policy, stager, plan
+
+
+def test_environment_module_has_no_public_plan_registry_bypass() -> None:
+    from forge.tools import environment
+
+    assert not hasattr(environment, "publish_plan")
+    assert not hasattr(environment, "inspect_plan")
+
+
+def test_capability_publishes_and_inspects_its_registered_plan(tmp_path) -> None:
+    _repository, controlled, worktree, policy, _stager, plan = _environment_case(tmp_path)
+
+    with controlled.open_worktree_capability(worktree, policy) as capability:
+        assert not capability.inspect(plan).present
+        assert capability.publish(plan) == plan.evidence
+        assert capability.inspect(plan).present
+
+
+def test_plan_is_bound_to_exact_stager_instance(tmp_path) -> None:
+    from forge.tools.environment import EnvironmentStager, EnvironmentStagingError
+
+    _repository, controlled, worktree, policy, _stager, plan = _environment_case(tmp_path)
+    foreign_stager = EnvironmentStager(controlled)
+
+    with pytest.raises(EnvironmentStagingError):
+        foreign_stager.publish(worktree, policy, plan)
+    assert not (worktree.path / "config" / "local.env").exists()
+
+
+def test_capability_rejects_plan_from_foreign_controlled_git(tmp_path) -> None:
+    from forge.tools.environment import EnvironmentStagingError
+    from test_git import _controlled
+
+    repository, _controlled_git, worktree, policy, _stager, plan = _environment_case(tmp_path)
+    foreign_git = _controlled(repository, tmp_path / "foreign-state")
+
+    with (
+        foreign_git.open_worktree_capability(worktree, policy) as capability,
+        pytest.raises(EnvironmentStagingError),
+    ):
+        capability.inspect(plan)
+
+
+def test_plan_record_does_not_keep_payload_alive_after_plan_collection(tmp_path) -> None:
+    _repository, _controlled_git, _worktree, _policy, _stager, plan = _environment_case(tmp_path)
+    from forge.tools.environment import _PLAN_RECORDS
+
+    records = _PLAN_RECORDS
+    record = next(iter(records.values()))
+    plan_ref = weakref.ref(plan)
+    record_ref = weakref.ref(record)
+
+    assert plan_ref() is plan
+    assert record_ref() is record
+    del plan
+    del record
+    gc.collect()
+
+    assert plan_ref() is None
+    assert record_ref() is None
+    assert not records
+
+
+def test_ignore_removed_after_preflight_causes_zero_publication(tmp_path, monkeypatch) -> None:
+    from forge.tools.environment import EnvironmentStagingError
+    from forge.tools.git import WorktreeCapability
+
+    _repository, _controlled, worktree, policy, stager, plan = _environment_case(tmp_path)
+    original_assert_ignored = WorktreeCapability.assert_ignored
+    calls = 0
+
+    def remove_ignore_after_preflight(capability, relative_path):
+        nonlocal calls
+        calls += 1
+        result = original_assert_ignored(capability, relative_path)
+        if calls == 1:
+            (worktree.path / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(WorktreeCapability, "assert_ignored", remove_ignore_after_preflight)
+    with pytest.raises(EnvironmentStagingError):
+        stager.publish(worktree, policy, plan)
+
+    assert calls == 2
+    assert not (worktree.path / "config" / "local.env").exists()
+    assert not tuple((worktree.path / "config").glob(".forge-env-*"))
 
 
 def test_environment_plan_does_not_expose_private_source_or_output_bytes() -> None:
@@ -1081,7 +1211,9 @@ def test_reflective_plan_payload_mutation_is_rejected_before_write(tmp_path) -> 
     )
     stager = EnvironmentStager(controlled)
     plan = stager.build_plan(worktree, policy, DatabaseBinding(state=ResourceState.DISABLED))
-    record = next(iter(object.__getattribute__(stager, "_plans").values()))
+    from forge.tools.environment import _PLAN_RECORDS
+
+    record = _PLAN_RECORDS[plan]
     assert "SAFE=SOURCE" not in repr(plan)
     with pytest.raises(AttributeError):
         object.__getattribute__(plan, "_files")

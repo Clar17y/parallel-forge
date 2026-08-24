@@ -13,17 +13,25 @@ setup/orchestration remain deferred.
   exact reserved-component rejection, Windows ADS/device/trailing-dot-space
   rejection, cross-field case-alias rejection, and no-follow bounded reads.
 - `WorktreeCapability` and `EnvironmentStagingPlan` are owner-sealed. A public
-  plan contains only an opaque token and digest-only evidence; raw paths, source
-  bytes, and output bytes remain in an `EnvironmentStager`-owned record. Exact
-  stager, worktree identity, policy identity/version, token identity, and all
-  path/source/output digests are checked immediately before publication.
+  plan contains only an opaque token and digest-only evidence. Raw paths, source
+  bytes, and output bytes remain in a module-private weak plan registry whose
+  record does not strongly reference the plan. Exact stager, ControlledGit
+  owner, worktree identity, policy identity/version, token identity, and all
+  path/source/output digests are checked at resolution and before each write.
   Copied, foreign, forged, or reflectively mutated plans fail closed. This is an
   API capability boundary, not a claim that Python reflection defeats a hostile
   process with memory access.
+- `WorktreeCapability.publish(plan)` and `.inspect(plan)` are the authoritative
+  capability operations; the environment stager invokes those operations, and
+  no public helper accepts a caller-supplied record registry. Plans cannot cross
+  stager instances or ControlledGit owners.
 - Publication inspects the complete destination set before any write. Only a
   totally absent set publishes; an exact complete set is idempotent; partial,
   unsafe, or different existing destinations raise reconciliation without
   changing the destination set.
+- After whole-set preflight, each write independently re-proves ignore status,
+  capability liveness, and plan-record digests; a post-preflight ignore race
+  therefore produces no destination or temporary file.
 - Publication is bounded, exclusive, single-link, permission-checked,
   flush/fsync verified, reopened, content-verified, and cleans exact temporary
   names on injected write/link/flush/reopen/cleanup faults.
@@ -43,15 +51,15 @@ setup/orchestration remain deferred.
 
 Windows focused and affected evidence:
 
-- `test_environment_staging.py`: `52 passed, 6 skipped` in 43.82 seconds.
+- `test_environment_staging.py`: `58 passed, 6 skipped` in 63.11 seconds.
 - `test_process.py`: `23 passed, 1 skipped` in 1.82 seconds.
 - Affected E2a suites (staging, process, paths, Git, database provisioner,
   policy, repository containment/inspection, secret-store, redaction, and
-  telemetry): `503 passed, 50 skipped` in 226.27 seconds.
+  telemetry): `509 passed, 50 skipped` in 249.86 seconds.
 - Candidate-scoped Ruff check: passed (`All checks passed!`).
-- Candidate-scoped Ruff format check: passed (`9 files already formatted`).
+- Candidate-scoped Ruff format check: passed (`4 files already formatted`).
 - Mypy over `apps/orchestrator/src`: passed, no issues in 110 source files.
-- Full configured Windows pytest suite: `1429 passed, 53 skipped` in 339.38
+- Full configured Windows pytest suite: `1435 passed, 53 skipped` in 366.02
   seconds.
 
 WSL native proof used the disposable `/tmp/forge-e2a-venv` uv environment
@@ -60,13 +68,13 @@ project lock or dependency files were modified:
 
 ```text
 wsl.exe -d Ubuntu -- bash -lc 'cd "/mnt/d/Code/Parallel Forge/.worktrees/forge-v0-1" && PYTHONPATH=.:apps/orchestrator/src /tmp/forge-e2a-venv/bin/pytest -p no:cacheprovider -q apps/orchestrator/tests/tools/test_environment_staging.py'
-51 passed, 7 skipped in 4.52s
+57 passed, 7 skipped in 6.28s
 
 ... test_environment_staging.py -k "linux_acl or linux_docker"
-4 passed, 54 deselected in 1.35s
+4 passed, 60 deselected in 1.39s
 
 ... test_process.py -k posix_launch_inherits
-1 passed, 23 deselected in 0.51s
+1 passed, 23 deselected in 0.53s
 ```
 
 The real Linux staging test published a Docker-mode file on a real filesystem,
@@ -88,6 +96,13 @@ used `/proc/self/fd/N`; the child reported that the cwd did not exist. The
 target fd is now always inherited, managed launches also inherit registration
 and Git fds, and `Popen` uses a parent-process fd path so descriptor resolution
 occurs after inheritance.
+
+The second review found that the first repair still allowed caller-provided
+record maps and did not make capability operations authoritative. The repair
+uses plan-identity weak ownership with no record-to-plan strong reference,
+binds records to the exact stager and ControlledGit owner, routes both stager
+and direct capability calls through the private resolver, and repeats ignore,
+revalidation, and digest checks immediately before every staging write.
 
 ## Platform and deferred limits
 

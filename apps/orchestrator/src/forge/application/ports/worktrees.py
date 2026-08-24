@@ -252,6 +252,7 @@ class EnvironmentStagingPlan:
     """Opaque immutable staging token with digest-only public evidence."""
 
     __slots__ = (
+        "__weakref__",
         "_evidence",
         "_sealed",
         "_token",

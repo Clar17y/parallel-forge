@@ -7,8 +7,10 @@ import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from threading import RLock
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
 from forge.application.ports.worktrees import (
     _STAGING_PLAN_SEAL,
@@ -69,15 +71,20 @@ class _StagedFile:
     evidence: EnvironmentFileEvidence
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True, kw_only=True)
 class _PlanRecord:
-    plan: EnvironmentStagingPlan
     token: object
+    stager_owner: object
+    git_owner: object
     identity: object
     policy_id: UUID
     policy_version: int
     files: tuple[_StagedFile, ...]
     evidence: tuple[EnvironmentFileEvidence, ...]
+
+
+_PLAN_RECORDS: WeakKeyDictionary[EnvironmentStagingPlan, _PlanRecord] = WeakKeyDictionary()
+_PLAN_RECORDS_LOCK = RLock()
 
 
 class EnvironmentStager:
@@ -89,7 +96,6 @@ class EnvironmentStager:
         ):
             raise TypeError("environment staging requires controlled Git")
         self._git = controlled_git
-        self._plans: dict[object, _PlanRecord] = {}
 
     def build_plan(
         self,
@@ -164,15 +170,18 @@ class EnvironmentStager:
             token=token,
             evidence=evidence,
         )
-        self._plans[token] = _PlanRecord(
-            plan=plan,
+        record = _PlanRecord(
             token=token,
+            stager_owner=self,
+            git_owner=self._git,
             identity=worktree.identity,
             policy_id=policy.id,
             policy_version=version,
             files=tuple(files),
             evidence=evidence,
         )
+        with _PLAN_RECORDS_LOCK:
+            _PLAN_RECORDS[plan] = record
         return plan
 
     def publish(
@@ -182,10 +191,12 @@ class EnvironmentStager:
         plan: EnvironmentStagingPlan,
     ) -> tuple[EnvironmentFileEvidence, ...]:
         _validate_policy(policy, None)
+        _assert_plan_stager(plan, self)
         publish_failed = False
         try:
             with self._git.open_worktree_capability(worktree, policy) as capability:
-                return publish_plan(capability, plan, records=self._plans)
+                typed_capability = cast("WorktreeCapability", capability)
+                return typed_capability.publish(plan)
         except EnvironmentStagingError:
             raise
         except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
@@ -201,10 +212,12 @@ class EnvironmentStager:
         plan: EnvironmentStagingPlan,
     ) -> EnvironmentStagingInspection:
         _validate_policy(policy, None)
+        _assert_plan_stager(plan, self)
         inspect_failed = False
         try:
             with self._git.open_worktree_capability(worktree, policy, read_only=True) as capability:
-                return inspect_plan(capability, plan, records=self._plans)
+                typed_capability = cast("WorktreeCapability", capability)
+                return typed_capability.inspect(plan)
         except EnvironmentStagingError:
             raise
         except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
@@ -218,18 +231,24 @@ WorktreeEnvironmentStager = EnvironmentStager
 EnvironmentFileStager = EnvironmentStager
 
 
-def publish_plan(
+def _assert_plan_stager(plan: EnvironmentStagingPlan, stager: EnvironmentStager) -> None:
+    if not isinstance(plan, EnvironmentStagingPlan):
+        raise EnvironmentStagingError(_INTEGRITY)
+    with _PLAN_RECORDS_LOCK:
+        record = _PLAN_RECORDS.get(plan)
+    if record is None or record.stager_owner is not stager:
+        raise EnvironmentStagingError(_INTEGRITY)
+
+
+def _publish_plan(
     capability: WorktreeCapability,
     plan: EnvironmentStagingPlan,
-    *,
-    records: dict[object, _PlanRecord] | None = None,
 ) -> tuple[EnvironmentFileEvidence, ...]:
     policy = object.__getattribute__(capability, "_policy")
-    worktree = object.__getattribute__(capability, "_worktree")
     git = object.__getattribute__(capability, "_git")
     publish_failed = False
     try:
-        record = _resolve_plan(plan, records, worktree.identity, policy.id, policy.version)
+        record = _resolve_plan(capability, plan)
         files = record.files
         _verify_plan_record(record)
         require_acl = policy.runner_mode is RunnerMode.DOCKER
@@ -248,6 +267,9 @@ def publish_plan(
                 object.__getattribute__(capability, "_access"),
                 parts[:-1],
             ) as parent:
+                capability.assert_ignored(item.path)
+                capability.revalidate()
+                _verify_plan_record(record)
                 _publish_staging(
                     parent,
                     parts[-1],
@@ -266,17 +288,14 @@ def publish_plan(
     raise AssertionError("environment publication failure path was not reached")
 
 
-def inspect_plan(
+def _inspect_plan(
     capability: WorktreeCapability,
     plan: EnvironmentStagingPlan,
-    *,
-    records: dict[object, _PlanRecord] | None = None,
 ) -> EnvironmentStagingInspection:
     policy = object.__getattribute__(capability, "_policy")
-    worktree = object.__getattribute__(capability, "_worktree")
     inspect_failed = False
     try:
-        record = _resolve_plan(plan, records, worktree.identity, policy.id, policy.version)
+        record = _resolve_plan(capability, plan)
         files = record.files
         _verify_plan_record(record)
         require_acl = policy.runner_mode is RunnerMode.DOCKER
@@ -296,22 +315,23 @@ def inspect_plan(
 
 
 def _resolve_plan(
+    capability: WorktreeCapability,
     plan: EnvironmentStagingPlan,
-    records: dict[object, _PlanRecord] | None,
-    identity: object,
-    policy_id: UUID,
-    policy_version: int,
 ) -> _PlanRecord:
-    if records is None:
+    if not isinstance(plan, EnvironmentStagingPlan):
         raise EnvironmentStagingError(_INTEGRITY)
-    record = records.get(plan.token)
+    worktree = object.__getattribute__(capability, "_worktree")
+    policy = object.__getattribute__(capability, "_policy")
+    git = object.__getattribute__(capability, "_git")
+    with _PLAN_RECORDS_LOCK:
+        record = _PLAN_RECORDS.get(plan)
     if (
         record is None
-        or record.plan is not plan
         or record.token is not plan.token
-        or record.identity != identity
-        or record.policy_id != policy_id
-        or record.policy_version != policy_version
+        or record.git_owner is not git
+        or record.identity != worktree.identity
+        or record.policy_id != policy.id
+        or record.policy_version != policy.version
         or tuple(plan.evidence) != record.evidence
     ):
         raise EnvironmentStagingError(_INTEGRITY)

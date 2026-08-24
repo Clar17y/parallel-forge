@@ -136,16 +136,16 @@ class WorktreeCapability:
 
     def publish(self, plan: EnvironmentStagingPlan) -> tuple[EnvironmentFileEvidence, ...]:
         object.__getattribute__(self, "_require_live")()
-        from forge.tools.environment import publish_plan
+        from forge.tools.environment import _publish_plan
 
-        result = publish_plan(self, plan)
+        result = _publish_plan(self, plan)
         return result
 
     def inspect(self, plan: EnvironmentStagingPlan) -> EnvironmentStagingInspection:
         object.__getattribute__(self, "_require_live")()
-        from forge.tools.environment import inspect_plan
+        from forge.tools.environment import _inspect_plan
 
-        return inspect_plan(self, plan)
+        return _inspect_plan(self, plan)
 
     def _require_live(self) -> None:
         if not object.__getattribute__(self, "_live") or object.__getattribute__(
