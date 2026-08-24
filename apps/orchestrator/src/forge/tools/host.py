@@ -12,6 +12,7 @@ from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.clock import Clock, SystemClock
 from forge.application.ports.runner import (
     CommandResult,
+    CommandTerminalResult,
     RunCommandRequest,
     RunnerAuditSink,
 )
@@ -27,6 +28,22 @@ from forge.tools.runner import (
     persist_output_artifacts,
     select_environment,
 )
+
+_HOST_CONTROL_KEYS = frozenset(
+    {
+        "APPDATA",
+        "COMSPEC",
+        "HOME",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+    }
+)
+_HOST_CONTROL_PREFIXES = ("DOCKER_",)
 
 
 class _ProcessResultLike(Protocol):
@@ -88,10 +105,34 @@ class TrustedHostRunner:
         self._monotonic = monotonic
 
     async def run(self, request: RunCommandRequest) -> CommandResult:
-        """Audit and execute one exact command without claiming containment."""
+        """Run one command while preserving the compatibility cancellation contract."""
+
+        terminal = await self.run_terminal(request)
+        if terminal.caller_cancelled:
+            raise asyncio.CancelledError()
+        return terminal.result
+
+    async def run_terminal(self, request: RunCommandRequest) -> CommandTerminalResult:
+        """Finish process, artifacts, and completion audit before cancellation."""
+
+        return await self._run_terminal_at(request, self._root.path)
+
+    async def _run_terminal_at(
+        self,
+        request: RunCommandRequest,
+        cwd: str | os.PathLike[str],
+        *,
+        before_launch: Callable[[], None] | None = None,
+    ) -> CommandTerminalResult:
+        """Run from a trusted capability-derived working directory."""
 
         spec = self._resolver.resolve(request.command_name, kind=request.kind)
-        selected = select_environment(spec, request.environment)
+        selected = select_environment(
+            spec,
+            request.environment,
+            denied_keys=_HOST_CONTROL_KEYS,
+            denied_prefixes=_HOST_CONTROL_PREFIXES,
+        )
         if self._artifact_store is None or self._audit is None:
             raise RunnerExecutionError()
         audit_payload = {
@@ -102,7 +143,9 @@ class TrustedHostRunner:
             "runner_mode": RunnerMode.TRUSTED_HOST.value,
             "unsandboxed": True,
         }
-        await self._record_audit("runner.trusted_host.attempt", audit_payload)
+        _, caller_cancelled = await await_deferred_cancellation(
+            self._record_audit("runner.trusted_host.attempt", audit_payload)
+        )
         started_at = self._clock.now()
         started = self._monotonic()
         with self._telemetry.start_span(
@@ -110,18 +153,22 @@ class TrustedHostRunner:
             attributes=audit_payload,
         ):
             try:
-                process_result, caller_cancelled = await await_deferred_cancellation(
+                if before_launch is not None:
+                    before_launch()
+                process_result, launch_cancelled = await await_deferred_cancellation(
                     asyncio.to_thread(
                         self._process_runner.run_argv,
                         spec.argv,
-                        cwd=self._root.path,
+                        cwd=cwd,
                         environment=selected,
                         timeout_seconds=spec.timeout_seconds,
-                    )
+                    ),
+                    already_cancelled=caller_cancelled,
                 )
+                caller_cancelled = caller_cancelled or launch_cancelled
             except Exception:  # noqa: BLE001 - adapter failures must cross as one safe error
                 raise RunnerExecutionError() from None
-            (stdout_digest, stderr_digest), caller_cancelled = await await_deferred_cancellation(
+            (stdout_digest, stderr_digest), artifact_cancelled = await await_deferred_cancellation(
                 persist_output_artifacts(
                     self._artifact_store,
                     process_result,
@@ -129,6 +176,7 @@ class TrustedHostRunner:
                 ),
                 already_cancelled=caller_cancelled,
             )
+            caller_cancelled = caller_cancelled or artifact_cancelled
         duration_ms = max(0, round((self._monotonic() - started) * 1000))
         result = CommandResult(
             command_name=spec.name,
@@ -153,16 +201,15 @@ class TrustedHostRunner:
         completion_payload = {**audit_payload, "evidence_digest": result.evidence_digest}
         if caller_cancelled:
             completion_payload["caller_cancelled"] = True
-        _, caller_cancelled = await await_deferred_cancellation(
+        _, completion_cancelled = await await_deferred_cancellation(
             self._record_audit(
                 "runner.trusted_host.completed",
                 completion_payload,
             ),
             already_cancelled=caller_cancelled,
         )
-        if caller_cancelled:
-            raise asyncio.CancelledError()
-        return result
+        caller_cancelled = caller_cancelled or completion_cancelled
+        return CommandTerminalResult(result=result, caller_cancelled=caller_cancelled)
 
     async def _record_audit(self, event_type: str, payload: Mapping[str, object]) -> None:
         audit = self._audit

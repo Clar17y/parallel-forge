@@ -212,3 +212,31 @@ __all__ = [
     "persist_output_artifacts",
     "select_environment",
 ]
+
+
+def __getattr__(name: str) -> object:
+    """Lazily expose the bound-runner adapters without an import cycle."""
+
+    if name in {
+        "BoundWorktreeRunner",
+        "ManagedWorktreeRunnerFactory",
+        "WorktreeBoundRunner",
+        "WorktreeRunnerFactory",
+        "WorktreeRunnerFactoryError",
+    }:
+        from forge.tools.worktree_runner import (
+            BoundWorktreeRunner,
+            ManagedWorktreeRunnerFactory,
+            WorktreeBoundRunner,
+            WorktreeRunnerFactory,
+            WorktreeRunnerFactoryError,
+        )
+
+        return {
+            "BoundWorktreeRunner": BoundWorktreeRunner,
+            "ManagedWorktreeRunnerFactory": ManagedWorktreeRunnerFactory,
+            "WorktreeBoundRunner": WorktreeBoundRunner,
+            "WorktreeRunnerFactory": WorktreeRunnerFactory,
+            "WorktreeRunnerFactoryError": WorktreeRunnerFactoryError,
+        }[name]
+    raise AttributeError(name)

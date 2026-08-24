@@ -8,10 +8,14 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from types import MappingProxyType
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from forge.domain.policy import RunnerMode, StepKind
 from forge.domain.validation import require_evidence_digest, validate_runner_image_reference
+
+if TYPE_CHECKING:
+    from forge.application.ports.worktrees import ManagedWorktree
+    from forge.domain.policy import ProjectPolicy
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -134,10 +138,46 @@ class CommandResult:
         return hashlib.sha256(payload).hexdigest()
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CommandTerminalResult:
+    """The immutable outcome at the command's terminal evidence boundary.
+
+    ``caller_cancelled`` is deliberately recorded rather than raised here.  A
+    caller that needs the compatibility behaviour can use ``RunnerPort.run``;
+    orchestration code uses this value to persist the terminal checkpoint before
+    propagating cancellation.
+    """
+
+    result: CommandResult
+    caller_cancelled: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.result, CommandResult):
+            raise TypeError("terminal command result requires command evidence")
+        if type(self.caller_cancelled) is not bool:
+            raise TypeError("terminal cancellation marker must be boolean")
+
+
 class RunnerPort(Protocol):
     """The one asynchronous path for every repository-controlled command."""
 
     async def run(self, request: RunCommandRequest) -> CommandResult: ...
+
+
+class TerminalRunnerPort(Protocol):
+    """Runner contract that exposes completed evidence before cancellation."""
+
+    async def run_terminal(self, request: RunCommandRequest) -> CommandTerminalResult: ...
+
+
+class WorktreeRunnerFactoryPort(Protocol):
+    """Construct a runner bound to one exact retained managed worktree."""
+
+    def create(
+        self,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+    ) -> RunnerPort: ...
 
 
 class RunnerAuditSink(Protocol):
@@ -152,4 +192,12 @@ class RunnerAuditSink(Protocol):
     ) -> None: ...
 
 
-__all__ = ["CommandResult", "RunCommandRequest", "RunnerAuditSink", "RunnerPort"]
+__all__ = [
+    "CommandResult",
+    "CommandTerminalResult",
+    "RunCommandRequest",
+    "RunnerAuditSink",
+    "RunnerPort",
+    "TerminalRunnerPort",
+    "WorktreeRunnerFactoryPort",
+]
