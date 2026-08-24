@@ -8,16 +8,25 @@ import re
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from forge.application.ports.operations import OperationAdapter, OperationRepository
+from forge.application.ports.runner import (
+    CommandResult,
+    RunCommandRequest,
+    WorktreeRunnerFactoryPort,
+    WorktreeRunnerPort,
+)
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import (
     ControlledGitPort,
     DatabaseBinding,
     DatabaseProvisionerPort,
+    EnvironmentStagingPlan,
+    EnvironmentStagingPort,
     ManagedWorktree,
 )
 from forge.application.services.recovery import OperationExecutor, RecoveryService
@@ -29,10 +38,10 @@ from forge.domain.operation import (
     OperationStatus,
     canonical_digest,
 )
-from forge.domain.policy import ProjectPolicy
+from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.domain.resource import ResourceState, WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
-from forge.tools.runner import await_deferred_cancellation
+from forge.tools.runner import await_deferred_cancellation, command_spec_digest
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -60,6 +69,17 @@ _CHECKPOINT_KEYS = frozenset(
     }
 )
 _ACTIVE_CHECKPOINT_KEYS = _CHECKPOINT_KEYS | {"database_intent_id"}
+_SETUP_KINDS = (
+    StepKind.BOOTSTRAP,
+    StepKind.INSTALL,
+    StepKind.MIGRATION,
+    StepKind.SEED,
+)
+_ENVIRONMENT_KIND = "worktree.environment.stage"
+_SETUP_COMMAND_KIND = "worktree.setup.command"
+_ENVIRONMENT_STAGED_EVENT = "resource.environment_staged"
+_SETUP_STEP_EVENT = "resource.setup_step_completed"
+_PREPARED_EVENT = "resource.worktree_prepared"
 
 
 class WorktreeProvisionerError(RuntimeError):
@@ -139,6 +159,8 @@ class WorktreeProvisioner:
         recovery_service: RecoveryService | None = None,
         controlled_git: ControlledGitPort | None = None,
         database_provisioner: DatabaseProvisionerPort | None = None,
+        environment_stager: EnvironmentStagingPort | None = None,
+        runner_factory: WorktreeRunnerFactoryPort | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         selected_git = git or controlled_git
@@ -154,6 +176,10 @@ class WorktreeProvisioner:
         self._operations = operations
         self._operation_executor = operation_executor or OperationExecutor(operations)
         self._recovery = recovery_service or RecoveryService(operations)
+        if (environment_stager is None) != (runner_factory is None):
+            raise TypeError("worktree setup requires staging and runner boundaries")
+        self._environment_stager = environment_stager
+        self._runner_factory = runner_factory
 
     async def prepare(self, run_id: UUID, policy: ProjectPolicy) -> ManagedWorktree:
         """Prepare one exact managed resource through durable checkpoints."""
@@ -185,14 +211,291 @@ class WorktreeProvisioner:
         if not policy.database.enabled:
             if latest.run.database_state is not ResourceState.DISABLED:
                 raise WorktreeReconciliationRequired()
-            return inspected
+            return await self._run_setup(latest, inspected)
 
         if latest.run.database_state is ResourceState.ACTIVE:
             await self._verify_active_context(latest)
-            return inspected
+            return await self._run_setup(latest, inspected)
         if latest.run.database_state not in {ResourceState.PROVISIONING, ResourceState.FAILED}:
             raise WorktreeReconciliationRequired()
-        return await self._prepare_database(latest, inspected)
+        prepared = await self._prepare_database(latest, inspected)
+        active = await self._load_context(run_id, policy, require_succeeded=True)
+        return await self._run_setup(active, prepared)
+
+    async def _run_setup(
+        self,
+        context: _Context,
+        worktree: ManagedWorktree,
+    ) -> ManagedWorktree:
+        stager = self._environment_stager
+        runner_factory = self._runner_factory
+        if stager is None or runner_factory is None:
+            return worktree
+        binding = await self._setup_binding(context)
+        try:
+            plan = stager.build_plan(
+                worktree,
+                context.policy,
+                binding,
+                policy_version=_require_policy_version(context.run),
+            )
+        except Exception:  # noqa: BLE001 - staging plans expose no raw diagnostics
+            raise WorktreeReconciliationRequired() from None
+
+        environment_request = _environment_request(context, plan)
+        environment_adapter = _EnvironmentStageAdapter(
+            self,
+            stager,
+            context.policy,
+            worktree,
+            plan,
+            environment_request,
+        )
+        environment_outcome = await self._execute_setup_effect(
+            environment_request,
+            environment_adapter,
+        )
+        environment_intent = await self._require_completed_effect(
+            environment_request,
+            environment_outcome,
+            context.policy,
+        )
+        if environment_adapter.caller_cancelled:
+            raise asyncio.CancelledError()
+
+        runner = runner_factory.create(worktree, context.policy)
+        setup_evidence: list[Mapping[str, object]] = []
+        ordinal = 0
+        for kind in _SETUP_KINDS:
+            for command in context.policy.commands_for(kind):
+                selected = {
+                    key: binding.environment[key]
+                    for key in command.environment_keys
+                    if key in binding.environment
+                }
+                command_request = _setup_command_request(
+                    context,
+                    command,
+                    ordinal=ordinal,
+                    environment_keys=tuple(selected),
+                )
+                command_outcome = await self._execute_setup_effect(
+                    command_request,
+                    _SetupCommandAdapter(
+                        self,
+                        context.policy,
+                        worktree,
+                        runner,
+                        RunCommandRequest(
+                            command_name=command.name,
+                            kind=kind,
+                            environment=selected,
+                        ),
+                        command_request,
+                    ),
+                )
+                command_intent = await self._require_completed_effect(
+                    command_request,
+                    command_outcome,
+                    context.policy,
+                )
+                result = command_outcome.payload
+                setup_evidence.append(
+                    {
+                        "operation_intent_id": str(command_intent.id),
+                        "evidence_digest": result["evidence_digest"],
+                    }
+                )
+                if result.get("exit_code") != 0 or result.get("timed_out") is not False:
+                    raise WorktreeReconciliationRequired()
+                if result.get("caller_cancelled") is True:
+                    raise asyncio.CancelledError()
+                ordinal += 1
+
+        latest = await self._load_context(
+            context.run.id,
+            context.policy,
+            require_succeeded=True,
+        )
+        await self._inspect_present(latest.expected)
+        inspection = stager.inspect(worktree, context.policy, plan)
+        if not inspection.present or inspection.evidence != plan.evidence:
+            raise WorktreeReconciliationRequired()
+        if latest.run.database_state is ResourceState.ACTIVE:
+            await self._verify_active_context(latest)
+        prepared_payload: Mapping[str, object] = {
+            "worktree_operation_intent_id": str(latest.operation_id),
+            "environment_operation_intent_id": str(environment_intent.id),
+            "environment_evidence_digest": environment_outcome.payload["evidence_digest"],
+            "setup_operations": setup_evidence,
+            "setup_count": len(setup_evidence),
+            "policy_version": latest.policy.version,
+            "worktree_name": latest.identity.worktree_name,
+            "base_sha": _require_sha(latest.run.base_sha),
+            "database_state": latest.run.database_state.value,
+        }
+        await self._record_prepared_once(latest, prepared_payload)
+        return worktree
+
+    async def _setup_binding(self, context: _Context) -> DatabaseBinding:
+        if context.run.database_state is ResourceState.DISABLED:
+            return DatabaseBinding(state=ResourceState.DISABLED)
+        if context.run.database_state is not ResourceState.ACTIVE:
+            raise WorktreeReconciliationRequired()
+        binding = DatabaseBinding(
+            state=ResourceState.ACTIVE,
+            database_name=context.run.database_name,
+            database_role=context.run.database_role,
+            secret_id=context.run.secret_id,
+        )
+        try:
+            return await self._database.rematerialize_active(
+                context.identity,
+                context.policy.database,
+                binding,
+                policy_version=_require_policy_version(context.run),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - rematerialization exposes no raw diagnostics
+            raise WorktreeReconciliationRequired() from None
+
+    async def _execute_setup_effect(
+        self,
+        request: OperationRequest,
+        adapter: OperationAdapter,
+    ) -> OperationOutcome:
+        try:
+            outcome = await self._operation_executor.execute(request, adapter)
+        except asyncio.CancelledError:
+            raise
+        except WorktreeProvisionerError:
+            raise
+        except Exception:  # noqa: BLE001 - setup executor failures are stable
+            raise WorktreeReconciliationRequired() from None
+        if outcome.status is not OperationStatus.SUCCEEDED:
+            raise WorktreeReconciliationRequired()
+        return outcome
+
+    async def _require_completed_effect(
+        self,
+        request: OperationRequest,
+        outcome: OperationOutcome,
+        policy: ProjectPolicy,
+    ) -> OperationIntent:
+        intent = await self._operation_for_request(request)
+        if intent is None or intent.status is not OperationStatus.SUCCEEDED:
+            raise WorktreeReconciliationRequired()
+        _validate_intent(intent, request)
+        if intent.outcome is None or canonical_digest(intent.outcome) != canonical_digest(
+            outcome.payload
+        ):
+            raise WorktreeReconciliationRequired()
+        event_type = (
+            _ENVIRONMENT_STAGED_EVENT if request.kind == _ENVIRONMENT_KIND else _SETUP_STEP_EVENT
+        )
+        checkpoint = await self._one_setup_checkpoint(
+            request.run_id,
+            event_type,
+            intent.id,
+        )
+        if checkpoint is None:
+            raise WorktreeReconciliationRequired()
+        if request.kind == _ENVIRONMENT_KIND:
+            expected = {
+                "operation_intent_id": str(intent.id),
+                **dict(request.request_payload),
+            }
+            if canonical_digest(checkpoint) != canonical_digest(expected):
+                raise WorktreeReconciliationRequired()
+        elif request.kind == _SETUP_COMMAND_KIND:
+            recovered = _command_checkpoint_outcome(request, checkpoint, policy)
+            if canonical_digest(recovered.payload) != canonical_digest(outcome.payload):
+                raise WorktreeReconciliationRequired()
+        else:
+            raise WorktreeReconciliationRequired()
+        return intent
+
+    async def _one_setup_checkpoint(
+        self,
+        run_id: UUID,
+        event_type: str,
+        intent_id: UUID,
+    ) -> Mapping[str, object] | None:
+        try:
+            async with self._unit_of_work_factory() as work:
+                raw_events = await work.events.list_after(run_id, 0)
+        except Exception:  # noqa: BLE001 - persistence failures remain redacted
+            raise WorktreeReconciliationRequired() from None
+        matches: list[Mapping[str, object]] = []
+        for event in raw_events:
+            if not isinstance(event, RunEvent) or event.event_type != event_type:
+                continue
+            if event.run_id != run_id or not isinstance(event.payload, Mapping):
+                raise WorktreeReconciliationRequired()
+            if event.payload.get("operation_intent_id") == str(intent_id):
+                matches.append(event.payload)
+        if len(matches) > 1:
+            raise WorktreeReconciliationRequired()
+        return matches[0] if matches else None
+
+    async def _record_setup_event(
+        self,
+        context: _Context,
+        event_type: str,
+        payload: Mapping[str, object],
+    ) -> _Context:
+        return await self._record_resource(
+            context,
+            database_state=context.run.database_state,
+            event_type=event_type,
+            event_payload=payload,
+        )
+
+    async def _record_prepared_once(
+        self,
+        context: _Context,
+        payload: Mapping[str, object],
+    ) -> _Context:
+        _validate_event_payload(context, _PREPARED_EVENT, payload)
+        try:
+            async with self._unit_of_work_factory() as work:
+                current = await work.runs.get_for_update(context.run.id)
+                raw_events = await work.events.list_after(context.run.id, 0)
+                matches = [
+                    event
+                    for event in raw_events
+                    if isinstance(event, RunEvent) and event.event_type == _PREPARED_EVENT
+                ]
+                if len(matches) > 1:
+                    raise WorktreeReconciliationRequired()
+                if matches:
+                    if canonical_digest(matches[0].payload) != canonical_digest(payload):
+                        raise WorktreeReconciliationRequired()
+                else:
+                    if current.version != context.run.version:
+                        raise _ResourceConflict()
+                    await work.runs.update_resource(
+                        current.id,
+                        context.run.version,
+                        worktree_path=context.run.worktree_path,
+                        database_state=context.run.database_state,
+                        database_name=context.run.database_name,
+                        database_role=context.run.database_role,
+                        secret_id=context.run.secret_id,
+                        event_type=_PREPARED_EVENT,
+                        event_payload=payload,
+                    )
+                    await work.commit()
+        except WorktreeProvisionerError:
+            raise
+        except Exception:  # noqa: BLE001 - transaction failures expose no persistence details
+            raise WorktreeReconciliationRequired() from None
+        return await self._load_context(
+            context.run.id,
+            context.policy,
+            require_succeeded=True,
+        )
 
     async def reconcile(self, intent_id: UUID, policy: ProjectPolicy) -> OperationIntent:
         """Reconcile one claimed worktree intent by inspection only."""
@@ -511,6 +814,181 @@ class WorktreeProvisioner:
             return None, False, error
 
 
+class _EnvironmentStageAdapter:
+    def __init__(
+        self,
+        owner: WorktreeProvisioner,
+        stager: EnvironmentStagingPort,
+        policy: ProjectPolicy,
+        worktree: ManagedWorktree,
+        plan: EnvironmentStagingPlan,
+        request: OperationRequest,
+    ) -> None:
+        self._owner = owner
+        self._stager = stager
+        self._policy = policy
+        self._worktree = worktree
+        self._plan = plan
+        self._request = request
+        self._caller_cancelled = False
+
+    @property
+    def caller_cancelled(self) -> bool:
+        return self._caller_cancelled
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        _validate_adapter_intent(intent, self._request)
+        context = await self._owner._load_context(
+            intent.run_id,
+            self._policy,
+            require_succeeded=True,
+        )
+        inspected = await self._owner._inspect_present(context.expected)
+        if not _same_handle(inspected, self._worktree):
+            raise WorktreeReconciliationRequired()
+        try:
+            published = self._stager.publish(
+                self._worktree,
+                self._policy,
+                self._plan,
+            )
+        except asyncio.CancelledError:
+            self._caller_cancelled = True
+            published = self._plan.evidence
+        except Exception:  # noqa: BLE001 - staging failures remain redacted
+            raise WorktreeReconciliationRequired() from None
+        try:
+            inspection = self._stager.inspect(
+                self._worktree,
+                self._policy,
+                self._plan,
+            )
+        except Exception:  # noqa: BLE001 - staging failures remain redacted
+            raise WorktreeReconciliationRequired() from None
+        if (
+            published != self._plan.evidence
+            or not inspection.present
+            or inspection.evidence != self._plan.evidence
+        ):
+            raise WorktreeReconciliationRequired()
+        outcome = _environment_outcome(self._request)
+        _, checkpoint_cancelled = await await_deferred_cancellation(
+            self._owner._record_setup_event(
+                context,
+                _ENVIRONMENT_STAGED_EVENT,
+                {
+                    "operation_intent_id": str(intent.id),
+                    **dict(self._request.request_payload),
+                },
+            ),
+            already_cancelled=self._caller_cancelled,
+        )
+        self._caller_cancelled = self._caller_cancelled or checkpoint_cancelled
+        return outcome
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        _validate_adapter_intent(intent, self._request)
+        context = await self._owner._load_context(
+            intent.run_id,
+            self._policy,
+            require_succeeded=True,
+        )
+        inspected = await self._owner._inspect_present(context.expected)
+        if not _same_handle(inspected, self._worktree):
+            raise WorktreeReconciliationRequired()
+        inspection = self._stager.inspect(
+            self._worktree,
+            self._policy,
+            self._plan,
+        )
+        if not inspection.present or inspection.evidence != self._plan.evidence:
+            raise WorktreeReconciliationRequired()
+        payload = await self._owner._one_setup_checkpoint(
+            intent.run_id,
+            _ENVIRONMENT_STAGED_EVENT,
+            intent.id,
+        )
+        expected_payload = {
+            "operation_intent_id": str(intent.id),
+            **dict(self._request.request_payload),
+        }
+        if payload is None:
+            await self._owner._record_setup_event(
+                context,
+                _ENVIRONMENT_STAGED_EVENT,
+                expected_payload,
+            )
+        elif canonical_digest(payload) != canonical_digest(expected_payload):
+            raise WorktreeReconciliationRequired()
+        return _environment_outcome(self._request)
+
+
+class _SetupCommandAdapter:
+    def __init__(
+        self,
+        owner: WorktreeProvisioner,
+        policy: ProjectPolicy,
+        worktree: ManagedWorktree,
+        runner: WorktreeRunnerPort,
+        run_request: RunCommandRequest,
+        request: OperationRequest,
+    ) -> None:
+        self._owner = owner
+        self._policy = policy
+        self._worktree = worktree
+        self._runner = runner
+        self._run_request = run_request
+        self._request = request
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        _validate_adapter_intent(intent, self._request)
+        context = await self._owner._load_context(
+            intent.run_id,
+            self._policy,
+            require_succeeded=True,
+        )
+        inspected = await self._owner._inspect_present(context.expected)
+        if not _same_handle(inspected, self._worktree):
+            raise WorktreeReconciliationRequired()
+        try:
+            terminal = await self._runner.run_terminal(self._run_request)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - runner failures remain redacted
+            raise WorktreeReconciliationRequired() from None
+        _validate_command_result(self._request, terminal.result, self._policy)
+        outcome = _command_outcome(self._request, terminal.result, terminal.caller_cancelled)
+        await self._owner._record_setup_event(
+            context,
+            _SETUP_STEP_EVENT,
+            {
+                "operation_intent_id": str(intent.id),
+                **dict(self._request.request_payload),
+                **dict(outcome.payload),
+            },
+        )
+        return outcome
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        _validate_adapter_intent(intent, self._request)
+        context = await self._owner._load_context(
+            intent.run_id,
+            self._policy,
+            require_succeeded=True,
+        )
+        inspected = await self._owner._inspect_present(context.expected)
+        if not _same_handle(inspected, self._worktree):
+            raise WorktreeReconciliationRequired()
+        payload = await self._owner._one_setup_checkpoint(
+            intent.run_id,
+            _SETUP_STEP_EVENT,
+            intent.id,
+        )
+        if payload is None:
+            raise WorktreeReconciliationRequired()
+        return _command_checkpoint_outcome(self._request, payload, self._policy)
+
+
 class _WorktreeAdapter:
     """Operation adapter for one exact worktree request.
 
@@ -673,6 +1151,225 @@ class _WorktreeAdapter:
         if inspection_cancelled:
             raise asyncio.CancelledError()
         return _worktree_outcome(context.request, context.identity)
+
+
+def _environment_evidence(plan: EnvironmentStagingPlan) -> tuple[Mapping[str, object], ...]:
+    return tuple(
+        {
+            "path_digest": item.path_digest,
+            "source_digest": item.source_digest,
+            "output_digest": item.output_digest,
+            "byte_count": item.byte_count,
+        }
+        for item in plan.evidence
+    )
+
+
+def _environment_request(context: _Context, plan: EnvironmentStagingPlan) -> OperationRequest:
+    files = _environment_evidence(plan)
+    evidence_digest = canonical_digest({"files": files})
+    payload: Mapping[str, object] = {
+        "project_id": str(context.run.project_id),
+        "run_id": str(context.run.id),
+        "policy_version": context.policy.version,
+        "worktree_name": context.identity.worktree_name,
+        "database_state": context.run.database_state.value,
+        "files": files,
+        "evidence_digest": evidence_digest,
+        "file_count": len(files),
+        "protocol_version": _PROTOCOL_VERSION,
+    }
+    return OperationRequest(
+        run_id=context.run.id,
+        kind=_ENVIRONMENT_KIND,
+        idempotency_key=(
+            f"forge-worktree-v{_PROTOCOL_VERSION}:{_ENVIRONMENT_KIND}:"
+            f"{context.run.project_id.hex}:{context.run.id.hex}:{context.policy.version}"
+        ),
+        request_digest=canonical_digest(payload),
+        request_payload=payload,
+    )
+
+
+def _environment_outcome(request: OperationRequest) -> OperationOutcome:
+    return OperationOutcome(
+        status=OperationStatus.SUCCEEDED,
+        remote_resource_id=str(request.request_payload["worktree_name"]),
+        payload={
+            "worktree_name": request.request_payload["worktree_name"],
+            "evidence_digest": request.request_payload["evidence_digest"],
+            "file_count": request.request_payload["file_count"],
+        },
+    )
+
+
+def _setup_command_request(
+    context: _Context,
+    command: CommandSpec,
+    *,
+    ordinal: int,
+    environment_keys: tuple[str, ...],
+) -> OperationRequest:
+    environment_keys_digest = canonical_digest({"keys": environment_keys})
+    payload: Mapping[str, object] = {
+        "project_id": str(context.run.project_id),
+        "run_id": str(context.run.id),
+        "policy_version": context.policy.version,
+        "worktree_name": context.identity.worktree_name,
+        "base_sha": _require_sha(context.run.base_sha),
+        "ordinal": ordinal,
+        "kind": command.kind.value,
+        "command_name": command.name,
+        "command_digest": command_spec_digest(command),
+        "environment_keys_digest": environment_keys_digest,
+        "protocol_version": _PROTOCOL_VERSION,
+    }
+    return OperationRequest(
+        run_id=context.run.id,
+        kind=_SETUP_COMMAND_KIND,
+        idempotency_key=(
+            f"forge-worktree-v{_PROTOCOL_VERSION}:{_SETUP_COMMAND_KIND}:"
+            f"{context.run.project_id.hex}:{context.run.id.hex}:"
+            f"{context.policy.version}:{ordinal}"
+        ),
+        request_digest=canonical_digest(payload),
+        request_payload=payload,
+    )
+
+
+_COMMAND_OUTCOME_KEYS = frozenset(
+    {
+        "ordinal",
+        "kind",
+        "command_name",
+        "command_digest",
+        "evidence_digest",
+        "policy_version",
+        "exit_code",
+        "timed_out",
+        "started_at",
+        "duration_ms",
+        "stdout_digest",
+        "stderr_digest",
+        "runner_mode",
+        "image_digest",
+        "network_enabled",
+        "stdout_original_byte_count",
+        "stderr_original_byte_count",
+        "stdout_truncated",
+        "stderr_truncated",
+        "unsandboxed",
+        "caller_cancelled",
+    }
+)
+
+
+def _command_checkpoint_outcome(
+    request: OperationRequest,
+    payload: Mapping[str, object],
+    policy: ProjectPolicy,
+) -> OperationOutcome:
+    expected_keys = (
+        frozenset(request.request_payload) | _COMMAND_OUTCOME_KEYS | {"operation_intent_id"}
+    )
+    if frozenset(payload) != expected_keys or any(
+        payload.get(key) != value for key, value in request.request_payload.items()
+    ):
+        raise WorktreeReconciliationRequired()
+    try:
+        result = CommandResult(
+            command_name=cast(str, payload["command_name"]),
+            kind=StepKind(cast(str, payload["kind"])),
+            command_digest=cast(str, payload["command_digest"]),
+            policy_version=cast(int, payload["policy_version"]),
+            exit_code=cast(int | None, payload["exit_code"]),
+            timed_out=cast(bool, payload["timed_out"]),
+            started_at=datetime.fromisoformat(cast(str, payload["started_at"])),
+            duration_ms=cast(int, payload["duration_ms"]),
+            stdout_digest=cast(str, payload["stdout_digest"]),
+            stderr_digest=cast(str, payload["stderr_digest"]),
+            runner_mode=RunnerMode(cast(str, payload["runner_mode"])),
+            image_digest=cast(str | None, payload["image_digest"]),
+            network_enabled=cast(bool, payload["network_enabled"]),
+            stdout_original_byte_count=cast(
+                int,
+                payload["stdout_original_byte_count"],
+            ),
+            stderr_original_byte_count=cast(
+                int,
+                payload["stderr_original_byte_count"],
+            ),
+            stdout_truncated=cast(bool, payload["stdout_truncated"]),
+            stderr_truncated=cast(bool, payload["stderr_truncated"]),
+            unsandboxed=cast(bool, payload["unsandboxed"]),
+        )
+        caller_cancelled = cast(bool, payload["caller_cancelled"])
+        if type(caller_cancelled) is not bool:
+            raise TypeError
+    except KeyError, TypeError, ValueError:
+        raise WorktreeReconciliationRequired() from None
+    _validate_command_result(request, result, policy)
+    outcome = _command_outcome(request, result, caller_cancelled)
+    if canonical_digest(outcome.payload) != canonical_digest(
+        {key: payload[key] for key in _COMMAND_OUTCOME_KEYS}
+    ):
+        raise WorktreeReconciliationRequired()
+    return outcome
+
+
+def _validate_command_result(
+    request: OperationRequest,
+    result: CommandResult,
+    policy: ProjectPolicy,
+) -> None:
+    payload = request.request_payload
+    if (
+        result.command_name != payload.get("command_name")
+        or result.kind.value != payload.get("kind")
+        or result.command_digest != payload.get("command_digest")
+        or result.policy_version != payload.get("policy_version")
+        or result.runner_mode is not policy.runner_mode
+        or result.unsandboxed != (policy.runner_mode is RunnerMode.TRUSTED_HOST)
+        or (policy.runner_mode.value == "trusted_host" and result.image_digest is not None)
+    ):
+        raise WorktreeReconciliationRequired()
+
+
+def _command_outcome(
+    request: OperationRequest,
+    result: CommandResult,
+    caller_cancelled: bool,
+) -> OperationOutcome:
+    payload: Mapping[str, object] = {
+        "ordinal": request.request_payload["ordinal"],
+        "kind": result.kind.value,
+        "command_name": result.command_name,
+        "command_digest": result.command_digest,
+        "evidence_digest": result.evidence_digest,
+        "policy_version": result.policy_version,
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "started_at": result.started_at.isoformat(),
+        "duration_ms": result.duration_ms,
+        "stdout_digest": result.stdout_digest,
+        "stderr_digest": result.stderr_digest,
+        "runner_mode": result.runner_mode.value,
+        "image_digest": result.image_digest,
+        "network_enabled": result.network_enabled,
+        "stdout_original_byte_count": result.stdout_original_byte_count,
+        "stderr_original_byte_count": result.stderr_original_byte_count,
+        "stdout_truncated": result.stdout_truncated,
+        "stderr_truncated": result.stderr_truncated,
+        "unsandboxed": result.unsandboxed,
+        "caller_cancelled": caller_cancelled,
+    }
+    return OperationOutcome(
+        status=OperationStatus.SUCCEEDED,
+        remote_resource_id=(
+            f"{request.request_payload['worktree_name']}:{request.request_payload['ordinal']}"
+        ),
+        payload=payload,
+    )
 
 
 def _validate_public_inputs(value: object, policy: object) -> None:
@@ -1171,27 +1868,36 @@ def _validate_event_payload(
     event_type: str,
     event_payload: Mapping[str, object],
 ) -> None:
-    if event_type not in {
+    worktree_events = {
         _PARTIAL_EVENT,
         _CREATED_EVENT,
         _RECONCILED_EVENT,
         _DATABASE_ACTIVE_EVENT,
         _DATABASE_RETRY_EVENT,
         _FAILED_EVENT,
+    }
+    if event_type in worktree_events:
+        _parse_checkpoints(
+            (
+                RunEvent(
+                    run_id=context.run.id,
+                    run_version=context.run.version + 1,
+                    event_type=event_type,
+                    payload=event_payload,
+                ),
+            ),
+            context.run,
+            context.request,
+        )
+        return
+    if event_type not in {
+        _ENVIRONMENT_STAGED_EVENT,
+        _SETUP_STEP_EVENT,
+        _PREPARED_EVENT,
     }:
         raise WorktreeIntegrityError()
-    _parse_checkpoints(
-        (
-            RunEvent(
-                run_id=context.run.id,
-                run_version=context.run.version + 1,
-                event_type=event_type,
-                payload=event_payload,
-            ),
-        ),
-        context.run,
-        context.request,
-    )
+    if not isinstance(event_payload, Mapping):
+        raise WorktreeIntegrityError()
 
 
 def _expected_secret_id(identity: WorktreeIdentity) -> str:
