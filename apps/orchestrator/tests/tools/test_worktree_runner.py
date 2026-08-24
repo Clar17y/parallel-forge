@@ -11,7 +11,13 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from forge.application.ports.runner import CommandResult, CommandTerminalResult, RunCommandRequest
+from forge.application.ports.runner import (
+    CommandResult,
+    CommandTerminalResult,
+    RunCommandRequest,
+    WorktreeRunnerFactoryPort,
+    WorktreeRunnerPort,
+)
 from forge.application.ports.worktrees import ManagedWorktree
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.domain.resource import WorktreeIdentity
@@ -53,6 +59,23 @@ def test_terminal_result_is_immutable_and_validated() -> None:
         pass
     else:
         raise AssertionError("terminal result must be immutable")
+
+
+def test_factory_contract_exposes_compatibility_and_terminal_methods(
+    managed_case: tuple[ControlledGit, ManagedWorktree, ProjectPolicy, _Process],
+) -> None:
+    controlled, worktree, policy, _ = managed_case
+    factory: WorktreeRunnerFactoryPort = WorktreeRunnerFactory(
+        controlled,
+        process_runner=_Process(),
+        artifact_store=_Artifacts(),
+        audit=_Audit(),
+    )
+    bound: WorktreeRunnerPort = factory.create(worktree, policy)
+
+    assert isinstance(bound, WorktreeRunnerPort)
+    assert callable(bound.run)
+    assert callable(bound.run_terminal)
 
 
 @dataclass

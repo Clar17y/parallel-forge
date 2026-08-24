@@ -108,6 +108,18 @@ class _FakeAudit:
         self.calls.append((event_type, priority, payload))
 
 
+class _BlockingAttemptAudit(_FakeAudit):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    async def record(self, event_type: str, *, priority: str, payload: dict[str, object]) -> None:
+        self.started.set()
+        await asyncio.to_thread(self.release.wait, 5)
+        await super().record(event_type, priority=priority, payload=payload)
+
+
 class _FakeTelemetry:
     class _Span:
         def __enter__(self) -> _FakeTelemetry._Span:
@@ -185,6 +197,39 @@ def test_trusted_host_fails_closed_when_attempt_audit_fails(tmp_path: Path) -> N
 
     with pytest.raises(RuntimeError, match="^runner audit failed$"):
         asyncio.run(runner.run(RunCommandRequest(command_name="named-lint", kind=StepKind.LINT)))
+    assert process.calls == []
+
+
+@pytest.mark.asyncio
+async def test_trusted_host_cancellation_during_attempt_audit_does_not_launch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    process = _FakeProcess()
+    audit = _BlockingAttemptAudit()
+    runner = TrustedHostRunner(
+        policy=_policy(),
+        root=CanonicalRoot(root),
+        process_runner=process,
+        artifact_store=_FakeArtifacts(),
+        audit=audit,
+        telemetry=_FakeTelemetry(),
+    )
+
+    task = asyncio.create_task(
+        runner.run_terminal(RunCommandRequest(command_name="named-lint", kind=StepKind.LINT))
+    )
+    assert await asyncio.to_thread(audit.started.wait, 1)
+    task.cancel()
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    audit.release.set()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
     assert process.calls == []
 
 

@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from forge.domain.policy import RunnerMode, StepKind
 from forge.domain.validation import require_evidence_digest, validate_runner_image_reference
@@ -170,6 +170,11 @@ class TerminalRunnerPort(Protocol):
     async def run_terminal(self, request: RunCommandRequest) -> CommandTerminalResult: ...
 
 
+@runtime_checkable
+class WorktreeRunnerPort(RunnerPort, TerminalRunnerPort, Protocol):
+    """Compatibility and terminal runner methods required by E2 orchestration."""
+
+
 class WorktreeRunnerFactoryPort(Protocol):
     """Construct a runner bound to one exact retained managed worktree."""
 
@@ -177,7 +182,7 @@ class WorktreeRunnerFactoryPort(Protocol):
         self,
         worktree: ManagedWorktree,
         policy: ProjectPolicy,
-    ) -> RunnerPort: ...
+    ) -> WorktreeRunnerPort: ...
 
 
 class RunnerAuditSink(Protocol):
@@ -200,4 +205,5 @@ __all__ = [
     "RunnerPort",
     "TerminalRunnerPort",
     "WorktreeRunnerFactoryPort",
+    "WorktreeRunnerPort",
 ]

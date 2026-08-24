@@ -152,8 +152,11 @@ def test_bound_runner_reads_e2a_staged_file_as_fixed_container_user(tmp_path: Pa
     (repository / "config" / ".keep").write_text("\n", encoding="utf-8")
     (repository / "tests").mkdir()
     (repository / "tests" / "e2b_reader.py").write_text(
+        "import os\n"
         "from pathlib import Path\n"
         "assert Path.cwd() == Path('/workspace')\n"
+        "assert os.getuid() == 10001\n"
+        "assert Path('/workspace/.git').is_file()\n"
         "assert Path('config/local.env').read_text(encoding='utf-8').strip() == 'FORGE_SECRET=secret-value'\n"
         "print('FORGE_E2B_OK')\n",
         encoding="utf-8",
@@ -235,10 +238,13 @@ def test_bound_runner_reads_e2a_staged_file_as_fixed_container_user(tmp_path: Pa
         runner.run_terminal(RunCommandRequest(command_name="e2b-reader", kind=StepKind.TEST))
     )
     stdout_bytes = asyncio.run(artifacts.open_bytes(terminal.result.stdout_digest))
+    stderr_bytes = asyncio.run(artifacts.open_bytes(terminal.result.stderr_digest))
     stdout = json.loads(stdout_bytes)
+    stderr = json.loads(stderr_bytes)
     assert terminal.result.exit_code == 0
     assert terminal.result.runner_mode is RunnerMode.DOCKER
     assert terminal.result.unsandboxed is False
     assert stdout["text"].strip() == "FORGE_E2B_OK"
+    assert stderr["text"] == ""
     assert "secret-value" not in repr(terminal)
     assert b"secret-value" not in stdout_bytes

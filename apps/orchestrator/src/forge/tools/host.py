@@ -146,6 +146,8 @@ class TrustedHostRunner:
         _, caller_cancelled = await await_deferred_cancellation(
             self._record_audit("runner.trusted_host.attempt", audit_payload)
         )
+        if caller_cancelled:
+            raise asyncio.CancelledError()
         started_at = self._clock.now()
         started = self._monotonic()
         with self._telemetry.start_span(

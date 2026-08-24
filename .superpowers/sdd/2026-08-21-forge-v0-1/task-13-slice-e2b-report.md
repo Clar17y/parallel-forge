@@ -22,12 +22,50 @@ Before production edits, the new focused test was run:
 It failed during collection with:
 `ImportError: cannot import name 'CommandTerminalResult' from forge.application.ports.runner`.
 
+## Review repairs and RED/GREEN evidence
+
+The independent review identified three narrow E2b repairs. Each production
+repair remained within the existing runner/port/smoke boundaries:
+
+- Trusted-host cancellation during a blocked attempt audit initially launched
+  one process after the audit returned with cancellation observed. The RED
+  command was:
+
+  ```text
+  .\\.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/tools/test_host_runner.py -q -k attempt_audit
+  1 failed, 1 passed, 4 deselected
+  ```
+
+  The failing assertion observed one `('lint', '--check')` process call where
+  zero was required. `TrustedHostRunner` now raises `CancelledError` only
+  after the deferred attempt-audit operation completes and before any launch.
+  Audit failure still wins over cancellation. The repair regression passes.
+- The factory protocol's return type exposed only `RunnerPort`, so E2c could
+  not type-call `run_terminal`. The RED command:
+
+  ```text
+  .\\.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/tools/test_worktree_runner.py -q -k factory_contract
+  ImportError: cannot import name 'WorktreeRunnerPort' from forge.application.ports.runner
+  ```
+
+  `WorktreeRunnerPort` now combines compatibility and terminal methods,
+  `WorktreeRunnerFactoryPort.create` returns it, and the regression checks
+  both the static annotation and runtime `isinstance` contract.
+- The real smoke reader now explicitly asserts `Path.cwd() == /workspace`,
+  `os.getuid() == 10001`, and `/workspace/.git` is a file (the linked
+  worktree discriminator; the repository root has a `.git` directory). It
+  reads the staged file, prints only `FORGE_E2B_OK`, and the host assertion
+  requires an empty stderr artifact. This strengthened Docker path could not
+  produce a local RED because the sandbox Docker daemon is inaccessible;
+  the post-repair supported-host run is delegated to the root verifier.
+
 ## Implemented contracts and mechanics
 
 - Added immutable, slots-based `CommandTerminalResult` with exactly
   `result: CommandResult` and `caller_cancelled: bool`, including type and
-  exact-boolean validation. Added `TerminalRunnerPort` and the narrow
-  `WorktreeRunnerFactoryPort`; `RunnerPort.run` remains unchanged.
+  exact-boolean validation. Added `TerminalRunnerPort`, the combined
+  `WorktreeRunnerPort`, and the narrow `WorktreeRunnerFactoryPort`; `RunnerPort.run`
+  remains unchanged.
 - Added `WorktreeRunnerFactory` and `WorktreeBoundRunner`. Factory creation
   accepts only a `ManagedWorktree` and exact immutable `ProjectPolicy`, reuses
   the `CanonicalRoot` owned by `ControlledGit`, and has no filesystem or
@@ -76,7 +114,7 @@ Focused E2b runner evidence:
 
 ```text
 .\\.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/tools/test_docker_runner.py apps/orchestrator/tests/tools/test_host_runner.py apps/orchestrator/tests/tools/test_worktree_runner.py -q
-39 passed in 13.35s
+41 passed in 14.17s
 ```
 
 Affected runner, process, policy, Git, worktree, environment staging,
@@ -84,20 +122,20 @@ database, path containment, repository inspection, artifact, redaction,
 telemetry, and E2b suites:
 
 ```text
-533 passed, 36 skipped in 245.50s (0:04:05)
+535 passed, 36 skipped in 245.84s (0:04:05)
 ```
 
 Configured full pytest suite:
 
 ```text
-1441 passed, 54 skipped in 368.96s (0:06:08)
+1443 passed, 54 skipped in 366.83s (0:06:06)
 ```
 
 Candidate static checks after the final code change:
 
 ```text
-Ruff check (7 changed implementation/test/integration files): All checks passed!
-Ruff format --check: 7 files already formatted
+Ruff check (final repair-touched implementation/test/integration files): All checks passed!
+Ruff format --check: 5 repair-touched files already formatted
 Mypy apps/orchestrator/src/forge: Success: no issues found in 111 source files
 git diff --check: passed
 ```
@@ -107,26 +145,23 @@ reported one unrelated access-denied warning while still returning
 `All checks passed!`, so the candidate-scoped check above is the authoritative
 static result.
 
-Real Docker proof was run independently by the root agent with the required
-escalated daemon access:
+The root agent's exact Docker evidence on commit `8aa7541` (before these
+review repairs) was run with the required escalated daemon access:
 
 ```text
 tests/integration/test_runner_container.py -q -m docker
 2 passed in 10.47s
 ```
 
-That run included the existing pinned-toolchain smoke and the new managed
-worktree E2a staged-file smoke. The latter read the staged file as fixed
-numeric UID `10001`, used `/workspace`, exited zero with only the fixed
+That pre-repair run included the existing pinned-toolchain smoke and the
+managed worktree E2a staged-file smoke. The latter read the staged file as
+fixed numeric UID `10001`, used `/workspace`, exited zero with the fixed
 success marker, and verified the secret was absent from output/artifacts and
-terminal representation. The result was captured immediately before a final
-parser-only hardening that requires Docker's explicit exact-name absence
-diagnostic instead of treating an ambiguous empty response as absence; it
-does not change the successful container argv or fixed-UID path. My
-sandbox-only attempt of the same module reported
+terminal representation. It is recorded as pre-repair evidence only; the
+strengthened UID/linked-worktree/empty-stderr assertions require the root's
+post-repair run. My sandbox-only attempt of the same module reported
 `2 skipped` because Docker's named pipe was inaccessible (`Access is denied`);
-this is a local permission limitation, not a passing claim. The independent
-root result is the supported-host proof.
+this is a local permission limitation, not a passing claim.
 
 WSL/POSIX verification was attempted with the worktree's WSL distribution;
 the platform service returned `WSL/Service/E_ACCESSDENIED`, so no WSL result
