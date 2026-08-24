@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from enum import StrEnum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from forge.domain.paths import normalize_policy_paths, union_policy_paths
 from forge.domain.review import FindingSeverity, ReviewFinding
 
 _SHELL_META = re.compile(r"[\r\n;&|$`()<>`]")
@@ -221,11 +222,7 @@ class ProjectPolicy(BaseModel):
     @field_validator("allowed_environment_files", "secret_paths")
     @classmethod
     def policy_paths_must_be_safe(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(set(value)) != len(value):
-            raise ValueError("policy paths must not contain duplicates")
-        for policy_path in value:
-            _validate_relative_policy_path(policy_path)
-        return value
+        return normalize_policy_paths(value)
 
     @field_validator("allowed_merge_methods")
     @classmethod
@@ -271,6 +268,12 @@ class ProjectPolicy(BaseModel):
             if command.required and command.kind.value in _VALIDATION_KINDS
         )
 
+    @property
+    def effective_secret_paths(self) -> tuple[str, ...]:
+        """Configured secret paths followed by allowed environment files."""
+
+        return union_policy_paths(self.secret_paths, self.allowed_environment_files)
+
     def blocks_publication(self, findings: Iterable[ReviewFinding]) -> bool:
         """Whether unresolved findings block PR publication under this policy."""
 
@@ -291,19 +294,6 @@ class ProjectPolicy(BaseModel):
 def _reject_shell_text(value: str, field_name: str) -> None:
     if _SHELL_META.search(value):
         raise ValueError(f"{field_name} must not contain shell metacharacters")
-
-
-def _validate_relative_policy_path(value: str) -> None:
-    if not value or not value.strip():
-        raise ValueError("policy paths must not be blank")
-
-    normalized = value.replace("\\", "/")
-    if normalized.startswith("/") or re.match(r"^[A-Za-z]:($|/)", normalized):
-        raise ValueError("policy paths must be relative")
-
-    parts = PurePosixPath(normalized).parts
-    if ".." in parts:
-        raise ValueError("policy paths must not contain traversal")
 
 
 __all__ = [

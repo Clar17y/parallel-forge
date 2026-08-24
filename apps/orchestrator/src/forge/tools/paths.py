@@ -5,14 +5,16 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import ctypes
+import hashlib
 import os
 import re
+import secrets
 import stat
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import Any, BinaryIO, NamedTuple
+from typing import Any, BinaryIO, NamedTuple, cast
 
 from forge.application.ports.repository import PathEscape, RepositoryAccessDenied
 
@@ -21,6 +23,13 @@ _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def _current_posix_uid() -> int:
+    getter = cast(Callable[[], int], getattr(os, "getuid"))  # noqa: B009
+    return int(getter())
+
+
 _TARGET_QUARANTINE_NAME = ".forge-quarantine"
 _REGISTRATION_QUARANTINE_NAME = ".forge-worktree-quarantine"
 _QUARANTINE_SEAL = object()
@@ -380,6 +389,7 @@ if os.name == "nt":
     _ERROR_FILE_NOT_FOUND = 2
     _ERROR_PATH_NOT_FOUND = 3
     _ERROR_INVALID_FUNCTION = 1
+    _ERROR_ACCESS_DENIED = 5
     _ERROR_NOT_SUPPORTED = 50
     _ERROR_FILE_EXISTS = 80
     _ERROR_ALREADY_EXISTS = 183
@@ -885,13 +895,23 @@ class _WindowsPathApi:
     def open_mutation_lock(self, path: Path) -> int:
         """Create/open the exact repository mutation lock without sharing."""
 
+        return self._open_mutation_lock(path, _OPEN_ALWAYS)
+
+    def open_existing_mutation_lock(self, path: Path) -> int:
+        """Open the existing mutation lock without creating repository metadata."""
+
+        return self._open_mutation_lock(path, _OPEN_EXISTING)
+
+    def _open_mutation_lock(self, path: Path, disposition: int) -> int:
+        """Open one exact lock with the caller-selected create policy."""
+
         ctypes.set_last_error(0)
         raw = self._create_file(
             str(path),
             _GENERIC_READ | _GENERIC_WRITE,
             0,
             None,
-            _OPEN_ALWAYS,
+            disposition,
             _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
             None,
         )
@@ -1341,7 +1361,13 @@ class _WindowsPathApi:
             raise
 
     def open_secret_file(
-        self, parent_handle: int, name: str, *, access: int, missing_ok: bool
+        self,
+        parent_handle: int,
+        name: str,
+        *,
+        access: int,
+        missing_ok: bool,
+        require_single_link: bool = True,
     ) -> int | None:
         """Open one regular, owner-sealed, single-link secret file."""
 
@@ -1354,7 +1380,7 @@ class _WindowsPathApi:
         if handle is None:
             return None
         try:
-            if int(self.information(handle).link_count) != 1:
+            if require_single_link and int(self.information(handle).link_count) != 1:
                 raise RepositoryAccessDenied("secret path has unexpected links")
             return handle
         except BaseException:
@@ -1444,7 +1470,7 @@ class _WindowsPathApi:
         if self._flush_file_buffers(handle):
             return
         error = ctypes.get_last_error()
-        if error in {_ERROR_INVALID_FUNCTION, _ERROR_NOT_SUPPORTED}:
+        if error in {_ERROR_INVALID_FUNCTION, _ERROR_ACCESS_DENIED, _ERROR_NOT_SUPPORTED}:
             return
         raise OSError(error or 1, "secret directory flush failed")
 
@@ -1536,6 +1562,24 @@ class _WindowsPathApi:
         if setter is None:
             raise RepositoryAccessDenied("native file disposition is unavailable")
         info = _FileDispositionInfoEx(_FILE_DISPOSITION_FLAGS)
+        ctypes.set_last_error(0)
+        if not setter(
+            handle,
+            _FILE_DISPOSITION_INFORMATION_EX_CLASS,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            raise RepositoryAccessDenied("native file disposition failed")
+
+    def dispose_link(self, handle: int) -> None:
+        """Delete only the opened directory entry for a staging hard link."""
+
+        setter = self._set_file_information_by_handle
+        if setter is None:
+            raise RepositoryAccessDenied("native file disposition is unavailable")
+        info = _FileDispositionInfoEx(
+            _FILE_DISPOSITION_DELETE | _FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE
+        )
         ctypes.set_last_error(0)
         if not setter(
             handle,
@@ -1780,7 +1824,7 @@ class CanonicalRoot:
 
     @contextlib.contextmanager
     def _open_managed_worktree(
-        self, leaf: str, registration_basename: str
+        self, leaf: str, registration_basename: str, *, create_lock: bool = True
     ) -> Iterator[_DirectoryAccess]:
         """Retain one exact managed worktree and its linked Git registration."""
 
@@ -1791,7 +1835,7 @@ class CanonicalRoot:
             opener = self._open_windows_managed_worktree
         else:
             opener = self._open_posix_managed_worktree
-        with opener(target_name, registration_name, normalized) as access:
+        with opener(target_name, registration_name, normalized, create_lock=create_lock) as access:
             active_token = _ACTIVE_DIRECTORY_ACCESS.set(access)
             try:
                 yield access
@@ -3325,7 +3369,12 @@ class CanonicalRoot:
 
     @contextlib.contextmanager
     def _open_windows_managed_worktree(
-        self, target_name: str, registration_name: str, normalized: str
+        self,
+        target_name: str,
+        registration_name: str,
+        normalized: str,
+        *,
+        create_lock: bool = True,
     ) -> Iterator[_DirectoryAccess]:
         """Retain a Windows worktree, registration, proofs, and mutation lock."""
 
@@ -3346,7 +3395,11 @@ class CanonicalRoot:
             git_handle = api.open_directory(git_path)
             resources.append(git_handle)
             lock_path = git_path / "forge-worktree.lock"
-            lock_handle = api.open_mutation_lock(lock_path)
+            lock_handle = (
+                api.open_mutation_lock(lock_path)
+                if create_lock
+                else api.open_existing_mutation_lock(lock_path)
+            )
             resources.append(lock_handle)
 
             worktree_parent_path = root_path / ".worktrees"
@@ -3438,7 +3491,12 @@ class CanonicalRoot:
 
     @contextlib.contextmanager
     def _open_posix_managed_worktree(
-        self, target_name: str, registration_name: str, normalized: str
+        self,
+        target_name: str,
+        registration_name: str,
+        normalized: str,
+        *,
+        create_lock: bool = True,
     ) -> Iterator[_DirectoryAccess]:
         """Retain a POSIX worktree, registration, proofs, and mutation lock."""
 
@@ -3463,7 +3521,11 @@ class CanonicalRoot:
             git_descriptor = _open_posix_directory_at(root_descriptor, ".git")
             resources.append(git_descriptor)
             lock_path = git_path / "forge-worktree.lock"
-            lock_descriptor = _open_posix_mutation_lock(git_descriptor)
+            lock_descriptor = (
+                _open_posix_mutation_lock(git_descriptor)
+                if create_lock
+                else _open_existing_posix_mutation_lock(git_descriptor)
+            )
             resources.append(lock_descriptor)
 
             worktree_parent_path = self._path / ".worktrees"
@@ -4881,11 +4943,19 @@ def _open_or_create_posix_directory_at(parent: int, name: str) -> int:
 
 
 def _open_posix_mutation_lock(git_descriptor: int) -> int:
+    return _open_posix_mutation_lock_with_flags(git_descriptor, os.O_CREAT)
+
+
+def _open_existing_posix_mutation_lock(git_descriptor: int) -> int:
+    return _open_posix_mutation_lock_with_flags(git_descriptor, 0)
+
+
+def _open_posix_mutation_lock_with_flags(git_descriptor: int, creation_flags: int) -> int:
     fcntl_api: Any = __import__("fcntl")
     try:
         descriptor = os.open(
             "forge-worktree.lock",
-            os.O_CREAT | os.O_RDWR | _O_NOFOLLOW | _O_CLOEXEC,
+            creation_flags | os.O_RDWR | _O_NOFOLLOW | _O_CLOEXEC,
             mode=0o600,
             dir_fd=git_descriptor,
         )
@@ -5105,6 +5175,472 @@ def _open_or_create_windows_directory(
         except OSError:
             raise RepositoryAccessDenied("repository quarantine root is unavailable") from None
         return opener(path)
+
+
+class _StagingParent:
+    """Internal retained handle for one existing worktree destination parent."""
+
+    __slots__ = ("base", "handles", "path", "windows")
+
+    def __init__(
+        self,
+        *,
+        base: int,
+        handles: list[int],
+        path: Path,
+        windows: _WindowsPathApi | None,
+    ) -> None:
+        self.base = base
+        self.handles = handles
+        self.path = path
+        self.windows = windows
+
+    @property
+    def handle(self) -> int:
+        return self.handles[-1] if self.handles else self.base
+
+
+@contextlib.contextmanager
+def _open_staging_parent(
+    root: CanonicalRoot,
+    access: _DirectoryAccess,
+    parts: tuple[str, ...],
+) -> Iterator[_StagingParent]:
+    """Walk existing parents relative to the retained target handle."""
+
+    root._verify_directory_access(access.normalized, access)
+    handles: list[int] = []
+    current_path = access.path
+    windows: _WindowsPathApi | None = None
+    try:
+        if os.name == "nt":
+            windows = root._windows
+            if windows is None:
+                raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+            current = access.capability
+            for part in parts:
+                current = windows.open_managed_directory_child(current, part)
+                handles.append(current)
+                current_path /= part
+        else:
+            current = access.capability
+            for part in parts:
+                current = _open_posix_directory_at(current, part)
+                handles.append(current)
+                current_path /= part
+        parent = _StagingParent(
+            base=access.capability,
+            handles=handles,
+            path=current_path,
+            windows=windows,
+        )
+        root._verify_directory_access(access.normalized, access)
+        yield parent
+        root._verify_directory_access(access.normalized, access)
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("staging destination is unavailable") from None
+    finally:
+        closer = windows.close if windows is not None else os.close
+        for handle in reversed(handles):
+            with contextlib.suppress(OSError, ValueError):
+                closer(handle)
+
+
+def _read_staging_posix(
+    parent: _StagingParent, name: str, maximum: int, *, require_acl: bool
+) -> tuple[bool, bytes]:
+    descriptor: int | None = None
+    try:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC,
+                dir_fd=parent.handle,
+            )
+        except FileNotFoundError:
+            return False, b""
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or int(before.st_nlink) != 1
+            or int(before.st_uid) != _current_posix_uid()
+        ):
+            raise RepositoryAccessDenied("staging destination is unsafe")
+        mode = stat.S_IMODE(before.st_mode)
+        if require_acl:
+            if sys.platform != "linux" or not _verify_linux_staging_acl(descriptor):
+                raise RepositoryAccessDenied("staging destination permissions are unsafe")
+        elif mode != 0o600:
+            raise RepositoryAccessDenied("staging destination permissions are unsafe")
+        data = _read_staging_descriptor(descriptor, maximum)
+        after = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or int(after.st_nlink) != 1
+            or (int(after.st_dev), int(after.st_ino)) != (int(before.st_dev), int(before.st_ino))
+            or int(after.st_size) != int(before.st_size)
+            or int(getattr(after, "st_mtime_ns", 0)) != int(getattr(before, "st_mtime_ns", 0))
+            or int(getattr(after, "st_ctime_ns", 0)) != int(getattr(before, "st_ctime_ns", 0))
+        ):
+            raise RepositoryAccessDenied("staging destination changed")
+        return True, data
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("staging destination is unavailable") from None
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError, ValueError):
+                os.close(descriptor)
+
+
+def _read_staging_windows(parent: _StagingParent, name: str, maximum: int) -> tuple[bool, bytes]:
+    api = parent.windows
+    if api is None:
+        raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+    handle: int | None = None
+    try:
+        # Some Windows NT relative-open paths report STATUS_INVALID_PARAMETER
+        # for a missing child.  A lexical absence check distinguishes that
+        # benign reconciliation state while native opening still proves every
+        # present entry without following reparses.
+        if not os.path.lexists(parent.path / name):
+            return False, b""
+        handle = api.open_secret_file(
+            parent.handle,
+            name,
+            access=_GENERIC_READ | _FILE_READ_ATTRIBUTES | _READ_CONTROL | _SYNCHRONIZE,
+            missing_ok=True,
+        )
+        if handle is None:
+            return False, b""
+        before = api.information(handle)
+        identity = tuple(api.identity(handle))
+        data = api.read_secret(handle, maximum)
+        after = api.information(handle)
+        if (
+            int(before.link_count) != 1
+            or int(after.link_count) != 1
+            or tuple(api.identity(handle)) != identity
+            or ((int(after.size_high) << 32) | int(after.size_low))
+            != ((int(before.size_high) << 32) | int(before.size_low))
+            or (
+                int(after.last_write_time.high),
+                int(after.last_write_time.low),
+            )
+            != (
+                int(before.last_write_time.high),
+                int(before.last_write_time.low),
+            )
+        ):
+            raise RepositoryAccessDenied("staging destination changed")
+        return True, data
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("staging destination is unavailable") from None
+    finally:
+        if handle is not None:
+            api.close(handle)
+
+
+def _read_staging(
+    parent: _StagingParent,
+    name: str,
+    maximum: int,
+    *,
+    require_acl: bool,
+) -> tuple[bool, bytes]:
+    if parent.windows is not None:
+        return _read_staging_windows(parent, name, maximum)
+    return _read_staging_posix(parent, name, maximum, require_acl=require_acl)
+
+
+def _publish_staging_posix(
+    parent: _StagingParent,
+    name: str,
+    data: bytes,
+    *,
+    require_acl: bool,
+    maximum: int,
+) -> None:
+    if require_acl and sys.platform != "linux":
+        raise RepositoryAccessDenied("Docker staging permissions are unsupported")
+    temp_name: str | None = None
+    descriptor: int | None = None
+    try:
+        for _attempt in range(8):
+            candidate = f".forge-env-{secrets.token_hex(12)}"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC,
+                    0o600,
+                    dir_fd=parent.handle,
+                )
+            except FileExistsError:
+                continue
+            temp_name = candidate
+            break
+        if descriptor is None or temp_name is None:
+            raise RepositoryAccessDenied("staging temporary file is unavailable")
+        if len(data) > maximum:
+            raise RepositoryAccessDenied("staging output is oversized")
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or int(metadata.st_nlink) != 1
+            or int(metadata.st_uid) != _current_posix_uid()
+        ):
+            raise RepositoryAccessDenied("staging temporary file is unsafe")
+        _write_staging_descriptor(descriptor, data)
+        os.fsync(descriptor)
+        if require_acl:
+            _set_linux_staging_acl(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        try:
+            os.link(
+                temp_name,
+                name,
+                src_dir_fd=parent.handle,
+                dst_dir_fd=parent.handle,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            present, existing = _read_staging_posix(parent, name, maximum, require_acl=require_acl)
+            if not present or existing != data:
+                raise RepositoryAccessDenied("staging destination requires reconciliation")
+            return
+        os.unlink(temp_name, dir_fd=parent.handle)
+        temp_name = None
+        os.fsync(parent.handle)
+        present, existing = _read_staging_posix(parent, name, maximum, require_acl=require_acl)
+        if not present or existing != data:
+            raise RepositoryAccessDenied("staging destination verification failed")
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("staging publication failed") from None
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError, ValueError):
+                os.close(descriptor)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=parent.handle)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                raise RepositoryAccessDenied("staging temporary cleanup failed") from None
+
+
+def _publish_staging_windows(
+    parent: _StagingParent,
+    name: str,
+    data: bytes,
+    *,
+    maximum: int,
+) -> None:
+    api = parent.windows
+    if api is None:
+        raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+    temp_name: str | None = None
+    handle: int | None = None
+    try:
+        for _attempt in range(8):
+            candidate = f".forge-env-{secrets.token_hex(12)}"
+            try:
+                handle = api.create_secret_file(parent.path / candidate, candidate)
+            except OSError:
+                continue
+            temp_name = candidate
+            break
+        if handle is None or temp_name is None:
+            raise RepositoryAccessDenied("staging temporary file is unavailable")
+        if len(data) > maximum:
+            raise RepositoryAccessDenied("staging output is oversized")
+        api.write_secret(handle, data)
+        try:
+            api.link_secret(parent.path / temp_name, parent.path / name)
+        except FileExistsError:
+            api.close(handle)
+            handle = None
+            present, existing = _read_staging_windows(parent, name, maximum)
+            if not present or existing != data:
+                raise RepositoryAccessDenied("staging destination requires reconciliation")
+            return
+        # The hard-link publication leaves the random temporary name as a
+        # second link until it is explicitly disposed.  Remove that exact
+        # temporary before reopening the final entry so its single-link proof
+        # is meaningful and never leave a credential-bearing temp behind.
+        api.dispose_link(handle)
+        api.close(handle)
+        handle = None
+        temp_name = None
+        api.flush_secret_directory(parent.handle)
+        present, existing = _read_staging_windows(parent, name, maximum)
+        if not present or existing != data:
+            raise RepositoryAccessDenied("staging destination verification failed")
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("staging publication failed") from None
+    finally:
+        if handle is not None:
+            try:
+                api.dispose(handle)
+            except OSError, RepositoryAccessDenied:
+                raise RepositoryAccessDenied("staging temporary cleanup failed") from None
+            finally:
+                api.close(handle)
+        if temp_name is not None:
+            cleanup: int | None = None
+            try:
+                cleanup = api.open_secret_file(
+                    parent.handle,
+                    temp_name,
+                    access=_DELETE | _FILE_READ_ATTRIBUTES | _READ_CONTROL | _SYNCHRONIZE,
+                    missing_ok=True,
+                    require_single_link=False,
+                )
+                if cleanup is not None:
+                    api.dispose_link(cleanup)
+            except OSError, RepositoryAccessDenied:
+                raise RepositoryAccessDenied("staging temporary cleanup failed") from None
+            finally:
+                if cleanup is not None:
+                    api.close(cleanup)
+
+
+def _publish_staging(
+    parent: _StagingParent,
+    name: str,
+    data: bytes,
+    *,
+    require_acl: bool,
+    maximum: int,
+) -> None:
+    if parent.windows is not None:
+        _publish_staging_windows(parent, name, data, maximum=maximum)
+    else:
+        _publish_staging_posix(
+            parent,
+            name,
+            data,
+            require_acl=require_acl,
+            maximum=maximum,
+        )
+
+
+def _read_staging_descriptor(descriptor: int, maximum: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while total <= maximum:
+        chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > maximum:
+            raise RepositoryAccessDenied("staging source is oversized")
+    return b"".join(chunks)
+
+
+def _write_staging_descriptor(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        written = os.write(descriptor, view[offset : offset + 64 * 1024])
+        if written <= 0:
+            raise RepositoryAccessDenied("staging write made no progress")
+        offset += written
+
+
+_LIBACL: ctypes.CDLL | None = None
+_LINUX_STAGING_ACL = b"u::rw-,u:10001:r--,g::---,m::r--,o::---"
+
+
+def _load_libacl() -> ctypes.CDLL:
+    global _LIBACL
+    if _LIBACL is None:
+        try:
+            _LIBACL = ctypes.CDLL("libacl.so.1", use_errno=True)
+            _LIBACL.acl_from_text.argtypes = [ctypes.c_char_p]
+            _LIBACL.acl_from_text.restype = ctypes.c_void_p
+            _LIBACL.acl_set_fd.argtypes = [ctypes.c_int, ctypes.c_void_p]
+            _LIBACL.acl_set_fd.restype = ctypes.c_int
+            _LIBACL.acl_get_fd.argtypes = [ctypes.c_int]
+            _LIBACL.acl_get_fd.restype = ctypes.c_void_p
+            _LIBACL.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ssize_t)]
+            _LIBACL.acl_to_text.restype = ctypes.c_void_p
+            _LIBACL.acl_free.argtypes = [ctypes.c_void_p]
+            _LIBACL.acl_free.restype = ctypes.c_int
+        except AttributeError, OSError, TypeError:
+            raise RepositoryAccessDenied("Linux staging ACL support is unavailable") from None
+    return _LIBACL
+
+
+def _acl_text(lib: ctypes.CDLL, acl: ctypes.c_void_p) -> str:
+    length = ctypes.c_ssize_t()
+    raw = lib.acl_to_text(acl, ctypes.byref(length))
+    if not raw or length.value <= 0:
+        raise RepositoryAccessDenied("Linux staging ACL verification failed")
+    try:
+        return ctypes.string_at(raw, int(length.value)).decode("ascii")
+    except UnicodeDecodeError, ValueError:
+        raise RepositoryAccessDenied("Linux staging ACL verification failed") from None
+    finally:
+        lib.acl_free(raw)
+
+
+def _verify_linux_staging_acl(descriptor: int) -> bool:
+    if sys.platform != "linux":
+        return False
+    try:
+        lib = _load_libacl()
+        acl = lib.acl_get_fd(descriptor)
+        if not acl:
+            return False
+        try:
+            lines = tuple(line.strip() for line in _acl_text(lib, acl).splitlines() if line.strip())
+        finally:
+            lib.acl_free(acl)
+        return lines == (
+            "user::rw-",
+            "user:10001:r--",
+            "group::---",
+            "mask::r--",
+            "other::---",
+        )
+    except RepositoryAccessDenied:
+        return False
+
+
+def _set_linux_staging_acl(descriptor: int) -> None:
+    if sys.platform != "linux":
+        raise RepositoryAccessDenied("Linux staging ACL support is unavailable")
+    lib = _load_libacl()
+    acl = lib.acl_from_text(_LINUX_STAGING_ACL)
+    if not acl:
+        raise RepositoryAccessDenied("Linux staging ACL creation failed")
+    try:
+        if lib.acl_set_fd(descriptor, acl) != 0:
+            raise RepositoryAccessDenied("Linux staging ACL application failed")
+    finally:
+        lib.acl_free(acl)
+    if not _verify_linux_staging_acl(descriptor):
+        raise RepositoryAccessDenied("Linux staging ACL verification failed")
+
+
+def _staging_digests(path: str, source: bytes, output: bytes) -> tuple[str, str, str]:
+    return (
+        hashlib.sha256(path.encode("utf-8")).hexdigest(),
+        hashlib.sha256(source).hexdigest(),
+        hashlib.sha256(output).hexdigest(),
+    )
 
 
 __all__ = ["CanonicalRoot", "PathEscape", "RepositoryAccessDenied"]

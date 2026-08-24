@@ -487,6 +487,60 @@ class DatabaseProvisioner(DatabaseProvisionerPort):
         policy_version: int,
     ) -> UUID:
         """Prove one active binding's durable intent and live database state."""
+        intent, _adapter = await self._prove_active(
+            identity,
+            policy,
+            resource,
+            policy_version=policy_version,
+        )
+        return intent.id
+
+    async def rematerialize_active(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding:
+        """Rebuild one transient scoped environment after exact live proof."""
+
+        _validate_policy_version(policy_version)
+        _validate_policy(policy)
+        expected = _validate_identity(identity, enabled=policy.enabled)
+        if not policy.enabled:
+            _validate_disabled_resource(resource)
+            return DatabaseBinding(state=ResourceState.DISABLED)
+
+        _intent, adapter = await self._prove_active(
+            expected,
+            policy,
+            resource,
+            policy_version=policy_version,
+        )
+        secret_id = _secret_id(expected)
+        password = self._read_password(secret_id)
+        url = adapter.normalized_admin_url
+        if url is None:
+            raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        scoped = _scoped_url(url, expected, password)
+        return DatabaseBinding(
+            state=ResourceState.ACTIVE,
+            database_name=expected.database_name,
+            database_role=expected.database_role,
+            secret_id=secret_id,
+            environment={policy.injected_environment_key: scoped},
+        )
+
+    async def _prove_active(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> tuple[OperationIntent, _ProvisionAdapter]:
+        """Return the authoritative intent and inspection adapter after proof."""
 
         _validate_policy_version(policy_version)
         _validate_policy(policy)
@@ -541,7 +595,7 @@ class DatabaseProvisioner(DatabaseProvisionerPort):
                 or canonical_digest(live.payload) != canonical_digest(expected_outcome.payload)
             ):
                 raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
-            return intent.id
+            return intent, adapter
         except asyncio.CancelledError:
             raise
         except DatabaseProvisionerError as error:

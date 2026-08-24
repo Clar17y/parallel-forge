@@ -8,7 +8,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 from uuid import UUID
 
 from forge.domain.operation import OperationIntent
@@ -16,6 +16,8 @@ from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity, validate_resource_shape
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_STAGING_PLAN_SEAL = object()
 
 
 class _RedactedEnvironment(Mapping[str, str]):
@@ -149,6 +151,8 @@ class ControlledGitPort(Protocol):
 
     def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit: ...
 
+    def open_worktree_capability(self, worktree: ManagedWorktree, policy: ProjectPolicy) -> Any: ...
+
 
 @runtime_checkable
 class SecretStorePort(Protocol):
@@ -209,6 +213,134 @@ class DatabaseBinding:
         )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EnvironmentFileEvidence:
+    """Digest-only evidence for one staged environment file."""
+
+    path_digest: str
+    source_digest: str
+    output_digest: str
+    byte_count: int
+
+    def __post_init__(self) -> None:
+        for value in (self.path_digest, self.source_digest, self.output_digest):
+            if not isinstance(value, str) or _DIGEST.fullmatch(value) is None:
+                raise ValueError("environment evidence digest is invalid")
+        if type(self.byte_count) is not int or self.byte_count < 0:
+            raise ValueError("environment evidence byte count is invalid")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EnvironmentStagingInspection:
+    """Safe result of inspecting one exact planned destination set."""
+
+    present: bool
+    evidence: tuple[EnvironmentFileEvidence, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.present) is not bool:
+            raise TypeError("environment inspection presence must be boolean")
+        if not isinstance(self.evidence, tuple) or any(
+            not isinstance(item, EnvironmentFileEvidence) for item in self.evidence
+        ):
+            raise TypeError("environment inspection evidence is invalid")
+        if not self.present and self.evidence:
+            raise ValueError("absent environment inspection cannot include evidence")
+
+
+class EnvironmentStagingPlan:
+    """Opaque immutable staging bytes with digest-only public evidence."""
+
+    __slots__ = (
+        "_evidence",
+        "_files",
+        "_identity",
+        "_owner",
+        "_policy_id",
+        "_policy_version",
+        "_sealed",
+    )
+
+    def __init__(
+        self,
+        *,
+        seal: object,
+        owner: object,
+        identity: WorktreeIdentity,
+        policy_id: UUID,
+        policy_version: int,
+        files: tuple[Any, ...],
+        evidence: tuple[EnvironmentFileEvidence, ...],
+    ) -> None:
+        if seal is not _STAGING_PLAN_SEAL:
+            raise TypeError("environment staging plan is internal")
+        if not isinstance(identity, WorktreeIdentity) or not isinstance(policy_id, UUID):
+            raise TypeError("environment staging plan identity is invalid")
+        if type(policy_version) is not int or policy_version < 1:
+            raise ValueError("environment staging plan policy version is invalid")
+        if not isinstance(files, tuple) or not isinstance(evidence, tuple):
+            raise TypeError("environment staging plan contents are invalid")
+        if len(files) != len(evidence) or any(
+            not isinstance(item, EnvironmentFileEvidence) for item in evidence
+        ):
+            raise TypeError("environment staging plan evidence is invalid")
+        self._owner = owner
+        self._identity = identity
+        self._policy_id = policy_id
+        self._policy_version = policy_version
+        self._files = files
+        self._evidence = evidence
+        self._sealed = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        try:
+            sealed = object.__getattribute__(self, "_sealed")
+        except AttributeError:
+            sealed = False
+        if sealed:
+            raise AttributeError("environment staging plan is immutable")
+        object.__setattr__(self, name, value)
+
+    def __getattribute__(self, name: str) -> object:
+        # The payload slots are deliberately inaccessible to callers.  The
+        # capability owner reaches them only through the sealed methods below;
+        # this keeps source/output bytes out of the public object surface.
+        if name.startswith("_"):
+            raise AttributeError("environment staging plan internals are private")
+        return object.__getattribute__(self, name)
+
+    @property
+    def evidence(self) -> tuple[EnvironmentFileEvidence, ...]:
+        return cast(tuple[EnvironmentFileEvidence, ...], object.__getattribute__(self, "_evidence"))
+
+    @property
+    def file_count(self) -> int:
+        return len(object.__getattribute__(self, "_files"))
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(file_count={self.file_count}, evidence={self.evidence!r})"
+
+    def _accept(
+        self,
+        owner: object,
+        identity: WorktreeIdentity,
+        policy_id: UUID,
+        version: int,
+    ) -> None:
+        if (
+            object.__getattribute__(self, "_owner") != owner
+            or object.__getattribute__(self, "_identity") != identity
+            or object.__getattribute__(self, "_policy_id") != policy_id
+            or object.__getattribute__(self, "_policy_version") != version
+        ):
+            raise ValueError("environment staging plan is not bound to this capability")
+
+    def _files_for(self, owner: object) -> tuple[object, ...]:
+        if object.__getattribute__(self, "_owner") != owner:
+            raise ValueError("environment staging plan is not bound to this capability")
+        return cast(tuple[object, ...], object.__getattribute__(self, "_files"))
+
+
 @runtime_checkable
 class DatabaseProvisionerPort(Protocol):
     """Isolated database lifecycle contract consumed by later orchestration."""
@@ -225,6 +357,15 @@ class DatabaseProvisionerPort(Protocol):
         *,
         policy_version: int,
     ) -> UUID: ...
+
+    async def rematerialize_active(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding: ...
 
     async def provision(
         self,
@@ -252,6 +393,33 @@ class WorktreeProvisionerPort(Protocol):
     async def reconcile(self, intent_id: UUID, policy: ProjectPolicy) -> OperationIntent: ...
 
 
+class EnvironmentStagingPort(Protocol):
+    """Capability-bound protected environment staging contract."""
+
+    def build_plan(
+        self,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int | None = None,
+    ) -> EnvironmentStagingPlan: ...
+
+    def publish(
+        self,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+        plan: EnvironmentStagingPlan,
+    ) -> tuple[EnvironmentFileEvidence, ...]: ...
+
+    def inspect(
+        self,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+        plan: EnvironmentStagingPlan,
+    ) -> EnvironmentStagingInspection: ...
+
+
 # Keep the port aliases discoverable to later worktree lifecycle slices while
 # exposing only the exact managed-worktree operations above.
 ManagedWorktreePort = ControlledGitPort
@@ -266,6 +434,10 @@ __all__ = [
     "ControlledGitPort",
     "DatabaseBinding",
     "DatabaseProvisionerPort",
+    "EnvironmentFileEvidence",
+    "EnvironmentStagingInspection",
+    "EnvironmentStagingPlan",
+    "EnvironmentStagingPort",
     "GitCommit",
     "GitCommitResult",
     "GitDiff",

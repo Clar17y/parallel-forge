@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import stat
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from forge.application.ports.repository import ProcessResult, RepositoryAccessDenied
-from forge.application.ports.worktrees import GitCommit, GitDiff, GitStatus, ManagedWorktree
+from forge.application.ports.worktrees import (
+    EnvironmentFileEvidence,
+    EnvironmentStagingInspection,
+    EnvironmentStagingPlan,
+    GitCommit,
+    GitDiff,
+    GitStatus,
+    ManagedWorktree,
+)
+from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.paths import CanonicalRoot
 from forge.tools.process import ProcessRunner
@@ -31,6 +41,120 @@ class ControlledGitError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("controlled git operation failed")
+
+
+_CAPABILITY_SEAL = object()
+
+
+class WorktreeCapability:
+    """Opaque owner-sealed operations for one retained managed worktree."""
+
+    __slots__ = ("_access", "_git", "_live", "_owner", "_policy", "_sealed", "_worktree")
+
+    def __init__(
+        self,
+        *,
+        seal: object,
+        owner: object,
+        git: ControlledGit,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+        access: object,
+    ) -> None:
+        if seal is not _CAPABILITY_SEAL:
+            raise TypeError("worktree capability is internal")
+        self._owner = owner
+        self._git = git
+        self._worktree = worktree
+        self._policy = policy
+        self._access = access
+        self._live = True
+        self._sealed = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        try:
+            sealed = object.__getattribute__(self, "_sealed")
+        except AttributeError:
+            sealed = False
+        if sealed:
+            raise AttributeError("worktree capability is immutable")
+        object.__setattr__(self, name, value)
+
+    def __getattribute__(self, name: str) -> object:
+        if name.startswith("_"):
+            raise AttributeError("worktree capability internals are private")
+        return object.__getattribute__(self, name)
+
+    def __repr__(self) -> str:
+        live = object.__getattribute__(self, "_live")
+        return "WorktreeCapability(live=True)" if live else "WorktreeCapability(live=False)"
+
+    def revalidate(self) -> None:
+        object.__getattribute__(self, "_require_live")()
+        git = object.__getattribute__(self, "_git")
+        access = object.__getattribute__(self, "_access")
+        worktree = object.__getattribute__(self, "_worktree")
+        policy = object.__getattribute__(self, "_policy")
+        identity = worktree.identity
+        if identity.run_id is None:
+            raise ControlledGitError()
+        try:
+            expected = WorktreeIdentity.for_run(
+                identity.project_id,
+                identity.run_id,
+                identity.branch,
+                policy.database.enabled,
+            )
+        except TypeError, ValueError:
+            raise ControlledGitError() from None
+        if expected != identity:
+            raise ControlledGitError()
+        git._repository._verify_directory_access(access.normalized, access)
+        git._validate_handle(worktree)
+        if git._head_sha(worktree) != worktree.base_sha:
+            raise ControlledGitError()
+        git._verify_ancestor_sha(worktree, worktree.base_sha)
+
+    def assert_ignored(self, relative_path: str) -> None:
+        """Prove one policy-validated destination is ignored by Git."""
+
+        object.__getattribute__(self, "_require_live")()
+        policy = object.__getattribute__(self, "_policy")
+        if relative_path not in policy.allowed_environment_files:
+            raise ControlledGitError()
+        self.revalidate()
+        git = object.__getattribute__(self, "_git")
+        worktree = object.__getattribute__(self, "_worktree")
+        result = git._run(
+            worktree.path,
+            ("check-ignore", "--quiet", "--", relative_path),
+            allow_return_codes=(0, 1),
+        )
+        if _return_code(result) != 0:
+            raise ControlledGitError()
+        self.revalidate()
+
+    def publish(self, plan: EnvironmentStagingPlan) -> tuple[EnvironmentFileEvidence, ...]:
+        object.__getattribute__(self, "_require_live")()
+        from forge.tools.environment import publish_plan
+
+        result = publish_plan(self, plan)
+        return result
+
+    def inspect(self, plan: EnvironmentStagingPlan) -> EnvironmentStagingInspection:
+        object.__getattribute__(self, "_require_live")()
+        from forge.tools.environment import inspect_plan
+
+        return inspect_plan(self, plan)
+
+    def _require_live(self) -> None:
+        if not object.__getattribute__(self, "_live") or object.__getattribute__(
+            self, "_owner"
+        ) is not object.__getattribute__(self, "_git"):
+            raise ControlledGitError()
+
+    def _finish(self) -> None:
+        object.__setattr__(self, "_live", False)
 
 
 class ControlledGit:
@@ -66,6 +190,7 @@ class ControlledGit:
                 raise ControlledGitError()
 
         self._git_executable = _resolve_git_executable(git_executable)
+        self._staging_owner = object()
         self._state_root = _prepare_directory(Path(state_root))
         if _overlaps(self._state_root, repository.path):
             raise ControlledGitError()
@@ -418,6 +543,67 @@ class ControlledGit:
             ValueError,
             AttributeError,
         ):
+            raise ControlledGitError() from None
+
+    @contextlib.contextmanager
+    def open_worktree_capability(
+        self, worktree: ManagedWorktree, policy: ProjectPolicy, *, read_only: bool = False
+    ) -> Iterator[WorktreeCapability]:
+        """Retain one exact Git registration and target for environment staging."""
+
+        caller_failed = False
+        try:
+            if not isinstance(policy, ProjectPolicy):
+                raise ControlledGitError()
+            configured = Path(policy.repository_path)
+            if configured.resolve(strict=True) != self._repository.path:
+                raise ControlledGitError()
+            self._validate_handle(worktree)
+            if (worktree.identity.database_name is not None) != policy.database.enabled:
+                raise ControlledGitError()
+            registration = self._registration_metadata(worktree.identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                worktree.identity.worktree_name,
+                registration.name,
+                create_lock=not read_only,
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                capability = WorktreeCapability(
+                    seal=_CAPABILITY_SEAL,
+                    owner=self,
+                    git=self,
+                    worktree=worktree,
+                    policy=policy,
+                    access=access,
+                )
+                operation_failed = False
+                try:
+                    capability.revalidate()
+                    try:
+                        yield capability
+                    except BaseException:
+                        caller_failed = True
+                        raise
+                finally:
+                    try:
+                        try:
+                            capability.revalidate()
+                        except Exception:
+                            # Preserve the operation's stable failure category
+                            # when release proof itself encounters a stale
+                            # target; a successful operation still fails closed.
+                            if not operation_failed:
+                                raise
+                    finally:
+                        object.__getattribute__(capability, "_finish")()
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
+            if caller_failed:
+                raise
             raise ControlledGitError() from None
 
     def _commit_bound(self, worktree: ManagedWorktree, message: str) -> GitCommit:
@@ -1208,4 +1394,4 @@ def _parse_single_line(result: ProcessResult) -> str:
     return lines[0]
 
 
-__all__ = ["ControlledGit", "ControlledGitError"]
+__all__ = ["ControlledGit", "ControlledGitError", "WorktreeCapability"]

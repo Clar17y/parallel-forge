@@ -20,6 +20,7 @@ from forge.application.ports.repository import (
     RepositoryEntry,
     SearchMatch,
 )
+from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS
 from forge.tools.paths import CanonicalRoot
 from forge.tools.process import ProcessRunner as LocalProcessRunner
 
@@ -37,17 +38,7 @@ class _UnconfiguredRg:
 
 _RG_UNCONFIGURED = _UnconfiguredRg()
 _BUILTIN_INSTRUCTION_NAMES = ("AGENTS.md", "CLAUDE.md", "README.md")
-_FIXED_DIRECTORY_EXCLUSIONS = frozenset(
-    {
-        ".git",
-        ".worktrees",
-        ".forge-worktrees",
-        "node_modules",
-        ".venv",
-        "venv",
-        "env",
-    }
-)
+_FIXED_DIRECTORY_EXCLUSIONS = RESERVED_REPOSITORY_COMPONENTS
 _REPARSE_POINT = 0x00000400
 
 
