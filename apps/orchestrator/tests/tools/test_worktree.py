@@ -152,23 +152,7 @@ class _Operations:
                 != canonical_digest(values["request_payload"])
             ):
                 raise ValueError("operation idempotency key has a different request")
-            return OperationIntent(
-                id=existing.id,
-                run_id=existing.run_id,
-                kind=existing.kind,
-                idempotency_key=existing.idempotency_key,
-                request_digest=existing.request_digest,
-                request_payload=existing.request_payload,
-                status=existing.status,
-                remote_resource_id=existing.remote_resource_id,
-                created_at=existing.created_at,
-                updated_at=existing.updated_at,
-                completed_at=existing.completed_at,
-                outcome=existing.outcome,
-                request_schema_version=existing.request_schema_version,
-                outcome_schema_version=existing.outcome_schema_version,
-                is_new=False,
-            )
+            return replace(existing, is_new=False)
         self.log.append("intent.commit")
         now = datetime.now(UTC)
         self.intent = OperationIntent(
@@ -193,20 +177,15 @@ class _Operations:
         self.log.append("operation.complete")
         self.outcome = outcome
         now = self.intent.created_at
-        self.intent = OperationIntent(
-            id=self.intent.id,
-            run_id=self.intent.run_id,
-            kind=self.intent.kind,
-            idempotency_key=self.intent.idempotency_key,
-            request_digest=self.intent.request_digest,
-            request_payload=self.intent.request_payload,
+        self.intent = replace(
+            self.intent,
             status=OperationStatus.SUCCEEDED,
             remote_resource_id=outcome.remote_resource_id,
-            created_at=now,
             updated_at=now,
             completed_at=now,
             outcome=outcome.payload,
             outcome_schema_version=outcome.outcome_schema_version,
+            is_new=False,
         )
         self.by_key[self.intent.idempotency_key] = self.intent
         return self.intent

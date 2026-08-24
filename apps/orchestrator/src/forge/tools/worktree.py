@@ -108,7 +108,6 @@ class _Context:
     identity: WorktreeIdentity
     expected: ManagedWorktree
     request: OperationRequest
-    events: tuple[_EventCheckpoint, ...]
     partial: _EventCheckpoint | None
     completed: _EventCheckpoint | None
     active: _EventCheckpoint | None
@@ -259,7 +258,6 @@ class WorktreeProvisioner:
             identity=identity,
             expected=expected,
             request=request,
-            events=tuple(checkpoints),
             partial=partial,
             completed=completed,
             active=active,
@@ -551,11 +549,10 @@ class _WorktreeAdapter:
             observed, observed_cancelled = await self._owner._inspect_any(partial.expected)
             if observed is not None:
                 try:
-                    created_context = await self._record_created(partial)
+                    await self._record_created(partial)
                 except Exception:  # noqa: BLE001 - preserve safe partial state after Git
                     await self._owner._record_failure(partial)
                     raise WorktreeReconciliationRequired() from None
-                del created_context
             else:
                 await self._owner._record_failure(partial)
             if observed_cancelled:
@@ -627,7 +624,7 @@ class _WorktreeAdapter:
         state = (
             ResourceState.PROVISIONING if self._policy.database.enabled else ResourceState.DISABLED
         )
-        reconciled = await self._owner._record_resource(
+        await self._owner._record_resource(
             context,
             worktree_path=str(context.expected.path),
             database_state=state,
@@ -641,7 +638,6 @@ class _WorktreeAdapter:
                 target_state=state,
             ),
         )
-        del reconciled
         if inspection_cancelled:
             raise asyncio.CancelledError()
         return _worktree_outcome(context.request, context.identity)
