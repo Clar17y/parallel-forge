@@ -244,7 +244,8 @@ Expected: exit 0 and no findings. If findings occur, inspect only redacted metad
 Run:
 
 ```powershell
-git ls-tree -r --name-only main forge/v0-1
+git ls-tree -r --name-only main
+git ls-tree -r --name-only forge/v0-1
 git status --short --branch
 git remote -v
 git tag --list
