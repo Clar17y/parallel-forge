@@ -185,11 +185,11 @@ Expected: the commit contains only `README.md` and `LICENSE`.
 
 **Files:**
 - Read: all objects reachable from `main` and `forge/v0-1`
-- Temporary only: `.tmp/gitleaks-canary/`
-- Temporary only: `.tmp/gitleaks-report/`
+- Temporary only: `.superpowers/sdd/2026-08-24-parallel-forge-publication/gitleaks-canary/` (inside the ignored SDD workspace)
+- Temporary only: `.superpowers/sdd/2026-08-24-parallel-forge-publication/gitleaks-report/` (inside the ignored SDD workspace)
 
 **Interfaces:**
-- Consumes: exact local refs after Task 1 and pinned official scanner image `ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:29c8a0572eae6d8ce620db1a4599663d43b06b0a8f90e42ded2ad5f63ac57f71`.
+- Consumes: exact local refs after Task 1 and the pinned official linux/amd64 scanner image `ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:507de9682470025fb3e7f57fe4c4ca8263d81369e027b6538b8a252a9c0371d4`.
 - Produces: a redacted PASS or an explicit publication blocker; it never creates an allowlist merely to obtain a green result.
 
 - [ ] **Step 1: Record the exact outgoing object set**
@@ -207,27 +207,34 @@ Expected: refs resolve, the worktree is clean, and only reachable objects listed
 
 - [ ] **Step 2: Pull and identify the pinned scanner**
 
-Run the exact digest-pinned image and print its version. Do not use `latest` or v8.30.1 because a public regression report exists for the latter's default-rule matching.
+Run the exact digest-pinned linux/amd64 image and inspect its OCI metadata. Do not use `latest` or the similarly named attestation-manifest digest; the latter is provenance metadata rather than a runnable image.
 
 ```powershell
-docker pull ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:29c8a0572eae6d8ce620db1a4599663d43b06b0a8f90e42ded2ad5f63ac57f71
-docker run --rm ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:29c8a0572eae6d8ce620db1a4599663d43b06b0a8f90e42ded2ad5f63ac57f71 version
+$image = 'ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:507de9682470025fb3e7f57fe4c4ca8263d81369e027b6538b8a252a9c0371d4'
+docker pull --platform linux/amd64 $image
+docker image inspect $image --format '{{json .RepoDigests}} {{json .Config.Labels}} {{.Architecture}}/{{.Os}}'
 ```
 
-Expected: version output identifies v8.29.0.
+Expected: the repository digest is exactly `sha256:507de9682470025fb3e7f57fe4c4ca8263d81369e027b6538b8a252a9c0371d4`, the OCI version label is `v8.29.0`, and the platform is `amd64/linux`.
 
 - [ ] **Step 3: Prove the scanner detects a synthetic canary**
 
-Create an ignored temporary directory with a scanner-recognized synthetic fixture, run `gitleaks dir --redact=100 --no-banner`, and require its configured finding exit code. The canary must never be staged or committed. Remove the validated exact temporary directory after the expected finding.
+Create an ignored temporary directory inside the SDD workspace with a scanner-recognized synthetic fixture assembled from harmless fragments at execution time. Run `gitleaks dir --redact=100 --no-banner --exit-code=1` against a read-only mount, capture the exit code, and require exit 1 plus redacted finding metadata. The canary must never be staged or committed. Resolve and validate the exact directory as a child of the ignored SDD workspace before removing it after the expected finding.
 
 Expected: the canary produces a redacted finding and nonzero finding exit; a false green blocks publication.
 
 - [ ] **Step 4: Scan the complete reachable history**
 
-Mount the repository root read-only and run:
+Mount the common checkout read-only and explicitly map its Git directory to the linked worktree before running:
 
 ```powershell
-docker run --rm --mount type=bind,source="D:\Code\Parallel Forge",target=/repo,readonly ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:29c8a0572eae6d8ce620db1a4599663d43b06b0a8f90e42ded2ad5f63ac57f71 git --redact=100 --no-banner --log-opts="--all" /repo
+$root = 'D:\Code\Parallel Forge'
+$image = 'ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:507de9682470025fb3e7f57fe4c4ca8263d81369e027b6538b8a252a9c0371d4'
+docker run --rm --pull=never --network none `
+  --mount "type=bind,source=$root,target=/workspace,readonly" `
+  --env GIT_DIR=/workspace/.git `
+  --env GIT_WORK_TREE=/workspace/.worktrees/forge-v0-1 `
+  $image git --redact=100 --no-banner --log-opts='--all' /workspace/.worktrees/forge-v0-1
 ```
 
 Expected: exit 0 and no findings. If findings occur, inspect only redacted metadata (rule, path, commit, fingerprint), distinguish synthetic fixtures from possible live material, and stop for owner review on any uncertainty.
