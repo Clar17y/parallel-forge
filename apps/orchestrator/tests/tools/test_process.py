@@ -128,6 +128,22 @@ def test_run_uses_exact_contained_cwd_and_explicit_environment(tmp_path: Path) -
     assert lines[1:] == ["yes", "None"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor launch")
+def test_posix_launch_inherits_the_retained_target_descriptor(tmp_path: Path) -> None:
+    root, _target, _registration = _make_managed_worktree_fixture(tmp_path)
+    canonical = CanonicalRoot(root)
+    with canonical._create_directory(".", "created") as access:
+        retained_fd = f"/proc/self/fd/{access.capability}"
+        result = ProcessRunner(canonical).run_argv(
+            _python("import os, sys; print(os.path.exists(sys.argv[1]))", retained_fd),
+            cwd=str(access.path),
+            environment={},
+        )
+
+    assert result.return_code == 0
+    assert result.stdout.strip() == "True"
+
+
 def test_run_bounds_stdout_and_stderr_independently_with_truthful_counts(tmp_path: Path) -> None:
     root = _root(tmp_path)
     result = _runner(root, stdout_max_bytes=64, stderr_max_bytes=32).run_argv(

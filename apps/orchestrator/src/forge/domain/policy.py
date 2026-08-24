@@ -250,6 +250,7 @@ class ProjectPolicy(BaseModel):
         names = [command.name for command in self.commands]
         if len(set(names)) != len(names):
             raise ValueError("duplicate command names are not permitted")
+        union_policy_paths(self.secret_paths, self.allowed_environment_files)
         return self
 
     def commands_for(self, kind: StepKind) -> tuple[CommandSpec, ...]:

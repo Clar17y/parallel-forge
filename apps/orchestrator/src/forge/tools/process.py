@@ -120,11 +120,22 @@ class ProcessRunner:
     ) -> ProcessResult:
         retained_access = self._root._verify_directory_access(normalized_cwd, access)
         try:
+            launch_cwd = self._root._launch_path_for_access(
+                normalized_cwd, retained_access, require_fd=bool(pass_fds)
+            )
+            if (
+                os.name != "nt"
+                and pass_fds
+                and launch_cwd == (f"/proc/self/fd/{retained_access.capability}")
+            ):
+                # ``Popen(cwd=...)`` resolves its cwd before pass_fds are
+                # installed in the child.  Refer to the still-open parent
+                # descriptor for that chdir; the inherited descriptor remains
+                # available to the command itself as /proc/self/fd/N.
+                launch_cwd = f"/proc/{os.getpid()}/fd/{retained_access.capability}"
             return self._run_in_directory(
                 command,
-                self._root._launch_path_for_access(
-                    normalized_cwd, retained_access, require_fd=bool(pass_fds)
-                ),
+                launch_cwd,
                 environment,
                 timeout,
                 pass_fds=pass_fds,

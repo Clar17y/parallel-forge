@@ -249,46 +249,28 @@ class EnvironmentStagingInspection:
 
 
 class EnvironmentStagingPlan:
-    """Opaque immutable staging bytes with digest-only public evidence."""
+    """Opaque immutable staging token with digest-only public evidence."""
 
     __slots__ = (
         "_evidence",
-        "_files",
-        "_identity",
-        "_owner",
-        "_policy_id",
-        "_policy_version",
         "_sealed",
+        "_token",
     )
 
     def __init__(
         self,
         *,
         seal: object,
-        owner: object,
-        identity: WorktreeIdentity,
-        policy_id: UUID,
-        policy_version: int,
-        files: tuple[Any, ...],
+        token: object,
         evidence: tuple[EnvironmentFileEvidence, ...],
     ) -> None:
         if seal is not _STAGING_PLAN_SEAL:
             raise TypeError("environment staging plan is internal")
-        if not isinstance(identity, WorktreeIdentity) or not isinstance(policy_id, UUID):
-            raise TypeError("environment staging plan identity is invalid")
-        if type(policy_version) is not int or policy_version < 1:
-            raise ValueError("environment staging plan policy version is invalid")
-        if not isinstance(files, tuple) or not isinstance(evidence, tuple):
-            raise TypeError("environment staging plan contents are invalid")
-        if len(files) != len(evidence) or any(
-            not isinstance(item, EnvironmentFileEvidence) for item in evidence
-        ):
+        if token is None or not isinstance(evidence, tuple):
             raise TypeError("environment staging plan evidence is invalid")
-        self._owner = owner
-        self._identity = identity
-        self._policy_id = policy_id
-        self._policy_version = policy_version
-        self._files = files
+        if any(not isinstance(item, EnvironmentFileEvidence) for item in evidence):
+            raise TypeError("environment staging plan evidence is invalid")
+        self._token = token
         self._evidence = evidence
         self._sealed = True
 
@@ -314,31 +296,17 @@ class EnvironmentStagingPlan:
         return cast(tuple[EnvironmentFileEvidence, ...], object.__getattribute__(self, "_evidence"))
 
     @property
+    def token(self) -> object:
+        """Return the opaque per-plan token without exposing staging payloads."""
+
+        return object.__getattribute__(self, "_token")
+
+    @property
     def file_count(self) -> int:
-        return len(object.__getattribute__(self, "_files"))
+        return len(self.evidence)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(file_count={self.file_count}, evidence={self.evidence!r})"
-
-    def _accept(
-        self,
-        owner: object,
-        identity: WorktreeIdentity,
-        policy_id: UUID,
-        version: int,
-    ) -> None:
-        if (
-            object.__getattribute__(self, "_owner") != owner
-            or object.__getattribute__(self, "_identity") != identity
-            or object.__getattribute__(self, "_policy_id") != policy_id
-            or object.__getattribute__(self, "_policy_version") != version
-        ):
-            raise ValueError("environment staging plan is not bound to this capability")
-
-    def _files_for(self, owner: object) -> tuple[object, ...]:
-        if object.__getattribute__(self, "_owner") != owner:
-            raise ValueError("environment staging plan is not bound to this capability")
-        return cast(tuple[object, ...], object.__getattribute__(self, "_files"))
 
 
 @runtime_checkable

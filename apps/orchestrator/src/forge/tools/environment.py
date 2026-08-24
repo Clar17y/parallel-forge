@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import re
 import stat
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
+from uuid import UUID
 
 from forge.application.ports.worktrees import (
     _STAGING_PLAN_SEAL,
@@ -59,21 +61,23 @@ class EnvironmentReconciliationRequired(EnvironmentStagingError):
         super().__init__(_RECONCILIATION)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _StagedFile:
-    __slots__ = ("evidence", "output", "path", "source")
+    path: str
+    source: bytes
+    output: bytes
+    evidence: EnvironmentFileEvidence
 
-    def __init__(
-        self,
-        *,
-        path: str,
-        source: bytes,
-        output: bytes,
-        evidence: EnvironmentFileEvidence,
-    ) -> None:
-        self.path = path
-        self.source = source
-        self.output = output
-        self.evidence = evidence
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _PlanRecord:
+    plan: EnvironmentStagingPlan
+    token: object
+    identity: object
+    policy_id: UUID
+    policy_version: int
+    files: tuple[_StagedFile, ...]
+    evidence: tuple[EnvironmentFileEvidence, ...]
 
 
 class EnvironmentStager:
@@ -85,6 +89,7 @@ class EnvironmentStager:
         ):
             raise TypeError("environment staging requires controlled Git")
         self._git = controlled_git
+        self._plans: dict[object, _PlanRecord] = {}
 
     def build_plan(
         self,
@@ -97,6 +102,7 @@ class EnvironmentStager:
         version = _validate_policy(policy, policy_version)
         if not hasattr(worktree, "identity"):
             raise EnvironmentStagingError(_INTEGRITY)
+        validation_failed = False
         try:
             paths = normalize_policy_paths(policy.allowed_environment_files)
             if paths != tuple(policy.allowed_environment_files):
@@ -108,10 +114,13 @@ class EnvironmentStager:
         except EnvironmentStagingError:
             raise
         except OSError, RepositoryAccessDenied, TypeError, ValueError, RuntimeError:
-            raise EnvironmentStagingError(_INTEGRITY) from None
+            validation_failed = True
+        if validation_failed:
+            raise EnvironmentStagingError(_INTEGRITY)
 
         files: list[_StagedFile] = []
         total = 0
+        staging_failed = False
         try:
             if len(paths) > _MAX_FILE_COUNT:
                 raise EnvironmentStagingError(_ERROR)
@@ -145,17 +154,26 @@ class EnvironmentStager:
         except EnvironmentStagingError:
             raise
         except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
-            raise EnvironmentStagingError(_ERROR) from None
+            staging_failed = True
+        if staging_failed:
+            raise EnvironmentStagingError(_ERROR)
         evidence = tuple(item.evidence for item in files)
-        return EnvironmentStagingPlan(
+        token = object()
+        plan = EnvironmentStagingPlan(
             seal=_STAGING_PLAN_SEAL,
-            owner=object.__getattribute__(self._git, "_staging_owner"),
+            token=token,
+            evidence=evidence,
+        )
+        self._plans[token] = _PlanRecord(
+            plan=plan,
+            token=token,
             identity=worktree.identity,
             policy_id=policy.id,
             policy_version=version,
             files=tuple(files),
             evidence=evidence,
         )
+        return plan
 
     def publish(
         self,
@@ -164,13 +182,17 @@ class EnvironmentStager:
         plan: EnvironmentStagingPlan,
     ) -> tuple[EnvironmentFileEvidence, ...]:
         _validate_policy(policy, None)
+        publish_failed = False
         try:
             with self._git.open_worktree_capability(worktree, policy) as capability:
-                return cast(tuple[EnvironmentFileEvidence, ...], capability.publish(plan))
+                return publish_plan(capability, plan, records=self._plans)
         except EnvironmentStagingError:
             raise
         except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
-            raise EnvironmentStagingError(_ERROR) from None
+            publish_failed = True
+        if publish_failed:
+            raise EnvironmentStagingError(_ERROR)
+        raise AssertionError("environment publication failure path was not reached")
 
     def inspect(
         self,
@@ -179,13 +201,17 @@ class EnvironmentStager:
         plan: EnvironmentStagingPlan,
     ) -> EnvironmentStagingInspection:
         _validate_policy(policy, None)
+        inspect_failed = False
         try:
             with self._git.open_worktree_capability(worktree, policy, read_only=True) as capability:
-                return cast(EnvironmentStagingInspection, capability.inspect(plan))
+                return inspect_plan(capability, plan, records=self._plans)
         except EnvironmentStagingError:
             raise
         except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
-            raise EnvironmentStagingError(_ERROR) from None
+            inspect_failed = True
+        if inspect_failed:
+            raise EnvironmentStagingError(_ERROR)
+        raise AssertionError("environment inspection failure path was not reached")
 
 
 WorktreeEnvironmentStager = EnvironmentStager
@@ -193,24 +219,32 @@ EnvironmentFileStager = EnvironmentStager
 
 
 def publish_plan(
-    capability: WorktreeCapability, plan: EnvironmentStagingPlan
+    capability: WorktreeCapability,
+    plan: EnvironmentStagingPlan,
+    *,
+    records: dict[object, _PlanRecord] | None = None,
 ) -> tuple[EnvironmentFileEvidence, ...]:
     policy = object.__getattribute__(capability, "_policy")
     worktree = object.__getattribute__(capability, "_worktree")
     git = object.__getattribute__(capability, "_git")
-    owner = object.__getattribute__(git, "_staging_owner")
-    version = policy.version
+    publish_failed = False
     try:
-        object.__getattribute__(plan, "_accept")(owner, worktree.identity, policy.id, version)
-        files = object.__getattribute__(plan, "_files_for")(owner)
+        record = _resolve_plan(plan, records, worktree.identity, policy.id, policy.version)
+        files = record.files
+        _verify_plan_record(record)
         require_acl = policy.runner_mode is RunnerMode.DOCKER
         capability.revalidate()
+        present = _inspect_destination_set(capability, files, require_acl=require_acl)
+        if present:
+            return record.evidence
+        # Destination inspection can cross an attacker-controlled mutation
+        # boundary. Re-verify the owner-sealed record after that read and
+        # immediately before the first publication write.
+        _verify_plan_record(record)
         for item in files:
-            capability.assert_ignored(item.path)
-            capability.revalidate()
             parts = tuple(item.path.split("/"))
             with _open_staging_parent(
-                object.__getattribute__(capability, "_git")._repository,
+                git._repository,
                 object.__getattribute__(capability, "_access"),
                 parts[:-1],
             ) as parent:
@@ -222,33 +256,98 @@ def publish_plan(
                     maximum=_MAX_FILE_BYTES,
                 )
             capability.revalidate()
-        return plan.evidence
+        return record.evidence
     except EnvironmentStagingError:
         raise
     except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
-        raise EnvironmentStagingError(_ERROR) from None
+        publish_failed = True
+    if publish_failed:
+        raise EnvironmentStagingError(_ERROR)
+    raise AssertionError("environment publication failure path was not reached")
 
 
 def inspect_plan(
-    capability: WorktreeCapability, plan: EnvironmentStagingPlan
+    capability: WorktreeCapability,
+    plan: EnvironmentStagingPlan,
+    *,
+    records: dict[object, _PlanRecord] | None = None,
 ) -> EnvironmentStagingInspection:
     policy = object.__getattribute__(capability, "_policy")
     worktree = object.__getattribute__(capability, "_worktree")
-    git = object.__getattribute__(capability, "_git")
-    owner = object.__getattribute__(git, "_staging_owner")
+    inspect_failed = False
     try:
-        object.__getattribute__(plan, "_accept")(
-            owner, worktree.identity, policy.id, policy.version
-        )
-        files = object.__getattribute__(plan, "_files_for")(owner)
+        record = _resolve_plan(plan, records, worktree.identity, policy.id, policy.version)
+        files = record.files
+        _verify_plan_record(record)
         require_acl = policy.runner_mode is RunnerMode.DOCKER
-        present_count = 0
-        for item in files:
-            capability.assert_ignored(item.path)
-            capability.revalidate()
-            parts = tuple(item.path.split("/"))
+        present_count = _inspect_destination_set(capability, files, require_acl=require_acl)
+        if not files:
+            return EnvironmentStagingInspection(present=True, evidence=plan.evidence)
+        if not present_count:
+            return EnvironmentStagingInspection(present=False)
+        return EnvironmentStagingInspection(present=True, evidence=record.evidence)
+    except EnvironmentStagingError:
+        raise
+    except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
+        inspect_failed = True
+    if inspect_failed:
+        raise EnvironmentStagingError(_ERROR)
+    raise AssertionError("environment inspection failure path was not reached")
+
+
+def _resolve_plan(
+    plan: EnvironmentStagingPlan,
+    records: dict[object, _PlanRecord] | None,
+    identity: object,
+    policy_id: UUID,
+    policy_version: int,
+) -> _PlanRecord:
+    if records is None:
+        raise EnvironmentStagingError(_INTEGRITY)
+    record = records.get(plan.token)
+    if (
+        record is None
+        or record.plan is not plan
+        or record.token is not plan.token
+        or record.identity != identity
+        or record.policy_id != policy_id
+        or record.policy_version != policy_version
+        or tuple(plan.evidence) != record.evidence
+    ):
+        raise EnvironmentStagingError(_INTEGRITY)
+    return record
+
+
+def _verify_plan_record(record: _PlanRecord) -> None:
+    if len(record.files) != len(record.evidence):
+        raise EnvironmentStagingError(_INTEGRITY)
+    for item, evidence in zip(record.files, record.evidence, strict=True):
+        if item.evidence != evidence:
+            raise EnvironmentStagingError(_INTEGRITY)
+        if _staging_digests(item.path, item.source, item.output) != (
+            evidence.path_digest,
+            evidence.source_digest,
+            evidence.output_digest,
+        ):
+            raise EnvironmentStagingError(_INTEGRITY)
+
+
+def _inspect_destination_set(
+    capability: WorktreeCapability,
+    files: tuple[_StagedFile, ...],
+    *,
+    require_acl: bool,
+) -> bool:
+    present_count = 0
+    git = object.__getattribute__(capability, "_git")
+    for item in files:
+        capability.assert_ignored(item.path)
+        capability.revalidate()
+        parts = tuple(item.path.split("/"))
+        destination_failed = False
+        try:
             with _open_staging_parent(
-                object.__getattribute__(capability, "_git")._repository,
+                git._repository,
                 object.__getattribute__(capability, "_access"),
                 parts[:-1],
             ) as parent:
@@ -258,25 +357,19 @@ def inspect_plan(
                     _MAX_FILE_BYTES,
                     require_acl=require_acl,
                 )
-            capability.revalidate()
-            if not present:
-                if present_count:
-                    raise EnvironmentReconciliationRequired()
-                continue
-            present_count += 1
-            if content != item.output:
-                raise EnvironmentReconciliationRequired()
-        if not files:
-            return EnvironmentStagingInspection(present=True, evidence=plan.evidence)
-        if present_count == 0:
-            return EnvironmentStagingInspection(present=False)
-        if present_count != len(files):
+        except OSError, RepositoryAccessDenied, ValueError:
+            destination_failed = True
+        if destination_failed:
             raise EnvironmentReconciliationRequired()
-        return EnvironmentStagingInspection(present=True, evidence=plan.evidence)
-    except EnvironmentStagingError:
-        raise
-    except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
-        raise EnvironmentStagingError(_ERROR) from None
+        capability.revalidate()
+        if not present:
+            continue
+        if content != item.output:
+            raise EnvironmentReconciliationRequired()
+        present_count += 1
+    if 0 < present_count < len(files):
+        raise EnvironmentReconciliationRequired()
+    return present_count == len(files)
 
 
 def _validate_policy(policy: ProjectPolicy, policy_version: int | None) -> int:
@@ -330,6 +423,7 @@ def _expected_secret_id(identity: object) -> str:
 
 
 def _read_source(root: CanonicalRoot, relative_path: str) -> bytes:
+    read_failed = False
     try:
         with root.open_read(relative_path) as stream:
             before = os.fstat(stream.fileno())
@@ -360,16 +454,23 @@ def _read_source(root: CanonicalRoot, relative_path: str) -> bytes:
     except EnvironmentStagingError:
         raise
     except OSError, ValueError, RepositoryAccessDenied:
-        raise EnvironmentStagingError(_ERROR) from None
+        read_failed = True
+    if read_failed:
+        raise EnvironmentStagingError(_ERROR)
+    raise AssertionError("environment source-read failure path was not reached")
 
 
 def _transform(source: bytes, resource: DatabaseBinding, policy: ProjectPolicy) -> bytes:
     if not policy.database.enabled:
         return source
+    decode_failed = False
     try:
         text = source.decode("utf-8")
     except UnicodeDecodeError:
-        raise EnvironmentStagingError(_ERROR) from None
+        decode_failed = True
+        text = ""
+    if decode_failed:
+        raise EnvironmentStagingError(_ERROR)
     if "\x00" in text:
         raise EnvironmentStagingError(_ERROR)
     key = policy.database.injected_environment_key

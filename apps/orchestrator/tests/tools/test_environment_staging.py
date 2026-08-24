@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -23,9 +25,7 @@ def test_environment_plan_does_not_expose_private_source_or_output_bytes() -> No
         EnvironmentFileEvidence,
         EnvironmentStagingPlan,
     )
-    from forge.tools.environment import _StagedFile
 
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
     evidence = EnvironmentFileEvidence(
         path_digest="0" * 64,
         source_digest="1" * 64,
@@ -34,23 +34,13 @@ def test_environment_plan_does_not_expose_private_source_or_output_bytes() -> No
     )
     plan = EnvironmentStagingPlan(
         seal=_STAGING_PLAN_SEAL,
-        owner=object(),
-        identity=identity,
-        policy_id=uuid4(),
-        policy_version=1,
-        files=(
-            _StagedFile(
-                path="config/.env",
-                source=b"SOURCE_SENTINEL",
-                output=b"OUTPUT_SENTINEL",
-                evidence=evidence,
-            ),
-        ),
+        token=object(),
         evidence=(evidence,),
     )
 
     assert not hasattr(plan, "_files")
-    assert not hasattr(plan, "_files_for")
+    assert not hasattr(plan, "_token")
+    assert plan.token is not None
     assert "SOURCE_SENTINEL" not in repr(plan)
     assert "OUTPUT_SENTINEL" not in repr(plan)
 
@@ -64,7 +54,7 @@ def test_worktree_capability_does_not_expose_handles_or_git_state() -> None:
     policy = ProjectPolicy(
         id=uuid4(),
         version=1,
-        repository_path="D:/Code/Parallel Forge",
+        repository_path=str(Path.cwd()),
         github_repository="owner/repository",
         default_branch="main",
         runner_mode=RunnerMode.TRUSTED_HOST,
@@ -77,7 +67,7 @@ def test_worktree_capability_does_not_expose_handles_or_git_state() -> None:
         git=owner,  # type: ignore[arg-type]
         worktree=ManagedWorktree(
             identity=identity,
-            path="D:/Code/Parallel Forge/.worktrees/forge-test",
+            path=Path.cwd() / ".worktrees" / "forge-test",
             base_sha="0" * 40,
         ),
         policy=policy,
@@ -255,7 +245,7 @@ def test_forged_plan_cannot_publish_arbitrary_bytes(tmp_path) -> None:
         EnvironmentStagingPlan,
     )
     from forge.domain.policy import RunnerMode
-    from forge.tools.environment import EnvironmentStager, EnvironmentStagingError, _StagedFile
+    from forge.tools.environment import EnvironmentStager, EnvironmentStagingError
     from test_git import _controlled, _source_repository
 
     repository, _ = _source_repository(tmp_path)
@@ -297,18 +287,7 @@ def test_forged_plan_cannot_publish_arbitrary_bytes(tmp_path) -> None:
     )
     plan = EnvironmentStagingPlan(
         seal=_STAGING_PLAN_SEAL,
-        owner=controlled,
-        identity=identity,
-        policy_id=policy.id,
-        policy_version=policy.version,
-        files=(
-            _StagedFile(
-                path="config/local.env",
-                source=b"SAFE=SOURCE\n",
-                output=forged,
-                evidence=evidence,
-            ),
-        ),
+        token=object(),
         evidence=(evidence,),
     )
 
@@ -659,6 +638,71 @@ def test_windows_publication_faults_leave_no_temporary_entries(
 
 
 @pytest.mark.skipif(__import__("sys").platform != "linux", reason="native Linux libacl")
+def test_linux_docker_staging_publishes_and_inspects_real_uid_10001_acl(tmp_path) -> None:
+    import os
+    import subprocess
+
+    from forge.domain.policy import RunnerMode
+    from forge.tools import paths as path_tools
+    from forge.tools.environment import EnvironmentStager
+    from test_git import _controlled, _source_repository
+
+    repository, _ = _source_repository(tmp_path)
+    (repository / ".gitignore").write_text(".worktrees/\nconfig/*.env\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", ".gitignore"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-m", "ignore env files"],
+        check=True,
+        capture_output=True,
+    )
+    base_sha = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repository / "config").mkdir()
+    source = b"DOCKER=SOURCE\n"
+    (repository / "config" / "local.env").write_bytes(source)
+    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    controlled = _controlled(repository, tmp_path / "state")
+    worktree = controlled.create_worktree(identity, base_sha)
+    (worktree.path / "config").mkdir()
+    policy = ProjectPolicy(
+        id=uuid4(),
+        version=1,
+        repository_path=str(repository),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.DOCKER,
+        allowed_environment_files=("config/local.env",),
+    )
+    stager = EnvironmentStager(controlled)
+    plan = stager.build_plan(worktree, policy, DatabaseBinding(state=ResourceState.DISABLED))
+
+    assert stager.publish(worktree, policy, plan) == plan.evidence
+    destination = worktree.path / "config" / "local.env"
+    assert destination.read_bytes() == source
+    descriptor = os.open(destination, os.O_RDONLY)
+    try:
+        assert path_tools._verify_linux_staging_acl(descriptor)
+        lib = path_tools._load_libacl()
+        acl = lib.acl_get_fd(descriptor)
+        assert acl
+        try:
+            acl_text = path_tools._acl_text(lib, acl)
+        finally:
+            lib.acl_free(acl)
+        assert "user:10001:r--" in acl_text.splitlines()
+    finally:
+        os.close(descriptor)
+
+    inspected = stager.inspect(worktree, policy, plan)
+    assert inspected.present is True
+    assert inspected.evidence == plan.evidence
+
+
+@pytest.mark.skipif(__import__("sys").platform != "linux", reason="native Linux libacl")
 def test_linux_acl_verification_requires_exact_uid_10001_entries() -> None:
     import ctypes
 
@@ -702,11 +746,33 @@ def test_linux_acl_unavailable_fails_closed_without_shell(monkeypatch) -> None:
     assert path_tools._verify_linux_staging_acl(1) is False
 
 
+@pytest.mark.skipif(__import__("sys").platform != "linux", reason="native Linux libacl")
+def test_linux_acl_application_failure_fails_closed(monkeypatch) -> None:
+    import ctypes
+
+    from forge.tools import paths as path_tools
+    from forge.tools.paths import RepositoryAccessDenied
+
+    class _ApplicationFailure:
+        def acl_from_text(self, _text: bytes):
+            return ctypes.c_void_p(1)
+
+        def acl_set_fd(self, _descriptor: int, _acl) -> int:
+            return -1
+
+        def acl_free(self, _value) -> int:
+            return 0
+
+    monkeypatch.setattr(path_tools, "_load_libacl", lambda: _ApplicationFailure())
+    with pytest.raises(RepositoryAccessDenied):
+        path_tools._set_linux_staging_acl(1)
+
+
 def test_effective_secret_paths_is_ordered_union_and_rejects_platform_collisions() -> None:
     policy = ProjectPolicy(
         id=uuid4(),
         version=1,
-        repository_path="D:/Code/Parallel Forge",
+        repository_path=str(Path.cwd()),
         github_repository="owner/repository",
         default_branch="main",
         secret_paths=(".env", "config/secret.env"),
@@ -718,14 +784,40 @@ def test_effective_secret_paths_is_ordered_union_and_rejects_platform_collisions
         "config/secret.env",
         "config/local.env",
     )
+    if os.name == "nt":
+        with pytest.raises(ValidationError):
+            ProjectPolicy(
+                id=uuid4(),
+                version=1,
+                repository_path=str(Path.cwd()),
+                github_repository="owner/repository",
+                default_branch="main",
+                allowed_environment_files=("config/LOCAL.env", "config/local.env"),
+            )
+    else:
+        accepted = ProjectPolicy(
+            id=uuid4(),
+            version=1,
+            repository_path=str(Path.cwd()),
+            github_repository="owner/repository",
+            default_branch="main",
+            allowed_environment_files=("config/LOCAL.env", "config/local.env"),
+        )
+        assert accepted.allowed_environment_files == ("config/LOCAL.env", "config/local.env")
+
+
+def test_policy_rejects_cross_field_windows_case_aliases() -> None:
+    if os.name != "nt":
+        pytest.skip("Windows casefold policy")
     with pytest.raises(ValidationError):
         ProjectPolicy(
             id=uuid4(),
             version=1,
-            repository_path="D:/Code/Parallel Forge",
+            repository_path=str(Path.cwd()),
             github_repository="owner/repository",
             default_branch="main",
-            allowed_environment_files=("config/LOCAL.env", "config/local.env"),
+            secret_paths=("config/Secret.env",),
+            allowed_environment_files=("config/secret.env",),
         )
 
 
@@ -768,6 +860,35 @@ async def test_disabled_rematerialization_returns_empty_binding_without_dependen
     )
 
     assert result == DatabaseBinding(state=ResourceState.DISABLED)
+
+
+@pytest.mark.asyncio
+async def test_disabled_rematerialization_rejects_nonempty_environment_before_dependencies() -> (
+    None
+):
+    class _Exploding:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"dependency touched: {name}")
+
+    provisioner = DatabaseProvisioner(
+        operation_executor=_Exploding(),
+        operation_repository=_Exploding(),
+        admin_secret_resolver=_Exploding(),
+        secret_store=_Exploding(),
+        password_source=_Exploding(),
+        connection_factory=_Exploding(),
+    )
+    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+
+    from forge.tools.database import DatabaseIntegrityError
+
+    with pytest.raises(DatabaseIntegrityError):
+        await provisioner.rematerialize_active(
+            identity,
+            DatabaseProvisioningPolicy(enabled=False),
+            DatabaseBinding(state=ResourceState.DISABLED, environment={"LEAK": "sentinel"}),
+            policy_version=1,
+        )
 
 
 @pytest.mark.asyncio
@@ -854,6 +975,7 @@ async def test_rematerialization_sanitizes_secret_store_exception_context(tmp_pa
 
 
 def test_staging_copies_ignored_source_bytes_without_exposing_them(tmp_path) -> None:
+    from forge.application.ports.worktrees import _STAGING_PLAN_SEAL, EnvironmentStagingPlan
     from forge.domain.policy import RunnerMode
     from forge.tools.environment import EnvironmentStager
     from test_git import _controlled, _source_repository
@@ -891,7 +1013,8 @@ def test_staging_copies_ignored_source_bytes_without_exposing_them(tmp_path) -> 
         trusted_project=True,
         allowed_environment_files=("config/local.env",),
     )
-    plan = EnvironmentStager(controlled).build_plan(
+    stager = EnvironmentStager(controlled)
+    plan = stager.build_plan(
         worktree,
         policy,
         DatabaseBinding(state=ResourceState.DISABLED),
@@ -901,6 +1024,72 @@ def test_staging_copies_ignored_source_bytes_without_exposing_them(tmp_path) -> 
     assert plan.file_count == 1
     assert plan.evidence[0].byte_count == len(source)
     assert "SOURCE_SENTINEL" not in repr(plan)
+
+    original_token = plan.token
+    object.__setattr__(plan, "_token", object())
+    from forge.tools.environment import EnvironmentStagingError
+
+    with pytest.raises(EnvironmentStagingError):
+        stager.publish(worktree, policy, plan)
+    assert not (worktree.path / "config" / "local.env").exists()
+
+    copied = EnvironmentStagingPlan(
+        seal=_STAGING_PLAN_SEAL,
+        token=original_token,
+        evidence=plan.evidence,
+    )
+    with pytest.raises(EnvironmentStagingError):
+        EnvironmentStager(controlled).publish(worktree, policy, copied)
+
+
+def test_reflective_plan_payload_mutation_is_rejected_before_write(tmp_path) -> None:
+    import subprocess
+
+    from forge.domain.policy import RunnerMode
+    from forge.tools.environment import EnvironmentStager, EnvironmentStagingError
+    from test_git import _controlled, _source_repository
+
+    repository, _ = _source_repository(tmp_path)
+    (repository / ".gitignore").write_text(".worktrees/\nconfig/*.env\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", ".gitignore"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-m", "ignore env files"],
+        check=True,
+        capture_output=True,
+    )
+    base_sha = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repository / "config").mkdir()
+    (repository / "config" / "local.env").write_bytes(b"SAFE=SOURCE\n")
+    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    controlled = _controlled(repository, tmp_path / "state")
+    worktree = controlled.create_worktree(identity, base_sha)
+    (worktree.path / "config").mkdir()
+    policy = ProjectPolicy(
+        id=uuid4(),
+        version=1,
+        repository_path=str(repository),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.TRUSTED_HOST,
+        trusted_project=True,
+        allowed_environment_files=("config/local.env",),
+    )
+    stager = EnvironmentStager(controlled)
+    plan = stager.build_plan(worktree, policy, DatabaseBinding(state=ResourceState.DISABLED))
+    record = next(iter(object.__getattribute__(stager, "_plans").values()))
+    assert "SAFE=SOURCE" not in repr(plan)
+    with pytest.raises(AttributeError):
+        object.__getattribute__(plan, "_files")
+    object.__setattr__(record.files[0], "output", b"FORGED_SENTINEL")
+
+    with pytest.raises(EnvironmentStagingError):
+        stager.publish(worktree, policy, plan)
+    assert not (worktree.path / "config" / "local.env").exists()
 
 
 def test_staging_publishes_and_inspects_exact_destination_idempotently(tmp_path) -> None:
@@ -946,9 +1135,17 @@ def test_staging_publishes_and_inspects_exact_destination_idempotently(tmp_path)
     stager = EnvironmentStager(controlled)
     plan = stager.build_plan(worktree, policy, DatabaseBinding(state=ResourceState.DISABLED))
 
-    assert stager.publish(worktree, policy, plan) == plan.evidence
     destination = worktree.path / "config" / "local.env"
     second_destination = worktree.path / "config" / "second.env"
+    destination.write_bytes(source)
+    from forge.tools.environment import EnvironmentReconciliationRequired
+
+    with pytest.raises(EnvironmentReconciliationRequired):
+        stager.publish(worktree, policy, plan)
+    assert not second_destination.exists()
+    destination.unlink()
+
+    assert stager.publish(worktree, policy, plan) == plan.evidence
     assert destination.read_bytes() == source
     assert second_destination.read_bytes() == second
     second_destination.unlink()
@@ -957,8 +1154,11 @@ def test_staging_publishes_and_inspects_exact_destination_idempotently(tmp_path)
 
     with pytest.raises(EnvironmentReconciliationRequired):
         stager.inspect(worktree, policy, plan)
-    assert stager.publish(worktree, policy, plan) == plan.evidence
-    assert stager.inspect(worktree, policy, plan).present is True
+    with pytest.raises(EnvironmentReconciliationRequired):
+        stager.publish(worktree, policy, plan)
+    assert destination.read_bytes() == source
+    assert not second_destination.exists()
+    assert not tuple((worktree.path / "config").glob(".forge-env-*"))
     different = b"DIFFERENT_DESTINATION"
     destination.write_bytes(different)
     from forge.tools.environment import EnvironmentStagingError
@@ -966,3 +1166,54 @@ def test_staging_publishes_and_inspects_exact_destination_idempotently(tmp_path)
     with pytest.raises(EnvironmentStagingError):
         stager.publish(worktree, policy, plan)
     assert destination.read_bytes() == different
+
+
+def _assert_staging_error_is_fully_redacted(error: BaseException) -> None:
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        assert "SECRET_CHAIN_SENTINEL" not in repr(current)
+        assert "URL_CHAIN_SENTINEL" not in repr(current)
+        assert current.__cause__ is None
+        assert current.__context__ is None
+        current = current.__cause__ or current.__context__
+
+
+def test_environment_stager_wrappers_drop_raw_exception_context() -> None:
+    from contextlib import contextmanager
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from forge.domain.policy import RunnerMode
+    from forge.tools.environment import EnvironmentStager, EnvironmentStagingError
+
+    policy = ProjectPolicy(
+        id=uuid4(),
+        version=1,
+        repository_path=str(Path.cwd()),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.TRUSTED_HOST,
+        trusted_project=True,
+    )
+
+    @contextmanager
+    def fail_open(*_args, **_kwargs):
+        raise OSError("SECRET_CHAIN_SENTINEL URL_CHAIN_SENTINEL")
+        yield  # pragma: no cover
+
+    controlled = SimpleNamespace(
+        repository_path=Path.cwd(),
+        open_worktree_capability=fail_open,
+    )
+    stager = EnvironmentStager(controlled)
+
+    for operation in (
+        lambda: stager.build_plan(object(), policy, DatabaseBinding(state=ResourceState.DISABLED)),
+        lambda: stager.publish(object(), policy, object()),
+        lambda: stager.inspect(object(), policy, object()),
+    ):
+        with pytest.raises(EnvironmentStagingError) as error:
+            operation()
+        _assert_staging_error_is_fully_redacted(error.value)

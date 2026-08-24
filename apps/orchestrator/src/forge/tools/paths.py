@@ -4278,13 +4278,17 @@ class CanonicalRoot:
         access = self._accept_directory_access(normalized, access)
         if os.name == "nt":
             return ()
-        descriptors = (
-            (access.capability, access.registration_capability, access.git_capability)
-            if access.registration_capability is not None
-            else (access.git_capability,)
-        )
-        if any(descriptor is None for descriptor in descriptors):
+        if access.capability is None:
             raise RepositoryAccessDenied("POSIX launch capability is unavailable")
+        descriptors: tuple[int | None, ...]
+        if access.registration_capability is not None:
+            if access.git_capability is None:
+                raise RepositoryAccessDenied("POSIX Git launch capability is unavailable")
+            descriptors = (access.capability, access.registration_capability, access.git_capability)
+        elif access.git_capability is not None:
+            descriptors = (access.capability, access.git_capability)
+        else:
+            descriptors = (access.capability,)
         return tuple(
             dict.fromkeys(descriptor for descriptor in descriptors if descriptor is not None)
         )

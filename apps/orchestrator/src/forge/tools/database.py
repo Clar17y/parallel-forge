@@ -887,6 +887,7 @@ def _validate_disabled_resource(resource: DatabaseBinding) -> None:
     if (
         not isinstance(resource, DatabaseBinding)
         or resource.state is not ResourceState.DISABLED
+        or bool(resource.environment)
         or any(
             value is not None
             for value in (resource.database_name, resource.database_role, resource.secret_id)

@@ -99,14 +99,18 @@ def normalize_policy_paths(values: Iterable[str]) -> tuple[str, ...]:
 
 def union_policy_paths(*groups: Iterable[str]) -> tuple[str, ...]:
     result: list[str] = []
-    seen: set[str] = set()
+    seen: dict[str, str] = {}
     for group in groups:
         for value in group:
             path = normalize_policy_path(value)
             key = policy_path_key(path)
-            if key not in seen:
-                seen.add(key)
-                result.append(path)
+            previous = seen.get(key)
+            if previous is not None:
+                if previous != path:
+                    raise ValueError("policy paths contain a platform alias")
+                continue
+            seen[key] = path
+            result.append(path)
     return tuple(result)
 
 
