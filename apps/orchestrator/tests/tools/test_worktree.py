@@ -407,6 +407,38 @@ class _ForeignDatabase(_EnabledDatabase):
         return self.binding
 
 
+class _ConcurrentDatabase(_EnabledDatabase):
+    def __init__(self, log: list[str]) -> None:
+        super().__init__(log)
+        self.arrivals = 0
+        self.all_arrived = asyncio.Event()
+        self.effect_calls = 0
+
+    async def provision(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding:
+        del policy, policy_version
+        self.log.append("database.provision")
+        self.provision_calls += 1
+        self.arrivals += 1
+        if self.arrivals == 2:
+            self.all_arrived.set()
+        await self.all_arrived.wait()
+        if self.binding is None:
+            self.effect_calls += 1
+            self.binding = DatabaseBinding(
+                state=ResourceState.ACTIVE,
+                database_name=identity.database_name,
+                database_role=identity.database_role,
+                secret_id=f"forge_db_{identity.project_id.hex}_{identity.run_id.hex}",
+            )
+        return self.binding
+
+
 @pytest.mark.asyncio
 async def test_disabled_prepare_commits_safe_checkpoints_before_git_and_skips_database() -> None:
     log: list[str] = []
@@ -571,6 +603,89 @@ async def test_foreign_database_binding_records_only_truthful_expected_failure_s
     assert all(
         event.event_type != "resource.database_active" for event in uow_factory.events.values
     )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_enabled_prepares_converge_on_one_exact_active_checkpoint() -> None:
+    branch = "feature/e1-concurrent-active"
+    run = _run(branch=branch)
+    log: list[str] = []
+    uow_factory = _UowFactory(run, log)
+    operations = _Operations(RUN_ID, log)
+    git = _Git(log)
+    database = _ConcurrentDatabase(log)
+    policy = _policy(enabled=True, repository_path=str(git.repository_path))
+
+    from forge.tools.worktree import (
+        WorktreeProvisioner,
+        _checkpoint_payload,
+        _request,
+        _worktree_outcome,
+    )
+
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, branch, True)
+    request = _request(run, identity, policy)
+    intent = await operations.begin(
+        run_id=RUN_ID,
+        operation_type=request.kind,
+        idempotency_key=request.idempotency_key,
+        request_digest=request.request_digest,
+        request_payload=request.request_payload,
+    )
+    expected = git.expected_worktree(identity, BASE_SHA)
+    git.handle = expected
+    partial = await uow_factory.runs.update_resource(
+        RUN_ID,
+        run.version,
+        worktree_path=str(expected.path),
+        database_state=ResourceState.PROVISIONING,
+        database_name=identity.database_name,
+        database_role=identity.database_role,
+        secret_id=None,
+        event_type="resource.worktree_preparing",
+        event_payload=_checkpoint_payload(
+            request,
+            intent.id,
+            target_state=ResourceState.PROVISIONING,
+        ),
+    )
+    await uow_factory.runs.update_resource(
+        RUN_ID,
+        partial.version,
+        worktree_path=str(expected.path),
+        database_state=ResourceState.PROVISIONING,
+        database_name=identity.database_name,
+        database_role=identity.database_role,
+        secret_id=None,
+        event_type="resource.worktree_created",
+        event_payload=_checkpoint_payload(
+            request,
+            intent.id,
+            target_state=ResourceState.PROVISIONING,
+        ),
+    )
+    await operations.complete(intent.id, _worktree_outcome(request, identity))
+    provisioner = WorktreeProvisioner(
+        uow_factory,
+        operations=operations,
+        git=git,
+        database=database,
+        operation_executor=_Executor(operations),
+    )
+
+    results = await asyncio.gather(
+        provisioner.prepare(RUN_ID, policy),
+        provisioner.prepare(RUN_ID, policy),
+        return_exceptions=True,
+    )
+
+    assert results == [expected, expected]
+    assert database.effect_calls == 1
+    assert (
+        sum(event.event_type == "resource.database_active" for event in uow_factory.events.values)
+        == 1
+    )
+    assert uow_factory.runs.current.database_state is ResourceState.ACTIVE
 
 
 def _run(*, enabled: bool = False, branch: str = "feature/e1") -> RunSnapshot:

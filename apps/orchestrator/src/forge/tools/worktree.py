@@ -83,6 +83,10 @@ class WorktreeReconciliationRequired(WorktreeProvisionerError):
         super().__init__(_RECONCILIATION_ERROR)
 
 
+class _ResourceConflict(WorktreeReconciliationRequired):
+    """A locked run advanced beyond the caller's validated snapshot."""
+
+
 class _UnitOfWorkFactory(Protocol):
     def __call__(self) -> UnitOfWork: ...
 
@@ -347,11 +351,39 @@ class WorktreeProvisioner:
                 event_type=_DATABASE_ACTIVE_EVENT,
                 event_payload=active_payload,
             )
+        except _ResourceConflict:
+            return await self._converge_active(
+                current,
+                worktree,
+                database_intent_id,
+            )
         except Exception:  # noqa: BLE001 - checkpoint failures retain a safe partial state
             await self._record_failure(current, validated_binding)
             raise WorktreeReconciliationRequired() from None
         await self._verify_active_context(active_context)
         return worktree
+
+    async def _converge_active(
+        self,
+        context: _Context,
+        worktree: ManagedWorktree,
+        database_intent_id: UUID,
+    ) -> ManagedWorktree:
+        latest = await self._load_context(
+            context.run.id,
+            context.policy,
+            require_succeeded=True,
+        )
+        if (
+            latest.run.database_state is not ResourceState.ACTIVE
+            or latest.completed is None
+            or latest.active is None
+            or latest.active.database_intent_id != database_intent_id
+            or not _same_handle(worktree, latest.expected)
+        ):
+            raise WorktreeReconciliationRequired()
+        await self._verify_active_context(latest)
+        return await self._inspect_present(latest.expected)
 
     async def _record_failure(
         self, context: _Context, binding: DatabaseBinding | None = None
@@ -402,7 +434,7 @@ class WorktreeProvisioner:
             async with self._unit_of_work_factory() as work:
                 current = await work.runs.get_for_update(context.run.id)
                 if current.version != context.run.version:
-                    raise WorktreeReconciliationRequired()
+                    raise _ResourceConflict()
                 await work.runs.update_resource(
                     current.id,
                     context.run.version,
