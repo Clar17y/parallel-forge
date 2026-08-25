@@ -98,3 +98,61 @@ def test_manifest_is_owner_only_on_posix(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
     store.create(manifest)
     assert store.path_for(manifest.project_id, manifest.branch).stat().st_mode & 0o777 == 0o600
+
+
+def test_manifest_mutations_flush_the_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = WorktreeManifestStore(tmp_path / "data")
+    manifest = _manifest(tmp_path)
+    flushes: list[str] = []
+    monkeypatch.setattr(store, "_flush_root", lambda: flushes.append("flush"))
+
+    store.create(manifest)
+    updated = manifest.model_copy(
+        update={"completed_checkpoints": ("manifest.created", "worktree.created")}
+    )
+    store.save(updated)
+    store.delete(updated)
+
+    assert flushes == ["flush", "flush", "flush"]
+
+
+def test_manifest_root_link_is_rejected(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    outside = tmp_path / "outside-root"
+    outside.mkdir()
+    try:
+        (data_root / "worktrees").symlink_to(outside, target_is_directory=True)
+    except OSError, NotImplementedError:
+        pytest.skip("links unavailable")
+    store = WorktreeManifestStore(data_root)
+
+    with pytest.raises(WorktreeManifestError, match="manifest operation failed"):
+        store.create(_manifest(tmp_path))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL assertion")
+def test_manifest_is_owner_only_on_windows(tmp_path: Path) -> None:
+    from forge.tools.paths import _WindowsPathApi
+
+    store = WorktreeManifestStore(tmp_path / "data")
+    manifest = _manifest(tmp_path)
+    store.create(manifest)
+    api = _WindowsPathApi()
+    parent = api.open_secret_directory(store.path_for(manifest.project_id, manifest.branch).parent)
+    handle = None
+    try:
+        handle = api.open_secret_file(
+            parent,
+            store.path_for(manifest.project_id, manifest.branch).name,
+            access=0x80000000 | 0x00000080 | 0x00020000 | 0x00100000,
+            missing_ok=False,
+        )
+        assert handle is not None
+    finally:
+        if handle is not None:
+            api.close(handle)
+        api.close(parent)

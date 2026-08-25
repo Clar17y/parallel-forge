@@ -93,3 +93,31 @@ def test_bash_wrappers_are_thin_and_strict() -> None:
         assert "exec python -m forge.cli.main worktree" in contents
         assert '"$@"' in contents
         assert "DATABASE_URL" not in contents
+
+
+def test_yes_failure_is_nonzero_redacted_and_secret_free() -> None:
+    environment = _environment()
+    sentinel = "SENTINEL_ADMIN_SECRET_DO_NOT_PRINT"
+    environment["FORGE_DATABASE_URL"] = sentinel
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "forge.cli.main",
+            "worktree",
+            "teardown",
+            "--branch",
+            "feature/failure",
+            "--yes",
+        ],
+        cwd=ROOT,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert result.stderr.strip() == "Forge worktree operation failed."
+    assert sentinel not in result.stdout + result.stderr

@@ -200,6 +200,7 @@ class WorktreeManifestStore:
                     if handle is not None:
                         api.close(handle)
                     api.close(parent)
+            self._flush_root()
         except Exception:  # noqa: BLE001 - filesystem diagnostics are redacted
             raise WorktreeManifestError() from None
 
@@ -279,6 +280,7 @@ class WorktreeManifestStore:
             self._reject_unsafe(path, directory=False)
             if self._windows is not None:
                 self._verify_windows_file(path)
+            self._flush_root()
         except WorktreeManifestError:
             raise
         except Exception:  # noqa: BLE001 - filesystem diagnostics are redacted
@@ -289,6 +291,21 @@ class WorktreeManifestStore:
                     temporary.unlink()
             except OSError:
                 pass
+
+    def _flush_root(self) -> None:
+        if self._windows is not None:
+            handle = self._windows.open_secret_directory(self._root)
+            try:
+                self._windows.flush_secret_directory(handle)
+            finally:
+                self._windows.close(handle)
+            return
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        descriptor = os.open(self._root, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def _read_bytes(self, path: Path) -> bytes:
         if self._windows is None:
