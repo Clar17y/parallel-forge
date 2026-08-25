@@ -530,9 +530,17 @@ class WorktreeProvisioner:
                     raise WorktreeReconciliationRequired()
                 if matches:
                     prepared = matches[0]
+                    resource_events = [
+                        event
+                        for event in raw_events
+                        if isinstance(event, RunEvent) and event.event_type.startswith("resource.")
+                    ]
                     if (
                         prepared.run_id != context.run.id
-                        or prepared.run_version != current.version
+                        or prepared.run_version > current.version
+                        or len(resource_events) < 2
+                        or resource_events[-1] is not prepared
+                        or prepared.run_version != resource_events[-2].run_version + 1
                         or canonical_digest(prepared.payload) != canonical_digest(payload)
                     ):
                         raise WorktreeReconciliationRequired()
@@ -554,7 +562,11 @@ class WorktreeProvisioner:
         except WorktreeProvisionerError:
             raise
         except Exception:  # noqa: BLE001 - transaction failures expose no persistence details
-            raise WorktreeReconciliationRequired() from None
+            failure: WorktreeReconciliationRequired | None = WorktreeReconciliationRequired()
+        else:
+            failure = None
+        if failure is not None:
+            raise failure
         return await self._load_context(
             context.run.id,
             context.policy,
@@ -590,7 +602,11 @@ class WorktreeProvisioner:
         except WorktreeProvisionerError:
             raise
         except Exception:  # noqa: BLE001 - persistence failures become a stable integrity category
-            raise WorktreeIntegrityError() from None
+            failure: WorktreeIntegrityError | None = WorktreeIntegrityError()
+        else:
+            failure = None
+        if failure is not None:
+            raise failure
 
         _validate_run_and_policy(run, policy, self._git.repository_path)
         identity = _identity_for_run(run, policy)
@@ -817,7 +833,11 @@ class WorktreeProvisioner:
         except WorktreeProvisionerError:
             raise
         except Exception:  # noqa: BLE001 - transaction failures expose no persistence details
-            raise WorktreeReconciliationRequired() from None
+            failure: WorktreeReconciliationRequired | None = WorktreeReconciliationRequired()
+        else:
+            failure = None
+        if failure is not None:
+            raise failure
         return await self._load_context(context.run.id, context.policy)
 
     async def _inspect_present(self, expected: ManagedWorktree) -> ManagedWorktree:

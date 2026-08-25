@@ -18,6 +18,7 @@ from forge.application.ports.worktrees import (
     EnvironmentStagingInspection,
     ManagedWorktree,
 )
+from forge.application.services.state_engine import StateEngine
 from forge.domain.event import RunEvent
 from forge.domain.operation import OperationIntent, OperationOutcome, OperationStatus
 from forge.domain.policy import (
@@ -36,11 +37,16 @@ RUN_ID = UUID("22222222-2222-2222-2222-222222222222")
 BASE_SHA = "a" * 40
 RUNNER_ERROR_SENTINEL = "runner-os-error-path-branch-environment-sentinel"
 BOUNDARY_ERROR_SENTINEL = "setup-boundary-error-path-branch-sentinel"
+PERSISTENCE_ERROR_SENTINEL = (
+    "postgresql://forge:hunter2@10.0.0.9/forge C:\\repo\\.worktrees\\sentinel"
+)
 
 
 @dataclass
 class _Events:
     values: list[RunEvent] = field(default_factory=list)
+    fail_list_on_call: int | None = None
+    list_calls: int = 0
 
     async def append(self, event: RunEvent) -> RunEvent:
         self.values.append(event)
@@ -48,6 +54,9 @@ class _Events:
 
     async def list_after(self, run_id: UUID, sequence: int) -> list[RunEvent]:
         del run_id, sequence
+        self.list_calls += 1
+        if self.list_calls == self.fail_list_on_call:
+            raise RuntimeError(PERSISTENCE_ERROR_SENTINEL)
         return list(self.values)
 
 
@@ -58,6 +67,7 @@ class _Runs:
     pause_event_type: str | None = None
     pause_entered: asyncio.Event = field(default_factory=asyncio.Event)
     pause_release: asyncio.Event = field(default_factory=asyncio.Event)
+    fail_event_type: str | None = None
 
     async def get(self, run_id: UUID) -> RunSnapshot:
         assert run_id == self.current.id
@@ -71,6 +81,8 @@ class _Runs:
     ) -> RunSnapshot:
         assert run_id == self.current.id
         assert expected_version == self.current.version
+        if values["event_type"] == self.fail_event_type:
+            raise RuntimeError(PERSISTENCE_ERROR_SENTINEL)
         if values["event_type"] == self.pause_event_type:
             self.pause_event_type = None
             self.pause_entered.set()
@@ -1159,3 +1171,50 @@ async def test_setup_diagnostics_exclude_scoped_values_branch_and_path() -> None
         str(Path.cwd()),
     ):
         assert forbidden not in diagnostics
+
+
+@pytest.mark.asyncio
+async def test_repeated_prepare_accepts_later_non_resource_run_versions() -> None:
+    log, uow, _operations, policy, provisioner = _case()
+    await provisioner.prepare(RUN_ID, policy)
+    run_count = len([entry for entry in log if entry.startswith("run:")])
+    prepared_version = uow.runs.current.version
+    state_engine = StateEngine()
+    uow.runs.current = state_engine.resume(state_engine.pause(uow.runs.current))
+
+    await provisioner.prepare(RUN_ID, policy)
+
+    assert uow.runs.current.state is RunState.PREPARING_WORKTREE
+    assert uow.runs.current.version == prepared_version + 2
+    assert len([entry for entry in log if entry.startswith("run:")]) == run_count
+    assert [event.event_type for event in uow.events.values].count(
+        "resource.worktree_prepared"
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["load-context", "setup-checkpoint", "prepared-checkpoint"],
+)
+@pytest.mark.asyncio
+async def test_persistence_boundaries_drop_raw_exception_context(boundary: str) -> None:
+    from forge.tools.worktree import WorktreeIntegrityError, WorktreeReconciliationRequired
+
+    _log, uow, _operations, policy, provisioner = _case()
+    if boundary == "load-context":
+        uow.events.fail_list_on_call = 1
+        expected_error = WorktreeIntegrityError
+    else:
+        uow.runs.fail_event_type = (
+            "resource.setup_step_completed"
+            if boundary == "setup-checkpoint"
+            else "resource.worktree_prepared"
+        )
+        expected_error = WorktreeReconciliationRequired
+
+    with pytest.raises(expected_error) as captured:
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert PERSISTENCE_ERROR_SENTINEL not in repr(captured.value)
