@@ -18,6 +18,7 @@ _MAX_ARGUMENT_COLLECTION_SIZE = 64
 _MAX_ARGUMENT_DEPTH = 8
 _MAX_ARGUMENT_NODES = 256
 _MAX_ARGUMENT_STRING_LENGTH = 1_000_000
+_MAX_POLICY_VERSION = 2**31 - 1
 _MAX_WORKTREE_ID_LENGTH = 128
 _MIN_INTEGER = -(2**63)
 _MAX_INTEGER = 2**63 - 1
@@ -93,8 +94,12 @@ class ToolAuthorizationContext:
             self.worktree_id
         ):
             raise ValueError("tool authorization worktree identifier is invalid")
-        if type(self.policy_version) is not int or self.policy_version < 1:
-            raise ValueError("tool authorization policy version must be a positive integer")
+        if (
+            type(self.policy_version) is not int
+            or self.policy_version < 1
+            or self.policy_version > _MAX_POLICY_VERSION
+        ):
+            raise ValueError("tool authorization policy version is outside the supported range")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

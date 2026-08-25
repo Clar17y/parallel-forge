@@ -41,31 +41,19 @@ _CAPABILITIES = {
     },
 }
 
-_AUTHORITY_ARGUMENTS = frozenset(
-    {
-        "agent_role",
-        "policy_version",
-        "resource_id",
-        "role",
-        "run_id",
-        "worktree_id",
-        "worktree_path",
-    }
-)
-_EXECUTION_CONTROL_ARGUMENTS = frozenset(
-    {
-        "argv",
-        "command_text",
-        "cwd",
-        "docker_flags",
-        "environment",
-        "mounts",
-        "network_enabled",
-        "shell",
-        "shell_command",
-    }
-)
-_FORBIDDEN_ARGUMENTS = _AUTHORITY_ARGUMENTS | _EXECUTION_CONTROL_ARGUMENTS
+_TOOL_ARGUMENT_SCHEMAS = {
+    ToolName.REPOSITORY_LIST_FILES: (frozenset(), frozenset({"path"})),
+    ToolName.REPOSITORY_READ_FILE: (frozenset({"path"}), frozenset()),
+    ToolName.REPOSITORY_SEARCH: (frozenset({"literal"}), frozenset({"path"})),
+    ToolName.REPOSITORY_READ_INSTRUCTIONS: (frozenset(), frozenset({"target_path"})),
+    ToolName.REPOSITORY_WRITE_FILE: (frozenset({"content", "path"}), frozenset()),
+    ToolName.GIT_STATUS: (frozenset(), frozenset()),
+    ToolName.GIT_DIFF: (frozenset(), frozenset()),
+    ToolName.GIT_COMMIT: (frozenset({"message"}), frozenset()),
+    ToolName.BUILD_RUN_NAMED_CHECK: (frozenset({"command_name"}), frozenset()),
+    ToolName.VALIDATION_RESULTS_READ: (frozenset(), frozenset()),
+    ToolName.REVIEW_ARTIFACTS_READ: (frozenset(), frozenset()),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,20 +103,20 @@ class ToolAuthorizer:
             raise ToolAuthorizationDenied()
         if not self.is_allowed(context.role, request.name):
             raise ToolAuthorizationDenied()
-        if _contains_forbidden_argument(request.arguments):
+        if not _arguments_match_schema(request.name, request.arguments):
             raise ToolAuthorizationDenied()
         return ToolAuthorization(context=context, request=request)
 
 
-def _contains_forbidden_argument(value: object) -> bool:
-    if isinstance(value, Mapping):
-        return any(
-            key in _FORBIDDEN_ARGUMENTS or _contains_forbidden_argument(item)
-            for key, item in value.items()
-        )
-    if isinstance(value, tuple):
-        return any(_contains_forbidden_argument(item) for item in value)
-    return False
+def _arguments_match_schema(
+    tool_name: ToolName,
+    arguments: Mapping[str, object],
+) -> bool:
+    fields = frozenset(arguments)
+    required, optional = _TOOL_ARGUMENT_SCHEMAS[tool_name]
+    return required <= fields <= required | optional and all(
+        type(value) is str for value in arguments.values()
+    )
 
 
 __all__ = ["CapabilityMatrix", "ToolAuthorizer"]

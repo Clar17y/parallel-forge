@@ -11,6 +11,36 @@ from forge.domain.tool import ToolAuthorizationContext, ToolName, ToolRequest
 
 RUN_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
+VALID_TOOL_REQUESTS = (
+    (AgentRole.PLANNER, ToolName.REPOSITORY_LIST_FILES, {"path": "."}),
+    (AgentRole.PLANNER, ToolName.REPOSITORY_READ_FILE, {"path": "README.md"}),
+    (
+        AgentRole.PLANNER,
+        ToolName.REPOSITORY_SEARCH,
+        {"literal": "Forge", "path": "."},
+    ),
+    (
+        AgentRole.PLANNER,
+        ToolName.REPOSITORY_READ_INSTRUCTIONS,
+        {"target_path": "apps/orchestrator"},
+    ),
+    (
+        AgentRole.DEVELOPER,
+        ToolName.REPOSITORY_WRITE_FILE,
+        {"path": "result.txt", "content": "complete"},
+    ),
+    (AgentRole.DEVELOPER, ToolName.GIT_STATUS, {}),
+    (AgentRole.DEVELOPER, ToolName.GIT_DIFF, {}),
+    (AgentRole.DEVELOPER, ToolName.GIT_COMMIT, {"message": "feat: result"}),
+    (
+        AgentRole.DEVELOPER,
+        ToolName.BUILD_RUN_NAMED_CHECK,
+        {"command_name": "unit"},
+    ),
+    (AgentRole.REVIEWER, ToolName.VALIDATION_RESULTS_READ, {}),
+    (AgentRole.REVIEWER, ToolName.REVIEW_ARTIFACTS_READ, {}),
+)
+
 
 def _context(role: AgentRole) -> ToolAuthorizationContext:
     return ToolAuthorizationContext(
@@ -76,6 +106,27 @@ def test_untrusted_argument_text_does_not_change_an_allowed_decision() -> None:
     assert authorization.arguments["literal"] == injection
 
 
+@pytest.mark.parametrize(("role", "tool_name", "arguments"), VALID_TOOL_REQUESTS)
+def test_every_tool_accepts_only_its_exact_agent_selected_fields(
+    role: AgentRole,
+    tool_name: ToolName,
+    arguments: dict[str, object],
+) -> None:
+    authorizer = ToolAuthorizer()
+
+    authorization = authorizer.authorize(
+        _context(role),
+        ToolRequest(name=tool_name, arguments=arguments),
+    )
+
+    assert dict(authorization.arguments) == arguments
+    with pytest.raises(ToolAuthorizationDenied, match=r"^tool authorization denied$"):
+        authorizer.authorize(
+            _context(role),
+            ToolRequest(name=tool_name, arguments={**arguments, "unexpected": "value"}),
+        )
+
+
 @pytest.mark.parametrize(
     "arguments",
     (
@@ -102,12 +153,17 @@ def test_arguments_cannot_substitute_authoritative_context(
     "arguments",
     (
         {"shell": "pwsh"},
+        {"command": "git push origin main"},
+        {"cmd": "git push origin main"},
+        {"raw_command": "git push origin main"},
+        {"script": "git push origin main"},
         {"shell_command": "Remove-Item -Recurse ."},
         {"command_text": "git push"},
         {"argv": ["sh", "-c", "git push"]},
         {"environment": {"token": "secret"}},
         {"docker_flags": ["--privileged"]},
         {"mounts": ["/:/host"]},
+        {"command_name": {"command": "git push origin main"}},
     ),
 )
 def test_authorization_rejects_arbitrary_execution_controls(
@@ -117,6 +173,17 @@ def test_authorization_rejects_arbitrary_execution_controls(
 
     with pytest.raises(ToolAuthorizationDenied, match=r"^tool authorization denied$"):
         ToolAuthorizer().authorize(_context(AgentRole.DEVELOPER), request)
+
+
+def test_named_check_authorization_accepts_only_its_exact_named_argument() -> None:
+    request = ToolRequest(
+        name=ToolName.BUILD_RUN_NAMED_CHECK,
+        arguments={"command_name": "unit"},
+    )
+
+    authorization = ToolAuthorizer().authorize(_context(AgentRole.DEVELOPER), request)
+
+    assert dict(authorization.arguments) == {"command_name": "unit"}
 
 
 def test_role_tool_request_and_context_are_closed_immutable_types() -> None:
@@ -148,6 +215,7 @@ def test_role_tool_request_and_context_are_closed_immutable_types() -> None:
         {"worktree_id": "x" * 129},
         {"policy_version": 0},
         {"policy_version": True},
+        {"policy_version": 2**31},
     ),
 )
 def test_authorization_context_is_strictly_validated(
@@ -163,6 +231,17 @@ def test_authorization_context_is_strictly_validated(
 
     with pytest.raises((TypeError, ValueError)):
         ToolAuthorizationContext(**values)  # type: ignore[arg-type]
+
+
+def test_authorization_context_accepts_largest_persistable_policy_version() -> None:
+    context = ToolAuthorizationContext(
+        role=AgentRole.PLANNER,
+        run_id=RUN_ID,
+        worktree_id="forge-aaaaaaaaaaaa-bbbbbbbbbbbb",
+        policy_version=2**31 - 1,
+    )
+
+    assert context.policy_version == 2**31 - 1
 
 
 @pytest.mark.parametrize(
