@@ -110,14 +110,19 @@ class DeveloperWorktreeLifecycle:
             worktree = self._git.expected_worktree(identity, manifest.base_sha)
 
             if "worktree.removed" not in manifest.completed_checkpoints:
-                inspected = await asyncio.to_thread(
-                    self._git.inspect_worktree, identity, manifest.base_sha
-                )
+                try:
+                    inspected = await asyncio.to_thread(
+                        self._git.inspect_worktree, identity, manifest.base_sha
+                    )
+                except Exception:  # noqa: BLE001 - exact absence proof decides recovery
+                    await asyncio.to_thread(self._git.verify_worktree_absent, worktree)
+                    inspected = None
                 if inspected is not None:
                     if inspected != worktree:
                         raise DeveloperWorktreeError()
                     await asyncio.to_thread(self._git.remove_worktree, worktree)
                 await asyncio.to_thread(self._git.verify_worktree_absent, worktree)
+                await asyncio.to_thread(self._git.prune)
                 manifest = await self._checkpoint(manifest, "worktree.removed")
             else:
                 await asyncio.to_thread(self._git.verify_worktree_absent, worktree)
@@ -252,7 +257,11 @@ class DeveloperWorktreeLifecycle:
             for command in policy.commands_for(kind):
                 digest = command_spec_digest(command)
                 checkpoint = f"setup.command:{ordinal}:{digest}"
+                started = f"setup.command-started:{ordinal}:{digest}"
                 if checkpoint not in manifest.completed_checkpoints:
+                    if started in manifest.completed_checkpoints:
+                        raise DeveloperWorktreeError()
+                    manifest = await self._checkpoint(manifest, started)
                     selected = {
                         key: binding.environment[key]
                         for key in command.environment_keys

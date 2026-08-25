@@ -9,6 +9,7 @@ import re
 import stat
 import uuid
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -115,6 +116,12 @@ class WorktreeManifestStore:
         if not path.is_absolute():
             path = path.resolve()
         self._root = path / "worktrees"
+        if os.name == "nt":
+            from forge.tools.paths import _WindowsPathApi
+
+            self._windows: Any | None = _WindowsPathApi()
+        else:
+            self._windows = None
 
     def path_for(self, project_id: UUID, branch: str) -> Path:
         if not isinstance(project_id, UUID):
@@ -146,7 +153,7 @@ class WorktreeManifestStore:
         self._prepare_root(create=False)
         try:
             self._reject_unsafe(path, directory=False)
-            data = path.read_bytes()
+            data = self._read_bytes(path)
             if len(data) > _MAX_BYTES:
                 raise WorktreeManifestError()
             manifest = DeveloperWorktreeManifest.model_validate_json(data)
@@ -172,20 +179,47 @@ class WorktreeManifestStore:
         current = self.load(manifest.project_id, manifest.branch)
         if current != manifest:
             raise WorktreeManifestError()
+        path = self.path_for(manifest.project_id, manifest.branch)
         try:
-            self.path_for(manifest.project_id, manifest.branch).unlink()
+            if self._windows is None:
+                path.unlink()
+            else:
+                api = self._windows
+                parent = api.open_secret_directory(self._root)
+                handle = None
+                try:
+                    handle = api.open_secret_file(
+                        parent,
+                        path.name,
+                        access=0x80000000 | 0x00010000 | 0x00020000 | 0x00100000,
+                        missing_ok=False,
+                    )
+                    assert handle is not None
+                    api.dispose(handle)
+                finally:
+                    if handle is not None:
+                        api.close(handle)
+                    api.close(parent)
         except Exception:  # noqa: BLE001 - filesystem diagnostics are redacted
             raise WorktreeManifestError() from None
 
     def _prepare_root(self, *, create: bool) -> None:
         try:
-            if create:
-                self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            if not self._root.exists():
-                return
-            self._reject_unsafe(self._root, directory=True)
-            if os.name != "nt":
+            if self._windows is None:
+                if create:
+                    self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
+                if not self._root.exists():
+                    return
+                self._reject_unsafe(self._root, directory=True)
                 os.chmod(self._root, 0o700)
+            else:
+                self._root.parent.mkdir(parents=True, exist_ok=True)
+                if create and not os.path.lexists(self._root):
+                    self._windows.create_secure_directory(self._root)
+                if not os.path.lexists(self._root):
+                    return
+                handle = self._windows.open_secret_directory(self._root)
+                self._windows.close(handle)
         except WorktreeManifestError:
             raise
         except Exception:  # noqa: BLE001 - filesystem diagnostics are redacted
@@ -218,14 +252,24 @@ class WorktreeManifestStore:
             raise WorktreeManifestError()
         temporary = self._root / f".{path.name}.{uuid.uuid4().hex}.tmp"
         try:
-            descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            try:
-                os.write(descriptor, payload)
-                os.fsync(descriptor)
-                if os.name != "nt":
+            if self._windows is None:
+                descriptor = os.open(
+                    temporary,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600,
+                )
+                try:
+                    os.write(descriptor, payload)
+                    os.fsync(descriptor)
                     os.fchmod(descriptor, 0o600)
-            finally:
-                os.close(descriptor)
+                finally:
+                    os.close(descriptor)
+            else:
+                handle = self._windows.create_secret_file(temporary, temporary.name)
+                try:
+                    self._windows.write_secret(handle, payload)
+                finally:
+                    self._windows.close(handle)
             self._reject_unsafe(temporary, directory=False)
             if not replace and os.path.lexists(path):
                 raise WorktreeManifestError()
@@ -233,6 +277,8 @@ class WorktreeManifestStore:
                 self._reject_unsafe(path, directory=False)
             os.replace(temporary, path)
             self._reject_unsafe(path, directory=False)
+            if self._windows is not None:
+                self._verify_windows_file(path)
         except WorktreeManifestError:
             raise
         except Exception:  # noqa: BLE001 - filesystem diagnostics are redacted
@@ -243,6 +289,60 @@ class WorktreeManifestStore:
                     temporary.unlink()
             except OSError:
                 pass
+
+    def _read_bytes(self, path: Path) -> bytes:
+        if self._windows is None:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or int(metadata.st_nlink) != 1:
+                    raise WorktreeManifestError()
+                chunks: list[bytes] = []
+                total = 0
+                while total <= _MAX_BYTES:
+                    chunk = os.read(descriptor, min(64 * 1024, _MAX_BYTES + 1 - total))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                return b"".join(chunks)
+            finally:
+                os.close(descriptor)
+        api = self._windows
+        parent = api.open_secret_directory(self._root)
+        handle = None
+        try:
+            handle = api.open_secret_file(
+                parent,
+                path.name,
+                access=0x80000000 | 0x00000080 | 0x00020000 | 0x00100000,
+                missing_ok=False,
+            )
+            assert handle is not None
+            return cast(bytes, api.read_secret(handle, _MAX_BYTES + 1))
+        finally:
+            if handle is not None:
+                api.close(handle)
+            api.close(parent)
+
+    def _verify_windows_file(self, path: Path) -> None:
+        assert self._windows is not None
+        parent = self._windows.open_secret_directory(self._root)
+        handle = None
+        try:
+            handle = self._windows.open_secret_file(
+                parent,
+                path.name,
+                access=0x80000000 | 0x00000080 | 0x00020000 | 0x00100000,
+                missing_ok=False,
+            )
+            if handle is None:
+                raise WorktreeManifestError()
+        finally:
+            if handle is not None:
+                self._windows.close(handle)
+            self._windows.close(parent)
 
     @staticmethod
     def _stable_identity(manifest: DeveloperWorktreeManifest) -> tuple[object, ...]:

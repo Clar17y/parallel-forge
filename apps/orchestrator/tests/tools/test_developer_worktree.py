@@ -10,9 +10,10 @@ from forge.application.ports.worktrees import (
     EnvironmentStagingInspection,
     ManagedWorktree,
 )
-from forge.domain.policy import ProjectPolicy, RunnerMode
+from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.domain.resource import ResourceState, WorktreeIdentity
-from forge.tools.developer_worktree import DeveloperWorktreeLifecycle
+from forge.domain.validation import command_spec_digest
+from forge.tools.developer_worktree import DeveloperWorktreeError, DeveloperWorktreeLifecycle
 from forge.tools.worktree_manifest import WorktreeManifestStore
 
 
@@ -35,6 +36,8 @@ class Git:
 
     def inspect_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree | None:
         expected = self.expected_worktree(identity, base_sha)
+        if self.current is None and self.branch_retained:
+            raise RuntimeError("retained branch prevents create-oriented inspection")
         return self.current if self.current == expected else None
 
     def create_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
@@ -50,6 +53,9 @@ class Git:
 
     def verify_worktree_absent(self, worktree: ManagedWorktree) -> None:
         assert self.current is None
+
+    def prune(self) -> None:
+        self.log.append("worktree:prune")
 
 
 class Database:
@@ -212,7 +218,7 @@ async def test_teardown_is_worktree_first_and_retains_branch(tmp_path: Path) -> 
 
     await service.teardown(selected, "feature/remove")
 
-    assert log == ["worktree:remove", "database:remove"]
+    assert log == ["worktree:remove", "worktree:prune", "database:remove"]
     assert git.branch_retained
     assert not manifests.exists(selected.id, "feature/remove")
 
@@ -250,3 +256,77 @@ async def test_teardown_retry_starts_after_verified_worktree_removal(tmp_path: P
     await service.teardown(selected, "feature/retry")
 
     assert log == ["database:remove"]
+
+
+@pytest.mark.asyncio
+async def test_teardown_recovers_when_removal_finished_before_checkpoint(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    log: list[str] = []
+    git = Git(root, log)
+    database = Database(log)
+    stager = Stager(log)
+    manifests = WorktreeManifestStore(tmp_path / "data")
+    service = DeveloperWorktreeLifecycle(
+        git=git,
+        database=database,
+        environment_stager=stager,
+        runner_factory=Factory(),
+        manifests=manifests,
+    )
+    selected = policy(root)
+    await service.setup(selected, "feature/interrupted-removal")
+    git.current = None
+    git.branch_retained = True
+    log.clear()
+
+    await service.teardown(selected, "feature/interrupted-removal")
+
+    assert log == ["worktree:prune"]
+    assert not manifests.exists(selected.id, "feature/interrupted-removal")
+
+
+@pytest.mark.asyncio
+async def test_setup_does_not_repeat_command_with_ambiguous_started_checkpoint(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    log: list[str] = []
+    git = Git(root, log)
+    manifests = WorktreeManifestStore(tmp_path / "data")
+    service = DeveloperWorktreeLifecycle(
+        git=git,
+        database=Database(log),
+        environment_stager=Stager(log),
+        runner_factory=Factory(),
+        manifests=manifests,
+    )
+    command = CommandSpec(
+        kind=StepKind.MIGRATION,
+        name="migrate-once",
+        argv=("forge-migrate",),
+        timeout_seconds=30,
+    )
+    selected = policy(root).model_copy(update={"commands": (command,)})
+    branch = "feature/ambiguous-command"
+    await service.setup(selected, branch, bootstrap=False)
+    manifest = manifests.load(selected.id, branch)
+    started = f"setup.command-started:0:{command_spec_digest(command)}"
+    checkpoints = tuple(
+        checkpoint
+        for checkpoint in manifest.completed_checkpoints
+        if checkpoint != "setup.complete"
+    )
+    interrupted = manifest.model_copy(update={"completed_checkpoints": (*checkpoints, started)})
+    manifests.save(interrupted)
+
+    with pytest.raises(
+        DeveloperWorktreeError,
+        match="developer worktree operation failed",
+    ):
+        await service.setup(selected, branch)
+
+    assert manifests.load(selected.id, branch) == interrupted
