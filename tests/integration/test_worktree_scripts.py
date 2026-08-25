@@ -121,3 +121,126 @@ def test_yes_failure_is_nonzero_redacted_and_secret_free() -> None:
     assert result.returncode != 0
     assert result.stderr.strip() == "Forge worktree operation failed."
     assert sentinel not in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell host wrapper")
+@pytest.mark.parametrize(
+    ("script", "subcommand", "extra"),
+    (
+        ("setup-worktree.ps1", "setup", "--no-bootstrap"),
+        ("teardown-worktree.ps1", "teardown", "--yes"),
+    ),
+)
+def test_powershell_wrapper_forwards_lifecycle_arguments_and_failure_exit(
+    tmp_path: Path,
+    script: str,
+    subcommand: str,
+    extra: str,
+) -> None:
+    powershell = next(
+        (
+            candidate
+            for candidate in ("pwsh.exe", "pwsh", "powershell.exe", "powershell")
+            if __import__("shutil").which(candidate)
+        ),
+        None,
+    )
+    if powershell is None:
+        pytest.skip("PowerShell unavailable")
+    fake_bin = tmp_path / "fake python with spaces"
+    fake_bin.mkdir()
+    capture = tmp_path / "captured arguments.txt"
+    (fake_bin / "python.cmd").write_text(
+        '@echo off\r\n> "%FORGE_CAPTURE%" echo %*\r\nexit /b %FORGE_FAKE_EXIT%\r\n',
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment["PATH"] = str(fake_bin) + os.pathsep + environment.get("PATH", "")
+    environment["FORGE_CAPTURE"] = str(capture)
+    environment["FORGE_FAKE_EXIT"] = "23"
+    spaced_cwd = tmp_path / "repository with spaces"
+    spaced_cwd.mkdir()
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-File",
+            str(ROOT / "scripts" / script),
+            "--branch",
+            "feature/space value",
+            extra,
+        ],
+        cwd=spaced_cwd,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 23
+    forwarded = capture.read_text(encoding="utf-8").strip()
+    assert forwarded.startswith(f"-m forge.cli.main worktree {subcommand} --branch ")
+    assert '"feature/space value"' in forwarded
+    assert forwarded.endswith(extra)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Bash host wrapper")
+@pytest.mark.parametrize(
+    ("script", "subcommand", "extra"),
+    (
+        ("setup-worktree.sh", "setup", "--no-bootstrap"),
+        ("teardown-worktree.sh", "teardown", "--yes"),
+    ),
+)
+def test_bash_wrapper_forwards_lifecycle_arguments_and_failure_exit(
+    tmp_path: Path,
+    script: str,
+    subcommand: str,
+    extra: str,
+) -> None:
+    fake_bin = tmp_path / "fake python with spaces"
+    fake_bin.mkdir()
+    capture = tmp_path / "captured arguments.txt"
+    fake_python = fake_bin / "python"
+    fake_python.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FORGE_CAPTURE"\nexit "$FORGE_FAKE_EXIT"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    environment = dict(os.environ)
+    environment["PATH"] = str(fake_bin) + os.pathsep + environment.get("PATH", "")
+    environment["FORGE_CAPTURE"] = str(capture)
+    environment["FORGE_FAKE_EXIT"] = "23"
+    spaced_cwd = tmp_path / "repository with spaces"
+    spaced_cwd.mkdir()
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / script),
+            "--branch",
+            "feature/space value",
+            extra,
+        ],
+        cwd=spaced_cwd,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 23
+    assert capture.read_text(encoding="utf-8").splitlines() == [
+        "-m",
+        "forge.cli.main",
+        "worktree",
+        subcommand,
+        "--branch",
+        "feature/space value",
+        extra,
+    ]
