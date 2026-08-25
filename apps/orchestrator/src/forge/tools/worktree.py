@@ -200,6 +200,7 @@ class _TeardownContext:
     identity: WorktreeIdentity
     expected: ManagedWorktree
     request: OperationRequest
+    removed: _EventCheckpoint | None
 
 
 class WorktreeProvisioner:
@@ -751,6 +752,7 @@ class WorktreeProvisioner:
         try:
             async with self._unit_of_work_factory() as work:
                 run = await work.runs.get(run_id)
+                raw_events = await work.events.list_after(run_id, 0)
         except Exception:  # noqa: BLE001 - persistence diagnostics are redacted
             raise WorktreeIntegrityError() from None
 
@@ -761,12 +763,16 @@ class WorktreeProvisioner:
         except Exception:  # noqa: BLE001 - Git diagnostics are redacted
             raise WorktreeIntegrityError() from None
         _validate_teardown_resource(run, policy, identity, expected, self._database)
+        request = _teardown_request(run, identity, policy)
+        removed = _parse_teardown_checkpoint(raw_events, run, request)
+        _validate_teardown_checkpoint_shape(run, policy, removed)
         return _TeardownContext(
             run=run,
             policy=policy,
             identity=identity,
             expected=expected,
-            request=_teardown_request(run, identity, policy),
+            request=request,
+            removed=removed,
         )
 
     async def _record_worktree_removed(
@@ -1125,7 +1131,8 @@ class _WorktreeTeardownAdapter:
             self._owner._git.prune,
             already_cancelled=remove_cancelled or verify_cancelled,
         )
-        await self._owner._record_worktree_removed(context, intent.id)
+        context = await self._owner._record_worktree_removed(context, intent.id)
+        _require_teardown_checkpoint(context, intent.id)
         if remove_cancelled or verify_cancelled or prune_cancelled:
             raise asyncio.CancelledError()
         return _worktree_outcome(context.request, context.identity)
@@ -1133,6 +1140,8 @@ class _WorktreeTeardownAdapter:
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
         context = await self._owner._load_teardown_context(intent.run_id, self._policy)
         _validate_adapter_intent(intent, context.request)
+        if context.run.worktree_path is None:
+            _require_teardown_checkpoint(context, intent.id)
         try:
             verify_cancelled = await self._owner._verify_absent(context.expected)
         except WorktreeReconciliationRequired:
@@ -1150,6 +1159,7 @@ class _WorktreeTeardownAdapter:
             context = await self._owner._record_worktree_removed(context, intent.id)
         if context.run.worktree_path is not None:
             raise WorktreeReconciliationRequired()
+        _require_teardown_checkpoint(context, intent.id)
         if verify_cancelled or prune_cancelled:
             raise asyncio.CancelledError()
         return _worktree_outcome(context.request, context.identity)
@@ -1850,7 +1860,6 @@ def _teardown_request(
         "branch_digest": hashlib.sha256(identity.branch.encode("utf-8")).hexdigest(),
         "worktree_name": identity.worktree_name,
         "base_sha": _require_sha(run.base_sha),
-        "database_state": run.database_state.value,
     }
     return OperationRequest(
         run_id=run.id,
@@ -2138,6 +2147,90 @@ def _parse_checkpoints(
     return tuple(parsed)
 
 
+def _parse_teardown_checkpoint(
+    raw_events: Sequence[object],
+    run: RunSnapshot,
+    request: OperationRequest,
+) -> _EventCheckpoint | None:
+    matches: list[_EventCheckpoint] = []
+    for event in raw_events:
+        if not isinstance(event, RunEvent):
+            raise WorktreeIntegrityError()
+        if event.event_type != _WORKTREE_REMOVED_EVENT:
+            continue
+        if event.run_id != run.id or not isinstance(event.payload, Mapping):
+            raise WorktreeReconciliationRequired()
+        payload = event.payload
+        if set(payload) != _CHECKPOINT_KEYS:
+            raise WorktreeIntegrityError()
+        operation_id = _parse_uuid_field(payload.get("operation_intent_id"))
+        if operation_id is None:
+            raise WorktreeReconciliationRequired()
+        if (
+            payload.get("project_id") != request.request_payload.get("project_id")
+            or payload.get("run_id") != request.request_payload.get("run_id")
+            or payload.get("policy_version") != request.request_payload.get("policy_version")
+            or payload.get("branch_digest") != request.request_payload.get("branch_digest")
+            or payload.get("worktree_name") != request.request_payload.get("worktree_name")
+            or payload.get("base_sha") != request.request_payload.get("base_sha")
+        ):
+            raise WorktreeReconciliationRequired()
+        state = payload.get("database_state")
+        if not isinstance(state, str):
+            raise WorktreeIntegrityError()
+        try:
+            ResourceState(state)
+        except ValueError:
+            raise WorktreeIntegrityError() from None
+        matches.append(
+            _EventCheckpoint(
+                event_type=event.event_type,
+                operation_intent_id=operation_id,
+                database_intent_id=None,
+                payload=payload,
+            )
+        )
+    if len(matches) > 1:
+        raise WorktreeReconciliationRequired()
+    return matches[0] if matches else None
+
+
+def _validate_teardown_checkpoint_shape(
+    run: RunSnapshot,
+    policy: ProjectPolicy,
+    removed: _EventCheckpoint | None,
+) -> None:
+    if removed is not None and run.worktree_path is not None:
+        raise WorktreeReconciliationRequired()
+    if (
+        policy.database.enabled
+        and run.worktree_path is None
+        and run.database_state
+        in {ResourceState.PROVISIONING, ResourceState.FAILED, ResourceState.ACTIVE}
+        and removed is None
+    ):
+        raise WorktreeReconciliationRequired()
+    if removed is None:
+        return
+    state = _checkpoint_database_state(removed)
+    expected_states = (
+        {ResourceState.PROVISIONING, ResourceState.FAILED, ResourceState.ACTIVE}
+        if policy.database.enabled
+        else {ResourceState.DISABLED}
+    )
+    if state not in expected_states:
+        raise WorktreeReconciliationRequired()
+
+
+def _require_teardown_checkpoint(context: _TeardownContext, intent_id: UUID) -> None:
+    if (
+        context.removed is None
+        or not isinstance(intent_id, UUID)
+        or context.removed.operation_intent_id != intent_id
+    ):
+        raise WorktreeReconciliationRequired()
+
+
 def _parse_uuid_field(value: object) -> UUID | None:
     if not isinstance(value, str):
         return None
@@ -2254,16 +2347,12 @@ def _validate_succeeded_intent(
 
 
 def _worktree_outcome(request: OperationRequest, identity: WorktreeIdentity) -> OperationOutcome:
-    target_state = request.request_payload.get("database_state")
-    if not isinstance(target_state, str):
-        raise WorktreeIntegrityError()
     return OperationOutcome(
         status=OperationStatus.SUCCEEDED,
         remote_resource_id=identity.worktree_name,
         payload={
             "worktree_name": identity.worktree_name,
             "base_sha": request.request_payload.get("base_sha"),
-            "database_state": target_state,
         },
     )
 

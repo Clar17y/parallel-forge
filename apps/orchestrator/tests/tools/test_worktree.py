@@ -807,6 +807,119 @@ def _provisioner(
 
 
 @pytest.mark.asyncio
+async def test_teardown_request_identity_ignores_mutable_database_state() -> None:
+    run = _run(enabled=True, branch="feature/teardown-stable-request")
+    policy = _policy(enabled=True)
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", True)
+    from forge.tools.worktree import _teardown_request
+
+    provisioning = _teardown_request(
+        replace(run, database_state=ResourceState.PROVISIONING), identity, policy
+    )
+    failed = _teardown_request(replace(run, database_state=ResourceState.FAILED), identity, policy)
+
+    assert set(provisioning.request_payload) == {
+        "project_id",
+        "run_id",
+        "policy_version",
+        "branch_digest",
+        "worktree_name",
+        "base_sha",
+    }
+    assert provisioning.idempotency_key == failed.idempotency_key
+    assert provisioning.request_digest == failed.request_digest
+    assert provisioning.request_payload == failed.request_payload
+
+    operations = _Operations(RUN_ID, [])
+    original = await operations.begin(
+        run_id=RUN_ID,
+        operation_type=provisioning.kind,
+        idempotency_key=provisioning.idempotency_key,
+        request_digest=provisioning.request_digest,
+        request_payload=provisioning.request_payload,
+    )
+    adopted = await operations.begin(
+        run_id=RUN_ID,
+        operation_type=failed.kind,
+        idempotency_key=failed.idempotency_key,
+        request_digest=failed.request_digest,
+        request_payload=failed.request_payload,
+    )
+
+    assert adopted.id == original.id
+    assert adopted.is_new is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("checkpoint_kind", ("missing", "foreign", "mismatched"))
+async def test_teardown_reconcile_rejects_invalid_removal_checkpoint(
+    checkpoint_kind: str,
+) -> None:
+    run = _run(enabled=True, branch="feature/teardown-missing-checkpoint")
+    log: list[str] = []
+    uow_factory = _UowFactory(run, log)
+    operations = _Operations(RUN_ID, log)
+    git = _BranchRetainingGit(log)
+    database = _EnabledDatabase(log)
+    from forge.tools.worktree import (
+        WorktreeProvisioner,
+        _teardown_checkpoint_payload,
+        _teardown_request,
+    )
+
+    policy = _policy(enabled=True, repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", True)
+    run = replace(
+        run,
+        worktree_path=None,
+        database_state=ResourceState.ACTIVE,
+        database_name=identity.database_name,
+        database_role=identity.database_role,
+        secret_id=f"forge_db_{PROJECT_ID.hex}_{RUN_ID.hex}",
+    )
+    uow_factory.runs.current = run
+    request = _teardown_request(run, identity, policy)
+    intent = await operations.begin(
+        run_id=RUN_ID,
+        operation_type=request.kind,
+        idempotency_key=request.idempotency_key,
+        request_digest=request.request_digest,
+        request_payload=request.request_payload,
+    )
+    if checkpoint_kind != "missing":
+        checkpoint_intent_id = intent.id if checkpoint_kind == "mismatched" else uuid4()
+        payload = dict(
+            _teardown_checkpoint_payload(
+                request,
+                checkpoint_intent_id,
+                target_state=ResourceState.ACTIVE,
+            )
+        )
+        if checkpoint_kind == "mismatched":
+            payload["base_sha"] = "b" * 40
+        await uow_factory.events.append(
+            RunEvent(
+                run_id=RUN_ID,
+                run_version=run.version,
+                event_type="resource.worktree_removed",
+                payload=payload,
+            )
+        )
+    provisioner = WorktreeProvisioner(
+        uow_factory,
+        operations=operations,
+        git=git,
+        database=database,
+        operation_executor=_Executor(operations),
+    )
+
+    reconciled = await provisioner.reconcile(intent.id, policy)
+
+    assert reconciled.status is OperationStatus.NEEDS_RECONCILIATION
+    assert "database.teardown" not in log
+
+
+@pytest.mark.asyncio
 async def test_disabled_teardown_removes_exact_worktree_and_keeps_branch() -> None:
     run = _run(branch="feature/teardown-disabled")
     provisioner, uow_factory, operations, git, log = _provisioner(run)
