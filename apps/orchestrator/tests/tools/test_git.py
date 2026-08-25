@@ -1346,6 +1346,21 @@ def test_remove_is_exact_quarantine_idempotent_and_keeps_branch(tmp_path: Path) 
     assert not target_quarantine.exists() or not any(target_quarantine.iterdir())
 
 
+def test_verify_worktree_absent_accepts_retained_branch_after_removal(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_run(
+        PROJECT_ID, RUN_ID, branch="feature/verify-removed", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    handle = controlled.create_worktree(identity, base_sha)
+
+    controlled.remove_worktree(handle)
+
+    controlled.verify_worktree_absent(handle)
+    with pytest.raises(ControlledGitError):
+        controlled.inspect_worktree(identity, base_sha)
+
+
 def test_remove_stale_registration_is_exact_and_preserves_unrelated_metadata(
     tmp_path: Path,
 ) -> None:

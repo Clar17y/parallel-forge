@@ -353,6 +353,17 @@ class ControlledGit:
         except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
             raise ControlledGitError() from None
 
+    def verify_worktree_absent(self, worktree: ManagedWorktree) -> None:
+        """Prove the exact target and registration are absent while retaining its branch."""
+
+        try:
+            identity, expected_path = self._validate_handle_shape(worktree)
+            self._remove_absent_worktree(identity, expected_path)
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
     def _remove_live_worktree(
         self,
         worktree: ManagedWorktree,

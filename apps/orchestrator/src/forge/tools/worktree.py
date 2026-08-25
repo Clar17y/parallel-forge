@@ -1066,6 +1066,12 @@ class WorktreeProvisioner:
         except Exception:  # noqa: BLE001 - inspection failures expose no Git diagnostics
             raise WorktreeReconciliationRequired() from None
 
+    async def _verify_absent(self, expected: ManagedWorktree) -> bool:
+        _, cancelled = await _run_redacted_thread(
+            lambda: self._git.verify_worktree_absent(expected)
+        )
+        return cancelled
+
     async def _create_worktree(
         self, expected: ManagedWorktree
     ) -> tuple[ManagedWorktree | None, bool, BaseException | None]:
@@ -1114,9 +1120,7 @@ class _WorktreeTeardownAdapter:
             )
         except WorktreeProvisionerError:
             pass
-        remaining, verify_cancelled = await self._owner._inspect_any(context.expected)
-        if remaining is not None:
-            raise WorktreeReconciliationRequired()
+        verify_cancelled = await self._owner._verify_absent(context.expected)
         _, prune_cancelled = await _run_redacted_thread(
             self._owner._git.prune,
             already_cancelled=remove_cancelled or verify_cancelled,
@@ -1129,20 +1133,24 @@ class _WorktreeTeardownAdapter:
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
         context = await self._owner._load_teardown_context(intent.run_id, self._policy)
         _validate_adapter_intent(intent, context.request)
-        present, inspect_cancelled = await self._owner._inspect_any(context.expected)
-        if present is not None:
+        try:
+            verify_cancelled = await self._owner._verify_absent(context.expected)
+        except WorktreeReconciliationRequired:
+            present, inspect_cancelled = await self._owner._inspect_any(context.expected)
+            if present is None:
+                raise WorktreeReconciliationRequired()
             if inspect_cancelled:
                 raise asyncio.CancelledError()
             return _needs_outcome()
         _, prune_cancelled = await _run_redacted_thread(
             self._owner._git.prune,
-            already_cancelled=inspect_cancelled,
+            already_cancelled=verify_cancelled,
         )
         if context.run.worktree_path is not None:
             context = await self._owner._record_worktree_removed(context, intent.id)
         if context.run.worktree_path is not None:
             raise WorktreeReconciliationRequired()
-        if inspect_cancelled or prune_cancelled:
+        if verify_cancelled or prune_cancelled:
             raise asyncio.CancelledError()
         return _worktree_outcome(context.request, context.identity)
 

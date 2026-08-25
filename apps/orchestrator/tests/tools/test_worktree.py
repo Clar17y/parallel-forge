@@ -311,6 +311,12 @@ class _Git:
         self.log.append("git.remove")
         self.handle = None
 
+    def verify_worktree_absent(self, worktree: ManagedWorktree) -> None:
+        self.log.append("git.verify_absent")
+        assert self.handle is None
+        assert self.branch_present is True
+        assert worktree == self.expected_worktree(worktree.identity, worktree.base_sha)
+
     def prune(self) -> None:
         self.log.append("git.prune")
 
@@ -343,6 +349,14 @@ class _RemoveThenRaiseGit(_Git):
     def remove_worktree(self, worktree: ManagedWorktree) -> None:
         super().remove_worktree(worktree)
         raise RuntimeError("raw git removal sentinel")
+
+
+class _BranchRetainingGit(_Git):
+    def inspect_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree | None:
+        inspected = super().inspect_worktree(identity, base_sha)
+        if inspected is None and self.branch_present:
+            raise RuntimeError("creation inspection rejects a retained branch")
+        return inspected
 
 
 class _Database:
@@ -819,6 +833,7 @@ async def test_disabled_teardown_removes_exact_worktree_and_keeps_branch() -> No
             "intent.commit",
             "git.inspect",
             "git.remove",
+            "git.verify_absent",
             "git.prune",
             "resource.commit",
             "operation.complete",
@@ -827,7 +842,7 @@ async def test_disabled_teardown_removes_exact_worktree_and_keeps_branch() -> No
         "intent.commit",
         "git.inspect",
         "git.remove",
-        "git.inspect",
+        "git.verify_absent",
         "git.prune",
         "resource.commit",
         "operation.complete",
@@ -895,6 +910,43 @@ async def test_active_database_teardown_runs_only_after_worktree_checkpoint() ->
     assert repeated == removed
     assert log.count("git.remove") == 1
     assert log.count("database.teardown") == 1
+
+
+@pytest.mark.asyncio
+async def test_teardown_uses_removal_inspection_when_branch_is_retained() -> None:
+    run = _run(enabled=True, branch="feature/teardown-retained-branch")
+    log: list[str] = []
+    uow_factory = _UowFactory(run, log)
+    operations = _Operations(RUN_ID, log)
+    git = _BranchRetainingGit(log)
+    database = _EnabledDatabase(log)
+    from forge.tools.worktree import WorktreeProvisioner
+
+    provisioner = WorktreeProvisioner(
+        uow_factory,
+        operations=operations,
+        git=git,
+        database=database,
+        operation_executor=_Executor(operations),
+    )
+    policy = _policy(enabled=True, repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", True)
+    expected = git.expected_worktree(identity, BASE_SHA)
+    git.handle = expected
+    uow_factory.runs.current = replace(
+        run,
+        worktree_path=str(expected.path),
+        database_state=ResourceState.ACTIVE,
+        database_name=identity.database_name,
+        database_role=identity.database_role,
+        secret_id=f"forge_db_{PROJECT_ID.hex}_{RUN_ID.hex}",
+    )
+
+    removed = await provisioner.teardown(RUN_ID, policy)
+
+    assert removed.worktree_path is None
+    assert removed.database_state is ResourceState.REMOVED
+    assert log.index("git.verify_absent") < log.index("database.teardown")
 
 
 @pytest.mark.asyncio
@@ -986,6 +1038,7 @@ async def test_teardown_cancellation_reconciles_original_intent_on_retry() -> No
     reconciled = await provisioner.reconcile(operations.intent.id, policy)
     assert reconciled.status is OperationStatus.SUCCEEDED
     assert log.count("git.remove") == 1
+    assert log.count("git.verify_absent") == 2
 
     removed = await provisioner.teardown(RUN_ID, policy)
 
