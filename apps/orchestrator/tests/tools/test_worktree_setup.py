@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +34,8 @@ from forge.tools.runner import command_spec_digest
 PROJECT_ID = UUID("11111111-1111-1111-1111-111111111111")
 RUN_ID = UUID("22222222-2222-2222-2222-222222222222")
 BASE_SHA = "a" * 40
+RUNNER_ERROR_SENTINEL = "runner-os-error-path-branch-environment-sentinel"
+BOUNDARY_ERROR_SENTINEL = "setup-boundary-error-path-branch-sentinel"
 
 
 @dataclass
@@ -52,6 +55,9 @@ class _Events:
 class _Runs:
     current: RunSnapshot
     events: _Events
+    pause_event_type: str | None = None
+    pause_entered: asyncio.Event = field(default_factory=asyncio.Event)
+    pause_release: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def get(self, run_id: UUID) -> RunSnapshot:
         assert run_id == self.current.id
@@ -65,6 +71,10 @@ class _Runs:
     ) -> RunSnapshot:
         assert run_id == self.current.id
         assert expected_version == self.current.version
+        if values["event_type"] == self.pause_event_type:
+            self.pause_event_type = None
+            self.pause_entered.set()
+            await self.pause_release.wait()
         self.current = self.current.with_resource(
             worktree_path=values["worktree_path"],
             database_state=values["database_state"],
@@ -296,15 +306,34 @@ class _ActiveDatabase:
 
 
 class _Plan:
-    evidence = ()
-    file_count = 0
+    evidence = (
+        EnvironmentFileEvidence(
+            path_digest="1" * 64,
+            source_digest="2" * 64,
+            output_digest="3" * 64,
+            byte_count=41,
+        ),
+    )
+    file_count = 1
 
 
 class _Stager:
-    def __init__(self, log: list[str], *, cancel_on_publish: bool = False) -> None:
+    def __init__(
+        self,
+        log: list[str],
+        *,
+        cancel_on_publish: bool = False,
+        call_threads: list[tuple[str, int]] | None = None,
+        fail_inspect_on: int | None = None,
+        missing_inspect_on: int | None = None,
+    ) -> None:
         self.log = log
         self.plan = _Plan()
         self.cancel_on_publish = cancel_on_publish
+        self.call_threads = call_threads
+        self.fail_inspect_on = fail_inspect_on
+        self.missing_inspect_on = missing_inspect_on
+        self.inspect_calls = 0
 
     def build_plan(
         self,
@@ -316,23 +345,34 @@ class _Stager:
     ) -> _Plan:
         del worktree, policy, resource, policy_version
         self.log.append("stage.plan")
+        if self.call_threads is not None:
+            self.call_threads.append(("plan", threading.get_ident()))
         return self.plan
 
     def publish(
         self, worktree: ManagedWorktree, policy: ProjectPolicy, plan: _Plan
     ) -> tuple[EnvironmentFileEvidence, ...]:
-        del worktree, policy, plan
+        del worktree, policy
         self.log.append("stage.publish")
+        if self.call_threads is not None:
+            self.call_threads.append(("publish", threading.get_ident()))
         if self.cancel_on_publish:
             raise asyncio.CancelledError()
-        return ()
+        return plan.evidence
 
     def inspect(
         self, worktree: ManagedWorktree, policy: ProjectPolicy, plan: _Plan
     ) -> EnvironmentStagingInspection:
-        del worktree, policy, plan
+        del worktree, policy
         self.log.append("stage.inspect")
-        return EnvironmentStagingInspection(present=True, evidence=())
+        self.inspect_calls += 1
+        if self.inspect_calls == self.fail_inspect_on:
+            raise OSError(BOUNDARY_ERROR_SENTINEL)
+        if self.inspect_calls == self.missing_inspect_on:
+            return EnvironmentStagingInspection(present=False, evidence=())
+        if self.call_threads is not None:
+            self.call_threads.append(("inspect", threading.get_ident()))
+        return EnvironmentStagingInspection(present=True, evidence=plan.evidence)
 
 
 def _result(
@@ -376,24 +416,31 @@ class _Runner:
         *,
         cancel_on: str | None = None,
         fail_on: str | None = None,
+        timeout_on: str | None = None,
         tamper_on: str | None = None,
+        raise_on: str | None = None,
         request_sink: list[RunCommandRequest] | None = None,
     ) -> None:
         self.log = log
         self.specs = specs
         self.cancel_on = cancel_on
         self.fail_on = fail_on
+        self.timeout_on = timeout_on
         self.tamper_on = tamper_on
+        self.raise_on = raise_on
         self.request_sink = request_sink
 
     async def run_terminal(self, request: RunCommandRequest) -> CommandTerminalResult:
         self.log.append(f"run:{request.command_name}")
         if self.request_sink is not None:
             self.request_sink.append(request)
+        if request.command_name == self.raise_on:
+            raise OSError(RUNNER_ERROR_SENTINEL)
         return _result(
             self.specs[request.command_name],
             caller_cancelled=request.command_name == self.cancel_on,
             exit_code=2 if request.command_name == self.fail_on else 0,
+            timed_out=request.command_name == self.timeout_on,
             command_name=(
                 "forged-command" if request.command_name == self.tamper_on else request.command_name
             ),
@@ -411,25 +458,35 @@ class _Factory:
         *,
         cancel_on: str | None = None,
         fail_on: str | None = None,
+        timeout_on: str | None = None,
         tamper_on: str | None = None,
+        raise_on: str | None = None,
         request_sink: list[RunCommandRequest] | None = None,
+        fail_create: bool = False,
     ) -> None:
         self.log = log
         self.specs = specs
         self.cancel_on = cancel_on
         self.fail_on = fail_on
+        self.timeout_on = timeout_on
         self.tamper_on = tamper_on
+        self.raise_on = raise_on
         self.request_sink = request_sink
+        self.fail_create = fail_create
 
     def create(self, worktree: ManagedWorktree, policy: ProjectPolicy) -> _Runner:
         del worktree, policy
         self.log.append("runner.create")
+        if self.fail_create:
+            raise OSError(BOUNDARY_ERROR_SENTINEL)
         return _Runner(
             self.log,
             self.specs,
             cancel_on=self.cancel_on,
             fail_on=self.fail_on,
+            timeout_on=self.timeout_on,
             tamper_on=self.tamper_on,
+            raise_on=self.raise_on,
             request_sink=self.request_sink,
         )
 
@@ -477,11 +534,17 @@ def _case(
     *,
     cancel_on: str | None = None,
     fail_on: str | None = None,
+    timeout_on: str | None = None,
     tamper_on: str | None = None,
+    raise_on: str | None = None,
     database_enabled: bool = False,
     database: Any | None = None,
     request_sink: list[RunCommandRequest] | None = None,
     cancel_stage: bool = False,
+    staging_threads: list[tuple[str, int]] | None = None,
+    fail_final_inspect: bool = False,
+    missing_final_inspect: bool = False,
+    fail_factory: bool = False,
 ) -> tuple[list[str], _UowFactory, _Operations, ProjectPolicy, Any]:
     log: list[str] = []
     run = RunSnapshot(
@@ -507,14 +570,23 @@ def _case(
         git=git,
         database=database or _Database(),
         operation_executor=_Executor(operations),
-        environment_stager=_Stager(log, cancel_on_publish=cancel_stage),
+        environment_stager=_Stager(
+            log,
+            cancel_on_publish=cancel_stage,
+            call_threads=staging_threads,
+            fail_inspect_on=2 if fail_final_inspect else None,
+            missing_inspect_on=2 if missing_final_inspect else None,
+        ),
         runner_factory=_Factory(
             log,
             specs,
             cancel_on=cancel_on,
             fail_on=fail_on,
+            timeout_on=timeout_on,
             tamper_on=tamper_on,
+            raise_on=raise_on,
             request_sink=request_sink,
+            fail_create=fail_factory,
         ),
     )
     return log, uow, operations, policy, provisioner
@@ -567,6 +639,20 @@ async def test_prepare_persists_one_checkpoint_for_each_setup_effect_before_fina
         "resource.worktree_prepared",
     ]
     assert uow.runs.current.state is RunState.PREPARING_WORKTREE
+    environment = next(
+        intent
+        for intent in operations.intents.values()
+        if intent.kind == "worktree.environment.stage"
+    )
+    assert environment.request_payload["files"] == (
+        {
+            "path_digest": "1" * 64,
+            "source_digest": "2" * 64,
+            "output_digest": "3" * 64,
+            "byte_count": 41,
+        },
+    )
+    assert environment.request_payload["file_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -795,3 +881,281 @@ async def test_cancelled_environment_publication_is_checkpointed_before_propagat
         if intent.kind == "worktree.environment.stage"
     )
     assert environment.status is OperationStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_repeated_checkpoint_cancellation_persists_once_and_retry_resumes() -> None:
+    log, uow, operations, policy, provisioner = _case()
+    uow.runs.pause_event_type = "resource.setup_step_completed"
+
+    cancelled_prepare = asyncio.create_task(provisioner.prepare(RUN_ID, policy))
+    await uow.runs.pause_entered.wait()
+    cancelled_prepare.cancel()
+    cancelled_prepare.cancel()
+    uow.runs.pause_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_prepare
+
+    setup_events = [
+        event for event in uow.events.values if event.event_type == "resource.setup_step_completed"
+    ]
+    assert len(setup_events) == 1
+    first_command = next(
+        intent
+        for intent in operations.intents.values()
+        if intent.request_payload.get("command_name") == "bootstrap-first"
+    )
+    assert first_command.status is OperationStatus.SUCCEEDED
+    assert [entry for entry in log if entry.startswith("run:")] == ["run:bootstrap-first"]
+
+    await provisioner.prepare(RUN_ID, policy)
+
+    assert [entry for entry in log if entry.startswith("run:")] == [
+        "run:bootstrap-first",
+        "run:bootstrap-second",
+        "run:install-first",
+        "run:migration-first",
+        "run:seed-first",
+    ]
+    assert [event.event_type for event in uow.events.values].count(
+        "resource.worktree_prepared"
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_staging_filesystem_calls_run_off_the_event_loop_thread() -> None:
+    event_loop_thread = threading.get_ident()
+    staging_threads: list[tuple[str, int]] = []
+    _log, _uow, _operations, policy, provisioner = _case(staging_threads=staging_threads)
+
+    await provisioner.prepare(RUN_ID, policy)
+
+    assert [name for name, _thread in staging_threads] == [
+        "plan",
+        "publish",
+        "inspect",
+        "inspect",
+    ]
+    assert all(thread != event_loop_thread for _name, thread in staging_threads)
+
+
+@pytest.mark.asyncio
+async def test_runner_failure_drops_raw_exception_chain_and_stops_setup() -> None:
+    from forge.tools.worktree import (
+        WorktreeReconciliationRequired,
+    )
+
+    log, uow, operations, policy, provisioner = _case(raise_on="bootstrap-first")
+
+    with pytest.raises(WorktreeReconciliationRequired) as captured:
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert RUNNER_ERROR_SENTINEL not in repr(captured.value)
+    assert [entry for entry in log if entry.startswith("run:")] == ["run:bootstrap-first"]
+    assert all(event.event_type != "resource.setup_step_completed" for event in uow.events.values)
+    diagnostic_state = (log, tuple(uow.events.values), tuple(operations.intents.values()))
+    assert RUNNER_ERROR_SENTINEL not in repr(diagnostic_state)
+
+
+@pytest.mark.asyncio
+async def test_reordered_setup_checkpoints_fail_closed_without_rerun() -> None:
+    from forge.tools.worktree import WorktreeReconciliationRequired
+
+    log, uow, _operations, policy, provisioner = _case()
+    await provisioner.prepare(RUN_ID, policy)
+    run_count = len([entry for entry in log if entry.startswith("run:")])
+    setup_indexes = [
+        index
+        for index, event in enumerate(uow.events.values)
+        if event.event_type == "resource.setup_step_completed"
+    ]
+    first, second = setup_indexes[:2]
+    uow.events.values[first], uow.events.values[second] = (
+        uow.events.values[second],
+        uow.events.values[first],
+    )
+
+    with pytest.raises(WorktreeReconciliationRequired):
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert len([entry for entry in log if entry.startswith("run:")]) == run_count
+
+
+@pytest.mark.asyncio
+async def test_timed_out_terminal_step_is_checkpointed_and_stops_later_steps() -> None:
+    from forge.tools.worktree import WorktreeReconciliationRequired
+
+    log, uow, operations, policy, provisioner = _case(timeout_on="install-first")
+
+    with pytest.raises(WorktreeReconciliationRequired):
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert [entry for entry in log if entry.startswith("run:")] == [
+        "run:bootstrap-first",
+        "run:bootstrap-second",
+        "run:install-first",
+    ]
+    install = next(
+        intent
+        for intent in operations.intents.values()
+        if intent.request_payload.get("command_name") == "install-first"
+    )
+    assert install.status is OperationStatus.SUCCEEDED
+    assert install.outcome is not None
+    assert install.outcome["timed_out"] is True
+    assert [event.event_type for event in uow.events.values].count(
+        "resource.setup_step_completed"
+    ) == 3
+    assert all(event.event_type != "resource.worktree_prepared" for event in uow.events.values)
+
+
+@pytest.mark.parametrize(
+    "case_kwargs",
+    [
+        {"fail_factory": True},
+        {"fail_final_inspect": True},
+    ],
+    ids=["runner-factory", "final-stage-inspection"],
+)
+@pytest.mark.asyncio
+async def test_setup_boundaries_raise_stable_context_free_errors(
+    case_kwargs: dict[str, bool],
+) -> None:
+    from forge.tools.worktree import WorktreeReconciliationRequired
+
+    _log, uow, _operations, policy, provisioner = _case(**case_kwargs)
+
+    with pytest.raises(WorktreeReconciliationRequired) as captured:
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert BOUNDARY_ERROR_SENTINEL not in repr(captured.value)
+    assert all(event.event_type != "resource.worktree_prepared" for event in uow.events.values)
+
+
+@pytest.mark.asyncio
+async def test_stale_prepared_event_version_fails_closed_without_rerun() -> None:
+    from forge.tools.worktree import WorktreeReconciliationRequired
+
+    log, uow, _operations, policy, provisioner = _case()
+    await provisioner.prepare(RUN_ID, policy)
+    run_count = len([entry for entry in log if entry.startswith("run:")])
+    prepared_index = next(
+        index
+        for index, event in enumerate(uow.events.values)
+        if event.event_type == "resource.worktree_prepared"
+    )
+    prepared = uow.events.values[prepared_index]
+    uow.events.values[prepared_index] = replace(
+        prepared,
+        run_version=prepared.run_version - 1,
+    )
+
+    with pytest.raises(WorktreeReconciliationRequired):
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert len([entry for entry in log if entry.startswith("run:")]) == run_count
+
+
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("ordinal", 99),
+        ("kind", "seed"),
+        ("command_digest", "f" * 64),
+        ("policy_version", 999),
+        ("evidence_digest", "e" * 64),
+    ],
+)
+@pytest.mark.asyncio
+async def test_tampered_setup_checkpoint_fails_closed_without_rerun(
+    field: str,
+    forged_value: object,
+) -> None:
+    from forge.tools.worktree import WorktreeReconciliationRequired
+
+    log, uow, _operations, policy, provisioner = _case()
+    await provisioner.prepare(RUN_ID, policy)
+    run_count = len([entry for entry in log if entry.startswith("run:")])
+    event_index = next(
+        index
+        for index, event in enumerate(uow.events.values)
+        if event.event_type == "resource.setup_step_completed"
+    )
+    event = uow.events.values[event_index]
+    uow.events.values[event_index] = replace(
+        event,
+        payload={**event.payload, field: forged_value},
+    )
+
+    with pytest.raises(WorktreeReconciliationRequired):
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert len([entry for entry in log if entry.startswith("run:")]) == run_count
+
+
+@pytest.mark.asyncio
+async def test_final_environment_drift_prevents_prepared_checkpoint() -> None:
+    from forge.tools.worktree import WorktreeReconciliationRequired
+
+    log, uow, _operations, policy, provisioner = _case(
+        missing_final_inspect=True,
+    )
+
+    with pytest.raises(WorktreeReconciliationRequired):
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert len([entry for entry in log if entry.startswith("run:")]) == 5
+    assert all(event.event_type != "resource.worktree_prepared" for event in uow.events.values)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_setup_checkpoint_fails_closed_without_rerun() -> None:
+    from forge.tools.worktree import WorktreeReconciliationRequired
+
+    log, uow, _operations, policy, provisioner = _case()
+    await provisioner.prepare(RUN_ID, policy)
+    run_count = len([entry for entry in log if entry.startswith("run:")])
+    event_index = next(
+        index
+        for index, event in enumerate(uow.events.values)
+        if event.event_type == "resource.setup_step_completed"
+    )
+    uow.events.values.insert(event_index + 1, uow.events.values[event_index])
+
+    with pytest.raises(WorktreeReconciliationRequired):
+        await provisioner.prepare(RUN_ID, policy)
+
+    assert len([entry for entry in log if entry.startswith("run:")]) == run_count
+
+
+@pytest.mark.asyncio
+async def test_setup_diagnostics_exclude_scoped_values_branch_and_path() -> None:
+    database = _ActiveDatabase()
+    requests: list[RunCommandRequest] = []
+    log, uow, operations, policy, provisioner = _case(
+        database_enabled=True,
+        database=database,
+        request_sink=requests,
+    )
+
+    await provisioner.prepare(RUN_ID, policy)
+
+    diagnostics = repr(
+        (
+            log,
+            tuple(uow.events.values),
+            tuple(operations.intents.values()),
+            tuple(requests),
+        )
+    )
+    for forbidden in (
+        database.environment_value,
+        "feature/setup-order",
+        str(Path.cwd()),
+    ):
+        assert forbidden not in diagnostics

@@ -45,6 +45,15 @@ class RunCommandRequest:
                 raise ValueError("command environment must contain valid string values")
         object.__setattr__(self, "environment", MappingProxyType(detached))
 
+    def __repr__(self) -> str:
+        """Redact environment values from diagnostic representations."""
+
+        return (
+            f"{type(self).__name__}(command_name={self.command_name!r}, "
+            f"kind={self.kind.value!r}, "
+            f"environment_keys={tuple(sorted(self.environment))!r})"
+        )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CommandResult:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,6 +25,8 @@ from forge.application.ports.worktrees import (
     ControlledGitPort,
     DatabaseBinding,
     DatabaseProvisionerPort,
+    EnvironmentFileEvidence,
+    EnvironmentStagingInspection,
     EnvironmentStagingPlan,
     EnvironmentStagingPort,
     ManagedWorktree,
@@ -80,6 +82,49 @@ _SETUP_COMMAND_KIND = "worktree.setup.command"
 _ENVIRONMENT_STAGED_EVENT = "resource.environment_staged"
 _SETUP_STEP_EVENT = "resource.setup_step_completed"
 _PREPARED_EVENT = "resource.worktree_prepared"
+
+
+async def _run_redacted_thread[Result](
+    operation: Callable[[], Result],
+    *,
+    already_cancelled: bool = False,
+) -> tuple[Result, bool]:
+    try:
+        result = await await_deferred_cancellation(
+            asyncio.to_thread(operation),
+            already_cancelled=already_cancelled,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - boundary diagnostics must not escape
+        failure = WorktreeReconciliationRequired()
+    else:
+        return result
+    raise failure
+
+
+async def _run_redacted_async[Result](operation: Awaitable[Result]) -> Result:
+    try:
+        result = await operation
+    except asyncio.CancelledError:
+        raise
+    except WorktreeProvisionerError:
+        raise
+    except Exception:  # noqa: BLE001 - boundary diagnostics must not escape
+        failure = WorktreeReconciliationRequired()
+    else:
+        return result
+    raise failure
+
+
+def _run_redacted[Result](operation: Callable[[], Result]) -> Result:
+    try:
+        result = operation()
+    except Exception:  # noqa: BLE001 - boundary diagnostics must not escape
+        failure = WorktreeReconciliationRequired()
+    else:
+        return result
+    raise failure
 
 
 class WorktreeProvisionerError(RuntimeError):
@@ -232,15 +277,16 @@ class WorktreeProvisioner:
         if stager is None or runner_factory is None:
             return worktree
         binding = await self._setup_binding(context)
-        try:
-            plan = stager.build_plan(
+        plan, plan_cancelled = await _run_redacted_thread(
+            lambda: stager.build_plan(
                 worktree,
                 context.policy,
                 binding,
                 policy_version=_require_policy_version(context.run),
             )
-        except Exception:  # noqa: BLE001 - staging plans expose no raw diagnostics
-            raise WorktreeReconciliationRequired() from None
+        )
+        if plan_cancelled:
+            raise asyncio.CancelledError()
 
         environment_request = _environment_request(context, plan)
         environment_adapter = _EnvironmentStageAdapter(
@@ -263,7 +309,7 @@ class WorktreeProvisioner:
         if environment_adapter.caller_cancelled:
             raise asyncio.CancelledError()
 
-        runner = runner_factory.create(worktree, context.policy)
+        runner = _run_redacted(lambda: runner_factory.create(worktree, context.policy))
         setup_evidence: list[Mapping[str, object]] = []
         ordinal = 0
         for kind in _SETUP_KINDS:
@@ -279,20 +325,21 @@ class WorktreeProvisioner:
                     ordinal=ordinal,
                     environment_keys=tuple(selected),
                 )
+                command_adapter = _SetupCommandAdapter(
+                    self,
+                    context.policy,
+                    worktree,
+                    runner,
+                    RunCommandRequest(
+                        command_name=command.name,
+                        kind=kind,
+                        environment=selected,
+                    ),
+                    command_request,
+                )
                 command_outcome = await self._execute_setup_effect(
                     command_request,
-                    _SetupCommandAdapter(
-                        self,
-                        context.policy,
-                        worktree,
-                        runner,
-                        RunCommandRequest(
-                            command_name=command.name,
-                            kind=kind,
-                            environment=selected,
-                        ),
-                        command_request,
-                    ),
+                    command_adapter,
                 )
                 command_intent = await self._require_completed_effect(
                     command_request,
@@ -306,10 +353,10 @@ class WorktreeProvisioner:
                         "evidence_digest": result["evidence_digest"],
                     }
                 )
+                if command_adapter.caller_cancelled:
+                    raise asyncio.CancelledError()
                 if result.get("exit_code") != 0 or result.get("timed_out") is not False:
                     raise WorktreeReconciliationRequired()
-                if result.get("caller_cancelled") is True:
-                    raise asyncio.CancelledError()
                 ordinal += 1
 
         latest = await self._load_context(
@@ -318,9 +365,13 @@ class WorktreeProvisioner:
             require_succeeded=True,
         )
         await self._inspect_present(latest.expected)
-        inspection = stager.inspect(worktree, context.policy, plan)
+        inspection, inspection_cancelled = await _run_redacted_thread(
+            lambda: stager.inspect(worktree, context.policy, plan)
+        )
         if not inspection.present or inspection.evidence != plan.evidence:
             raise WorktreeReconciliationRequired()
+        if inspection_cancelled:
+            raise asyncio.CancelledError()
         if latest.run.database_state is ResourceState.ACTIVE:
             await self._verify_active_context(latest)
         prepared_payload: Mapping[str, object] = {
@@ -348,31 +399,21 @@ class WorktreeProvisioner:
             database_role=context.run.database_role,
             secret_id=context.run.secret_id,
         )
-        try:
-            return await self._database.rematerialize_active(
+        return await _run_redacted_async(
+            self._database.rematerialize_active(
                 context.identity,
                 context.policy.database,
                 binding,
                 policy_version=_require_policy_version(context.run),
             )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - rematerialization exposes no raw diagnostics
-            raise WorktreeReconciliationRequired() from None
+        )
 
     async def _execute_setup_effect(
         self,
         request: OperationRequest,
         adapter: OperationAdapter,
     ) -> OperationOutcome:
-        try:
-            outcome = await self._operation_executor.execute(request, adapter)
-        except asyncio.CancelledError:
-            raise
-        except WorktreeProvisionerError:
-            raise
-        except Exception:  # noqa: BLE001 - setup executor failures are stable
-            raise WorktreeReconciliationRequired() from None
+        outcome = await _run_redacted_async(self._operation_executor.execute(request, adapter))
         if outcome.status is not OperationStatus.SUCCEEDED:
             raise WorktreeReconciliationRequired()
         return outcome
@@ -425,15 +466,33 @@ class WorktreeProvisioner:
         try:
             async with self._unit_of_work_factory() as work:
                 raw_events = await work.events.list_after(run_id, 0)
+        except WorktreeProvisionerError:
+            raise
         except Exception:  # noqa: BLE001 - persistence failures remain redacted
-            raise WorktreeReconciliationRequired() from None
+            failure: WorktreeReconciliationRequired | None = WorktreeReconciliationRequired()
+        else:
+            failure = None
+        if failure is not None:
+            raise failure
         matches: list[Mapping[str, object]] = []
+        expected_ordinal = 0
+        seen_intents: set[str] = set()
         for event in raw_events:
             if not isinstance(event, RunEvent) or event.event_type != event_type:
                 continue
             if event.run_id != run_id or not isinstance(event.payload, Mapping):
                 raise WorktreeReconciliationRequired()
-            if event.payload.get("operation_intent_id") == str(intent_id):
+            operation_intent_id = event.payload.get("operation_intent_id")
+            if event_type == _SETUP_STEP_EVENT:
+                if (
+                    event.payload.get("ordinal") != expected_ordinal
+                    or not isinstance(operation_intent_id, str)
+                    or operation_intent_id in seen_intents
+                ):
+                    raise WorktreeReconciliationRequired()
+                seen_intents.add(operation_intent_id)
+                expected_ordinal += 1
+            if operation_intent_id == str(intent_id):
                 matches.append(event.payload)
         if len(matches) > 1:
             raise WorktreeReconciliationRequired()
@@ -470,7 +529,12 @@ class WorktreeProvisioner:
                 if len(matches) > 1:
                     raise WorktreeReconciliationRequired()
                 if matches:
-                    if canonical_digest(matches[0].payload) != canonical_digest(payload):
+                    prepared = matches[0]
+                    if (
+                        prepared.run_id != context.run.id
+                        or prepared.run_version != current.version
+                        or canonical_digest(prepared.payload) != canonical_digest(payload)
+                    ):
                         raise WorktreeReconciliationRequired()
                 else:
                     if current.version != context.run.version:
@@ -847,24 +911,23 @@ class _EnvironmentStageAdapter:
         if not _same_handle(inspected, self._worktree):
             raise WorktreeReconciliationRequired()
         try:
-            published = self._stager.publish(
-                self._worktree,
-                self._policy,
-                self._plan,
+            (published, inspection), staging_cancelled = await _run_redacted_thread(
+                self._publish_and_inspect
             )
         except asyncio.CancelledError:
             self._caller_cancelled = True
             published = self._plan.evidence
-        except Exception:  # noqa: BLE001 - staging failures remain redacted
-            raise WorktreeReconciliationRequired() from None
-        try:
-            inspection = self._stager.inspect(
-                self._worktree,
-                self._policy,
-                self._plan,
+            inspection, inspection_cancelled = await _run_redacted_thread(
+                lambda: self._stager.inspect(
+                    self._worktree,
+                    self._policy,
+                    self._plan,
+                ),
+                already_cancelled=True,
             )
-        except Exception:  # noqa: BLE001 - staging failures remain redacted
-            raise WorktreeReconciliationRequired() from None
+            self._caller_cancelled = self._caller_cancelled or inspection_cancelled
+        else:
+            self._caller_cancelled = self._caller_cancelled or staging_cancelled
         if (
             published != self._plan.evidence
             or not inspection.present
@@ -886,6 +949,24 @@ class _EnvironmentStageAdapter:
         self._caller_cancelled = self._caller_cancelled or checkpoint_cancelled
         return outcome
 
+    def _publish_and_inspect(
+        self,
+    ) -> tuple[
+        tuple[EnvironmentFileEvidence, ...],
+        EnvironmentStagingInspection,
+    ]:
+        published = self._stager.publish(
+            self._worktree,
+            self._policy,
+            self._plan,
+        )
+        inspection = self._stager.inspect(
+            self._worktree,
+            self._policy,
+            self._plan,
+        )
+        return published, inspection
+
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
         _validate_adapter_intent(intent, self._request)
         context = await self._owner._load_context(
@@ -896,11 +977,15 @@ class _EnvironmentStageAdapter:
         inspected = await self._owner._inspect_present(context.expected)
         if not _same_handle(inspected, self._worktree):
             raise WorktreeReconciliationRequired()
-        inspection = self._stager.inspect(
-            self._worktree,
-            self._policy,
-            self._plan,
+        inspection, inspection_cancelled = await _run_redacted_thread(
+            lambda: self._stager.inspect(
+                self._worktree,
+                self._policy,
+                self._plan,
+            ),
+            already_cancelled=self._caller_cancelled,
         )
+        self._caller_cancelled = self._caller_cancelled or inspection_cancelled
         if not inspection.present or inspection.evidence != self._plan.evidence:
             raise WorktreeReconciliationRequired()
         payload = await self._owner._one_setup_checkpoint(
@@ -913,11 +998,15 @@ class _EnvironmentStageAdapter:
             **dict(self._request.request_payload),
         }
         if payload is None:
-            await self._owner._record_setup_event(
-                context,
-                _ENVIRONMENT_STAGED_EVENT,
-                expected_payload,
+            _, checkpoint_cancelled = await await_deferred_cancellation(
+                self._owner._record_setup_event(
+                    context,
+                    _ENVIRONMENT_STAGED_EVENT,
+                    expected_payload,
+                ),
+                already_cancelled=self._caller_cancelled,
             )
+            self._caller_cancelled = self._caller_cancelled or checkpoint_cancelled
         elif canonical_digest(payload) != canonical_digest(expected_payload):
             raise WorktreeReconciliationRequired()
         return _environment_outcome(self._request)
@@ -939,6 +1028,11 @@ class _SetupCommandAdapter:
         self._runner = runner
         self._run_request = run_request
         self._request = request
+        self._caller_cancelled = False
+
+    @property
+    def caller_cancelled(self) -> bool:
+        return self._caller_cancelled
 
     async def invoke(self, intent: OperationIntent) -> OperationOutcome:
         _validate_adapter_intent(intent, self._request)
@@ -950,23 +1044,22 @@ class _SetupCommandAdapter:
         inspected = await self._owner._inspect_present(context.expected)
         if not _same_handle(inspected, self._worktree):
             raise WorktreeReconciliationRequired()
-        try:
-            terminal = await self._runner.run_terminal(self._run_request)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - runner failures remain redacted
-            raise WorktreeReconciliationRequired() from None
+        terminal = await _run_redacted_async(self._runner.run_terminal(self._run_request))
         _validate_command_result(self._request, terminal.result, self._policy)
         outcome = _command_outcome(self._request, terminal.result, terminal.caller_cancelled)
-        await self._owner._record_setup_event(
-            context,
-            _SETUP_STEP_EVENT,
-            {
-                "operation_intent_id": str(intent.id),
-                **dict(self._request.request_payload),
-                **dict(outcome.payload),
-            },
+        _, checkpoint_cancelled = await await_deferred_cancellation(
+            self._owner._record_setup_event(
+                context,
+                _SETUP_STEP_EVENT,
+                {
+                    "operation_intent_id": str(intent.id),
+                    **dict(self._request.request_payload),
+                    **dict(outcome.payload),
+                },
+            ),
+            already_cancelled=terminal.caller_cancelled,
         )
+        self._caller_cancelled = terminal.caller_cancelled or checkpoint_cancelled
         return outcome
 
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
@@ -1307,7 +1400,11 @@ def _command_checkpoint_outcome(
         if type(caller_cancelled) is not bool:
             raise TypeError
     except KeyError, TypeError, ValueError:
-        raise WorktreeReconciliationRequired() from None
+        failure: WorktreeReconciliationRequired | None = WorktreeReconciliationRequired()
+    else:
+        failure = None
+    if failure is not None:
+        raise failure
     _validate_command_result(request, result, policy)
     outcome = _command_outcome(request, result, caller_cancelled)
     if canonical_digest(outcome.payload) != canonical_digest(

@@ -117,6 +117,21 @@ def test_run_request_detaches_and_freezes_environment() -> None:
         )
 
 
+def test_run_request_repr_discloses_only_environment_keys() -> None:
+    scoped_url = "postgresql://user:scoped-secret@127.0.0.1/forge"
+    request = RunCommandRequest(
+        command_name="named-migration",
+        kind=StepKind.MIGRATION,
+        environment={"DATABASE_URL": scoped_url},
+    )
+
+    diagnostic = repr(request)
+
+    assert scoped_url not in diagnostic
+    assert "scoped-secret" not in diagnostic
+    assert "environment_keys=('DATABASE_URL',)" in diagnostic
+
+
 def test_command_result_is_immutable_and_evidence_digest_binds_security_fields() -> None:
     result = make_result()
 
