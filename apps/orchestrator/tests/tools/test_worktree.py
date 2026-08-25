@@ -287,6 +287,7 @@ class _Git:
     def __init__(self, log: list[str]) -> None:
         self.log = log
         self.handle: ManagedWorktree | None = None
+        self.branch_present = True
 
     def expected_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
         return ManagedWorktree(
@@ -305,6 +306,14 @@ class _Git:
         self.handle = self.expected_worktree(identity, base_sha)
         return self.handle
 
+    def remove_worktree(self, worktree: ManagedWorktree) -> None:
+        assert self.handle == worktree
+        self.log.append("git.remove")
+        self.handle = None
+
+    def prune(self) -> None:
+        self.log.append("git.prune")
+
 
 class _DelayedGit(_Git):
     def __init__(self, log: list[str]) -> None:
@@ -316,6 +325,24 @@ class _DelayedGit(_Git):
         self.started.set()
         self.release.wait(timeout=5)
         return super().create_worktree(identity, base_sha)
+
+
+class _DelayedRemoveGit(_Git):
+    def __init__(self, log: list[str]) -> None:
+        super().__init__(log)
+        self.remove_started = threading.Event()
+        self.remove_release = threading.Event()
+
+    def remove_worktree(self, worktree: ManagedWorktree) -> None:
+        self.remove_started.set()
+        self.remove_release.wait(timeout=5)
+        super().remove_worktree(worktree)
+
+
+class _RemoveThenRaiseGit(_Git):
+    def remove_worktree(self, worktree: ManagedWorktree) -> None:
+        super().remove_worktree(worktree)
+        raise RuntimeError("raw git removal sentinel")
 
 
 class _Database:
@@ -335,6 +362,10 @@ class _Database:
     async def provision(self, *args: Any, **kwargs: Any) -> DatabaseBinding:
         self.calls += 1
         raise AssertionError("disabled preparation must not provision a database")
+
+    async def teardown(self, *args: Any, **kwargs: Any) -> DatabaseBinding:
+        self.calls += 1
+        raise AssertionError("disabled teardown must not call the database boundary")
 
 
 class _EnabledDatabase:
@@ -385,6 +416,43 @@ class _EnabledDatabase:
         self.log.append("database.verify")
         self.verify_calls += 1
         return self.intent_id
+
+    async def teardown(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding:
+        del identity, policy, resource, policy_version
+        self.log.append("database.teardown")
+        return DatabaseBinding(state=ResourceState.REMOVED)
+
+
+class _FailOnceTeardownDatabase(_EnabledDatabase):
+    def __init__(self, log: list[str]) -> None:
+        super().__init__(log)
+        self.teardown_attempts = 0
+
+    async def teardown(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding:
+        self.teardown_attempts += 1
+        if self.teardown_attempts == 1:
+            self.log.append("database.teardown.failed")
+            raise RuntimeError("raw database teardown sentinel")
+        return await super().teardown(
+            identity,
+            policy,
+            resource,
+            policy_version=policy_version,
+        )
 
 
 class _ForeignDatabase(_EnabledDatabase):
@@ -722,6 +790,245 @@ def _provisioner(
         operation_executor=_Executor(operations),
     )
     return provisioner, uow_factory, operations, git, log
+
+
+@pytest.mark.asyncio
+async def test_disabled_teardown_removes_exact_worktree_and_keeps_branch() -> None:
+    run = _run(branch="feature/teardown-disabled")
+    provisioner, uow_factory, operations, git, log = _provisioner(run)
+    policy = _policy(repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", False)
+    expected = git.expected_worktree(identity, BASE_SHA)
+    git.handle = expected
+    uow_factory.runs.current = replace(run, worktree_path=str(expected.path))
+
+    removed = await provisioner.teardown(RUN_ID, policy)
+
+    assert removed == uow_factory.runs.current
+    assert removed.worktree_path is None
+    assert removed.database_state is ResourceState.DISABLED
+    assert git.handle is None
+    assert git.branch_present is True
+    assert operations.intent is not None
+    assert operations.intent.kind == "worktree.teardown"
+    assert [
+        entry
+        for entry in log
+        if entry
+        in {
+            "intent.commit",
+            "git.inspect",
+            "git.remove",
+            "git.prune",
+            "resource.commit",
+            "operation.complete",
+        }
+    ] == [
+        "intent.commit",
+        "git.inspect",
+        "git.remove",
+        "git.inspect",
+        "git.prune",
+        "resource.commit",
+        "operation.complete",
+    ]
+    assert [event.event_type for event in uow_factory.events.values] == [
+        "resource.worktree_removed"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_teardown_rejects_wrong_persisted_path_before_any_effect() -> None:
+    run = _run(branch="feature/teardown-wrong-path")
+    provisioner, uow_factory, operations, git, log = _provisioner(run)
+    policy = _policy(repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", False)
+    git.handle = git.expected_worktree(identity, BASE_SHA)
+    uow_factory.runs.current = replace(
+        run,
+        worktree_path=str(git.repository_path / ".worktrees" / "foreign"),
+    )
+    from forge.tools.worktree import WorktreeIntegrityError
+
+    with pytest.raises(WorktreeIntegrityError) as captured:
+        await provisioner.teardown(RUN_ID, policy)
+
+    assert captured.value.__cause__ is None
+    assert operations.by_key == {}
+    assert "git.remove" not in log
+    assert "git.prune" not in log
+    assert uow_factory.events.values == []
+
+
+@pytest.mark.asyncio
+async def test_active_database_teardown_runs_only_after_worktree_checkpoint() -> None:
+    run = _run(branch="feature/teardown-active")
+    provisioner, uow_factory, _operations, git, log = _provisioner(run, enabled=True)
+    policy = _policy(enabled=True, repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", True)
+    expected = git.expected_worktree(identity, BASE_SHA)
+    git.handle = expected
+    uow_factory.runs.current = replace(
+        run,
+        worktree_path=str(expected.path),
+        database_state=ResourceState.ACTIVE,
+        database_name=identity.database_name,
+        database_role=identity.database_role,
+        secret_id=f"forge_db_{PROJECT_ID.hex}_{RUN_ID.hex}",
+    )
+
+    removed = await provisioner.teardown(RUN_ID, policy)
+
+    assert removed.worktree_path is None
+    assert removed.database_state is ResourceState.REMOVED
+    assert removed.database_name is None
+    assert removed.database_role is None
+    assert removed.secret_id is None
+    assert log.index("git.remove") < log.index("database.teardown")
+    assert [event.event_type for event in uow_factory.events.values] == [
+        "resource.worktree_removed",
+        "resource.database_removed",
+    ]
+    assert git.branch_present is True
+    repeated = await provisioner.teardown(RUN_ID, policy)
+
+    assert repeated == removed
+    assert log.count("git.remove") == 1
+    assert log.count("database.teardown") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_database_teardown_failure_preserves_exact_state_for_retry() -> None:
+    run = _run(branch="feature/teardown-database-retry")
+    log: list[str] = []
+    uow_factory = _UowFactory(run, log)
+    operations = _Operations(RUN_ID, log)
+    git = _Git(log)
+    database = _FailOnceTeardownDatabase(log)
+    from forge.tools.worktree import WorktreeProvisioner, WorktreeReconciliationRequired
+
+    provisioner = WorktreeProvisioner(
+        uow_factory,
+        operations=operations,
+        git=git,
+        database=database,
+        operation_executor=_Executor(operations),
+    )
+    policy = _policy(enabled=True, repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", True)
+    expected = git.expected_worktree(identity, BASE_SHA)
+    git.handle = expected
+    uow_factory.runs.current = replace(
+        run,
+        worktree_path=str(expected.path),
+        database_state=ResourceState.ACTIVE,
+        database_name=identity.database_name,
+        database_role=identity.database_role,
+        secret_id=f"forge_db_{PROJECT_ID.hex}_{RUN_ID.hex}",
+    )
+
+    with pytest.raises(WorktreeReconciliationRequired) as captured:
+        await provisioner.teardown(RUN_ID, policy)
+
+    assert captured.value.__cause__ is None
+    assert uow_factory.runs.current.worktree_path is None
+    assert uow_factory.runs.current.database_state is ResourceState.ACTIVE
+    assert uow_factory.runs.current.database_name == identity.database_name
+    assert uow_factory.runs.current.database_role == identity.database_role
+
+    removed = await provisioner.teardown(RUN_ID, policy)
+
+    assert removed.database_state is ResourceState.REMOVED
+    assert database.teardown_attempts == 2
+    assert log.count("git.remove") == 1
+
+
+async def test_teardown_cancellation_reconciles_original_intent_on_retry() -> None:
+    run = _run(branch="feature/teardown-cancel")
+    log: list[str] = []
+    uow_factory = _UowFactory(run, log)
+    operations = _Operations(RUN_ID, log)
+    git = _DelayedRemoveGit(log)
+    database = _Database(log)
+    from forge.tools.worktree import WorktreeProvisioner
+
+    provisioner = WorktreeProvisioner(
+        uow_factory,
+        operations=operations,
+        git=git,
+        database=database,
+        operation_executor=_Executor(operations),
+    )
+    policy = _policy(repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", False)
+    expected = git.expected_worktree(identity, BASE_SHA)
+    git.handle = expected
+    uow_factory.runs.current = replace(run, worktree_path=str(expected.path))
+
+    task = asyncio.create_task(provisioner.teardown(RUN_ID, policy))
+    assert await asyncio.to_thread(git.remove_started.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    git.remove_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert uow_factory.runs.current.worktree_path is None
+    assert [event.event_type for event in uow_factory.events.values] == [
+        "resource.worktree_removed"
+    ]
+    assert operations.intent is not None
+    assert operations.intent.status is OperationStatus.PENDING
+
+    reconciled = await provisioner.reconcile(operations.intent.id, policy)
+    assert reconciled.status is OperationStatus.SUCCEEDED
+    assert log.count("git.remove") == 1
+
+    removed = await provisioner.teardown(RUN_ID, policy)
+
+    assert removed.worktree_path is None
+    assert operations.intent is not None
+    assert operations.intent.status is OperationStatus.SUCCEEDED
+    assert log.count("git.remove") == 1
+
+
+@pytest.mark.asyncio
+async def test_teardown_adopts_exact_absence_after_git_reports_failure() -> None:
+    run = _run(branch="feature/teardown-terminal-error")
+    log: list[str] = []
+    uow_factory = _UowFactory(run, log)
+    operations = _Operations(RUN_ID, log)
+    git = _RemoveThenRaiseGit(log)
+    database = _Database(log)
+    from forge.tools.worktree import WorktreeProvisioner
+
+    provisioner = WorktreeProvisioner(
+        uow_factory,
+        operations=operations,
+        git=git,
+        database=database,
+        operation_executor=_Executor(operations),
+    )
+    policy = _policy(repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", False)
+    expected = git.expected_worktree(identity, BASE_SHA)
+    git.handle = expected
+    uow_factory.runs.current = replace(run, worktree_path=str(expected.path))
+
+    removed = await provisioner.teardown(RUN_ID, policy)
+
+    assert removed.worktree_path is None
+    assert log.count("git.remove") == 1
+    assert [event.event_type for event in uow_factory.events.values] == [
+        "resource.worktree_removed"
+    ]
+
+    assert operations.intent is not None
+    assert operations.intent.status is OperationStatus.SUCCEEDED
+    assert log.count("git.remove") == 1
 
 
 @pytest.mark.asyncio

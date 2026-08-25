@@ -14,6 +14,7 @@ from uuid import UUID
 from forge.domain.operation import OperationIntent
 from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity, validate_resource_shape
+from forge.domain.run import RunSnapshot
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -358,6 +359,7 @@ class WorktreeProvisionerPort(Protocol):
     """Durable persisted-run worktree preparation and inspection recovery."""
 
     async def prepare(self, run_id: UUID, policy: ProjectPolicy) -> ManagedWorktree: ...
+    async def teardown(self, run_id: UUID, policy: ProjectPolicy) -> RunSnapshot: ...
 
     async def reconcile(self, intent_id: UUID, policy: ProjectPolicy) -> OperationIntent: ...
 

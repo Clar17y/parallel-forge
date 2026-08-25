@@ -49,6 +49,9 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _PROTOCOL_VERSION = 1
 _WORKTREE_KIND = "worktree.create"
+_WORKTREE_TEARDOWN_KIND = "worktree.teardown"
+_WORKTREE_REMOVED_EVENT = "resource.worktree_removed"
+_DATABASE_REMOVED_EVENT = "resource.database_removed"
 _PARTIAL_EVENT = "resource.worktree_preparing"
 _CREATED_EVENT = "resource.worktree_created"
 _RECONCILED_EVENT = "resource.worktree_reconciled"
@@ -190,6 +193,15 @@ class _Context:
         return checkpoint.operation_intent_id
 
 
+@dataclass(frozen=True, slots=True)
+class _TeardownContext:
+    run: RunSnapshot
+    policy: ProjectPolicy
+    identity: WorktreeIdentity
+    expected: ManagedWorktree
+    request: OperationRequest
+
+
 class WorktreeProvisioner:
     """Prepare exactly one durable run-scoped worktree and optional database."""
 
@@ -225,6 +237,73 @@ class WorktreeProvisioner:
             raise TypeError("worktree setup requires staging and runner boundaries")
         self._environment_stager = environment_stager
         self._runner_factory = runner_factory
+
+    async def teardown(self, run_id: UUID, policy: ProjectPolicy) -> RunSnapshot:
+        """Remove one exact persisted worktree before any database cleanup."""
+
+        _validate_public_inputs(run_id, policy)
+        context = await self._load_teardown_context(run_id, policy)
+        if (
+            context.run.worktree_path is None
+            and context.run.database_state is ResourceState.REMOVED
+        ):
+            return context.run
+        operation = await self._operation_for_request(context.request)
+        if context.run.worktree_path is not None or operation is not None:
+            adapter = _WorktreeTeardownAdapter(self, policy)
+            try:
+                outcome = await self._operation_executor.execute(context.request, adapter)
+            except asyncio.CancelledError:
+                raise
+            except WorktreeProvisionerError:
+                raise
+            except Exception:  # noqa: BLE001 - executor failures are redacted
+                raise WorktreeReconciliationRequired() from None
+            if outcome.status is not OperationStatus.SUCCEEDED:
+                raise WorktreeReconciliationRequired()
+            if not _outcome_matches(outcome, context.request, context.identity):
+                raise WorktreeReconciliationRequired()
+        elif policy.database.enabled and context.run.database_state not in {
+            ResourceState.DISABLED,
+            ResourceState.REMOVED,
+        }:
+            raise WorktreeReconciliationRequired()
+
+        latest = await self._load_teardown_context(run_id, policy)
+        if latest.run.worktree_path is not None:
+            raise WorktreeReconciliationRequired()
+        if not policy.database.enabled:
+            return latest.run
+        if latest.run.database_state is ResourceState.REMOVED:
+            return latest.run
+        if latest.run.database_state is ResourceState.DISABLED:
+            return latest.run
+
+        resource = DatabaseBinding(
+            state=latest.run.database_state,
+            database_name=latest.run.database_name,
+            database_role=latest.run.database_role,
+            secret_id=latest.run.secret_id,
+        )
+        try:
+            self._database.validate_binding(latest.identity, resource)
+            removed = await self._database.teardown(
+                latest.identity,
+                latest.policy.database,
+                resource,
+                policy_version=_require_policy_version(latest.run),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - database failures retain exact state
+            raise WorktreeReconciliationRequired() from None
+        if removed != DatabaseBinding(state=ResourceState.REMOVED):
+            raise WorktreeReconciliationRequired()
+        operation = await self._operation_for_request(latest.request)
+        if operation is None or operation.status is not OperationStatus.SUCCEEDED:
+            raise WorktreeReconciliationRequired()
+        completed = await self._record_database_removed(latest, operation.id)
+        return completed.run
 
     async def prepare(self, run_id: UUID, policy: ProjectPolicy) -> ManagedWorktree:
         """Prepare one exact managed resource through durable checkpoints."""
@@ -577,7 +656,20 @@ class WorktreeProvisioner:
         """Reconcile one claimed worktree intent by inspection only."""
 
         _validate_public_inputs(intent_id, policy)
-        adapter = _WorktreeAdapter(self, policy, reconcile_only=True)
+        try:
+            intent = await self._operations.get(intent_id)
+        except Exception:  # noqa: BLE001 - persistence diagnostics are redacted
+            raise WorktreeIntegrityError() from None
+        if intent.kind == _WORKTREE_KIND:
+            adapter: OperationAdapter = _WorktreeAdapter(
+                self,
+                policy,
+                reconcile_only=True,
+            )
+        elif intent.kind == _WORKTREE_TEARDOWN_KIND:
+            adapter = _WorktreeTeardownAdapter(self, policy)
+        else:
+            raise WorktreeIntegrityError()
         try:
             return await self._recovery.reconcile(intent_id, adapter)
         except asyncio.CancelledError:
@@ -650,6 +742,102 @@ class WorktreeProvisioner:
             active=active,
             operation=operation,
         )
+
+    async def _load_teardown_context(
+        self,
+        run_id: UUID,
+        policy: ProjectPolicy,
+    ) -> _TeardownContext:
+        try:
+            async with self._unit_of_work_factory() as work:
+                run = await work.runs.get(run_id)
+        except Exception:  # noqa: BLE001 - persistence diagnostics are redacted
+            raise WorktreeIntegrityError() from None
+
+        _validate_teardown_run_and_policy(run, policy, self._git.repository_path)
+        identity = _identity_for_run(run, policy)
+        try:
+            expected = self._git.expected_worktree(identity, _require_sha(run.base_sha))
+        except Exception:  # noqa: BLE001 - Git diagnostics are redacted
+            raise WorktreeIntegrityError() from None
+        _validate_teardown_resource(run, policy, identity, expected, self._database)
+        return _TeardownContext(
+            run=run,
+            policy=policy,
+            identity=identity,
+            expected=expected,
+            request=_teardown_request(run, identity, policy),
+        )
+
+    async def _record_worktree_removed(
+        self,
+        context: _TeardownContext,
+        intent_id: UUID,
+    ) -> _TeardownContext:
+        if context.run.worktree_path != str(context.expected.path):
+            raise WorktreeReconciliationRequired()
+        payload = _teardown_checkpoint_payload(
+            context.request,
+            intent_id,
+            target_state=context.run.database_state,
+        )
+        try:
+            async with self._unit_of_work_factory() as work:
+                current = await work.runs.get_for_update(context.run.id)
+                if current.version != context.run.version:
+                    raise _ResourceConflict()
+                await work.runs.update_resource(
+                    current.id,
+                    context.run.version,
+                    worktree_path=None,
+                    database_state=context.run.database_state,
+                    database_name=context.run.database_name,
+                    database_role=context.run.database_role,
+                    secret_id=context.run.secret_id,
+                    event_type=_WORKTREE_REMOVED_EVENT,
+                    event_payload=payload,
+                )
+                await work.commit()
+        except WorktreeProvisionerError:
+            raise
+        except Exception:  # noqa: BLE001 - transaction failures are redacted
+            raise WorktreeReconciliationRequired() from None
+        return await self._load_teardown_context(context.run.id, context.policy)
+
+    async def _record_database_removed(
+        self,
+        context: _TeardownContext,
+        intent_id: UUID,
+    ) -> _TeardownContext:
+        if context.run.worktree_path is not None:
+            raise WorktreeReconciliationRequired()
+        payload = _teardown_checkpoint_payload(
+            context.request,
+            intent_id,
+            target_state=ResourceState.REMOVED,
+        )
+        try:
+            async with self._unit_of_work_factory() as work:
+                current = await work.runs.get_for_update(context.run.id)
+                if current.version != context.run.version:
+                    raise _ResourceConflict()
+                await work.runs.update_resource(
+                    current.id,
+                    context.run.version,
+                    worktree_path=None,
+                    database_state=ResourceState.REMOVED,
+                    database_name=None,
+                    database_role=None,
+                    secret_id=None,
+                    event_type=_DATABASE_REMOVED_EVENT,
+                    event_payload=payload,
+                )
+                await work.commit()
+        except WorktreeProvisionerError:
+            raise
+        except Exception:  # noqa: BLE001 - transaction failures are redacted
+            raise WorktreeReconciliationRequired() from None
+        return await self._load_teardown_context(context.run.id, context.policy)
 
     async def _operation_for_request(self, request: OperationRequest) -> OperationIntent | None:
         try:
@@ -896,6 +1084,67 @@ class WorktreeProvisioner:
             raise
         except BaseException as error:  # noqa: BLE001 - terminal thread failure is inspected safely
             return None, False, error
+
+
+class _WorktreeTeardownAdapter:
+    """Remove one exact registered worktree and reconcile only by inspection."""
+
+    def __init__(self, owner: WorktreeProvisioner, policy: ProjectPolicy) -> None:
+        self._owner = owner
+        self._policy = policy
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        context = await self._owner._load_teardown_context(intent.run_id, self._policy)
+        _validate_adapter_intent(intent, context.request)
+        if context.run.worktree_path is None:
+            raise WorktreeReconciliationRequired()
+
+        present, inspect_cancelled = await self._owner._inspect_any(context.expected)
+        if present is None:
+            if inspect_cancelled:
+                raise asyncio.CancelledError()
+            raise WorktreeReconciliationRequired()
+        if inspect_cancelled:
+            raise asyncio.CancelledError()
+
+        remove_cancelled = False
+        try:
+            _, remove_cancelled = await _run_redacted_thread(
+                lambda: self._owner._git.remove_worktree(context.expected)
+            )
+        except WorktreeProvisionerError:
+            pass
+        remaining, verify_cancelled = await self._owner._inspect_any(context.expected)
+        if remaining is not None:
+            raise WorktreeReconciliationRequired()
+        _, prune_cancelled = await _run_redacted_thread(
+            self._owner._git.prune,
+            already_cancelled=remove_cancelled or verify_cancelled,
+        )
+        await self._owner._record_worktree_removed(context, intent.id)
+        if remove_cancelled or verify_cancelled or prune_cancelled:
+            raise asyncio.CancelledError()
+        return _worktree_outcome(context.request, context.identity)
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        context = await self._owner._load_teardown_context(intent.run_id, self._policy)
+        _validate_adapter_intent(intent, context.request)
+        present, inspect_cancelled = await self._owner._inspect_any(context.expected)
+        if present is not None:
+            if inspect_cancelled:
+                raise asyncio.CancelledError()
+            return _needs_outcome()
+        _, prune_cancelled = await _run_redacted_thread(
+            self._owner._git.prune,
+            already_cancelled=inspect_cancelled,
+        )
+        if context.run.worktree_path is not None:
+            context = await self._owner._record_worktree_removed(context, intent.id)
+        if context.run.worktree_path is not None:
+            raise WorktreeReconciliationRequired()
+        if inspect_cancelled or prune_cancelled:
+            raise asyncio.CancelledError()
+        return _worktree_outcome(context.request, context.identity)
 
 
 class _EnvironmentStageAdapter:
@@ -1487,6 +1736,145 @@ def _command_outcome(
         ),
         payload=payload,
     )
+
+
+def _validate_teardown_run_and_policy(
+    run: RunSnapshot,
+    policy: ProjectPolicy,
+    repository_path: Path,
+) -> None:
+    try:
+        if not isinstance(run, RunSnapshot):
+            raise WorktreeIntegrityError()
+        if run.project_id != policy.id or run.policy_version != policy.version:
+            raise WorktreeIntegrityError()
+        if run.branch_name is None or not run.branch_name.strip():
+            raise WorktreeIntegrityError()
+        if run.base_ref is None or not run.base_ref.strip():
+            raise WorktreeIntegrityError()
+        if _SHA.fullmatch(run.base_sha or "") is None:
+            raise WorktreeIntegrityError()
+        if not isinstance(repository_path, Path) or policy.repository_path != str(repository_path):
+            raise WorktreeIntegrityError()
+    except WorktreeProvisionerError:
+        raise
+    except OSError, TypeError, ValueError:
+        raise WorktreeIntegrityError() from None
+
+
+def _validate_teardown_resource(
+    run: RunSnapshot,
+    policy: ProjectPolicy,
+    identity: WorktreeIdentity,
+    expected: ManagedWorktree,
+    database: DatabaseProvisionerPort,
+) -> None:
+    path = run.worktree_path
+    if path is not None:
+        try:
+            candidate = Path(path)
+            if candidate != expected.path or not candidate.is_absolute():
+                raise WorktreeIntegrityError()
+            if any(part in {".", ".."} for part in candidate.parts[1:]):
+                raise WorktreeIntegrityError()
+        except WorktreeProvisionerError:
+            raise
+        except TypeError, ValueError:
+            raise WorktreeIntegrityError() from None
+
+    if not policy.database.enabled:
+        if run.database_state is not ResourceState.DISABLED or any(
+            value is not None for value in (run.database_name, run.database_role, run.secret_id)
+        ):
+            raise WorktreeIntegrityError()
+        return
+
+    if run.database_state is ResourceState.DISABLED:
+        if path is not None or any(
+            value is not None for value in (run.database_name, run.database_role, run.secret_id)
+        ):
+            raise WorktreeIntegrityError()
+        return
+    if run.database_state is ResourceState.REMOVED:
+        if path is not None or any(
+            value is not None for value in (run.database_name, run.database_role, run.secret_id)
+        ):
+            raise WorktreeIntegrityError()
+        return
+    if run.database_state not in {
+        ResourceState.PROVISIONING,
+        ResourceState.FAILED,
+        ResourceState.ACTIVE,
+    }:
+        raise WorktreeIntegrityError()
+    for actual, wanted in (
+        (run.database_name, identity.database_name),
+        (run.database_role, identity.database_role),
+    ):
+        if actual is not None and actual != wanted:
+            raise WorktreeIntegrityError()
+    expected_secret = _expected_secret_id(identity)
+    if run.secret_id is not None and run.secret_id != expected_secret:
+        raise WorktreeIntegrityError()
+    try:
+        database.validate_binding(
+            identity,
+            DatabaseBinding(
+                state=run.database_state,
+                database_name=run.database_name,
+                database_role=run.database_role,
+                secret_id=run.secret_id,
+            ),
+        )
+    except Exception:  # noqa: BLE001 - injected validators are redacted
+        raise WorktreeIntegrityError() from None
+
+
+def _teardown_request(
+    run: RunSnapshot,
+    identity: WorktreeIdentity,
+    policy: ProjectPolicy,
+) -> OperationRequest:
+    payload: dict[str, object] = {
+        "project_id": str(run.project_id),
+        "run_id": str(run.id),
+        "policy_version": policy.version,
+        "branch_digest": hashlib.sha256(identity.branch.encode("utf-8")).hexdigest(),
+        "worktree_name": identity.worktree_name,
+        "base_sha": _require_sha(run.base_sha),
+        "database_state": run.database_state.value,
+    }
+    return OperationRequest(
+        run_id=run.id,
+        kind=_WORKTREE_TEARDOWN_KIND,
+        idempotency_key=(
+            f"forge-worktree-v{_PROTOCOL_VERSION}:{_WORKTREE_TEARDOWN_KIND}:"
+            f"{run.project_id.hex}:{run.id.hex}:{policy.version}"
+        ),
+        request_digest=canonical_digest(payload),
+        request_payload=payload,
+    )
+
+
+def _teardown_checkpoint_payload(
+    request: OperationRequest,
+    operation_intent_id: UUID,
+    *,
+    target_state: ResourceState,
+) -> Mapping[str, object]:
+    if not isinstance(operation_intent_id, UUID) or not isinstance(target_state, ResourceState):
+        raise WorktreeIntegrityError()
+    source = request.request_payload
+    return {
+        "operation_intent_id": str(operation_intent_id),
+        "project_id": source["project_id"],
+        "run_id": source["run_id"],
+        "policy_version": source["policy_version"],
+        "branch_digest": source["branch_digest"],
+        "worktree_name": source["worktree_name"],
+        "base_sha": source["base_sha"],
+        "database_state": target_state.value,
+    }
 
 
 def _validate_public_inputs(value: object, policy: object) -> None:
