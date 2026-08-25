@@ -280,6 +280,14 @@ class WorktreeProvisioner:
         if latest.run.database_state is ResourceState.DISABLED:
             return latest.run
 
+        operation = await self._operation_for_request(latest.request)
+        if operation is None:
+            raise WorktreeReconciliationRequired()
+        _validate_succeeded_intent(operation, latest.request, latest.identity)
+        _require_teardown_checkpoint(latest, operation.id)
+        if await self._verify_absent(latest.expected):
+            raise asyncio.CancelledError()
+
         resource = DatabaseBinding(
             state=latest.run.database_state,
             database_name=latest.run.database_name,
@@ -299,9 +307,6 @@ class WorktreeProvisioner:
         except Exception:  # noqa: BLE001 - database failures retain exact state
             raise WorktreeReconciliationRequired() from None
         if removed != DatabaseBinding(state=ResourceState.REMOVED):
-            raise WorktreeReconciliationRequired()
-        operation = await self._operation_for_request(latest.request)
-        if operation is None or operation.status is not OperationStatus.SUCCEEDED:
             raise WorktreeReconciliationRequired()
         completed = await self._record_database_removed(latest, operation.id)
         return completed.run

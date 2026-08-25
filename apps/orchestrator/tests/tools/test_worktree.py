@@ -920,6 +920,83 @@ async def test_teardown_reconcile_rejects_invalid_removal_checkpoint(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("evidence", ("missing", "foreign", "mismatched", "live"))
+async def test_succeeded_teardown_revalidates_checkpoint_and_absence_before_database(
+    evidence: str,
+) -> None:
+    run = _run(enabled=True, branch="feature/teardown-succeeded-retry")
+    log: list[str] = []
+    uow_factory = _UowFactory(run, log)
+    operations = _Operations(RUN_ID, log)
+    git = _BranchRetainingGit(log)
+    database = _EnabledDatabase(log)
+    from forge.tools.worktree import (
+        WorktreeProvisioner,
+        WorktreeProvisionerError,
+        _teardown_checkpoint_payload,
+        _teardown_request,
+        _worktree_outcome,
+    )
+
+    policy = _policy(enabled=True, repository_path=str(git.repository_path))
+    identity = WorktreeIdentity.for_run(PROJECT_ID, RUN_ID, run.branch_name or "", True)
+    run = replace(
+        run,
+        worktree_path=None,
+        database_state=ResourceState.ACTIVE,
+        database_name=identity.database_name,
+        database_role=identity.database_role,
+        secret_id=f"forge_db_{PROJECT_ID.hex}_{RUN_ID.hex}",
+    )
+    uow_factory.runs.current = run
+    request = _teardown_request(run, identity, policy)
+    intent = await operations.begin(
+        run_id=RUN_ID,
+        operation_type=request.kind,
+        idempotency_key=request.idempotency_key,
+        request_digest=request.request_digest,
+        request_payload=request.request_payload,
+    )
+    await operations.complete(intent.id, _worktree_outcome(request, identity))
+    if evidence != "missing":
+        checkpoint_intent_id = uuid4() if evidence == "foreign" else intent.id
+        payload = dict(
+            _teardown_checkpoint_payload(
+                request,
+                checkpoint_intent_id,
+                target_state=ResourceState.ACTIVE,
+            )
+        )
+        if evidence == "mismatched":
+            payload["base_sha"] = "b" * 40
+        await uow_factory.events.append(
+            RunEvent(
+                run_id=RUN_ID,
+                run_version=run.version,
+                event_type="resource.worktree_removed",
+                payload=payload,
+            )
+        )
+    if evidence == "live":
+        git.handle = git.expected_worktree(identity, BASE_SHA)
+    provisioner = WorktreeProvisioner(
+        uow_factory,
+        operations=operations,
+        git=git,
+        database=database,
+        operation_executor=_Executor(operations),
+    )
+
+    with pytest.raises(WorktreeProvisionerError):
+        await provisioner.teardown(RUN_ID, policy)
+
+    assert "database.teardown" not in log
+    assert uow_factory.runs.current.database_state is ResourceState.ACTIVE
+    assert operations.intent is not None
+    assert operations.intent.status is OperationStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
 async def test_disabled_teardown_removes_exact_worktree_and_keeps_branch() -> None:
     run = _run(branch="feature/teardown-disabled")
     provisioner, uow_factory, operations, git, log = _provisioner(run)
