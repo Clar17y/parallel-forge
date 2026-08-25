@@ -29,7 +29,7 @@ from forge.domain.operation import (
     canonical_digest,
 )
 from forge.domain.policy import DatabaseProvisioningPolicy
-from forge.domain.resource import ResourceState, WorktreeIdentity
+from forge.domain.resource import ResourceState, WorktreeIdentity, database_secret_id
 from forge.tools.runner import await_deferred_cancellation
 from forge.tools.secrets import SecretAlreadyExistsError
 
@@ -666,6 +666,96 @@ class DatabaseProvisioner(DatabaseProvisionerPort):
             raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
         return DatabaseBinding(state=ResourceState.REMOVED)
 
+    async def provision_standalone(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding:
+        """Provision a developer database without a run operation intent."""
+
+        _validate_policy_version(policy_version)
+        _validate_policy(policy)
+        expected = _validate_developer_identity(identity, enabled=policy.enabled)
+        if not policy.enabled:
+            return DatabaseBinding(state=ResourceState.DISABLED)
+        _validate_secret_reference(_require_reference(policy))
+        secret_id = _secret_id(expected)
+        adapter = _ProvisionAdapter(self, expected, policy, secret_id)
+        outcome = await adapter._run(mutate=True)
+        if outcome.status is not OperationStatus.SUCCEEDED:
+            raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        url = adapter.normalized_admin_url
+        if url is None:
+            raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        password = self._read_password(secret_id)
+        return DatabaseBinding(
+            state=ResourceState.ACTIVE,
+            database_name=expected.database_name,
+            database_role=expected.database_role,
+            secret_id=secret_id,
+            environment={policy.injected_environment_key: _scoped_url(url, expected, password)},
+        )
+
+    async def rematerialize_standalone(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding:
+        """Verify and rematerialize transient environment for a developer database."""
+
+        _validate_policy_version(policy_version)
+        _validate_policy(policy)
+        expected = _validate_developer_identity(identity, enabled=policy.enabled)
+        if not policy.enabled:
+            _validate_disabled_resource(resource)
+            return DatabaseBinding(state=ResourceState.DISABLED)
+        _validate_teardown_resource(resource, expected)
+        adapter = _ProvisionAdapter(self, expected, policy, _secret_id(expected))
+        outcome = await adapter._run(mutate=False)
+        if outcome.status is not OperationStatus.SUCCEEDED:
+            raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        url = adapter.normalized_admin_url
+        if url is None:
+            raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        secret_id = _secret_id(expected)
+        password = self._read_password(secret_id)
+        return DatabaseBinding(
+            state=ResourceState.ACTIVE,
+            database_name=expected.database_name,
+            database_role=expected.database_role,
+            secret_id=secret_id,
+            environment={policy.injected_environment_key: _scoped_url(url, expected, password)},
+        )
+
+    async def teardown_standalone(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding:
+        """Remove an exact developer database without a run operation intent."""
+
+        _validate_policy_version(policy_version)
+        _validate_policy(policy)
+        expected = _validate_developer_identity(identity, enabled=policy.enabled)
+        if not policy.enabled:
+            _validate_disabled_resource(resource)
+            return DatabaseBinding(state=ResourceState.DISABLED)
+        _validate_teardown_resource(resource, expected)
+        _validate_secret_reference(_require_reference(policy))
+        adapter = _TeardownAdapter(self, expected, policy, _secret_id(expected))
+        outcome = await adapter._run(mutate=True)
+        if outcome.status is not OperationStatus.SUCCEEDED:
+            raise DatabaseReconciliationRequired(_RECONCILIATION_ERROR)
+        return DatabaseBinding(state=ResourceState.REMOVED)
+
     async def _execute(
         self, request: OperationRequest, adapter: OperationAdapter
     ) -> OperationOutcome:
@@ -883,6 +973,18 @@ def _validate_identity(identity: WorktreeIdentity, *, enabled: bool) -> Worktree
     return expected
 
 
+def _validate_developer_identity(identity: WorktreeIdentity, *, enabled: bool) -> WorktreeIdentity:
+    if not isinstance(identity, WorktreeIdentity) or identity.run_id is not None:
+        raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+    try:
+        expected = WorktreeIdentity.for_developer(identity.project_id, identity.branch, enabled)
+    except Exception:  # noqa: BLE001 - malformed identity failures are redacted
+        raise DatabaseIntegrityError(_INTEGRITY_ERROR) from None
+    if expected != identity:
+        raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+    return expected
+
+
 def _validate_disabled_resource(resource: DatabaseBinding) -> None:
     if (
         not isinstance(resource, DatabaseBinding)
@@ -925,9 +1027,10 @@ def _validate_teardown_resource(resource: DatabaseBinding, identity: WorktreeIde
 
 
 def _secret_id(identity: WorktreeIdentity) -> str:
-    if identity.run_id is None:
-        raise DatabaseIntegrityError(_INTEGRITY_ERROR)
-    return f"forge_db_{identity.project_id.hex}_{identity.run_id.hex}"
+    try:
+        return database_secret_id(identity)
+    except TypeError, ValueError:
+        raise DatabaseIntegrityError(_INTEGRITY_ERROR) from None
 
 
 def _request(

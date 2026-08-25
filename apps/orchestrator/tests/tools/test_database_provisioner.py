@@ -21,7 +21,7 @@ from forge.domain.operation import (
     OperationStatus,
 )
 from forge.domain.policy import DatabaseProvisioningPolicy
-from forge.domain.resource import ResourceState, WorktreeIdentity
+from forge.domain.resource import ResourceState, WorktreeIdentity, database_secret_id
 from forge.tools.database import (
     DatabaseBinding,
     DatabaseIntegrityError,
@@ -1498,3 +1498,81 @@ async def test_real_postgres_scoped_connectivity_owner_and_session_termination(
                 await cleanup.execute(f'DROP ROLE "{identity.database_role}"')
         finally:
             await cleanup.close()
+
+
+@pytest.mark.asyncio
+async def test_standalone_database_lifecycle_uses_no_operation_executor(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_developer(
+        project_id,
+        "feature/standalone-database",
+        True,
+    )
+    policy = _enabled_policy()
+    provisioner, _resolver, _source, _connection, executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=policy,
+        events=events,
+    )
+
+    binding = await provisioner.provision_standalone(
+        identity,
+        policy,
+        policy_version=7,
+    )
+    verified = await provisioner.rematerialize_standalone(
+        identity,
+        policy,
+        binding,
+        policy_version=7,
+    )
+    removed = await provisioner.teardown_standalone(
+        identity,
+        policy,
+        binding,
+        policy_version=7,
+    )
+
+    assert binding.state is ResourceState.ACTIVE
+    assert verified == binding
+    assert binding.secret_id == database_secret_id(identity)
+    assert removed == DatabaseBinding(state=ResourceState.REMOVED)
+    assert executor.requests == []
+
+
+@pytest.mark.asyncio
+async def test_disabled_standalone_database_touches_no_dependencies(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    identity = WorktreeIdentity.for_developer(uuid4(), "feature/no-database", False)
+    policy = _disabled_policy()
+    provisioner, resolver, source, connection, executor = _provisioner(
+        tmp_path,
+        identity=identity,
+        policy=policy,
+        events=events,
+    )
+
+    binding = await provisioner.provision_standalone(
+        identity,
+        policy,
+        policy_version=7,
+    )
+    removed = await provisioner.teardown_standalone(
+        identity,
+        policy,
+        binding,
+        policy_version=7,
+    )
+
+    assert binding == DatabaseBinding(state=ResourceState.DISABLED)
+    assert removed == binding
+    assert resolver.calls == []
+    assert source.calls == []
+    assert connection.statements == []
+    assert executor.requests == []

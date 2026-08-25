@@ -209,8 +209,7 @@ def _validate_binding(
             raise WorktreeRunnerFactoryError()
         if (worktree.identity.database_name is not None) != policy.database.enabled:
             raise WorktreeRunnerFactoryError()
-        if worktree.identity.run_id is None:
-            raise WorktreeRunnerFactoryError()
+
         if policy.runner_mode is RunnerMode.TRUSTED_HOST and not policy.trusted_project:
             raise WorktreeRunnerFactoryError()
     except WorktreeRunnerFactoryError:

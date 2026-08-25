@@ -199,4 +199,20 @@ def _sanitize_branch(branch: str) -> str:
     return (slug or "branch")[:24]
 
 
-__all__ = ["ResourceState", "WorktreeIdentity", "validate_resource_shape"]
+def database_secret_id(identity: WorktreeIdentity) -> str:
+    """Return the opaque local-secret identifier for one exact identity."""
+
+    if not isinstance(identity, WorktreeIdentity):
+        raise TypeError("identity must be a WorktreeIdentity")
+    if identity.run_id is not None:
+        return f"forge_db_{identity.project_id.hex}_{identity.run_id.hex}"
+    branch_digest = hashlib.sha256(identity.branch.encode("utf-8")).hexdigest()
+    return f"forge_db_dev_{identity.project_id.hex}_{branch_digest}"
+
+
+__all__ = [
+    "ResourceState",
+    "WorktreeIdentity",
+    "database_secret_id",
+    "validate_resource_shape",
+]

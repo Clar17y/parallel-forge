@@ -208,6 +208,17 @@ class ControlledGit:
 
         return self._repository.path
 
+    def resolve_default_base_sha(self) -> str:
+        """Resolve only the configured local default branch to an exact commit."""
+
+        try:
+            self._scan_local_config(self._repository.path)
+            return self._parse_base_sha(self._default_branch)
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, TypeError, ValueError:
+            raise ControlledGitError() from None
+
     def expected_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
         """Derive one exact managed handle without inspecting or mutating Git."""
 

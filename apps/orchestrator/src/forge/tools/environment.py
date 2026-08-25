@@ -21,7 +21,7 @@ from forge.application.ports.worktrees import (
 )
 from forge.domain.paths import normalize_policy_paths
 from forge.domain.policy import ProjectPolicy, RunnerMode
-from forge.domain.resource import ResourceState
+from forge.domain.resource import ResourceState, database_secret_id
 from forge.tools.paths import (
     CanonicalRoot,
     RepositoryAccessDenied,
@@ -441,11 +441,10 @@ def _validate_binding(identity: object, policy: ProjectPolicy, resource: Databas
 
 
 def _expected_secret_id(identity: object) -> str:
-    project_id = getattr(identity, "project_id", None)
-    run_id = getattr(identity, "run_id", None)
-    if project_id is None or run_id is None:
-        raise EnvironmentStagingError(_INTEGRITY)
-    return f"forge_db_{project_id.hex}_{run_id.hex}"
+    try:
+        return database_secret_id(identity)  # type: ignore[arg-type]
+    except TypeError, ValueError:
+        raise EnvironmentStagingError(_INTEGRITY) from None
 
 
 def _read_source(root: CanonicalRoot, relative_path: str) -> bytes:

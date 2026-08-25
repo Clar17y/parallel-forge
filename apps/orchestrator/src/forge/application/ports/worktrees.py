@@ -126,6 +126,8 @@ class ControlledGitPort(Protocol):
     @property
     def repository_path(self) -> Path: ...
 
+    def resolve_default_base_sha(self) -> str: ...
+
     def expected_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree: ...
 
     def inspect_worktree(
@@ -348,6 +350,32 @@ class DatabaseProvisionerPort(Protocol):
     ) -> DatabaseBinding: ...
 
     async def teardown(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding: ...
+
+    async def provision_standalone(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding: ...
+
+    async def rematerialize_standalone(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        resource: DatabaseBinding,
+        *,
+        policy_version: int,
+    ) -> DatabaseBinding: ...
+
+    async def teardown_standalone(
         self,
         identity: WorktreeIdentity,
         policy: DatabaseProvisioningPolicy,

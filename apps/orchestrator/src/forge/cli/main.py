@@ -9,6 +9,7 @@ from typing import cast
 import typer
 
 from forge.application.services.auth import AuthService, AuthUnitOfWork
+from forge.cli.worktrees import worktree_app
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.settings import Settings
@@ -16,6 +17,7 @@ from forge.settings import Settings
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 operator_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(operator_app, name="operator")
+app.add_typer(worktree_app, name="worktree")
 
 
 @app.callback()
@@ -52,3 +54,7 @@ async def _rotate(settings: Settings) -> str:
         return await service.rotate()
     finally:
         await engine.dispose()
+
+
+if __name__ == "__main__":
+    app()
