@@ -1147,13 +1147,25 @@ class _WindowsPathApi:
             raise
 
     def rename_directory(self, handle: int, parent_handle: int, name: str) -> None:
+        self.rename_entry(handle, parent_handle, name, replace=False)
+
+    def rename_entry(
+        self,
+        handle: int,
+        parent_handle: int,
+        name: str,
+        *,
+        replace: bool,
+    ) -> None:
+        """Rename one retained entry relative to a retained parent handle."""
+
         encoded = name.encode("utf-16-le")
         if len(encoded) > 255 * 2:
             raise RepositoryAccessDenied("repository quarantine name is too long")
         info_size = _FILE_RENAME_NAME_OFFSET
         info_buffer = ctypes.create_string_buffer(ctypes.sizeof(_FileRenameInfo) + len(encoded) + 2)
         info = _FileRenameInfo.from_buffer(info_buffer)
-        info.replace_if_exists = 0
+        info.replace_if_exists = int(replace)
         info.root_directory = wintypes.HANDLE(parent_handle)
         info.file_name_length = len(encoded)
         ctypes.memmove(ctypes.addressof(info_buffer) + info_size, encoded, len(encoded))
@@ -1777,6 +1789,37 @@ class CanonicalRoot:
 
         with self.open_read(value) as stream:
             return stream.read()
+
+    def replace_file(
+        self,
+        value: str | os.PathLike[str],
+        data: bytes,
+        *,
+        maximum: int,
+    ) -> tuple[str | None, str, int]:
+        """Atomically create or replace one regular file below this pinned root."""
+
+        normalized = self.normalize(value)
+        if not isinstance(data, bytes) or len(data) > maximum:
+            raise RepositoryAccessDenied("repository file content is invalid")
+        parts = tuple(normalized.split("/"))
+        parent = "." if len(parts) == 1 else "/".join(parts[:-1])
+        with self._open_directory(parent) as access:
+            return _replace_repository_file(self, access, parts[-1], data, maximum)
+
+    def inspect_file(
+        self,
+        value: str | os.PathLike[str],
+        *,
+        maximum: int,
+    ) -> tuple[str, int] | None:
+        """Return digest and size for one safe regular file, or absence."""
+
+        normalized = self.normalize(value)
+        parts = tuple(normalized.split("/"))
+        parent = "." if len(parts) == 1 else "/".join(parts[:-1])
+        with self._open_directory(parent) as access:
+            return _inspect_repository_file(self, access, parts[-1], maximum)
 
     @contextlib.contextmanager
     def open_directory(self, value: str | os.PathLike[str] = ".") -> Iterator[Path]:
@@ -5179,6 +5222,192 @@ def _open_or_create_windows_directory(
         except OSError:
             raise RepositoryAccessDenied("repository quarantine root is unavailable") from None
         return opener(path)
+
+
+def _repository_file_digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _inspect_repository_file(
+    root: CanonicalRoot,
+    access: _DirectoryAccess,
+    name: str,
+    maximum: int,
+) -> tuple[str, int] | None:
+    """Inspect one final child through retained parent authority."""
+
+    if type(maximum) is not int or maximum < 1:
+        raise RepositoryAccessDenied("repository file bound is invalid")
+    name = _validate_quarantine_component(name)
+    root._verify_directory_access(access.normalized, access)
+    if os.name == "nt":
+        api = root._windows
+        if api is None:
+            raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+        names = {item.casefold() for item in api.enumerate_names(access.capability)}
+        if name.casefold() not in names:
+            return None
+        handle = api.open_managed_proof_child(access.capability, name)
+        try:
+            info = api.information(handle)
+            if int(info.link_count) != 1:
+                raise RepositoryAccessDenied("repository file has unexpected links")
+            data = api.read_bounded(handle, maximum)
+        finally:
+            api.close(handle)
+    else:
+        descriptor: int | None = None
+        try:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC | getattr(os, "O_NONBLOCK", 0),
+                    dir_fd=access.capability,
+                )
+            except FileNotFoundError:
+                return None
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or int(before.st_nlink) != 1
+                or int(before.st_uid) != _current_posix_uid()
+            ):
+                raise RepositoryAccessDenied("repository file is unsafe")
+            data = _read_staging_descriptor(descriptor, maximum)
+            after = os.fstat(descriptor)
+            if (
+                (int(before.st_dev), int(before.st_ino)) != (int(after.st_dev), int(after.st_ino))
+                or int(before.st_size) != int(after.st_size)
+                or int(before.st_mtime_ns) != int(after.st_mtime_ns)
+            ):
+                raise RepositoryAccessDenied("repository file changed during inspection")
+        except RepositoryAccessDenied:
+            raise
+        except OSError, ValueError:
+            raise RepositoryAccessDenied("repository file inspection failed") from None
+        finally:
+            if descriptor is not None:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+    root._verify_directory_access(access.normalized, access)
+    return _repository_file_digest(data), len(data)
+
+
+def _replace_repository_file(
+    root: CanonicalRoot,
+    access: _DirectoryAccess,
+    name: str,
+    data: bytes,
+    maximum: int,
+) -> tuple[str | None, str, int]:
+    previous = _inspect_repository_file(root, access, name, maximum)
+    output_digest = _repository_file_digest(data)
+    if previous is not None and previous[0] == output_digest:
+        return previous[0], output_digest, len(data)
+    if os.name == "nt":
+        _replace_repository_file_windows(root, access, name, data, maximum)
+    else:
+        _replace_repository_file_posix(root, access, name, data, maximum)
+    final = _inspect_repository_file(root, access, name, maximum)
+    if final != (output_digest, len(data)):
+        raise RepositoryAccessDenied("repository file publication could not be verified")
+    return None if previous is None else previous[0], output_digest, len(data)
+
+
+def _replace_repository_file_posix(
+    root: CanonicalRoot,
+    access: _DirectoryAccess,
+    name: str,
+    data: bytes,
+    maximum: int,
+) -> None:
+    temp_name: str | None = None
+    descriptor: int | None = None
+    try:
+        if len(data) > maximum:
+            raise RepositoryAccessDenied("repository file content is oversized")
+        try:
+            existing = os.stat(name, dir_fd=access.capability, follow_symlinks=False)
+        except FileNotFoundError:
+            final_mode = 0o644
+        else:
+            if not stat.S_ISREG(existing.st_mode) or int(existing.st_nlink) != 1:
+                raise RepositoryAccessDenied("repository file is unsafe")
+            final_mode = stat.S_IMODE(existing.st_mode) & 0o777
+        for _attempt in range(8):
+            candidate = f".forge-write-{secrets.token_hex(12)}"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC,
+                    0o600,
+                    dir_fd=access.capability,
+                )
+            except FileExistsError:
+                continue
+            temp_name = candidate
+            break
+        if descriptor is None or temp_name is None:
+            raise RepositoryAccessDenied("repository temporary file is unavailable")
+        _write_staging_descriptor(descriptor, data)
+        os.fchmod(descriptor, final_mode)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        root._verify_directory_access(access.normalized, access)
+        os.replace(
+            temp_name,
+            name,
+            src_dir_fd=access.capability,
+            dst_dir_fd=access.capability,
+        )
+        temp_name = None
+        os.fsync(access.capability)
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("repository file publication failed") from None
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        if temp_name is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp_name, dir_fd=access.capability)
+
+
+def _replace_repository_file_windows(
+    root: CanonicalRoot,
+    access: _DirectoryAccess,
+    name: str,
+    data: bytes,
+    maximum: int,
+) -> None:
+    api = root._windows
+    if api is None:
+        raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+    if len(data) > maximum:
+        raise RepositoryAccessDenied("repository file content is oversized")
+    temp_name = f".forge-write-{secrets.token_hex(12)}"
+    handle: int | None = None
+    published = False
+    try:
+        handle = api.create_secret_file(access.path / temp_name, temp_name)
+        api.write_secret(handle, data)
+        root._verify_directory_access(access.normalized, access)
+        api.rename_entry(handle, access.capability, name, replace=True)
+        published = True
+        api.flush_secret_directory(access.capability)
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("repository file publication failed") from None
+    finally:
+        if handle is not None:
+            if not published:
+                with contextlib.suppress(OSError, RepositoryAccessDenied):
+                    api.dispose(handle)
+            api.close(handle)
 
 
 class _StagingParent:

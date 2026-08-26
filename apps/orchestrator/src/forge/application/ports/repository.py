@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
+from forge.domain.artifact import validate_artifact_digest
+
 
 class RepositoryError(RuntimeError):
     """Base class for bounded repository-tool failures."""
@@ -52,6 +54,30 @@ class FileRead:
     content: str
     original_byte_count: int
     truncated: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FileWrite:
+    """Digest-only evidence for one exact repository file publication."""
+
+    path: str
+    output_digest: str
+    byte_count: int
+    previous_digest: str | None = None
+    created: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str) or not self.path or self.path == ".":
+            raise ValueError("file write path must be repository-relative")
+        validate_artifact_digest(self.output_digest)
+        if self.previous_digest is not None:
+            validate_artifact_digest(self.previous_digest)
+        if type(self.byte_count) is not int or self.byte_count < 0:
+            raise ValueError("file write byte count must be nonnegative")
+        if type(self.created) is not bool:
+            raise TypeError("file write creation marker must be boolean")
+        if self.created != (self.previous_digest is None):
+            raise ValueError("file write creation evidence is inconsistent")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -124,6 +150,14 @@ class RepositoryReader(Protocol):
     def read_instructions(self, target_path: str = ".") -> Sequence[InstructionDocument]: ...
 
 
+class RepositoryWriter(Protocol):
+    """Synchronous capability-bound repository file mutation boundary."""
+
+    def write_file(self, path: str, content: str) -> FileWrite: ...
+
+    def inspect_file(self, path: str, expected_digest: str) -> FileWrite | None: ...
+
+
 class ProcessRunner(Protocol):
     """Synchronous no-shell process execution boundary."""
 
@@ -140,6 +174,7 @@ class ProcessRunner(Protocol):
 __all__ = [
     "BinaryRepositoryFile",
     "FileRead",
+    "FileWrite",
     "InstructionDocument",
     "PathEscape",
     "ProcessExecutionError",
@@ -151,5 +186,6 @@ __all__ = [
     "RepositoryError",
     "RepositoryReader",
     "RepositoryRoot",
+    "RepositoryWriter",
     "SearchMatch",
 ]

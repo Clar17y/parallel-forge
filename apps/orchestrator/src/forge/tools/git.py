@@ -147,6 +147,53 @@ class WorktreeCapability:
 
         return _inspect_plan(self, plan)
 
+    def write_repository_file(
+        self,
+        path: str,
+        content: bytes,
+        *,
+        maximum: int,
+    ) -> tuple[str | None, str, int, str]:
+        """Publish one bounded file under the retained managed worktree."""
+
+        object.__getattribute__(self, "_require_live")()
+        worktree = object.__getattribute__(self, "_worktree")
+        policy = object.__getattribute__(self, "_policy")
+        root = CanonicalRoot(worktree.path)
+        normalized = root.normalize(path)
+        if any(root.matches(normalized, secret) for secret in policy.effective_secret_paths):
+            raise ControlledGitError()
+        self.revalidate()
+        previous, output, byte_count = root.replace_file(
+            normalized,
+            content,
+            maximum=maximum,
+        )
+        self.revalidate()
+        return previous, output, byte_count, normalized
+
+    def inspect_repository_file(
+        self,
+        path: str,
+        *,
+        maximum: int,
+    ) -> tuple[str, int, str] | None:
+        """Inspect one bounded file under the retained managed worktree."""
+
+        object.__getattribute__(self, "_require_live")()
+        worktree = object.__getattribute__(self, "_worktree")
+        policy = object.__getattribute__(self, "_policy")
+        root = CanonicalRoot(worktree.path)
+        normalized = root.normalize(path)
+        if any(root.matches(normalized, secret) for secret in policy.effective_secret_paths):
+            raise ControlledGitError()
+        self.revalidate()
+        result = root.inspect_file(normalized, maximum=maximum)
+        self.revalidate()
+        if result is None:
+            return None
+        return result[0], result[1], normalized
+
     def _require_live(self) -> None:
         if not object.__getattribute__(self, "_live") or object.__getattribute__(
             self, "_owner"
