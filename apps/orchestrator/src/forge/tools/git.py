@@ -20,6 +20,7 @@ from forge.application.ports.worktrees import (
     GitStatus,
     ManagedWorktree,
 )
+from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.paths import CanonicalRoot
@@ -31,9 +32,20 @@ _MAX_METADATA_BYTES = 4096
 _MAX_METADATA_ENTRIES = 256
 _MAX_BRANCH_LENGTH = 255
 _MAX_COMMIT_MESSAGE_BYTES = 4096
+_RESERVED_REPOSITORY_KEYS = frozenset(
+    component.casefold() if os.name == "nt" else component
+    for component in RESERVED_REPOSITORY_COMPONENTS
+)
 
 _FORGE_NAME = "Forge"
 _FORGE_EMAIL = "forge@example.test"
+
+
+def _has_reserved_repository_component(path: str) -> bool:
+    return any(
+        (component.casefold() if os.name == "nt" else component) in _RESERVED_REPOSITORY_KEYS
+        for component in path.split("/")
+    )
 
 
 class ControlledGitError(RuntimeError):
@@ -96,7 +108,7 @@ class WorktreeCapability:
         worktree = object.__getattribute__(self, "_worktree")
         policy = object.__getattribute__(self, "_policy")
         identity = worktree.identity
-        if identity.run_id is None:
+        if identity.project_id != policy.id or identity.run_id is None:
             raise ControlledGitError()
         try:
             expected = WorktreeIdentity.for_run(
@@ -161,6 +173,8 @@ class WorktreeCapability:
         policy = object.__getattribute__(self, "_policy")
         root = CanonicalRoot(worktree.path)
         normalized = root.normalize(path)
+        if _has_reserved_repository_component(normalized):
+            raise ControlledGitError()
         if any(root.matches(normalized, secret) for secret in policy.effective_secret_paths):
             raise ControlledGitError()
         self.revalidate()
@@ -185,6 +199,8 @@ class WorktreeCapability:
         policy = object.__getattribute__(self, "_policy")
         root = CanonicalRoot(worktree.path)
         normalized = root.normalize(path)
+        if _has_reserved_repository_component(normalized):
+            raise ControlledGitError()
         if any(root.matches(normalized, secret) for secret in policy.effective_secret_paths):
             raise ControlledGitError()
         self.revalidate()
@@ -624,6 +640,8 @@ class ControlledGit:
         try:
             if not isinstance(policy, ProjectPolicy):
                 raise ControlledGitError()
+            if worktree.identity.project_id != policy.id:
+                raise ControlledGitError()
             configured = Path(policy.repository_path)
             if configured.resolve(strict=True) != self._repository.path:
                 raise ControlledGitError()
@@ -670,7 +688,7 @@ class ControlledGit:
                         object.__getattribute__(capability, "_finish")()
         except ControlledGitError:
             raise
-        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError:
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
             if caller_failed:
                 raise
             raise ControlledGitError() from None
