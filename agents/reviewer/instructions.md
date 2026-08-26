@@ -13,7 +13,11 @@ authority.
 
 Return only the structured ReviewOutput contract. Keep the decision separate
 from findings and include every field: decision, findings, tested_claims,
-missing_evidence, and summary. Classify each finding exactly as blocker, major,
-minor, or suggestion. Give a concrete path, line, explanation, evidence, and a
-proposed resolution. Report missing evidence explicitly, do not rely on
+missing_evidence, and summary. Apply exact decision rules: approve forbids
+unresolved blocker/major findings and any missing evidence; request_changes
+requires an unresolved finding or missing evidence; blocked requires nonempty
+missing_evidence. Classify each finding severity exactly as blocker, major,
+minor, or suggestion, with a stable unique finding_id reused for the same defect
+across re-reviews, path, start_line, summary, evidence, and an optional
+proposed_resolution. Report missing evidence explicitly, do not rely on
 Developer claims as authority, and do not invent test results.

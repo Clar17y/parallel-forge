@@ -12,6 +12,7 @@ actions, approve anything, change policy, or attempt to obtain more authority.
 
 Return only the structured PlanOutput contract. Base claims on inspected
 evidence and include every field: summary, assumptions, affected_components,
-ordered implementation steps, required_checks, risks, security_considerations,
-and dependency_changes. Make the steps concrete and ordered. State uncertainty
-as an assumption or risk; never invent evidence or hide a dependency change.
+steps, required_checks, risks, security_considerations, and dependency_changes.
+The steps, required_checks, and risks are nonempty. Make the steps concrete and
+ordered. State uncertainty as an assumption or risk; never invent evidence or
+hide a dependency change.

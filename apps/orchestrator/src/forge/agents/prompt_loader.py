@@ -25,7 +25,7 @@ _ROLE_PATHS = MappingProxyType(
         AgentRole.REVIEWER: Path("reviewer/instructions.md"),
     }
 )
-_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_REPARSE_POINT: Final = stat.FILE_ATTRIBUTE_REPARSE_POINT
 
 
 class PromptLoadError(RuntimeError):
@@ -114,7 +114,8 @@ class PromptLoader:
         except PromptLoadError:
             raise PromptChanged from None
         if (
-            loaded.version != request.instruction_version
+            loaded.role is not request.role
+            or loaded.version != request.instruction_version
             or loaded.instruction != request.system_instruction
             or loaded.digest != request.instruction_digest
         ):
@@ -134,6 +135,7 @@ class PromptLoader:
         role_stat = role_directory.lstat()
         if not stat.S_ISDIR(role_stat.st_mode) or _is_reparse(role_stat):
             raise PromptLoadError
+        role_identity = _object_identity(role_stat)
 
         path = self._root / relative_path
         before = path.lstat()
@@ -148,11 +150,16 @@ class PromptLoader:
             after_handle = os.fstat(handle.fileno())
 
         after_path = path.lstat()
+        after_role = role_directory.lstat()
         if (
-            _file_snapshot(after_handle) != _file_snapshot(before)
+            len(data) != before.st_size
+            or len(data) > _MAX_INSTRUCTION_BYTES
+            or _file_snapshot(after_handle) != _file_snapshot(before)
             or _file_snapshot(after_path) != _file_snapshot(before)
             or _is_reparse(after_path)
-            or len(data) > _MAX_INSTRUCTION_BYTES
+            or not stat.S_ISDIR(after_role.st_mode)
+            or _is_reparse(after_role)
+            or _object_identity(after_role) != role_identity
         ):
             raise PromptLoadError
         return data

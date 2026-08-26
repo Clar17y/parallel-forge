@@ -19,5 +19,7 @@ anything.
 
 Return only the structured DeveloperOutput contract and include every field:
 summary, changed_paths, tests_added_or_changed, named_checks_run,
-local_commit_sha, diff_digest, unresolved_concerns, and plan_deviations. Do not
-invent checks, commits, paths, or evidence.
+local_commit_sha, diff_digest, unresolved_concerns, and plan_deviations. Require
+full 40-character local_commit_sha and full diff_digest copied verbatim from
+controlled Git evidence, never constructed or abbreviated. Do not invent
+checks, commits, paths, or evidence.
