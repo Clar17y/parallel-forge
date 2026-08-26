@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -36,15 +37,19 @@ class ArtifactMetadataConflict(ArtifactRepositoryError):
 
 
 class ArtifactRepository:
-    """Persist content once and append each exact run lineage once."""
+    """Persist artifact lineage in short transactions or a caller-owned session."""
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession],
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
         *,
+        session: AsyncSession | None = None,
         redactor: Redactor | None = None,
     ) -> None:
+        if (session_factory is None) == (session is None):
+            raise ValueError("provide exactly one artifact persistence boundary")
         self._session_factory = session_factory
+        self._session = session
         self._redactor = redactor or Redactor()
 
     async def record(
@@ -75,7 +80,7 @@ class ArtifactRepository:
             raise TypeError("artifact metadata must be an object")
         metadata_snapshot = _with_truncation_metadata(dict(bounded_metadata), descriptor)
         try:
-            async with self._session_factory() as session, session.begin():
+            async with self._session_scope(transaction=True) as session:
                 content = await self._content_row(descriptor, metadata_snapshot, session)
                 parent_ids = await self._parent_ids(parents, run_id, session)
                 lineage = await self._lineage_row(
@@ -98,7 +103,7 @@ class ArtifactRepository:
         validate_artifact_digest(digest)
         if not isinstance(run_id, UUID):
             raise TypeError("artifact run id must be a UUID")
-        async with self._session_factory() as session:
+        async with self._session_scope(transaction=False) as session:
             row = (
                 await session.execute(
                     select(Artifact, ArtifactLineage)
@@ -120,7 +125,7 @@ class ArtifactRepository:
         """Return all run lineages in deterministic run/time order."""
 
         validate_artifact_digest(digest)
-        async with self._session_factory() as session:
+        async with self._session_scope(transaction=False) as session:
             rows = (
                 await session.execute(
                     select(Artifact, ArtifactLineage)
@@ -136,6 +141,21 @@ class ArtifactRepository:
                 parents = await self._parent_digests(content.id, lineage.run_id, session)
                 result.append(_descriptor_from_rows(content, lineage, parents))
             return tuple(result)
+
+    @asynccontextmanager
+    async def _session_scope(self, *, transaction: bool) -> AsyncIterator[AsyncSession]:
+        if self._session is not None:
+            yield self._session
+            return
+        session_factory = self._session_factory
+        if session_factory is None:
+            raise ArtifactRepositoryError("artifact persistence boundary is not configured")
+        async with session_factory() as session:
+            if transaction:
+                async with session.begin():
+                    yield session
+            else:
+                yield session
 
     async def _content_row(
         self,

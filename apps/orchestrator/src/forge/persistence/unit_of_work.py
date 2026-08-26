@@ -6,9 +6,11 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from forge.application.ports.artifacts import ArtifactRepository as ArtifactRepositoryPort
 from forge.application.ports.operations import OperationRepository
 from forge.application.services.state_engine import StateEngine
 from forge.observability.redaction import Redactor
+from forge.persistence.repositories.artifacts import ArtifactRepository
 from forge.persistence.repositories.audit import PostgresAuditRepository
 from forge.persistence.repositories.auth import PostgresAuthRepository
 from forge.persistence.repositories.commands import PostgresCommandRepository
@@ -48,6 +50,7 @@ class PostgresUnitOfWork:
         self.audits: PostgresAuditRepository
         self.tool_calls: PostgresToolCallRepository
         self.operations: OperationRepository
+        self.artifacts: ArtifactRepositoryPort
 
     @property
     def session(self) -> AsyncSession:
@@ -71,6 +74,7 @@ class PostgresUnitOfWork:
         self.audits = self.audit
         self.tool_calls = PostgresToolCallRepository(self._session, redactor=self._redactor)
         self.operations = PostgresOperationRepository(session=self._session)
+        self.artifacts = ArtifactRepository(session=self._session, redactor=self._redactor)
         self.runs = PostgresRunRepository(
             self._session,
             state_engine=self._state_engine,
