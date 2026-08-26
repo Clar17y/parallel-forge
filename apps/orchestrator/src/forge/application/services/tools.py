@@ -764,31 +764,46 @@ def _safe_metadata(
     bounded = selected.redact(value)
     if not isinstance(bounded, Mapping):
         raise TypeError("tool metadata must be an object")
-    safe = {
-        key: _durable_safe_value(thaw_payload(item))
-        for key, item in bounded.items()
-        if isinstance(key, str)
-    }
+    safe, _ = _durable_safe_mapping(bounded)
     validate_durable_payload(safe)
     return safe
 
 
-def _durable_safe_value(value: object) -> object:
-    """Replace credential-shaped text that remains unsafe after redaction."""
+def _durable_safe_mapping(value: Mapping[object, object]) -> tuple[dict[str, object], bool]:
+    safe: dict[str, object] = {}
+    redacted_keys: list[str] = []
+    for key, item in value.items():
+        if not isinstance(key, str):
+            continue
+        safe_item, redacted = _durable_safe_value(thaw_payload(item))
+        safe[key] = safe_item
+        if redacted:
+            redacted_keys.append(key)
+    for key in redacted_keys:
+        safe[f"{key}_redacted"] = True
+    return safe, bool(redacted_keys)
+
+
+def _durable_safe_value(value: object) -> tuple[object, bool]:
+    """Substitute unsafe text and report that evidence changed."""
 
     if isinstance(value, str):
         try:
             validate_durable_payload(value)
         except ValueError:
-            return "[REDACTED]"
-        return value
+            return "[REDACTED unsafe_text]", True
+        return value, False
     if isinstance(value, Mapping):
-        return {
-            key: _durable_safe_value(item) for key, item in value.items() if isinstance(key, str)
-        }
+        return _durable_safe_mapping(value)
     if isinstance(value, (list, tuple)):
-        return [_durable_safe_value(item) for item in value]
-    return value
+        safe_items: list[object] = []
+        any_redacted = False
+        for item in value:
+            safe_item, redacted = _durable_safe_value(item)
+            safe_items.append(safe_item)
+            any_redacted = any_redacted or redacted
+        return safe_items, any_redacted
+    return value, False
 
 
 def _json_bytes(value: object) -> bytes:
