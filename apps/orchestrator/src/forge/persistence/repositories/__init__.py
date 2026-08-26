@@ -47,6 +47,12 @@ from forge.persistence.repositories.tasks import (
     compute_task_digest,
     derive_normalized_text,
 )
+from forge.persistence.repositories.tool_calls import (
+    PostgresToolCallRepository,
+    ToolCallConflict,
+    ToolCallNotFound,
+    ToolCallRepositoryError,
+)
 
 __all__ = [
     "AuditRepositoryError",
@@ -73,6 +79,7 @@ __all__ = [
     "PostgresProjectRepository",
     "PostgresRunRepository",
     "PostgresTaskRepository",
+    "PostgresToolCallRepository",
     "ProjectIdentityConflict",
     "ProjectNotFound",
     "ProjectRepositoryError",
@@ -82,6 +89,9 @@ __all__ = [
     "TaskNotFound",
     "TaskProjectNotFound",
     "TaskRepositoryError",
+    "ToolCallConflict",
+    "ToolCallNotFound",
+    "ToolCallRepositoryError",
     "compute_task_digest",
     "derive_normalized_text",
     "hash_idempotency_key",

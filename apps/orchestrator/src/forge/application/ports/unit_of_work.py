@@ -6,7 +6,9 @@ from collections.abc import Sequence
 from typing import Protocol, Self
 from uuid import UUID
 
+from forge.application.ports.projects import ProjectRepository
 from forge.application.ports.runs import RunRepository
+from forge.application.ports.tools import ToolCallRepository
 from forge.domain.event import RunEvent
 
 
@@ -22,7 +24,9 @@ class UnitOfWork(Protocol):
     """One explicit transaction shared by run and event repositories."""
 
     runs: RunRepository
+    projects: ProjectRepository
     events: EventRepository
+    tool_calls: ToolCallRepository
 
     async def __aenter__(self) -> Self: ...
 

@@ -11,6 +11,8 @@ from typing import Any
 from uuid import UUID
 
 from forge.domain.actor import AgentRole
+from forge.domain.artifact import validate_artifact_digest
+from forge.domain.payload import redact_durable_text, validate_durable_payload
 
 _ARGUMENT_KEY = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 _WORKTREE_ID = re.compile(r"\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\Z")
@@ -22,6 +24,7 @@ _MAX_POLICY_VERSION = 2**31 - 1
 _MAX_WORKTREE_ID_LENGTH = 128
 _MIN_INTEGER = -(2**63)
 _MAX_INTEGER = 2**63 - 1
+_MAX_ERROR_MESSAGE_LENGTH = 1024
 
 
 class ToolName(StrEnum):
@@ -38,6 +41,58 @@ class ToolName(StrEnum):
     BUILD_RUN_NAMED_CHECK = "build.run_named_check"
     VALIDATION_RESULTS_READ = "validation-results.read"
     REVIEW_ARTIFACTS_READ = "review-artifacts.read"
+
+
+class ToolCallStatus(StrEnum):
+    """Terminal lifecycle values for an audited controlled-tool call."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    DENIED = "denied"
+    CANCELLED = "cancelled"
+
+
+class ToolErrorCode(StrEnum):
+    """Stable, non-sensitive categories returned by the invocation boundary."""
+
+    AUTHORIZATION_DENIED = "authorization_denied"
+    INVALID_REQUEST = "invalid_request"
+    RUN_NOT_ACTIVE = "run_not_active"
+    POLICY_MISMATCH = "policy_mismatch"
+    RESOURCE_MISMATCH = "resource_mismatch"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    TOOL_UNAVAILABLE = "tool_unavailable"
+    ADAPTER_ERROR = "adapter_error"
+    OPERATION_ERROR = "operation_error"
+    PERSISTENCE_ERROR = "persistence_error"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolError:
+    """A bounded error category safe to expose to an agent or API caller."""
+
+    code: ToolErrorCode
+    message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.code, ToolErrorCode):
+            raise TypeError("tool error code must be a ToolErrorCode")
+        if (
+            not isinstance(self.message, str)
+            or not self.message
+            or len(self.message) > _MAX_ERROR_MESSAGE_LENGTH
+        ):
+            raise ValueError("tool error message is invalid")
+        safe = redact_durable_text(self.message)
+        if safe != self.message:
+            object.__setattr__(self, "message", safe)
+        validate_durable_payload({"message": self.message})
+
+    def __str__(self) -> str:
+        return self.message
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -80,6 +135,11 @@ class ToolAuthorizationContext:
     run_id: UUID
     worktree_id: str
     policy_version: int
+    # Task 14A callers may omit these while the invocation boundary requires
+    # them.  Defaults preserve the reviewed authorization-only API while
+    # allowing Forge to bind the persisted execution and step identities.
+    agent_execution_id: UUID | None = None
+    step_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if type(self.role) is not AgentRole:
@@ -100,6 +160,12 @@ class ToolAuthorizationContext:
             or self.policy_version > _MAX_POLICY_VERSION
         ):
             raise ValueError("tool authorization policy version is outside the supported range")
+        for value, name in (
+            (self.agent_execution_id, "agent execution identifier"),
+            (self.step_id, "run-step identifier"),
+        ):
+            if value is not None and (not isinstance(value, UUID) or value.int == 0):
+                raise ValueError(f"tool authorization {name} must be a non-nil UUID")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -132,12 +198,90 @@ class ToolAuthorization:
         return self.context.policy_version
 
     @property
+    def agent_execution_id(self) -> UUID | None:
+        return self.context.agent_execution_id
+
+    @property
+    def step_id(self) -> UUID | None:
+        return self.context.step_id
+
+    @property
     def tool_name(self) -> ToolName:
         return self.request.name
 
     @property
     def arguments(self) -> Mapping[str, object]:
         return self.request.arguments
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolResult:
+    """Bounded structured outcome returned by ``ControlledToolService``."""
+
+    tool_name: ToolName
+    status: ToolCallStatus
+    metadata: Mapping[str, object] = MappingProxyType({})
+    artifact_digests: tuple[str, ...] = ()
+    error: ToolError | None = None
+    tool_call_id: UUID | None = None
+    operation_intent_id: UUID | None = None
+    correlation_id: UUID | None = None
+    agent_execution_id: UUID | None = None
+    step_id: UUID | None = None
+    duration_ms: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool_name, ToolName):
+            raise TypeError("tool result name must be a ToolName")
+        if not isinstance(self.status, ToolCallStatus):
+            raise TypeError("tool result status must be a ToolCallStatus")
+        if not isinstance(self.metadata, Mapping):
+            raise TypeError("tool result metadata must be a mapping")
+        validate_durable_payload(self.metadata)
+        object.__setattr__(self, "metadata", _freeze(dict(self.metadata)))
+        digests = tuple(self.artifact_digests)
+        if digests != tuple(sorted(set(digests))):
+            raise ValueError("tool result artifact digests must be unique and sorted")
+        for digest in digests:
+            validate_artifact_digest(digest)
+        object.__setattr__(self, "artifact_digests", digests)
+        if self.error is not None and not isinstance(self.error, ToolError):
+            raise TypeError("tool result error must be a ToolError")
+        if self.status in {ToolCallStatus.FAILED, ToolCallStatus.DENIED, ToolCallStatus.CANCELLED}:
+            if self.error is None:
+                raise ValueError("non-success tool results require an error")
+        elif self.error is not None:
+            raise ValueError("successful tool results cannot contain an error")
+        for value, name in (
+            (self.tool_call_id, "tool call identifier"),
+            (self.operation_intent_id, "operation intent identifier"),
+            (self.correlation_id, "correlation identifier"),
+            (self.agent_execution_id, "agent execution identifier"),
+            (self.step_id, "run-step identifier"),
+        ):
+            if value is not None and (not isinstance(value, UUID) or value.int == 0):
+                raise ValueError(f"{name} must be a non-nil UUID")
+        if type(self.duration_ms) is not int or self.duration_ms < 0:
+            raise ValueError("tool result duration must be a nonnegative integer")
+
+    @property
+    def result_metadata(self) -> Mapping[str, object]:
+        """Persistence-oriented alias for the bounded metadata object."""
+
+        return self.metadata
+
+    @property
+    def result_status(self) -> ToolCallStatus:
+        """Compatibility alias for callers naming the status explicitly."""
+
+        return self.status
+
+
+# Descriptive aliases keep the public vocabulary compatible with callers that
+# call this lifecycle an invocation rather than a tool call.
+ToolInvocationStatus = ToolCallStatus
+ToolStatus = ToolCallStatus
+ToolInvocationErrorCode = ToolErrorCode
 
 
 def _freeze_argument(value: Any, *, depth: int, budget: list[int]) -> object:
@@ -173,9 +317,26 @@ def _freeze_argument(value: Any, *, depth: int, budget: list[int]) -> object:
     raise TypeError("tool arguments must contain only bounded JSON-compatible values")
 
 
+def _freeze(value: Any) -> Any:
+    """Detach JSON-compatible result metadata into immutable containers."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
 __all__ = [
     "ToolAuthorization",
     "ToolAuthorizationContext",
+    "ToolCallStatus",
+    "ToolError",
+    "ToolErrorCode",
+    "ToolInvocationErrorCode",
+    "ToolInvocationStatus",
     "ToolName",
     "ToolRequest",
+    "ToolResult",
+    "ToolStatus",
 ]

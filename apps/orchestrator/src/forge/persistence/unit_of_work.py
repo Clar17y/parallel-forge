@@ -16,6 +16,7 @@ from forge.persistence.repositories.mutations import PostgresMutationRepository
 from forge.persistence.repositories.projects import PostgresProjectRepository
 from forge.persistence.repositories.runs import PostgresRunRepository
 from forge.persistence.repositories.tasks import PostgresTaskRepository
+from forge.persistence.repositories.tool_calls import PostgresToolCallRepository
 
 
 class PostgresUnitOfWork:
@@ -43,6 +44,7 @@ class PostgresUnitOfWork:
         self.mutations: PostgresMutationRepository
         self.audit: PostgresAuditRepository
         self.audits: PostgresAuditRepository
+        self.tool_calls: PostgresToolCallRepository
 
     @property
     def session(self) -> AsyncSession:
@@ -64,6 +66,7 @@ class PostgresUnitOfWork:
         self.mutations = PostgresMutationRepository(self._session)
         self.audit = PostgresAuditRepository(self._session, redactor=self._redactor)
         self.audits = self.audit
+        self.tool_calls = PostgresToolCallRepository(self._session, redactor=self._redactor)
         self.runs = PostgresRunRepository(
             self._session,
             state_engine=self._state_engine,
