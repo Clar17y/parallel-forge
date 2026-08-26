@@ -309,11 +309,21 @@ def _redact_record(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord
 
 
 def _prepare_reservation(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord:
+    if not isinstance(record, ToolCallRecord):
+        raise ToolCallRepositoryError("tool call reservation evidence is invalid")
+    if record.status is not ToolCallStatus.RUNNING or not record.authorized:
+        raise ToolCallConflict("tool call reservation requires an authorized running call")
+    if (
+        record.completed_at is not None
+        or record.result_metadata is not None
+        or record.result_metadata_schema_version is not None
+        or record.duration_ms is not None
+        or record.artifact_digests
+    ):
+        raise ToolCallConflict("tool call reservation cannot contain terminal evidence")
     safe_record = _prepare_lifecycle_record(record, redactor)
     if safe_record is None:
         raise ToolCallRepositoryError("tool call reservation evidence is invalid")
-    if safe_record.status is not ToolCallStatus.RUNNING or not safe_record.authorized:
-        raise ToolCallConflict("tool call reservation requires an authorized running call")
     return safe_record
 
 
