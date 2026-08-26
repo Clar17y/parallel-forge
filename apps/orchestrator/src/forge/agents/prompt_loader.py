@@ -25,7 +25,7 @@ _ROLE_PATHS = MappingProxyType(
         AgentRole.REVIEWER: Path("reviewer/instructions.md"),
     }
 )
-_REPARSE_POINT: Final = stat.FILE_ATTRIBUTE_REPARSE_POINT
+_REPARSE_POINT: Final[int] = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 class PromptLoadError(RuntimeError):
