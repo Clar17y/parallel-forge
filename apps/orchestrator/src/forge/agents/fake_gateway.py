@@ -20,9 +20,10 @@ from forge.domain.agent import (
 from forge.domain.plan import PlanOutput
 from forge.observability.usage import UsageRecord
 
-_PG_INT32_MIN: Final[int] = 0
+_NONNEGATIVE_INT32_FLOOR: Final[int] = 0
 _PG_INT32_MAX: Final[int] = 2_147_483_647
 _MAX_STEPS_PER_ROLE: Final[int] = 1_000
+_MAX_RECORDED_REQUESTS: Final[int] = _MAX_STEPS_PER_ROLE * len(AgentRole)
 _PRICING_VERSION: Final[str] = "fake-v1"
 _CURRENCY: Final[str] = "USD"
 
@@ -30,8 +31,8 @@ _CURRENCY: Final[str] = "USD"
 def _validate_nonnegative_int32(value: object, name: str) -> int:
     if type(value) is not int or isinstance(value, bool):
         raise TypeError(f"{name} must be an integer")
-    if value < _PG_INT32_MIN or value > _PG_INT32_MAX:
-        raise ValueError(f"{name} must be between {_PG_INT32_MIN} and {_PG_INT32_MAX}")
+    if value < _NONNEGATIVE_INT32_FLOOR or value > _PG_INT32_MAX:
+        raise ValueError(f"{name} must be between {_NONNEGATIVE_INT32_FLOOR} and {_PG_INT32_MAX}")
     return value
 
 
@@ -92,16 +93,6 @@ class FakeAgentStep:
         else:
             if self.output is not None:
                 raise ValueError(f"{self.scenario.value} step must not specify structured output")
-
-    @property
-    def tool_call_count(self) -> int:
-        """Alias for tool_calls matching usage record naming."""
-        return self.tool_calls
-
-    @property
-    def estimated_cost_minor(self) -> int:
-        """Alias for cost_minor matching usage record naming."""
-        return self.cost_minor
 
     def __repr__(self) -> str:
         return (
@@ -325,7 +316,8 @@ class FakeAgentGateway:
         )
         self._requests: list[AgentRequest] = []
         self._invocation_counts: dict[AgentRole, int] = {}
-        self._lock: asyncio.Lock = asyncio.Lock()
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def requests(self) -> tuple[AgentRequest, ...]:
@@ -333,7 +325,7 @@ class FakeAgentGateway:
         return tuple(self._requests)
 
     def invocation_count(self, role: AgentRole) -> int:
-        """Return the consumed zero-based per-role invocation count."""
+        """Return the number of consumed steps for one role."""
         if type(role) is not AgentRole:
             raise TypeError("role must be an AgentRole")
         return self._invocation_counts.get(role, 0)
@@ -346,11 +338,18 @@ class FakeAgentGateway:
         """Execute one validated agent request against the scripted steps."""
         if type(request) is not AgentRequest:
             raise TypeError("request must be an AgentRequest")
+        if any(
+            value != value.strip()
+            for value in (request.provider, request.model, request.instruction_version)
+        ):
+            raise FakeScriptInvalid
 
-        async with self._lock:
+        async with self._admission_lock():
             role = request.role
             script = self._scripts.get(role)
             count = self._invocation_counts.get(role, 0)
+            if len(self._requests) >= _MAX_RECORDED_REQUESTS:
+                raise FakeScriptExhausted
             self._requests.append(request)
             if script is None or count >= len(script):
                 raise FakeScriptExhausted
@@ -435,6 +434,21 @@ class FakeAgentGateway:
             tool_call_count=step.tool_calls,
             duration_ms=step.duration_ms,
         )
+
+    def _admission_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        lock = self._lock
+        if lock is None:
+            lock = asyncio.Lock()
+            self._lock = lock
+            self._lock_loop = loop
+        elif self._lock_loop is not loop:
+            if lock.locked():
+                raise FakeScriptInvalid
+            lock = asyncio.Lock()
+            self._lock = lock
+            self._lock_loop = loop
+        return lock
 
 
 __all__ = [
