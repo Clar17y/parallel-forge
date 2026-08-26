@@ -31,6 +31,8 @@ _WORKTREE_ID = re.compile(r"\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\Z")
 _MAX_TEXT_LENGTH = 10_000
 _MAX_ITEM_LENGTH = 5_000
 _MAX_COLLECTION_SIZE = 100
+_MAX_CONTENT_BYTES = 1_048_576
+_MAX_CONTEXT_BYTES = 4_194_304
 
 _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
     AgentRole.PLANNER: frozenset(
@@ -145,7 +147,7 @@ class UntrustedContent(BaseModel):
 
     source_kind: UntrustedSourceKind
     source_reference: str = Field(min_length=1)
-    content: str
+    content: str = Field(min_length=1)
     content_digest: str = Field(min_length=64, max_length=64)
     original_byte_count: int = Field(ge=0)
     truncated: bool = False
@@ -159,6 +161,15 @@ class UntrustedContent(BaseModel):
     @classmethod
     def validate_digest_format(cls, value: str) -> str:
         return _validate_sha256_digest(value, "content_digest")
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        if len(value.encode("utf-8")) > _MAX_CONTENT_BYTES:
+            raise ValueError("content exceeds maximum byte size of 1048576")
+        return value
 
     @model_validator(mode="after")
     def validate_content_integrity(self) -> Self:
@@ -270,13 +281,22 @@ class PlannerInput(BaseModel):
     original_task: UntrustedContent
     base_commit: str = Field(min_length=40, max_length=40)
     repository_tree: UntrustedContent
-    relevant_instructions: tuple[UntrustedContent, ...] = Field(default=())
+    relevant_instructions: tuple[UntrustedContent, ...] = Field(
+        default=(), max_length=_MAX_COLLECTION_SIZE
+    )
     policy_summary: PolicySummary
 
     @field_validator("base_commit")
     @classmethod
     def validate_base_commit(cls, value: str) -> str:
         return _validate_commit_sha(value, "base_commit")
+
+    @model_validator(mode="after")
+    def validate_context_size(self) -> Self:
+        _validate_context_size(
+            (self.original_task, self.repository_tree, *self.relevant_instructions)
+        )
+        return self
 
 
 class DeveloperInput(BaseModel):
@@ -288,8 +308,12 @@ class DeveloperInput(BaseModel):
     plan: PlanOutput
     worktree_id: str = Field(min_length=1, max_length=128)
     base_commit: str = Field(min_length=40, max_length=40)
-    remediation_findings: tuple[ReviewFinding, ...] = Field(default=())
-    relevant_instructions: tuple[UntrustedContent, ...] = Field(default=())
+    remediation_findings: tuple[ReviewFinding, ...] = Field(
+        default=(), max_length=_MAX_COLLECTION_SIZE
+    )
+    relevant_instructions: tuple[UntrustedContent, ...] = Field(
+        default=(), max_length=_MAX_COLLECTION_SIZE
+    )
 
     @field_validator("worktree_id")
     @classmethod
@@ -306,6 +330,10 @@ class DeveloperInput(BaseModel):
     @field_validator("remediation_findings")
     @classmethod
     def validate_findings(cls, value: Sequence[ReviewFinding]) -> tuple[ReviewFinding, ...]:
+        if len(value) > _MAX_COLLECTION_SIZE:
+            raise ValueError(
+                f"remediation_findings exceeds maximum count of {_MAX_COLLECTION_SIZE}"
+            )
         seen: set[str] = set()
         for finding in value:
             if not isinstance(finding, ReviewFinding):
@@ -314,6 +342,11 @@ class DeveloperInput(BaseModel):
                 raise ValueError("duplicate finding_id in remediation_findings")
             seen.add(finding.finding_id)
         return tuple(value)
+
+    @model_validator(mode="after")
+    def validate_context_size(self) -> Self:
+        _validate_context_size((self.original_task, *self.relevant_instructions))
+        return self
 
 
 class ReviewerInput(BaseModel):
@@ -324,8 +357,24 @@ class ReviewerInput(BaseModel):
     original_task: UntrustedContent
     plan: PlanOutput
     current_diff: UntrustedContent
-    check_evidence: tuple[UntrustedContent, ...] = Field(default=())
-    relevant_instructions: tuple[UntrustedContent, ...] = Field(default=())
+    check_evidence: tuple[UntrustedContent, ...] = Field(
+        default=(), max_length=_MAX_COLLECTION_SIZE
+    )
+    relevant_instructions: tuple[UntrustedContent, ...] = Field(
+        default=(), max_length=_MAX_COLLECTION_SIZE
+    )
+
+    @model_validator(mode="after")
+    def validate_context_size(self) -> Self:
+        _validate_context_size(
+            (
+                self.original_task,
+                self.current_diff,
+                *self.check_evidence,
+                *self.relevant_instructions,
+            )
+        )
+        return self
 
 
 class DeveloperOutput(BaseModel):
@@ -392,7 +441,7 @@ class ReviewOutput(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     decision: ReviewDecision
-    findings: tuple[ReviewFinding, ...]
+    findings: tuple[ReviewFinding, ...] = Field(default=(), max_length=_MAX_COLLECTION_SIZE)
     tested_claims: tuple[str, ...]
     missing_evidence: tuple[str, ...]
     summary: str = Field(min_length=1)
@@ -405,6 +454,8 @@ class ReviewOutput(BaseModel):
     @field_validator("findings")
     @classmethod
     def validate_findings(cls, value: Sequence[ReviewFinding]) -> tuple[ReviewFinding, ...]:
+        if len(value) > _MAX_COLLECTION_SIZE:
+            raise ValueError(f"findings exceeds maximum count of {_MAX_COLLECTION_SIZE}")
         seen: set[str] = set()
         for finding in value:
             if not isinstance(finding, ReviewFinding):
@@ -456,11 +507,11 @@ class AgentBudget(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    max_input_tokens: int = Field(default=100_000, ge=1)
-    max_output_tokens: int = Field(default=16_000, ge=1)
-    max_tool_calls: int = Field(default=100, ge=0)
-    max_duration_seconds: int = Field(default=1800, ge=1)
-    max_cost_minor: int = Field(default=1000, ge=0)
+    max_input_tokens: int = Field(default=100_000, ge=1, strict=True)
+    max_output_tokens: int = Field(default=16_000, ge=1, strict=True)
+    max_tool_calls: int = Field(default=100, ge=0, strict=True)
+    max_duration_seconds: int = Field(default=1800, ge=1, strict=True)
+    max_cost_minor: int = Field(default=1000, ge=0, strict=True)
 
     @classmethod
     def from_model_policy(cls, policy: AgentModelPolicy) -> Self:
@@ -473,10 +524,6 @@ class AgentBudget(BaseModel):
             max_duration_seconds=policy.max_duration_seconds,
             max_cost_minor=policy.max_cost_minor,
         )
-
-    @classmethod
-    def from_policy(cls, policy: AgentModelPolicy) -> Self:
-        return cls.from_model_policy(policy)
 
 
 class AgentRequest(BaseModel):
@@ -520,6 +567,11 @@ class AgentRequest(BaseModel):
     def validate_instruction_digest(cls, value: str) -> str:
         return _validate_sha256_digest(value, "instruction_digest")
 
+    @field_validator("system_instruction")
+    @classmethod
+    def validate_system_instruction(cls, value: str) -> str:
+        return _validate_non_blank_text(value, "system_instruction")
+
     @field_validator("allowed_tools")
     @classmethod
     def validate_tools_sequence(cls, value: Sequence[ToolName]) -> tuple[ToolName, ...]:
@@ -562,6 +614,8 @@ class AgentRequest(BaseModel):
         for content in _iter_untrusted_content(self.context):
             if content.content and content.content in self.system_instruction:
                 raise ValueError("system_instruction must not contain untrusted context content")
+
+        _validate_context_size(_iter_untrusted_content(self.context))
 
         validate_durable_payload(self.model_dump(mode="json"))
 
@@ -650,6 +704,8 @@ class AgentResult(BaseModel):
             if self.role == AgentRole.REVIEWER and not isinstance(self.output, ReviewOutput):
                 raise ValueError("reviewer result output must be a ReviewOutput")
 
+        validate_durable_payload(self.model_dump(mode="json"))
+
         return self
 
 
@@ -666,6 +722,12 @@ def _iter_untrusted_content(
         *context.check_evidence,
         *context.relevant_instructions,
     )
+
+
+def _validate_context_size(envelopes: Sequence[UntrustedContent]) -> None:
+    total_bytes = sum(len(envelope.content.encode("utf-8")) for envelope in envelopes)
+    if total_bytes > _MAX_CONTEXT_BYTES:
+        raise ValueError("agent context exceeds maximum byte size of 4194304")
 
 
 __all__ = [
