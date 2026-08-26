@@ -62,6 +62,20 @@ class FakeScriptInvalid(ValueError):
         super().__init__("fake agent script configuration is invalid")
 
 
+class FakeRequestInvalid(ValueError):
+    """A fake gateway request cannot produce valid usage evidence."""
+
+    def __init__(self) -> None:
+        super().__init__("fake agent request metadata is invalid")
+
+
+class FakeRequestLogFull(RuntimeError):
+    """The bounded fake request inspection log has reached capacity."""
+
+    def __init__(self) -> None:
+        super().__init__("fake agent request log is full")
+
+
 @dataclass(frozen=True, slots=True)
 class FakeAgentStep:
     """One immutable scripted execution step for a fake agent role."""
@@ -342,14 +356,14 @@ class FakeAgentGateway:
             value != value.strip()
             for value in (request.provider, request.model, request.instruction_version)
         ):
-            raise FakeScriptInvalid
+            raise FakeRequestInvalid
 
         async with self._admission_lock():
             role = request.role
             script = self._scripts.get(role)
             count = self._invocation_counts.get(role, 0)
             if len(self._requests) >= _MAX_RECORDED_REQUESTS:
-                raise FakeScriptExhausted
+                raise FakeRequestLogFull
             self._requests.append(request)
             if script is None or count >= len(script):
                 raise FakeScriptExhausted
@@ -455,6 +469,8 @@ __all__ = [
     "FakeAgentGateway",
     "FakeAgentScenario",
     "FakeAgentStep",
+    "FakeRequestInvalid",
+    "FakeRequestLogFull",
     "FakeScriptExhausted",
     "FakeScriptInvalid",
 ]
