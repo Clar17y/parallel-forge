@@ -33,6 +33,7 @@ _MAX_ITEM_LENGTH = 5_000
 _MAX_COLLECTION_SIZE = 100
 _MAX_CONTENT_BYTES = 1_048_576
 _MAX_CONTEXT_BYTES = 4_194_304
+_MAX_REPOSITORY_PATH_LENGTH = 4_096
 
 _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
     AgentRole.PLANNER: frozenset(
@@ -383,8 +384,8 @@ class DeveloperOutput(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     summary: str = Field(min_length=1)
-    changed_paths: tuple[str, ...]
-    tests_added_or_changed: tuple[str, ...]
+    changed_paths: tuple[str, ...] = Field(max_length=_MAX_COLLECTION_SIZE)
+    tests_added_or_changed: tuple[str, ...] = Field(max_length=_MAX_COLLECTION_SIZE)
     named_checks_run: tuple[str, ...]
     local_commit_sha: str = Field(min_length=40, max_length=40)
     diff_digest: str = Field(min_length=64, max_length=64)
@@ -399,6 +400,16 @@ class DeveloperOutput(BaseModel):
     @field_validator("changed_paths", "tests_added_or_changed")
     @classmethod
     def validate_repository_paths(cls, value: Sequence[str]) -> tuple[str, ...]:
+        if not isinstance(value, (tuple, list)):
+            raise TypeError("repository paths must be a sequence of strings")
+        if len(value) > _MAX_COLLECTION_SIZE:
+            raise ValueError(f"repository paths exceed maximum count of {_MAX_COLLECTION_SIZE}")
+        for index, path in enumerate(value):
+            _validate_non_blank_text(
+                path,
+                f"repository paths[{index}]",
+                max_length=_MAX_REPOSITORY_PATH_LENGTH,
+            )
         return normalize_policy_paths(value)
 
     @field_validator("named_checks_run")
