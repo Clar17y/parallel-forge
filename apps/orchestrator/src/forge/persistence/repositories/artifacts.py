@@ -81,8 +81,8 @@ class ArtifactRepository:
         metadata_snapshot = _with_truncation_metadata(dict(bounded_metadata), descriptor)
         try:
             async with self._session_scope(transaction=True) as session:
-                content = await self._content_row(descriptor, metadata_snapshot, session)
                 parent_ids = await self._parent_ids(parents, run_id, session)
+                content = await self._content_row(descriptor, metadata_snapshot, session)
                 lineage = await self._lineage_row(
                     content,
                     run_id,
