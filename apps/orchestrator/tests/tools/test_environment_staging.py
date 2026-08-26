@@ -50,12 +50,13 @@ def _environment_case(
     source_path = repository.joinpath(*relative_path.split("/"))
     source_path.parent.mkdir(parents=True)
     source_path.write_bytes(source)
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -204,9 +205,10 @@ def test_worktree_capability_does_not_expose_handles_or_git_state() -> None:
     from forge.domain.policy import RunnerMode
     from forge.tools.git import _CAPABILITY_SEAL, WorktreeCapability
 
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(Path.cwd()),
         github_repository="owner/repository",
@@ -238,11 +240,12 @@ def test_released_worktree_capability_cannot_be_reused(tmp_path) -> None:
     from test_git import _controlled, _source_repository
 
     repository, base_sha = _source_repository(tmp_path)
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -264,13 +267,14 @@ def test_capability_rejects_identity_forgery_with_same_target_name(tmp_path) -> 
     from test_git import _controlled, _source_repository
 
     repository, base_sha = _source_repository(tmp_path)
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     forged_identity = replace(identity, project_id=uuid4())
     forged = ManagedWorktree(identity=forged_identity, path=worktree.path, base_sha=base_sha)
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -291,7 +295,8 @@ def test_capability_rejects_worktree_head_drift(tmp_path) -> None:
     from test_git import _controlled, _source_repository
 
     repository, base_sha = _source_repository(tmp_path)
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "drift.txt").write_text("drift\n", encoding="utf-8")
@@ -313,7 +318,7 @@ def test_capability_rejects_worktree_head_drift(tmp_path) -> None:
         capture_output=True,
     )
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -367,12 +372,13 @@ def test_unignored_destination_is_rejected_before_publication(tmp_path) -> None:
     ).stdout.strip()
     (repository / "config").mkdir()
     (repository / "config" / "local.env").write_bytes(b"TOKEN=SOURCE\n")
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -418,12 +424,13 @@ def test_forged_plan_cannot_publish_arbitrary_bytes(tmp_path) -> None:
     ).stdout.strip()
     (repository / "config").mkdir()
     (repository / "config" / "local.env").write_bytes(b"SAFE=SOURCE\n")
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -475,12 +482,13 @@ def test_source_hard_link_is_rejected_without_destination_write(tmp_path) -> Non
     source = repository / "config" / "local.env"
     source.write_bytes(b"TOKEN=SOURCE\n")
     (repository / "config" / "local-copy.env").hardlink_to(source)
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -588,12 +596,13 @@ def test_inspection_does_not_create_missing_mutation_lock(tmp_path) -> None:
     ).stdout.strip()
     (repository / "config").mkdir()
     (repository / "config" / "local.env").write_bytes(b"SAFE=SOURCE\n")
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -687,12 +696,13 @@ def test_windows_directory_flush_failure_is_not_suppressed(tmp_path, monkeypatch
     ).stdout.strip()
     (repository / "config").mkdir()
     (repository / "config" / "local.env").write_bytes(b"SAFE=SOURCE\n")
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -818,12 +828,13 @@ def test_linux_docker_staging_publishes_and_inspects_real_uid_10001_acl(tmp_path
     (repository / "config").mkdir()
     source = b"DOCKER=SOURCE\n"
     (repository / "config" / "local.env").write_bytes(source)
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -1153,12 +1164,13 @@ def test_staging_copies_ignored_source_bytes_without_exposing_them(tmp_path) -> 
     (repository / "config").mkdir()
     source = b"TOKEN=SOURCE_SENTINEL\n"
     (repository / "config" / "local.env").write_bytes(source)
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=3,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -1219,12 +1231,13 @@ def test_reflective_plan_payload_mutation_is_rejected_before_write(tmp_path) -> 
     ).stdout.strip()
     (repository / "config").mkdir()
     (repository / "config" / "local.env").write_bytes(b"SAFE=SOURCE\n")
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=1,
         repository_path=str(repository),
         github_repository="owner/repository",
@@ -1274,12 +1287,13 @@ def test_staging_publishes_and_inspects_exact_destination_idempotently(tmp_path)
     (repository / "config" / "local.env").write_bytes(source)
     second = b"SECOND=SOURCE\n"
     (repository / "config" / "second.env").write_bytes(second)
-    identity = WorktreeIdentity.for_run(uuid4(), uuid4(), "feature/staging", False)
+    project_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, uuid4(), "feature/staging", False)
     controlled = _controlled(repository, tmp_path / "state")
     worktree = controlled.create_worktree(identity, base_sha)
     (worktree.path / "config").mkdir()
     policy = ProjectPolicy(
-        id=uuid4(),
+        id=project_id,
         version=3,
         repository_path=str(repository),
         github_repository="owner/repository",
