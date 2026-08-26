@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.ports.tools import ToolCallRecord
@@ -29,12 +30,92 @@ class ToolCallConflict(ToolCallRepositoryError):
     """A tool-call identifier was reused for different immutable evidence."""
 
 
+_TERMINAL_STATUSES = frozenset(
+    {
+        ToolCallStatus.SUCCEEDED,
+        ToolCallStatus.FAILED,
+        ToolCallStatus.DENIED,
+        ToolCallStatus.CANCELLED,
+    }
+)
+
+
 class PostgresToolCallRepository:
     """Persist one immutable tool-call projection on the caller's session."""
 
     def __init__(self, session: AsyncSession, *, redactor: Redactor | None = None) -> None:
         self._session = session
         self._redactor = redactor or Redactor()
+
+    async def reserve(self, record: ToolCallRecord) -> ToolCallRecord:
+        """Reserve one authorized running call or replay the exact reservation."""
+
+        safe_record = _prepare_reservation(record, self._redactor)
+        try:
+            inserted = await self._session.execute(
+                insert(ToolCall)
+                .values(**_row_values(safe_record))
+                .on_conflict_do_nothing(index_elements=[ToolCall.id])
+                .returning(ToolCall.id)
+            )
+            inserted_id = inserted.scalar_one_or_none()
+            if inserted_id is not None:
+                stored = await self._session.get(ToolCall, inserted_id)
+                if stored is None:
+                    raise ToolCallRepositoryError("tool call reservation disappeared")
+                return _record_from_row(stored)
+
+            existing = (
+                await self._session.execute(
+                    select(ToolCall).where(ToolCall.id == safe_record.id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                raise ToolCallRepositoryError("tool call reservation could not be loaded")
+            loaded = _record_from_row(existing)
+            if _record_json(loaded) != _record_json(safe_record):
+                raise ToolCallConflict("tool call reservation was reused for different evidence")
+            return loaded
+        except ToolCallConflict:
+            raise
+        except Exception:  # noqa: BLE001 - public boundary must hide adapter/driver details
+            raise ToolCallRepositoryError("tool call reservation failed") from None
+
+    async def finalize(self, record: ToolCallRecord) -> ToolCallRecord:
+        """Finalize one running call, preserving its immutable admission evidence."""
+
+        safe_record = _prepare_finalization(record, self._redactor)
+        try:
+            existing = (
+                await self._session.execute(
+                    select(ToolCall).where(ToolCall.id == safe_record.id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                raise ToolCallNotFound("tool call evidence was not found")
+            loaded = _record_from_row(existing)
+
+            if loaded.status is not ToolCallStatus.RUNNING:
+                if loaded.status in _TERMINAL_STATUSES and _record_json(loaded) == _record_json(
+                    safe_record
+                ):
+                    return loaded
+                raise ToolCallConflict("tool call lifecycle state cannot be rewritten")
+            if _immutable_record_json(loaded) != _immutable_record_json(safe_record):
+                raise ToolCallConflict("tool call immutable evidence cannot be changed")
+
+            existing.status = safe_record.status.value.upper()
+            existing.result_metadata_schema_version = safe_record.result_metadata_schema_version
+            existing.result_metadata = (
+                None if safe_record.result_metadata is None else dict(safe_record.result_metadata)
+            )
+            existing.completed_at = safe_record.completed_at
+            await self._session.flush()
+            return _record_from_row(existing)
+        except ToolCallConflict, ToolCallNotFound:
+            raise
+        except Exception:  # noqa: BLE001 - public boundary must hide adapter/driver details
+            raise ToolCallRepositoryError("tool call finalization failed") from None
 
     async def record(self, record: ToolCallRecord) -> ToolCallRecord:
         """Insert evidence or return the exact existing record on replay."""
@@ -160,20 +241,24 @@ class PostgresToolCallRepository:
 def _redact_record(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord:
     arguments = redactor.redact(record.normalized_arguments)
     raw_metadata = dict(record.result_metadata or {})
-    if record.step_id is not None:
-        raw_metadata.setdefault("step_id", str(record.step_id))
-    if record.role is not None:
-        raw_metadata.setdefault("role", record.role.value)
-    if record.policy_version is not None:
-        raw_metadata.setdefault("policy_version", record.policy_version)
+    lineage = {
+        "step_id": None if record.step_id is None else str(record.step_id),
+        "role": None if record.role is None else record.role.value,
+        "policy_version": record.policy_version,
+        "artifact_digests": list(record.artifact_digests),
+        "correlation_id": None if record.correlation_id is None else str(record.correlation_id),
+        "operation_intent_id": (
+            None if record.operation_intent_id is None else str(record.operation_intent_id)
+        ),
+    }
+    for key, expected in lineage.items():
+        if key in raw_metadata:
+            if not _same_lineage_value(raw_metadata[key], expected):
+                raise ToolCallRepositoryError("tool call evidence lineage is inconsistent")
+        elif expected is not None and (key != "artifact_digests" or expected):
+            raw_metadata[key] = expected
     if record.duration_ms is not None:
         raw_metadata.setdefault("duration_ms", record.duration_ms)
-    if record.artifact_digests:
-        raw_metadata.setdefault("artifact_digests", list(record.artifact_digests))
-    if record.correlation_id is not None:
-        raw_metadata.setdefault("correlation_id", str(record.correlation_id))
-    if record.operation_intent_id is not None:
-        raw_metadata.setdefault("operation_intent_id", str(record.operation_intent_id))
     metadata = (
         None
         if record.result_metadata is None and not raw_metadata
@@ -184,7 +269,7 @@ def _redact_record(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord
     ):
         raise ToolCallRepositoryError("tool call evidence must contain object payloads")
     try:
-        return ToolCallRecord(
+        safe_record = ToolCallRecord(
             id=record.id,
             run_id=record.run_id,
             agent_execution_id=record.agent_execution_id,
@@ -209,8 +294,100 @@ def _redact_record(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord
                 else (1 if metadata is not None else None)
             ),
         )
+        for key, expected in lineage.items():
+            if expected is not None and (key != "artifact_digests" or expected):
+                actual = (
+                    None
+                    if safe_record.result_metadata is None
+                    else safe_record.result_metadata.get(key)
+                )
+                if not _same_lineage_value(actual, expected):
+                    raise ToolCallRepositoryError("tool call evidence lineage is inconsistent")
+        return safe_record
     except (TypeError, ValueError) as error:
         raise ToolCallRepositoryError("tool call evidence is malformed") from error
+
+
+def _prepare_reservation(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord:
+    safe_record = _prepare_lifecycle_record(record, redactor)
+    if safe_record is None:
+        raise ToolCallRepositoryError("tool call reservation evidence is invalid")
+    if safe_record.status is not ToolCallStatus.RUNNING or not safe_record.authorized:
+        raise ToolCallConflict("tool call reservation requires an authorized running call")
+    return safe_record
+
+
+def _prepare_finalization(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord:
+    safe_record = _prepare_lifecycle_record(record, redactor)
+    if safe_record is None:
+        raise ToolCallRepositoryError("tool call finalization evidence is invalid")
+    if safe_record.status not in _TERMINAL_STATUSES:
+        raise ToolCallConflict("tool call finalization requires a terminal status")
+    return safe_record
+
+
+def _prepare_lifecycle_record(
+    record: ToolCallRecord,
+    redactor: Redactor,
+) -> ToolCallRecord | None:
+    prepared: ToolCallRecord | None = None
+    try:
+        if not isinstance(record, ToolCallRecord):
+            return None
+        prepared = _redact_record(record, redactor)
+    except Exception:  # noqa: BLE001 - lifecycle validation must not expose input details
+        prepared = None
+    if prepared is None:
+        raise ToolCallRepositoryError("tool call lifecycle evidence is invalid")
+    return prepared
+
+
+def _same_lineage_value(actual: object, expected: object) -> bool:
+    if expected == []:
+        return actual in (None, [], ())
+    if isinstance(expected, list):
+        return isinstance(actual, (list, tuple)) and tuple(actual) == tuple(expected)
+    return actual == expected
+
+
+def _row_values(record: ToolCallRecord) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "run_id": record.run_id,
+        "agent_execution_id": record.agent_execution_id,
+        "tool_name": record.tool_name.value,
+        "arguments_schema_version": record.arguments_schema_version,
+        "normalized_arguments": dict(record.normalized_arguments),
+        "authorized": record.authorized,
+        "status": record.status.value.upper(),
+        "result_metadata_schema_version": record.result_metadata_schema_version,
+        "result_metadata": (
+            None if record.result_metadata is None else dict(record.result_metadata)
+        ),
+        "started_at": record.started_at,
+        "completed_at": record.completed_at,
+    }
+
+
+def _immutable_record_json(record: ToolCallRecord) -> str:
+    payload: dict[str, object] = {
+        "id": str(record.id),
+        "run_id": str(record.run_id),
+        "agent_execution_id": str(record.agent_execution_id),
+        "tool_name": record.tool_name.value,
+        "normalized_arguments": dict(record.normalized_arguments),
+        "authorized": record.authorized,
+        "started_at": record.started_at.isoformat(),
+        "step_id": None if record.step_id is None else str(record.step_id),
+        "role": None if record.role is None else record.role.value,
+        "policy_version": record.policy_version,
+        "correlation_id": None if record.correlation_id is None else str(record.correlation_id),
+        "operation_intent_id": (
+            None if record.operation_intent_id is None else str(record.operation_intent_id)
+        ),
+        "arguments_schema_version": record.arguments_schema_version,
+    }
+    return canonical_payload(payload)
 
 
 def _record_from_row(row: ToolCall) -> ToolCallRecord:

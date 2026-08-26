@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Protocol, Self
 from uuid import UUID
 
+from forge.application.ports.operations import OperationRepository
 from forge.application.ports.projects import ProjectRepository
 from forge.application.ports.runs import RunRepository
 from forge.application.ports.tools import ToolCallRepository
@@ -27,6 +28,7 @@ class UnitOfWork(Protocol):
     projects: ProjectRepository
     events: EventRepository
     tool_calls: ToolCallRepository
+    operations: OperationRepository
 
     async def __aenter__(self) -> Self: ...
 

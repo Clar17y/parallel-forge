@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -48,10 +49,18 @@ class OperationLeaseError(OperationError):
 
 
 class PostgresOperationRepository:
-    """Commit operation intent/outcome rows in separate short transactions."""
+    """Persist operations in short transactions or one caller-owned session."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
+        if (session_factory is None) == (session is None):
+            raise ValueError("provide exactly one operation persistence boundary")
         self._session_factory = session_factory
+        self._session = session
 
     async def begin(
         self,
@@ -106,61 +115,69 @@ class PostgresOperationRepository:
             execution_lease_expires_at=execution_lease_expires_at,
             is_new=True,
         )
-        async with self._session_factory() as session, session.begin():
-            run = await PostgresRunRepository(session).get_for_update(request.run_id)
-            inserted = await session.execute(
-                insert(OperationIntentRecord)
-                .values(
-                    id=candidate.id,
-                    run_id=candidate.run_id,
-                    operation_kind=candidate.kind,
-                    idempotency_key=candidate.idempotency_key,
-                    request_digest=candidate.request_digest,
-                    request_schema_version=candidate.request_schema_version,
-                    request_payload=thaw_payload(candidate.request_payload),
-                    status="PENDING",
-                    attempt_count=candidate.attempt,
-                    execution_owner=candidate.execution_owner,
-                    execution_lease_expires_at=candidate.execution_lease_expires_at,
-                    started_at=None,
-                    completed_at=None,
-                )
-                .on_conflict_do_nothing(index_elements=[OperationIntentRecord.idempotency_key])
-                .returning(OperationIntentRecord.id)
+        async with self._session_scope(transaction=True) as session:
+            return await self._begin_core(session, candidate, now)
+
+    async def _begin_core(
+        self,
+        session: AsyncSession,
+        candidate: OperationIntent,
+        now: datetime,
+    ) -> OperationIntent:
+        run = await PostgresRunRepository(session).get_for_update(candidate.run_id)
+        inserted = await session.execute(
+            insert(OperationIntentRecord)
+            .values(
+                id=candidate.id,
+                run_id=candidate.run_id,
+                operation_kind=candidate.kind,
+                idempotency_key=candidate.idempotency_key,
+                request_digest=candidate.request_digest,
+                request_schema_version=candidate.request_schema_version,
+                request_payload=thaw_payload(candidate.request_payload),
+                status="PENDING",
+                attempt_count=candidate.attempt,
+                execution_owner=candidate.execution_owner,
+                execution_lease_expires_at=candidate.execution_lease_expires_at,
+                started_at=None,
+                completed_at=None,
             )
-            inserted_id = inserted.scalar_one_or_none()
-            if inserted_id is not None:
-                await PostgresEventRepository(session).append(
-                    RunEvent(
-                        run_id=request.run_id,
-                        run_version=run.version,
-                        event_type="operation.intent_created",
-                        actor_class="system",
-                        payload_schema_version=1,
-                        occurred_at=now,
-                        payload={
-                            "operation_intent_id": str(candidate.id),
-                            "operation_kind": candidate.kind,
-                            "request_digest": candidate.request_digest,
-                            "request_schema_version": candidate.request_schema_version,
-                        },
+            .on_conflict_do_nothing(index_elements=[OperationIntentRecord.idempotency_key])
+            .returning(OperationIntentRecord.id)
+        )
+        inserted_id = inserted.scalar_one_or_none()
+        if inserted_id is not None:
+            await PostgresEventRepository(session).append(
+                RunEvent(
+                    run_id=candidate.run_id,
+                    run_version=run.version,
+                    event_type="operation.intent_created",
+                    actor_class="system",
+                    payload_schema_version=1,
+                    occurred_at=now,
+                    payload={
+                        "operation_intent_id": str(candidate.id),
+                        "operation_kind": candidate.kind,
+                        "request_digest": candidate.request_digest,
+                        "request_schema_version": candidate.request_schema_version,
+                    },
+                )
+            )
+        record = await session.get(OperationIntentRecord, inserted_id or candidate.id)
+        if record is None:
+            record = (
+                await session.execute(
+                    select(OperationIntentRecord).where(
+                        OperationIntentRecord.idempotency_key == candidate.idempotency_key
                     )
                 )
-            record = await session.get(OperationIntentRecord, inserted_id or candidate.id)
-            if record is None:
-                record = (
-                    await session.execute(
-                        select(OperationIntentRecord).where(
-                            OperationIntentRecord.idempotency_key == candidate.idempotency_key
-                        )
-                    )
-                ).scalar_one_or_none()
-            if record is None:
-                raise OperationError("operation intent disappeared before it could be loaded")
-            actual = _intent_from_record(record, is_new=inserted_id is not None)
-            if inserted_id is None:
-                _check_begin_match(candidate, actual)
-            return actual
+            ).scalar_one_or_none()
+        if record is None:
+            raise OperationError("operation intent disappeared before it could be loaded")
+        actual = _intent_from_record(record, is_new=inserted_id is not None)
+        if inserted_id is None:
+            _check_begin_match(candidate, actual)
+        return actual
 
     async def claim_for_recovery(
         self, intent_id: UUID, *, owner_id: str, lease_seconds: float
@@ -170,28 +187,38 @@ class PostgresOperationRepository:
         _validate_execution_request(owner_id, lease_seconds)
         now = _utc_now()
         expiry = now + timedelta(seconds=lease_seconds)
-        async with self._session_factory() as session, session.begin():
-            record = await self._locked(intent_id, session)
-            current = _intent_from_record(record)
-            if current.status not in {
-                OperationStatus.PENDING,
-                OperationStatus.NEEDS_RECONCILIATION,
-            }:
-                return OperationExecutionClaim(intent=current, acquired=False)
-            if (
-                record.execution_owner is not None
-                and record.execution_lease_expires_at is not None
-                and record.execution_lease_expires_at > now
-            ):
-                return OperationExecutionClaim(intent=current, acquired=False)
-            record.execution_owner = owner_id
-            record.execution_lease_expires_at = expiry
-            record.attempt_count += 1
-            if record.started_at is None:
-                record.started_at = now
-            await session.flush()
-            await session.refresh(record)
-            return OperationExecutionClaim(intent=_intent_from_record(record), acquired=True)
+        async with self._session_scope(transaction=True) as session:
+            return await self._claim_core(session, intent_id, owner_id, expiry, now)
+
+    async def _claim_core(
+        self,
+        session: AsyncSession,
+        intent_id: UUID,
+        owner_id: str,
+        expiry: datetime,
+        now: datetime,
+    ) -> OperationExecutionClaim:
+        record = await self._locked(intent_id, session)
+        current = _intent_from_record(record)
+        if current.status not in {
+            OperationStatus.PENDING,
+            OperationStatus.NEEDS_RECONCILIATION,
+        }:
+            return OperationExecutionClaim(intent=current, acquired=False)
+        if (
+            record.execution_owner is not None
+            and record.execution_lease_expires_at is not None
+            and record.execution_lease_expires_at > now
+        ):
+            return OperationExecutionClaim(intent=current, acquired=False)
+        record.execution_owner = owner_id
+        record.execution_lease_expires_at = expiry
+        record.attempt_count += 1
+        if record.started_at is None:
+            record.started_at = now
+        await session.flush()
+        await session.refresh(record)
+        return OperationExecutionClaim(intent=_intent_from_record(record), acquired=True)
 
     async def renew_execution(
         self, intent_id: UUID, *, owner_id: str, lease_seconds: float
@@ -200,16 +227,26 @@ class PostgresOperationRepository:
 
         _validate_execution_request(owner_id, lease_seconds)
         now = _utc_now()
-        async with self._session_factory() as session, session.begin():
-            record = await self._locked(intent_id, session)
-            _require_execution_owner(record, owner_id, now)
-            record.execution_lease_expires_at = now + timedelta(seconds=lease_seconds)
-            await session.flush()
-            await session.refresh(record)
-            return _intent_from_record(record)
+        async with self._session_scope(transaction=True) as session:
+            return await self._renew_core(session, intent_id, owner_id, lease_seconds, now)
+
+    async def _renew_core(
+        self,
+        session: AsyncSession,
+        intent_id: UUID,
+        owner_id: str,
+        lease_seconds: float,
+        now: datetime,
+    ) -> OperationIntent:
+        record = await self._locked(intent_id, session)
+        _require_execution_owner(record, owner_id, now)
+        record.execution_lease_expires_at = now + timedelta(seconds=lease_seconds)
+        await session.flush()
+        await session.refresh(record)
+        return _intent_from_record(record)
 
     async def get(self, intent_id: UUID) -> OperationIntent:
-        async with self._session_factory() as session:
+        async with self._session_scope(transaction=False) as session:
             record = await session.get(OperationIntentRecord, intent_id)
             if record is None:
                 raise OperationNotFound(f"operation intent {intent_id} was not found")
@@ -220,7 +257,7 @@ class PostgresOperationRepository:
 
         if not isinstance(idempotency_key, str) or not idempotency_key:
             raise ValueError("operation idempotency key is invalid")
-        async with self._session_factory() as session:
+        async with self._session_scope(transaction=False) as session:
             record = (
                 await session.execute(
                     select(OperationIntentRecord).where(
@@ -235,36 +272,46 @@ class PostgresOperationRepository:
     ) -> OperationIntent:
         if outcome.status is not OperationStatus.SUCCEEDED:
             raise ValueError("complete requires a succeeded operation outcome")
-        async with self._session_factory() as session, session.begin():
-            record = await self._locked(intent_id, session)
-            if record.status == "SUCCEEDED":
-                existing = _intent_from_record(record)
-                if existing.remote_resource_id != outcome.remote_resource_id or canonical_payload(
-                    existing.outcome or {}
-                ) != canonical_payload(outcome.payload):
-                    raise OperationStateConflict(
-                        f"operation intent {intent_id} already has a different outcome"
-                    )
-                return existing
-            if record.status not in {"PENDING", "NEEDS_RECONCILIATION"}:
+        async with self._session_scope(transaction=True) as session:
+            return await self._complete_core(session, intent_id, outcome, owner_id=owner_id)
+
+    async def _complete_core(
+        self,
+        session: AsyncSession,
+        intent_id: UUID,
+        outcome: OperationOutcome,
+        *,
+        owner_id: str | None,
+    ) -> OperationIntent:
+        record = await self._locked(intent_id, session)
+        if record.status == "SUCCEEDED":
+            existing = _intent_from_record(record)
+            if existing.remote_resource_id != outcome.remote_resource_id or canonical_payload(
+                existing.outcome or {}
+            ) != canonical_payload(outcome.payload):
                 raise OperationStateConflict(
-                    f"operation intent {intent_id} is already terminal: {record.status}"
+                    f"operation intent {intent_id} already has a different outcome"
                 )
-            _require_execution_owner(record, owner_id, _utc_now())
-            now = _utc_now()
-            record.status = "SUCCEEDED"
-            record.remote_resource_id = outcome.remote_resource_id
-            record.outcome_schema_version = outcome.outcome_schema_version
-            record.outcome_payload = thaw_payload(outcome.payload)
-            record.completed_at = now
-            record.last_error = None
-            record.execution_owner = None
-            record.execution_lease_expires_at = None
-            if record.started_at is None:
-                record.started_at = now
-            await session.flush()
-            await session.refresh(record)
-            return _intent_from_record(record)
+            return existing
+        if record.status not in {"PENDING", "NEEDS_RECONCILIATION"}:
+            raise OperationStateConflict(
+                f"operation intent {intent_id} is already terminal: {record.status}"
+            )
+        _require_execution_owner(record, owner_id, _utc_now())
+        now = _utc_now()
+        record.status = "SUCCEEDED"
+        record.remote_resource_id = outcome.remote_resource_id
+        record.outcome_schema_version = outcome.outcome_schema_version
+        record.outcome_payload = thaw_payload(outcome.payload)
+        record.completed_at = now
+        record.last_error = None
+        record.execution_owner = None
+        record.execution_lease_expires_at = None
+        if record.started_at is None:
+            record.started_at = now
+        await session.flush()
+        await session.refresh(record)
+        return _intent_from_record(record)
 
     async def fail(
         self,
@@ -275,50 +322,70 @@ class PostgresOperationRepository:
         owner_id: str | None = None,
     ) -> OperationIntent:
         bounded_error = _bounded_error(error)
-        async with self._session_factory() as session, session.begin():
-            record = await self._locked(intent_id, session)
-            if record.status == "FAILED" and not needs_reconciliation:
-                existing = _intent_from_record(record)
-                if existing.error == bounded_error:
-                    return existing
-                raise OperationStateConflict(
-                    f"operation intent {intent_id} already has a different failure"
-                )
-            if record.status == "SUCCEEDED":
-                raise OperationStateConflict(f"operation intent {intent_id} already succeeded")
-            _require_execution_owner(record, owner_id, _utc_now())
-            now = _utc_now()
-            record.status = "NEEDS_RECONCILIATION" if needs_reconciliation else "FAILED"
-            record.last_error = bounded_error
-            record.completed_at = None if needs_reconciliation else now
-            record.outcome_payload = None
-            record.outcome_schema_version = None
-            record.remote_resource_id = None
-            record.execution_owner = None
-            record.execution_lease_expires_at = None
-            if record.started_at is None:
-                record.started_at = now
-            await session.flush()
-            await session.refresh(record)
-            return _intent_from_record(record)
+        async with self._session_scope(transaction=True) as session:
+            return await self._fail_core(
+                session,
+                intent_id,
+                bounded_error,
+                needs_reconciliation=needs_reconciliation,
+                owner_id=owner_id,
+            )
+
+    async def _fail_core(
+        self,
+        session: AsyncSession,
+        intent_id: UUID,
+        bounded_error: str,
+        *,
+        needs_reconciliation: bool,
+        owner_id: str | None,
+    ) -> OperationIntent:
+        record = await self._locked(intent_id, session)
+        if record.status == "FAILED" and not needs_reconciliation:
+            existing = _intent_from_record(record)
+            if existing.error == bounded_error:
+                return existing
+            raise OperationStateConflict(
+                f"operation intent {intent_id} already has a different failure"
+            )
+        if record.status == "SUCCEEDED":
+            raise OperationStateConflict(f"operation intent {intent_id} already succeeded")
+        _require_execution_owner(record, owner_id, _utc_now())
+        now = _utc_now()
+        record.status = "NEEDS_RECONCILIATION" if needs_reconciliation else "FAILED"
+        record.last_error = bounded_error
+        record.completed_at = None if needs_reconciliation else now
+        record.outcome_payload = None
+        record.outcome_schema_version = None
+        record.remote_resource_id = None
+        record.execution_owner = None
+        record.execution_lease_expires_at = None
+        if record.started_at is None:
+            record.started_at = now
+        await session.flush()
+        await session.refresh(record)
+        return _intent_from_record(record)
 
     async def list_unresolved(self) -> Sequence[OperationIntent]:
-        async with self._session_factory() as session:
-            result = await session.execute(
-                select(OperationIntentRecord)
-                .where(
-                    or_(
-                        OperationIntentRecord.status == "PENDING",
-                        OperationIntentRecord.status == "NEEDS_RECONCILIATION",
-                    )
-                )
-                .order_by(
-                    OperationIntentRecord.updated_at,
-                    OperationIntentRecord.created_at,
-                    OperationIntentRecord.id,
+        async with self._session_scope(transaction=False) as session:
+            return await self._list_unresolved_core(session)
+
+    async def _list_unresolved_core(self, session: AsyncSession) -> Sequence[OperationIntent]:
+        result = await session.execute(
+            select(OperationIntentRecord)
+            .where(
+                or_(
+                    OperationIntentRecord.status == "PENDING",
+                    OperationIntentRecord.status == "NEEDS_RECONCILIATION",
                 )
             )
-            return [_intent_from_record(record) for record in result.scalars().all()]
+            .order_by(
+                OperationIntentRecord.updated_at,
+                OperationIntentRecord.created_at,
+                OperationIntentRecord.id,
+            )
+        )
+        return [_intent_from_record(record) for record in result.scalars().all()]
 
     async def _locked(self, intent_id: UUID, session: AsyncSession) -> OperationIntentRecord:
         record = (
@@ -331,6 +398,23 @@ class PostgresOperationRepository:
         if record is None:
             raise OperationNotFound(f"operation intent {intent_id} was not found")
         return record
+
+    def _factory(self) -> async_sessionmaker[AsyncSession]:
+        if self._session_factory is None:
+            raise OperationError("operation persistence boundary is not configured")
+        return self._session_factory
+
+    @asynccontextmanager
+    async def _session_scope(self, *, transaction: bool) -> AsyncIterator[AsyncSession]:
+        if self._session is not None:
+            yield self._session
+            return
+        async with self._factory()() as session:
+            if transaction:
+                async with session.begin():
+                    yield session
+            else:
+                yield session
 
 
 def _check_begin_match(expected: OperationIntent, actual: OperationIntent) -> None:
