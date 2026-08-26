@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Protocol
 
 
@@ -97,8 +98,22 @@ class ProcessResult:
         return self.return_code
 
 
+class RepositoryRoot(Protocol):
+    """Canonical containment hooks required by every repository reader."""
+
+    @property
+    def path(self) -> Path: ...
+
+    def contains(self, value: str, *, allow_root: bool = False) -> bool: ...
+
+    def normalize(self, value: str, *, allow_root: bool = False) -> str: ...
+
+
 class RepositoryReader(Protocol):
     """Synchronous read-only repository tool boundary."""
+
+    @property
+    def root(self) -> RepositoryRoot: ...
 
     def list_files(self, path: str = ".") -> Sequence[RepositoryEntry]: ...
 
@@ -135,5 +150,6 @@ __all__ = [
     "RepositoryEntry",
     "RepositoryError",
     "RepositoryReader",
+    "RepositoryRoot",
     "SearchMatch",
 ]

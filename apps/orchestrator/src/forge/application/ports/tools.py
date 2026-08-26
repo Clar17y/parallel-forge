@@ -165,6 +165,7 @@ class ToolCallRepository(Protocol):
         run_id: UUID,
         agent_execution_id: UUID,
         step_id: UUID,
+        role: AgentRole,
     ) -> bool: ...
 
     async def count_for_execution(self, agent_execution_id: UUID) -> int: ...

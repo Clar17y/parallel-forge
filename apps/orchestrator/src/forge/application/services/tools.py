@@ -12,9 +12,9 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
 from uuid import UUID, uuid4
 
+from forge.application.ports.projects import ProjectRecord
 from forge.application.ports.repository import (
     FileRead,
     InstructionDocument,
@@ -31,6 +31,7 @@ from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, GitOutput, ManagedWorktree
 from forge.domain.actor import AgentRole
 from forge.domain.event import RunEvent, thaw_payload
+from forge.domain.payload import validate_durable_payload
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
@@ -246,6 +247,8 @@ class ControlledToolService:
         try:
             async with self._open_uow() as work:
                 resolved_run = await self._resolve_run(work, context)
+                if resolved_run is None:
+                    raise ToolInvocationError()
                 resolved_policy = await self._resolve_policy(work, resolved_run)
                 authorization, validation_error = self._validate(
                     context,
@@ -370,7 +373,7 @@ class ControlledToolService:
     async def _resolve_policy(
         self,
         work: UnitOfWork,
-        run: RunSnapshot | None,
+        run: RunSnapshot,
     ) -> ProjectPolicy | None:
         if run is None or run.policy_version is None:
             return None
@@ -386,7 +389,7 @@ class ControlledToolService:
             or project.policy.version != run.policy_version
         ):
             return None
-        return _policy_from_record(project.policy, run.project_id)
+        return _policy_from_record(project)
 
     async def _execution_context_is_current(
         self,
@@ -407,6 +410,7 @@ class ControlledToolService:
                 context.run_id,
                 execution_id,
                 step_id,
+                context.role,
             )
         except Exception:  # noqa: BLE001 - failure to prove lineage fails closed
             return False
@@ -524,14 +528,11 @@ class ControlledToolService:
         if reader is None or expected is None:
             return False
         try:
-            reader_object: Any = reader
-            root = reader_object.root
+            root = reader.root
             root_path = root.path
-            contains = root.contains
-            normalize = root.normalize
         except AttributeError, TypeError, ValueError:
             return False
-        return callable(contains) and callable(normalize) and _canonical_path(root_path) == expected
+        return _canonical_path(root_path) == expected
 
     def _bound_worktree(self, run: RunSnapshot, policy: ProjectPolicy) -> ManagedWorktree | None:
         git = self._git
@@ -578,16 +579,14 @@ class ControlledToolService:
         value = request.arguments.get(key, ".")
         if not isinstance(value, str):
             return False
-        adapter: object | None = self._repository_reader
-        root = getattr(adapter, "root", None)
-        contains = getattr(root, "contains", None)
-        normalize = getattr(root, "normalize", None)
-        if not callable(contains) or not callable(normalize):
+        reader = self._repository_reader
+        if reader is None:
             return False
+        root = reader.root
         try:
-            if contains(value, allow_root=allow_root) is not True:
+            if root.contains(value, allow_root=allow_root) is not True:
                 return False
-            normalized = normalize(value, allow_root=allow_root)
+            normalized = root.normalize(value, allow_root=allow_root)
         except TypeError, ValueError, RuntimeError, OSError:
             return False
         return isinstance(normalized, str) and (allow_root or normalized != ".")
@@ -599,17 +598,16 @@ class ControlledToolService:
         key = "target_path" if request.name is ToolName.REPOSITORY_READ_INSTRUCTIONS else "path"
         if key not in values:
             return _safe_metadata(values, redactor=self._redactor)
-        adapter: object | None = self._repository_reader
-        root = getattr(adapter, "root", None)
-        normalize = getattr(root, "normalize", None)
-        if callable(normalize) and isinstance(values[key], str):
+        reader = self._repository_reader
+        path_value = values[key]
+        if reader is not None and isinstance(path_value, str):
             allow_root = request.name in {
                 ToolName.REPOSITORY_LIST_FILES,
                 ToolName.REPOSITORY_SEARCH,
                 ToolName.REPOSITORY_READ_INSTRUCTIONS,
             }
             try:
-                values[key] = normalize(values[key], allow_root=allow_root)
+                values[key] = reader.root.normalize(path_value, allow_root=allow_root)
             except Exception:  # noqa: BLE001 - path validation already controls dispatch
                 return _safe_metadata(values, redactor=self._redactor)
         return _safe_metadata(values, redactor=self._redactor)
@@ -683,38 +681,19 @@ class ControlledToolService:
             if name is ToolName.GIT_STATUS:
                 worktree = self._worktree
                 if worktree is None or self._git is None:
-                    return self._result(
-                        name,
-                        ToolCallStatus.DENIED,
-                        ToolError(
-                            code=ToolErrorCode.TOOL_UNAVAILABLE,
-                            message="controlled tool adapter is unavailable",
-                        ),
-                    )
+                    raise ToolInvocationError()
                 status = self._git.status(worktree)
                 return self._result(name, ToolCallStatus.SUCCEEDED, metadata=_git_output(status))
             if name is ToolName.GIT_DIFF:
                 worktree = self._worktree
                 if worktree is None or self._git is None:
-                    return self._result(
-                        name,
-                        ToolCallStatus.DENIED,
-                        ToolError(
-                            code=ToolErrorCode.TOOL_UNAVAILABLE,
-                            message="controlled tool adapter is unavailable",
-                        ),
-                    )
+                    raise ToolInvocationError()
                 diff = self._git.diff(worktree)
                 return self._result(name, ToolCallStatus.SUCCEEDED, metadata=_git_output(diff))
-            return self._result(
-                name,
-                ToolCallStatus.DENIED,
-                ToolError(
-                    code=ToolErrorCode.TOOL_UNAVAILABLE,
-                    message="controlled tool adapter is unavailable",
-                ),
-            )
+            raise ToolInvocationError()
         except asyncio.CancelledError:
+            raise
+        except ToolInvocationError:
             raise
         except Exception:  # noqa: BLE001 - adapters cross one safe public category
             return self._result(
@@ -785,7 +764,31 @@ def _safe_metadata(
     bounded = selected.redact(value)
     if not isinstance(bounded, Mapping):
         raise TypeError("tool metadata must be an object")
-    return {key: thaw_payload(item) for key, item in bounded.items() if isinstance(key, str)}
+    safe = {
+        key: _durable_safe_value(thaw_payload(item))
+        for key, item in bounded.items()
+        if isinstance(key, str)
+    }
+    validate_durable_payload(safe)
+    return safe
+
+
+def _durable_safe_value(value: object) -> object:
+    """Replace credential-shaped text that remains unsafe after redaction."""
+
+    if isinstance(value, str):
+        try:
+            validate_durable_payload(value)
+        except ValueError:
+            return "[REDACTED]"
+        return value
+    if isinstance(value, Mapping):
+        return {
+            key: _durable_safe_value(item) for key, item in value.items() if isinstance(key, str)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_durable_safe_value(item) for item in value]
+    return value
 
 
 def _json_bytes(value: object) -> bytes:
@@ -940,11 +943,13 @@ def _canonical_path(value: object) -> Path | None:
         return None
 
 
-def _policy_from_record(value: object, project_id: UUID) -> ProjectPolicy | None:
+def _policy_from_record(project: ProjectRecord) -> ProjectPolicy | None:
     """Rehydrate one persisted policy without trusting document identity fields."""
 
-    if isinstance(value, ProjectPolicy):
-        return value if value.id == project_id else None
+    value = project.policy
+    if value is None:
+        return None
+    project_id = project.id
     record_project_id = getattr(value, "project_id", None)
     version = getattr(value, "version", None)
     document = getattr(value, "document", None)
@@ -958,6 +963,9 @@ def _policy_from_record(value: object, project_id: UUID) -> ProjectPolicy | None
         values = dict(document)
         values["id"] = project_id
         values["version"] = version
+        values["repository_path"] = project.canonical_path
+        values["github_repository"] = project.github_repository
+        values["default_branch"] = project.default_branch
         return ProjectPolicy.model_validate(values)
     except TypeError, ValueError:
         return None

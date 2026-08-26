@@ -127,6 +127,7 @@ class PostgresToolCallRepository:
         run_id: UUID,
         agent_execution_id: UUID,
         step_id: UUID,
+        role: AgentRole,
     ) -> bool:
         """Prove the execution and step belong to the same locked run context."""
 
@@ -137,6 +138,8 @@ class PostgresToolCallRepository:
         ):
             if not isinstance(value, UUID) or value.int == 0:
                 raise TypeError(f"tool call {name} identifier must be a UUID")
+        if not isinstance(role, AgentRole):
+            raise TypeError("tool call execution role must be an AgentRole")
         execution_id = (
             await self._session.execute(
                 select(AgentExecution.id)
@@ -145,6 +148,8 @@ class PostgresToolCallRepository:
                     AgentExecution.id == agent_execution_id,
                     AgentExecution.run_id == run_id,
                     AgentExecution.step_id == step_id,
+                    AgentExecution.role == role.value,
+                    AgentExecution.status == "RUNNING",
                     Step.run_id == run_id,
                 )
             )
