@@ -12,14 +12,18 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
+from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.projects import ProjectRecord
 from forge.application.ports.repository import (
+    MAX_REPOSITORY_WRITE_BYTES,
     FileRead,
+    FileWrite,
     InstructionDocument,
     RepositoryEntry,
     RepositoryReader,
+    RepositoryWriter,
     SearchMatch,
 )
 from forge.application.ports.tools import (
@@ -29,8 +33,16 @@ from forge.application.ports.tools import (
 )
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, GitOutput, ManagedWorktree
+from forge.application.services.recovery import OperationExecutor
 from forge.domain.actor import AgentRole
 from forge.domain.event import RunEvent, thaw_payload
+from forge.domain.operation import (
+    OperationIntent,
+    OperationOutcome,
+    OperationStatus,
+    canonical_digest,
+    canonical_payload,
+)
 from forge.domain.payload import validate_durable_payload
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
@@ -172,11 +184,21 @@ _READ_TOOLS = frozenset(
 )
 _UNAVAILABLE_TOOLS = frozenset(
     {
-        ToolName.REPOSITORY_WRITE_FILE,
         ToolName.GIT_COMMIT,
         ToolName.BUILD_RUN_NAMED_CHECK,
         ToolName.VALIDATION_RESULTS_READ,
         ToolName.REVIEW_ARTIFACTS_READ,
+    }
+)
+_WRITE_CALL_NAMESPACE = UUID("01e47e14-31c1-5e57-94f2-9f34ae8ae8ae")
+_WRITE_EXECUTION_LEASE_SECONDS = 30.0
+_WRITE_RESULT_ARTIFACT_MAX_BYTES = 64 * 1024
+_TERMINAL_TOOL_STATUSES = frozenset(
+    {
+        ToolCallStatus.SUCCEEDED,
+        ToolCallStatus.FAILED,
+        ToolCallStatus.DENIED,
+        ToolCallStatus.CANCELLED,
     }
 )
 _BASE_SHA = re.compile(r"\A[0-9a-f]{40}\Z", re.ASCII)
@@ -204,6 +226,14 @@ _RESULT_REDACTION_POLICY = RedactionPolicy(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedWrite:
+    path: str
+    content: str
+    content_digest: str
+    byte_count: int
+
+
 class ControlledToolService:
     """Validate, dispatch, and durably record one Forge-controlled tool call.
 
@@ -218,15 +248,21 @@ class ControlledToolService:
         unit_of_work_factory: Callable[[], UnitOfWork],
         *,
         authorizer: ToolAuthorizerPort | None = None,
+        artifact_store: ArtifactStore | None = None,
         repository_reader: RepositoryReader | None = None,
+        repository_writer: RepositoryWriter | None = None,
         controlled_git: ControlledGitPort | None = None,
+        operation_executor: OperationExecutor | None = None,
         redactor: Redactor | None = None,
         worktree: ManagedWorktree | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._authorizer = authorizer or ToolAuthorizer()
+        self._artifact_store = artifact_store
         self._repository_reader = repository_reader
+        self._repository_writer = repository_writer
         self._git = controlled_git
+        self._operation_executor = operation_executor
         self._redactor = redactor or Redactor(policy=_RESULT_REDACTION_POLICY)
         self._worktree = worktree
         if not callable(self._unit_of_work_factory):
@@ -241,6 +277,8 @@ class ControlledToolService:
 
         if type(context) is not ToolAuthorizationContext or type(request) is not ToolRequest:
             raise ToolInvocationError()
+        if request.name is ToolName.REPOSITORY_WRITE_FILE:
+            return await self._invoke_repository_write(context, request)
         tool_call_id = uuid4()
         started_at = datetime.now(UTC)
         started = time.monotonic()
@@ -359,6 +397,282 @@ class ControlledToolService:
         except Exception:  # noqa: BLE001 - all untrusted boundary failures are stable
             raise ToolInvocationError() from None
 
+    async def _invoke_repository_write(
+        self,
+        context: ToolAuthorizationContext,
+        request: ToolRequest,
+    ) -> ToolResult:
+        started_at = datetime.now(UTC)
+        started = time.monotonic()
+        try:
+            async with self._open_uow() as work:
+                resolved_run = await self._resolve_run(work, context)
+                if resolved_run is None:
+                    raise ToolInvocationError()
+                resolved_policy = await self._resolve_policy(work, resolved_run)
+                authorization, validation_error = self._validate(
+                    context,
+                    request,
+                    resolved_run,
+                    resolved_policy,
+                )
+                if validation_error is None and not await self._execution_context_is_current(
+                    context, work
+                ):
+                    validation_error = (
+                        ToolErrorCode.RESOURCE_MISMATCH,
+                        "tool execution identity is not current",
+                    )
+
+                prepared = self._write_request_values(request)
+                normalized_arguments = self._normalized_arguments(request)
+                payload: dict[str, object] | None = None
+                tool_call_id: UUID | None = None
+                existing: ToolCallRecord | None = None
+                if (
+                    validation_error is None
+                    and authorization is not None
+                    and resolved_policy is not None
+                    and prepared is not None
+                ):
+                    payload = _write_operation_payload(context, resolved_run, prepared)
+                    tool_call_id = _write_tool_call_id(payload)
+                    existing = next(
+                        (
+                            item
+                            for item in await work.tool_calls.list_for_run(context.run_id)
+                            if item.id == tool_call_id
+                        ),
+                        None,
+                    )
+                    if existing is not None and existing.status in _TERMINAL_TOOL_STATUSES:
+                        replay = _write_replay_result(
+                            existing,
+                            context,
+                            normalized_arguments,
+                        )
+                        await work.rollback()
+                        return replay
+                    if existing is None and not await self._budget_available(
+                        context, resolved_policy, work
+                    ):
+                        validation_error = (
+                            ToolErrorCode.BUDGET_EXCEEDED,
+                            "tool-call budget is exhausted",
+                        )
+
+                if validation_error is not None:
+                    return await self._record_write_denial(
+                        work,
+                        context,
+                        request,
+                        resolved_run,
+                        validation_error,
+                        started_at=started_at,
+                        started=started,
+                    )
+                if (
+                    authorization is None
+                    or resolved_policy is None
+                    or prepared is None
+                    or payload is None
+                    or tool_call_id is None
+                ):
+                    raise ToolInvocationError()
+
+                intent = await work.operations.begin(
+                    run_id=context.run_id,
+                    operation_type=ToolName.REPOSITORY_WRITE_FILE.value,
+                    idempotency_key=f"tool:{tool_call_id}",
+                    request_digest=canonical_digest(payload),
+                    request_payload=payload,
+                    execution_owner=f"forge-operation-{uuid4().hex}",
+                    execution_lease_seconds=_WRITE_EXECUTION_LEASE_SECONDS,
+                )
+                reservation = ToolCallRecord(
+                    id=tool_call_id,
+                    run_id=context.run_id,
+                    agent_execution_id=_required_uuid(context.agent_execution_id),
+                    tool_name=request.name,
+                    normalized_arguments=normalized_arguments,
+                    authorized=True,
+                    status=ToolCallStatus.RUNNING,
+                    started_at=existing.started_at if existing is not None else started_at,
+                    step_id=context.step_id,
+                    role=context.role,
+                    policy_version=context.policy_version,
+                    correlation_id=tool_call_id,
+                    operation_intent_id=intent.id,
+                    arguments_schema_version=1,
+                )
+                reserved = await work.tool_calls.reserve(reservation)
+                await work.commit()
+
+            writer = self._repository_writer
+            executor = self._operation_executor
+            artifact_store = self._artifact_store
+            if (
+                writer is None
+                or artifact_store is None
+                or not isinstance(executor, OperationExecutor)
+            ):
+                raise ToolInvocationError()
+            adapter = _RepositoryWriteOperationAdapter(writer=writer, prepared=prepared)
+            outcome = await executor.execute_admitted(intent, adapter)
+            if outcome.status is not OperationStatus.SUCCEEDED:
+                raise ToolInvocationError()
+            result_metadata = _safe_metadata(
+                thaw_payload(outcome.payload),
+                redactor=self._redactor,
+            )
+            artifact_bytes = _write_result_artifact_bytes(intent.id, result_metadata)
+            descriptor = await artifact_store.put_bytes(
+                artifact_bytes,
+                media_type="application/json",
+                max_bytes=_WRITE_RESULT_ARTIFACT_MAX_BYTES,
+                bounding_policy="head_tail",
+            )
+            if await artifact_store.verify(descriptor.digest) is not True:
+                raise ToolInvocationError()
+
+            async with self._open_uow() as work:
+                terminal_run = await work.runs.get_for_update(context.run_id)
+                current = await work.tool_calls.get(tool_call_id)
+                if current.status in _TERMINAL_TOOL_STATUSES:
+                    replay = _write_replay_result(
+                        current,
+                        context,
+                        normalized_arguments,
+                    )
+                    await work.rollback()
+                    return replay
+                if current.status is not ToolCallStatus.RUNNING:
+                    raise ToolInvocationError()
+
+                completed_at = datetime.now(UTC)
+                duration_ms = max(0, int((time.monotonic() - started) * 1000))
+                result = ToolResult(
+                    tool_name=request.name,
+                    status=ToolCallStatus.SUCCEEDED,
+                    metadata=result_metadata,
+                    artifact_digests=(descriptor.digest,),
+                    tool_call_id=tool_call_id,
+                    operation_intent_id=intent.id,
+                    correlation_id=tool_call_id,
+                    agent_execution_id=context.agent_execution_id,
+                    step_id=context.step_id,
+                    duration_ms=duration_ms,
+                )
+                final_record = ToolCallRecord(
+                    id=tool_call_id,
+                    run_id=context.run_id,
+                    agent_execution_id=_required_uuid(context.agent_execution_id),
+                    tool_name=request.name,
+                    normalized_arguments=normalized_arguments,
+                    authorized=True,
+                    status=ToolCallStatus.SUCCEEDED,
+                    started_at=reserved.started_at,
+                    completed_at=completed_at,
+                    result_metadata=_record_metadata(
+                        result,
+                        authorized=True,
+                        started_at=reserved.started_at,
+                        completed_at=completed_at,
+                        redactor=self._redactor,
+                    ),
+                    step_id=context.step_id,
+                    role=context.role,
+                    policy_version=context.policy_version,
+                    duration_ms=duration_ms,
+                    artifact_digests=(descriptor.digest,),
+                    correlation_id=tool_call_id,
+                    operation_intent_id=intent.id,
+                    arguments_schema_version=1,
+                    result_metadata_schema_version=1,
+                )
+                await work.artifacts.record(
+                    descriptor,
+                    run_id=context.run_id,
+                    producer_type="controlled_tool",
+                    producer_id=tool_call_id,
+                    metadata={
+                        "operation_intent_id": str(intent.id),
+                        "result_schema_version": 1,
+                        "tool_name": request.name.value,
+                    },
+                )
+                await work.tool_calls.finalize(final_record)
+                await work.events.append(
+                    _tool_event(
+                        result,
+                        context,
+                        terminal_run,
+                        tool_call_id,
+                        authorized=True,
+                    )
+                )
+                await work.commit()
+                return result
+        except asyncio.CancelledError:
+            raise
+        except ToolInvocationError:
+            raise
+        except Exception:  # noqa: BLE001 - raw content and adapter details never escape
+            raise ToolInvocationError() from None
+
+    async def _record_write_denial(
+        self,
+        work: UnitOfWork,
+        context: ToolAuthorizationContext,
+        request: ToolRequest,
+        run: RunSnapshot,
+        validation_error: tuple[ToolErrorCode, str],
+        *,
+        started_at: datetime,
+        started: float,
+    ) -> ToolResult:
+        tool_call_id = uuid4()
+        completed_at = datetime.now(UTC)
+        result = ToolResult(
+            tool_name=request.name,
+            status=ToolCallStatus.DENIED,
+            error=ToolError(code=validation_error[0], message=validation_error[1]),
+            tool_call_id=tool_call_id,
+            correlation_id=tool_call_id,
+            agent_execution_id=context.agent_execution_id,
+            step_id=context.step_id,
+            duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+        )
+        record = ToolCallRecord(
+            id=tool_call_id,
+            run_id=context.run_id,
+            agent_execution_id=_required_uuid(context.agent_execution_id),
+            tool_name=request.name,
+            normalized_arguments=self._normalized_arguments(request),
+            authorized=False,
+            status=ToolCallStatus.DENIED,
+            started_at=started_at,
+            completed_at=completed_at,
+            result_metadata=_record_metadata(
+                result,
+                authorized=False,
+                started_at=started_at,
+                completed_at=completed_at,
+                redactor=self._redactor,
+            ),
+            step_id=context.step_id,
+            role=context.role,
+            policy_version=context.policy_version,
+            duration_ms=result.duration_ms,
+            correlation_id=tool_call_id,
+            arguments_schema_version=1,
+            result_metadata_schema_version=1,
+        )
+        await work.tool_calls.record(record)
+        await work.events.append(_tool_event(result, context, run, tool_call_id, authorized=False))
+        await work.commit()
+        return result
+
     async def _resolve_run(
         self,
         work: UnitOfWork,
@@ -443,6 +757,45 @@ class ControlledToolService:
             )
         if not self._resource_binding_matches(context, run, policy):
             return None, (ToolErrorCode.RESOURCE_MISMATCH, "managed worktree path is not current")
+        if request.name is ToolName.REPOSITORY_WRITE_FILE:
+            writer = self._repository_writer
+            artifact_store = self._artifact_store
+            executor = self._operation_executor
+            if (
+                writer is None
+                or artifact_store is None
+                or not isinstance(executor, OperationExecutor)
+                or not callable(getattr(writer, "write_file", None))
+                or not callable(getattr(writer, "inspect_file", None))
+                or not callable(getattr(writer, "is_bound_to", None))
+                or not callable(getattr(artifact_store, "put_bytes", None))
+                or not callable(getattr(artifact_store, "verify", None))
+            ):
+                return None, (
+                    ToolErrorCode.TOOL_UNAVAILABLE,
+                    "controlled tool adapter is unavailable",
+                )
+            bound = self._bound_worktree(run, policy)
+            controlled_git = self._git
+            if bound is None or controlled_git is None or self._repository_reader is None:
+                return None, (
+                    ToolErrorCode.RESOURCE_MISMATCH,
+                    "repository writer binding is not current",
+                )
+            try:
+                binding_matches = writer.is_bound_to(controlled_git, bound, policy)
+            except Exception:  # noqa: BLE001 - adapter authority checks fail closed
+                binding_matches = False
+            if binding_matches is not True or not self._reader_binding_matches(run):
+                return None, (
+                    ToolErrorCode.RESOURCE_MISMATCH,
+                    "repository writer binding is not current",
+                )
+            if not self._path_argument_is_valid(request, allow_root=False):
+                return None, (ToolErrorCode.INVALID_REQUEST, "tool path is not applicable")
+            if self._write_request_values(request) is None:
+                return None, (ToolErrorCode.INVALID_REQUEST, "tool content is not applicable")
+            return authorization, None
         if request.name in _UNAVAILABLE_TOOLS:
             return None, (ToolErrorCode.TOOL_UNAVAILABLE, "controlled tool adapter is unavailable")
         if request.name in _READ_TOOLS - {ToolName.GIT_STATUS, ToolName.GIT_DIFF}:
@@ -594,6 +947,8 @@ class ControlledToolService:
     def _normalized_arguments(self, request: ToolRequest) -> dict[str, object]:
         """Canonicalize path arguments before redacting tool-call evidence."""
 
+        if request.name is ToolName.REPOSITORY_WRITE_FILE:
+            return self._normalized_write_arguments(request)
         values = dict(request.arguments)
         key = "target_path" if request.name is ToolName.REPOSITORY_READ_INSTRUCTIONS else "path"
         if key not in values:
@@ -611,6 +966,53 @@ class ControlledToolService:
             except Exception:  # noqa: BLE001 - path validation already controls dispatch
                 return _safe_metadata(values, redactor=self._redactor)
         return _safe_metadata(values, redactor=self._redactor)
+
+    def _write_request_values(self, request: ToolRequest) -> _PreparedWrite | None:
+        if request.name is not ToolName.REPOSITORY_WRITE_FILE:
+            return None
+        path = request.arguments.get("path")
+        content = request.arguments.get("content")
+        reader = self._repository_reader
+        if not isinstance(path, str) or not isinstance(content, str) or reader is None:
+            return None
+        if "\x00" in content:
+            return None
+        try:
+            encoded = content.encode("utf-8", errors="strict")
+            normalized = reader.root.normalize(path, allow_root=False)
+        except AttributeError, OSError, RuntimeError, TypeError, UnicodeError, ValueError:
+            return None
+        if not normalized or normalized == "." or len(encoded) > MAX_REPOSITORY_WRITE_BYTES:
+            return None
+        return _PreparedWrite(
+            path=normalized,
+            content=content,
+            content_digest=hashlib.sha256(encoded).hexdigest(),
+            byte_count=len(encoded),
+        )
+
+    def _normalized_write_arguments(self, request: ToolRequest) -> dict[str, object]:
+        prepared = self._write_request_values(request)
+        if prepared is not None:
+            return {
+                "path": prepared.path,
+                "content_digest": prepared.content_digest,
+                "content_byte_count": prepared.byte_count,
+            }
+        evidence: dict[str, object] = {"content_valid": False}
+        path = request.arguments.get("path")
+        if isinstance(path, str):
+            evidence["path"] = path
+        content = request.arguments.get("content")
+        if isinstance(content, str) and "\x00" not in content:
+            try:
+                encoded = content.encode("utf-8", errors="strict")
+            except UnicodeError:
+                pass
+            else:
+                evidence["content_digest"] = hashlib.sha256(encoded).hexdigest()
+                evidence["content_byte_count"] = len(encoded)
+        return _safe_metadata(evidence, redactor=self._redactor)
 
     async def _budget_available(
         self,
@@ -722,6 +1124,167 @@ class ControlledToolService:
             metadata=metadata,
             redactor=self._redactor,
         )
+
+
+class _RepositoryWriteOperationError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("repository write operation failed")
+
+
+@dataclass(frozen=True, slots=True)
+class _RepositoryWriteOperationAdapter:
+    writer: RepositoryWriter
+    prepared: _PreparedWrite
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        self._validate_intent(intent)
+        result = await asyncio.to_thread(
+            self.writer.write_file,
+            self.prepared.path,
+            self.prepared.content,
+        )
+        self._validate_result(result)
+        return OperationOutcome(payload=_file_write(result, reconciled=False))
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        self._validate_intent(intent)
+        result = await asyncio.to_thread(
+            self.writer.inspect_file,
+            self.prepared.path,
+            self.prepared.content_digest,
+        )
+        if result is None:
+            return OperationOutcome(
+                status=OperationStatus.NEEDS_RECONCILIATION,
+                error="repository write outcome requires reconciliation",
+            )
+        self._validate_result(result)
+        return OperationOutcome(payload=_file_write(result, reconciled=True))
+
+    def _validate_intent(self, intent: OperationIntent) -> None:
+        payload = intent.request_payload
+        if (
+            intent.kind != ToolName.REPOSITORY_WRITE_FILE.value
+            or payload.get("path") != self.prepared.path
+            or payload.get("content_digest") != self.prepared.content_digest
+            or payload.get("content_byte_count") != self.prepared.byte_count
+        ):
+            raise _RepositoryWriteOperationError()
+
+    def _validate_result(self, result: FileWrite) -> None:
+        if (
+            not isinstance(result, FileWrite)
+            or result.path != self.prepared.path
+            or result.output_digest != self.prepared.content_digest
+            or result.byte_count != self.prepared.byte_count
+        ):
+            raise _RepositoryWriteOperationError()
+
+
+def _write_operation_payload(
+    context: ToolAuthorizationContext,
+    run: RunSnapshot,
+    prepared: _PreparedWrite,
+) -> dict[str, object]:
+    return {
+        "agent_execution_id": str(_required_uuid(context.agent_execution_id)),
+        "content_byte_count": prepared.byte_count,
+        "content_digest": prepared.content_digest,
+        "path": prepared.path,
+        "policy_version": context.policy_version,
+        "project_id": str(run.project_id),
+        "run_id": str(context.run_id),
+        "step_id": str(_required_uuid(context.step_id)),
+        "worktree_id": context.worktree_id,
+    }
+
+
+def _write_tool_call_id(payload: Mapping[str, object]) -> UUID:
+    return uuid5(_WRITE_CALL_NAMESPACE, canonical_payload(payload))
+
+
+def _file_write(value: FileWrite, *, reconciled: bool) -> dict[str, object]:
+    result: dict[str, object] = {
+        "byte_count": value.byte_count,
+        "output_digest": value.output_digest,
+        "path": value.path,
+        "reconciled": reconciled,
+    }
+    if not reconciled:
+        result["created"] = value.created
+        result["previous_digest"] = value.previous_digest
+    return result
+
+
+def _write_result_artifact_bytes(
+    operation_intent_id: UUID,
+    result_metadata: Mapping[str, object],
+) -> bytes:
+    value = _json_bytes(
+        {
+            "operation_intent_id": str(operation_intent_id),
+            "result": dict(result_metadata),
+            "schema_version": 1,
+            "status": ToolCallStatus.SUCCEEDED.value,
+            "tool_name": ToolName.REPOSITORY_WRITE_FILE.value,
+        }
+    )
+    if len(value) > _WRITE_RESULT_ARTIFACT_MAX_BYTES:
+        raise ToolInvocationError()
+    return value
+
+
+def _write_replay_result(
+    record: ToolCallRecord,
+    context: ToolAuthorizationContext,
+    normalized_arguments: Mapping[str, object],
+) -> ToolResult:
+    if (
+        record.status is not ToolCallStatus.SUCCEEDED
+        or record.tool_name is not ToolName.REPOSITORY_WRITE_FILE
+        or not record.authorized
+        or record.run_id != context.run_id
+        or record.agent_execution_id != context.agent_execution_id
+        or record.step_id != context.step_id
+        or record.role is not context.role
+        or record.policy_version != context.policy_version
+        or record.correlation_id != record.id
+        or record.operation_intent_id is None
+        or not record.artifact_digests
+        or canonical_payload(record.normalized_arguments) != canonical_payload(normalized_arguments)
+        or record.result_metadata is None
+    ):
+        raise ToolInvocationError()
+    metadata = {
+        key: thaw_payload(record.result_metadata[key])
+        for key in (
+            "byte_count",
+            "created",
+            "output_digest",
+            "path",
+            "previous_digest",
+            "reconciled",
+        )
+        if key in record.result_metadata
+    }
+    if (
+        metadata.get("path") != normalized_arguments.get("path")
+        or metadata.get("output_digest") != normalized_arguments.get("content_digest")
+        or metadata.get("byte_count") != normalized_arguments.get("content_byte_count")
+    ):
+        raise ToolInvocationError()
+    return ToolResult(
+        tool_name=record.tool_name,
+        status=record.status,
+        metadata=_safe_metadata(metadata),
+        artifact_digests=record.artifact_digests,
+        tool_call_id=record.id,
+        operation_intent_id=record.operation_intent_id,
+        correlation_id=record.correlation_id,
+        agent_execution_id=record.agent_execution_id,
+        step_id=record.step_id,
+        duration_ms=record.duration_ms or 0,
+    )
 
 
 def _new_result(

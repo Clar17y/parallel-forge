@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from forge.domain.artifact import validate_artifact_digest
+from forge.domain.policy import ProjectPolicy
+
+from .worktrees import ControlledGitPort, ManagedWorktree
+
+MAX_REPOSITORY_WRITE_BYTES = 1024 * 1024
 
 
 class RepositoryError(RuntimeError):
@@ -153,6 +158,13 @@ class RepositoryReader(Protocol):
 class RepositoryWriter(Protocol):
     """Synchronous capability-bound repository file mutation boundary."""
 
+    def is_bound_to(
+        self,
+        controlled_git: ControlledGitPort,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+    ) -> bool: ...
+
     def write_file(self, path: str, content: str) -> FileWrite: ...
 
     def inspect_file(self, path: str, expected_digest: str) -> FileWrite | None: ...
@@ -172,6 +184,7 @@ class ProcessRunner(Protocol):
 
 
 __all__ = [
+    "MAX_REPOSITORY_WRITE_BYTES",
     "BinaryRepositoryFile",
     "FileRead",
     "FileWrite",

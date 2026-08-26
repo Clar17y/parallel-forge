@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from forge.application.ports.repository import FileWrite
-from forge.application.ports.worktrees import ManagedWorktree
+from forge.application.ports.repository import MAX_REPOSITORY_WRITE_BYTES, FileWrite
+from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.domain.artifact import validate_artifact_digest
 from forge.domain.policy import ProjectPolicy
 from forge.tools.git import ControlledGit
-
-_MAX_WRITE_BYTES = 1024 * 1024
 
 
 class RepositoryWriteError(RuntimeError):
@@ -37,6 +35,16 @@ class WorktreeRepositoryWriter:
         self._worktree = worktree
         self._policy = policy
 
+    def is_bound_to(
+        self,
+        controlled_git: ControlledGitPort,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+    ) -> bool:
+        """Prove this adapter retains the exact Forge-owned authority objects."""
+
+        return controlled_git is self._git and worktree == self._worktree and policy == self._policy
+
     def write_file(self, path: str, content: str) -> FileWrite:
         if not isinstance(path, str) or not isinstance(content, str) or "\x00" in content:
             raise RepositoryWriteError()
@@ -45,7 +53,7 @@ class WorktreeRepositoryWriter:
             encoded = content.encode("utf-8", errors="strict")
         except UnicodeError:
             pass
-        if encoded is None or len(encoded) > _MAX_WRITE_BYTES:
+        if encoded is None or len(encoded) > MAX_REPOSITORY_WRITE_BYTES:
             raise RepositoryWriteError()
         failed = False
         result: tuple[str | None, str, int, str] | None = None
@@ -54,7 +62,7 @@ class WorktreeRepositoryWriter:
                 result = capability.write_repository_file(
                     path,
                     encoded,
-                    maximum=_MAX_WRITE_BYTES,
+                    maximum=MAX_REPOSITORY_WRITE_BYTES,
                 )
         except Exception:  # noqa: BLE001 - expose one context-free safe category
             failed = True
@@ -87,7 +95,7 @@ class WorktreeRepositoryWriter:
             ) as capability:
                 result = capability.inspect_repository_file(
                     path,
-                    maximum=_MAX_WRITE_BYTES,
+                    maximum=MAX_REPOSITORY_WRITE_BYTES,
                 )
         except Exception:  # noqa: BLE001 - expose one context-free safe category
             failed = True

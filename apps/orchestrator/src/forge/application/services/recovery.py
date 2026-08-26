@@ -53,6 +53,30 @@ class OperationExecutor:
 
         return await self._invoke_owned(intent, adapter, owner_id)
 
+    async def execute_admitted(
+        self,
+        intent: OperationIntent,
+        adapter: OperationAdapter,
+    ) -> OperationOutcome:
+        """Execute or reconcile an intent committed by a caller's admission UoW."""
+
+        if not isinstance(intent, OperationIntent):
+            raise TypeError("admitted operation must be an OperationIntent")
+        if intent.status is OperationStatus.SUCCEEDED:
+            return intent.to_outcome()
+        if intent.status is OperationStatus.FAILED:
+            raise RecoveryError(f"operation intent {intent.id} is terminally failed")
+        if (
+            intent.is_new
+            and intent.status is OperationStatus.PENDING
+            and intent.execution_owner is not None
+            and intent.execution_lease_expires_at is not None
+            and intent.execution_lease_expires_at > _utc_now()
+        ):
+            return await self._invoke_owned(intent, adapter, intent.execution_owner)
+        owner_id = f"forge-operation-{uuid4().hex}"
+        return await self._observe_or_reconcile(intent, adapter, owner_id)
+
     async def _invoke_owned(
         self, intent: OperationIntent, adapter: OperationAdapter, owner_id: str
     ) -> OperationOutcome:
