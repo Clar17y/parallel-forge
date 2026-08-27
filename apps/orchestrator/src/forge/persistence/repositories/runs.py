@@ -276,35 +276,35 @@ class PostgresRunRepository:
     ) -> RunSnapshot:
         """Apply one locked state operation and its causal event."""
 
-        statement = select(Run).where(Run.id == run_id).with_for_update()
-        result = await self._session.execute(statement)
-        record = result.scalar_one_or_none()
-        if record is None:
-            raise RunNotFound(run_id)
-
-        if record.version != expected_version:
-            raise ConcurrencyConflict(run_id, expected_version, record.version)
-
-        changed = change(_snapshot_from_record(record))
-        if self._events is None:
-            raise PersistenceError("run repository is not bound to an event repository")
-        event = RunEvent(
-            run_id=run_id,
-            run_version=changed.version,
-            event_type=event_type,
-            payload=event_payload,
-            actor_class=actor_class,
-            actor_id=actor_id,
-            payload_schema_version=payload_schema_version,
-            occurred_at=occurred_at or _utc_now(),
-        )
         try:
+            statement = select(Run).where(Run.id == run_id).with_for_update()
+            result = await self._session.execute(statement)
+            record = result.scalar_one_or_none()
+            if record is None:
+                raise RunNotFound(run_id)
+
+            if record.version != expected_version:
+                raise ConcurrencyConflict(run_id, expected_version, record.version)
+
+            changed = change(_snapshot_from_record(record))
+            if self._events is None:
+                raise PersistenceError("run repository is not bound to an event repository")
+            event = RunEvent(
+                run_id=run_id,
+                run_version=changed.version,
+                event_type=event_type,
+                payload=event_payload,
+                actor_class=actor_class,
+                actor_id=actor_id,
+                payload_schema_version=payload_schema_version,
+                occurred_at=occurred_at or _utc_now(),
+            )
             _apply_snapshot(record, changed)
             await self._events.append(event)
             await self._session.flush()
         except BaseException:
-            # A caller may catch the append failure and still call commit().
-            # Roll back immediately so state cannot commit without its event.
+            # A caller may catch any command failure and still call commit().
+            # Roll back immediately so locks and partial state cannot survive it.
             await self._session.rollback()
             raise
         return changed
