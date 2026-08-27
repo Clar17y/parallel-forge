@@ -11,7 +11,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, NoReturn, Protocol, TypeAlias, cast, runtime_checkable
 
+from forge.application.ports.provider_credentials import (
+    ProviderCredentialError,
+    ProviderCredentialResolverPort,
+    validate_provider_secret_reference,
+)
 from google.adk.agents import LlmAgent
+from google.adk.models.google_llm import Gemini
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.base_tool import BaseTool
@@ -27,6 +33,8 @@ _MAX_PAYLOAD_BYTES: Final = ADK_MAX_PAYLOAD_BYTES
 _MAX_TOOLS: Final = 100
 _MAX_EVENTS: Final = 10_000
 _MAX_PARTS_PER_EVENT: Final = 1_000
+_MAX_PROVIDER_KEY_BYTES: Final = 4_096
+_GEMINI_MODEL_RE: Final = re.compile(r"\Agemini-[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _AGENT_NAME_RE: Final = re.compile(r"\A[A-Za-z][A-Za-z0-9_.-]{0,95}\Z")
 _OPAQUE_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 _PROVIDER_REQUEST_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
@@ -470,17 +478,77 @@ async def _next_with_deadline(stream: AsyncIterator[object], *, remaining_second
 class AdkRuntime:
     """Concrete raw runner/session/event adapter for pinned Google ADK 2.5.0."""
 
+    def __init__(
+        self,
+        credential_resolver: ProviderCredentialResolverPort,
+        credential_reference: str,
+    ) -> None:
+        if not isinstance(credential_resolver, ProviderCredentialResolverPort):
+            raise AdkRuntimeError()
+        try:
+            validated_reference = validate_provider_secret_reference(credential_reference)
+        except ProviderCredentialError:
+            raise AdkRuntimeError() from None
+        self._credential_resolver = credential_resolver
+        self._credential_reference = validated_reference
+
+    def __repr__(self) -> str:
+        return "AdkRuntime(credential_reference_configured=True)"
+
+    async def _resolve_credential(self, started: float, max_duration_ms: int) -> str | object:
+        remaining_seconds = max_duration_ms / 1_000 - (_monotonic() - started)
+        if remaining_seconds < 0:
+            return _STREAM_TIMED_OUT
+        timeout = asyncio.timeout(remaining_seconds)
+        try:
+            async with timeout:
+                raw_key = await self._credential_resolver.resolve(self._credential_reference)
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            if timeout.expired():
+                return _STREAM_TIMED_OUT
+            raise AdkRuntimeError() from None
+        except ProviderCredentialError:
+            raise AdkRuntimeError() from None
+        except Exception:  # noqa: BLE001 - resolver failures are context-free
+            raise AdkRuntimeError() from None
+        if (
+            type(raw_key) is not str
+            or not raw_key
+            or raw_key != raw_key.strip()
+            or any(character.isspace() or not character.isascii() for character in raw_key)
+        ):
+            raise AdkRuntimeError()
+        try:
+            key_length = len(raw_key.encode("utf-8"))
+        except UnicodeError:
+            raise AdkRuntimeError() from None
+        if key_length > _MAX_PROVIDER_KEY_BYTES:
+            raise AdkRuntimeError()
+        return raw_key
+
     async def invoke(self, request: AdkInvocation) -> AdkInvocationResult:
         if type(request) is not AdkInvocation:
             raise TypeError("request must be an AdkInvocation")
+        if _GEMINI_MODEL_RE.fullmatch(request.model) is None:
+            raise AdkRuntimeError()
 
         started = _monotonic()
         observed = _ObservedStream()
         stream: AsyncIterator[object] | None = None
         try:
+            credential = await self._resolve_credential(started, request.max_duration_ms)
+            if credential is _STREAM_TIMED_OUT:
+                return self._result(observed, AdkFinishReason.BUDGET_EXHAUSTED, started=started)
+            assert type(credential) is str
+            model = Gemini(
+                model=request.model,
+                client_kwargs={"api_key": credential, "vertexai": False},
+            )
             agent = LlmAgent(
                 name=request.agent_name,
-                model=request.model,
+                model=model,
                 instruction=request.instruction,
                 include_contents="none",
                 output_schema=request.output_schema,
@@ -519,6 +587,10 @@ class AdkRuntime:
         except StopAsyncIteration:
             observed.commit_active_turn()
         except asyncio.CancelledError:
+            if stream is not None:
+                await _close_stream(stream)
+            raise
+        except AdkRuntimeError:
             if stream is not None:
                 await _close_stream(stream)
             raise
