@@ -11,6 +11,7 @@ from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.operations import OperationRepository
 from forge.application.ports.projects import ProjectRepository
 from forge.application.ports.runs import RunRepository
+from forge.application.ports.tasks import TaskRepository
 from forge.application.ports.tools import ToolCallRepository
 from forge.domain.event import RunEvent
 
@@ -33,6 +34,7 @@ class UnitOfWork(Protocol):
     operations: OperationRepository
     artifacts: ArtifactRepository
     executions: ExecutionRepository
+    tasks: TaskRepository
 
     async def __aenter__(self) -> Self: ...
 

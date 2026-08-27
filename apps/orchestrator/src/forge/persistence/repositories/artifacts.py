@@ -343,6 +343,7 @@ def _descriptor_from_rows(
         if not isinstance(truncation_policy, str):
             raise PersistenceDataError("stored artifact truncation policy is malformed")
         return ArtifactDescriptor(
+            artifact_id=content.id,
             digest=content.digest,
             media_type=content.media_type,
             byte_count=content.size_bytes,

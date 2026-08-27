@@ -63,6 +63,10 @@ class ArtifactDescriptor:
     truncated: bool = False
     original_byte_count: int | None = None
     truncation_policy: str = "none"
+    # Filesystem stores cannot know the database content-row identity. A
+    # persistence repository fills this optional value on returned descriptors.
+    # It is appended to preserve existing positional construction order.
+    artifact_id: UUID | None = None
 
     def __post_init__(self) -> None:
         validate_artifact_digest(self.digest)
@@ -77,6 +81,11 @@ class ArtifactDescriptor:
             raise TypeError("artifact producer id must be a UUID")
         if self.run_id is not None and not isinstance(self.run_id, UUID):
             raise TypeError("artifact run id must be a UUID")
+        if self.artifact_id is not None:
+            if not isinstance(self.artifact_id, UUID):
+                raise TypeError("artifact content id must be a UUID")
+            if self.artifact_id.int == 0:
+                raise ValueError("artifact content id must be non-nil")
         if type(self.schema_version) is not int or self.schema_version < 1:
             raise ValueError("artifact schema version must be positive")
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
@@ -111,6 +120,12 @@ class ArtifactDescriptor:
         """Return the canonical relative pointer persisted by repositories."""
 
         return canonical_storage_pointer(self.digest)
+
+    @property
+    def content_id(self) -> UUID | None:
+        """Compatibility spelling for the persisted immutable content-row ID."""
+
+        return self.artifact_id
 
 
 def validate_artifact_digest(value: str) -> None:
