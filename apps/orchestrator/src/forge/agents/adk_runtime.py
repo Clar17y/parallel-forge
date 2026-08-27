@@ -30,6 +30,7 @@ _AGENT_NAME_RE: Final = re.compile(r"\A[A-Za-z][A-Za-z0-9_.-]{0,95}\Z")
 _OPAQUE_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 _PROVIDER_REQUEST_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 _STREAM_TIMED_OUT: Final = object()
+_monotonic = time.monotonic
 
 
 class AdkRuntimeError(RuntimeError):
@@ -179,7 +180,8 @@ def _event_text(event: object, expected_author: str) -> str | None:
     length = 0
     for part in parts:
         text = getattr(part, "text", None)
-        if getattr(part, "thought", False) is True or type(text) is not str or not text:
+        thought = getattr(part, "thought", None)
+        if (thought is not None and thought is not False) or type(text) is not str or not text:
             continue
         length += len(text)
         if length > _MAX_OUTPUT_CHARS:
@@ -212,6 +214,8 @@ def _event_finish_reason(event: object) -> AdkFinishReason | None:
 
 
 def _function_call_count(event: object) -> int:
+    if getattr(event, "partial", None) is True:
+        return 0
     get_calls = getattr(event, "get_function_calls", None)
     if not callable(get_calls):
         return 0
@@ -366,7 +370,7 @@ class _ObservedStream:
         if text is not None:
             self.last_text = text
         reason = _event_finish_reason(event)
-        if reason is not None:
+        if reason is not None and self.finish_reason is AdkFinishReason.COMPLETED:
             self.finish_reason = reason
         if getattr(event, "partial", None) is not True:
             self.commit_active_turn()
@@ -409,7 +413,7 @@ class _ObservedStream:
 
 
 def _duration_ms(started: float) -> int:
-    elapsed = int((time.monotonic() - started) * 1_000)
+    elapsed = int((_monotonic() - started) * 1_000)
     if elapsed < 0 or elapsed > _PG_INT32_MAX:
         raise AdkRuntimeError()
     return elapsed
@@ -451,7 +455,7 @@ async def _close_stream(stream: object) -> None:
 
 
 async def _next_with_deadline(stream: AsyncIterator[object], *, remaining_seconds: float) -> object:
-    if remaining_seconds <= 0:
+    if remaining_seconds < 0:
         return _STREAM_TIMED_OUT
     try:
         async with asyncio.timeout(remaining_seconds):
@@ -467,12 +471,10 @@ class AdkRuntime:
         if type(request) is not AdkInvocation:
             raise TypeError("request must be an AdkInvocation")
 
-        started = time.monotonic()
+        started = _monotonic()
         observed = _ObservedStream()
         stream: AsyncIterator[object] | None = None
         try:
-            if request.max_duration_ms == 0:
-                return self._result(observed, AdkFinishReason.BUDGET_EXHAUSTED, started=started)
             agent = LlmAgent(
                 name=request.agent_name,
                 model=request.model,
@@ -499,7 +501,7 @@ class AdkRuntime:
             )
             event_count = 0
             while True:
-                remaining = request.max_duration_ms / 1_000 - (time.monotonic() - started)
+                remaining = request.max_duration_ms / 1_000 - (_monotonic() - started)
                 event = await _next_with_deadline(stream, remaining_seconds=remaining)
                 if event is _STREAM_TIMED_OUT:
                     await _close_stream(stream)
