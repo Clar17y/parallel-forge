@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from forge.domain.approval import ApprovalGate
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState
 
@@ -29,6 +30,34 @@ class RunRepository(Protocol):
         run_id: UUID,
         expected_version: int,
         target: RunState,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
+    async def await_approval(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        gate: ApprovalGate,
+        evidence_digest: str,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
+    async def intervene(
+        self,
+        run_id: UUID,
+        expected_version: int,
         event_type: str,
         event_payload: Mapping[str, object],
         *,

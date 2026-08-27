@@ -1,9 +1,11 @@
 """Immutable run state and snapshot value types."""
 
+import re
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from uuid import UUID
 
+from forge.domain.approval import ApprovalGate
 from forge.domain.resource import ResourceState, validate_resource_shape
 
 
@@ -42,6 +44,14 @@ class SuspensionKind(StrEnum):
     INTERVENTION = "INTERVENTION"
 
 
+_APPROVAL_DIGEST = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
+_APPROVAL_STATE_BY_GATE = {
+    ApprovalGate.PLAN: RunState.AWAITING_PLAN_APPROVAL,
+    ApprovalGate.PR: RunState.AWAITING_PR_APPROVAL,
+    ApprovalGate.MERGE: RunState.AWAITING_MERGE_APPROVAL,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class SuspensionContext:
     """The state and suspension metadata hidden by an outer pause."""
@@ -49,6 +59,24 @@ class SuspensionContext:
     state: RunState
     suspended_state: RunState | None
     suspension_kind: SuspensionKind | None
+    pending_gate: ApprovalGate | None = None
+    pending_evidence_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, RunState):
+            raise TypeError("suspension context state must be a RunState")
+        if self.suspended_state is not None and not isinstance(self.suspended_state, RunState):
+            raise TypeError("suspension context suspended state must be a RunState")
+        if self.suspension_kind is not None and not isinstance(
+            self.suspension_kind, SuspensionKind
+        ):
+            raise TypeError("suspension context kind must be a SuspensionKind")
+        _validate_pending_metadata(
+            self.state,
+            self.pending_gate,
+            self.pending_evidence_digest,
+            field_name="suspension context",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +104,8 @@ class RunSnapshot:
     database_name: str | None = None
     database_role: str | None = None
     secret_id: str | None = None
+    pending_gate: ApprovalGate | None = None
+    pending_evidence_digest: str | None = None
 
     def __post_init__(self) -> None:
         validate_resource_shape(
@@ -84,6 +114,18 @@ class RunSnapshot:
             self.database_role,
             self.secret_id,
         )
+        if not isinstance(self.state, RunState):
+            raise TypeError("run state must be a RunState")
+        if self.suspension_context is not None and not isinstance(
+            self.suspension_context, SuspensionContext
+        ):
+            raise TypeError("suspension context must be a SuspensionContext")
+        _validate_pending_metadata(
+            self.state,
+            self.pending_gate,
+            self.pending_evidence_digest,
+            field_name="run",
+        )
 
     def with_state(
         self,
@@ -91,6 +133,8 @@ class RunSnapshot:
         suspended_state: RunState | None = None,
         suspension_kind: SuspensionKind | None = None,
         suspension_context: SuspensionContext | None = None,
+        pending_gate: ApprovalGate | None = None,
+        pending_evidence_digest: str | None = None,
     ) -> RunSnapshot:
         """Return a new snapshot with one version increment and no mutation."""
 
@@ -100,6 +144,8 @@ class RunSnapshot:
             suspended_state=suspended_state,
             suspension_kind=suspension_kind,
             suspension_context=suspension_context,
+            pending_gate=pending_gate,
+            pending_evidence_digest=pending_evidence_digest,
             version=self.version + 1,
         )
 
@@ -131,6 +177,33 @@ class RunSnapshot:
             ),
             secret_id=self.secret_id if isinstance(secret_id, _Unset) else secret_id,
         )
+
+
+def _validate_pending_metadata(
+    state: RunState,
+    pending_gate: ApprovalGate | None,
+    pending_evidence_digest: str | None,
+    *,
+    field_name: str,
+) -> None:
+    """Validate the database's closed state/gate/digest shape in memory."""
+
+    if pending_gate is not None and not isinstance(pending_gate, ApprovalGate):
+        raise TypeError(f"{field_name} pending gate must be an ApprovalGate")
+    approval_state = _APPROVAL_STATE_BY_GATE.get(pending_gate) if pending_gate else None
+    if state not in _APPROVAL_STATE_BY_GATE.values():
+        if pending_gate is not None or pending_evidence_digest is not None:
+            raise ValueError(
+                f"{field_name} pending approval metadata is not allowed for this state"
+            )
+        return
+    if approval_state is not state:
+        raise ValueError(f"{field_name} pending gate does not match its approval state")
+    if (
+        not isinstance(pending_evidence_digest, str)
+        or _APPROVAL_DIGEST.fullmatch(pending_evidence_digest) is None
+    ):
+        raise ValueError(f"{field_name} pending evidence digest must be lowercase SHA-256")
 
 
 __all__ = [

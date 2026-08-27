@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -12,6 +12,7 @@ from sqlalchemy import null, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.services.state_engine import LEGAL, StateEngine
+from forge.domain.approval import ApprovalGate
 from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState, SuspensionContext, SuspensionKind
@@ -22,6 +23,12 @@ if TYPE_CHECKING:
 
 
 _TERMINAL_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED})
+_APPROVAL_GATE_BY_STATE = {
+    RunState.AWAITING_PLAN_APPROVAL: ApprovalGate.PLAN,
+    RunState.AWAITING_PR_APPROVAL: ApprovalGate.PR,
+    RunState.AWAITING_MERGE_APPROVAL: ApprovalGate.MERGE,
+}
+_APPROVAL_DIGEST = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
 
 
 class PersistenceError(RuntimeError):
@@ -159,6 +166,8 @@ class PostgresRunRepository:
                 suspension_context=null(),
                 local_remediation_count=0,
                 remote_remediation_count=0,
+                pending_gate=None,
+                pending_evidence_digest=None,
                 token_budget=0,
                 cost_budget_minor=0,
                 duration_budget_seconds=0,
@@ -186,6 +195,87 @@ class PostgresRunRepository:
     ) -> RunSnapshot:
         """Apply one locked state transition and append its causal event."""
 
+        return await self._change_state(
+            run_id,
+            expected_version,
+            lambda current: self._state_engine.transition(current, target),
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+        )
+
+    async def await_approval(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        gate: ApprovalGate,
+        evidence_digest: str,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        """Enter an evidence-bound approval gate in one locked transition."""
+
+        return await self._change_state(
+            run_id,
+            expected_version,
+            lambda current: self._state_engine.await_approval(current, gate, evidence_digest),
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+        )
+
+    async def intervene(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        """Enter human intervention using the state engine's legal graph."""
+
+        return await self._change_state(
+            run_id,
+            expected_version,
+            self._state_engine.intervene,
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+        )
+
+    async def _change_state(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        change: Callable[[RunSnapshot], RunSnapshot],
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str,
+        actor_id: UUID | None,
+        occurred_at: datetime | None,
+        payload_schema_version: int,
+    ) -> RunSnapshot:
+        """Apply one locked state operation and its causal event."""
+
         statement = select(Run).where(Run.id == run_id).with_for_update()
         result = await self._session.execute(statement)
         record = result.scalar_one_or_none()
@@ -195,8 +285,7 @@ class PostgresRunRepository:
         if record.version != expected_version:
             raise ConcurrencyConflict(run_id, expected_version, record.version)
 
-        current = _snapshot_from_record(record)
-        changed = self._state_engine.transition(current, target)
+        changed = change(_snapshot_from_record(record))
         if self._events is None:
             raise PersistenceError("run repository is not bound to an event repository")
         event = RunEvent(
@@ -215,8 +304,7 @@ class PostgresRunRepository:
             await self._session.flush()
         except BaseException:
             # A caller may catch the append failure and still call commit().
-            # Roll back immediately so a tracked run update can never commit
-            # without its causal event; the UoW remains reusable afterwards.
+            # Roll back immediately so state cannot commit without its event.
             await self._session.rollback()
             raise
         return changed
@@ -327,7 +415,15 @@ def _snapshot_from_record(record: Run) -> RunSnapshot:
     suspension_kind = (
         None if record.suspension_kind is None else _suspension_kind(record.suspension_kind)
     )
-    context = _decode_suspension_context(record, state, suspended_state, suspension_kind)
+    pending_gate = _pending_gate(record.pending_gate)
+    pending_evidence_digest = _pending_evidence_digest(record.pending_evidence_digest)
+    _validate_pending_shape(state, pending_gate, pending_evidence_digest)
+    context = _decode_suspension_context(
+        record,
+        state,
+        suspended_state,
+        suspension_kind,
+    )
     resource_state = _resource_state(record.database_state)
     try:
         return RunSnapshot(
@@ -350,9 +446,11 @@ def _snapshot_from_record(record: Run) -> RunSnapshot:
             remote_remediation_count=remote_count,
             suspension_kind=suspension_kind,
             suspension_context=context,
+            pending_gate=pending_gate,
+            pending_evidence_digest=pending_evidence_digest,
         )
     except (TypeError, ValueError) as error:
-        raise PersistenceDataError(f"run resource fields are malformed: {error}") from error
+        raise PersistenceDataError(f"run fields are malformed: {error}") from error
 
 
 def _decode_suspension_context(
@@ -365,24 +463,41 @@ def _decode_suspension_context(
     raw_context = record.suspension_context
 
     if state is RunState.PAUSED:
+        if record.pending_gate is not None or record.pending_evidence_digest is not None:
+            raise PersistenceDataError("paused run cannot have top-level approval metadata")
         if (
             suspended_state is None
             or suspension_kind is not SuspensionKind.PAUSE
-            or schema_version != 1
+            or schema_version not in {1, 2}
             or not isinstance(raw_context, Mapping)
         ):
             raise PersistenceDataError("paused run has malformed suspension metadata")
         if suspended_state in _TERMINAL_STATES or suspended_state is RunState.PAUSED:
             raise PersistenceDataError("paused run has an unsupported suspended state")
-        context = _context_from_json(raw_context)
+        context = _context_from_json(raw_context, schema_version)
         if context.state is not suspended_state:
             raise PersistenceDataError("paused run context state does not match suspended state")
+        has_pending = (
+            context.pending_gate is not None or context.pending_evidence_digest is not None
+        )
+        if schema_version == 1 and has_pending:
+            raise PersistenceDataError(
+                "version-1 suspension context cannot contain approval metadata"
+            )
+        if schema_version == 2 and not has_pending:
+            raise PersistenceDataError("version-2 suspension context requires approval metadata")
         if (context.suspended_state is None) != (context.suspension_kind is None):
             raise PersistenceDataError("nested suspension context has inconsistent shape")
         if context.suspended_state is RunState.PAUSED:
             raise PersistenceDataError("suspension context cannot retain PAUSED")
         if context.suspension_kind is SuspensionKind.PAUSE:
             raise PersistenceDataError("nested pause context is not a supported state shape")
+        if context.state in _APPROVAL_GATE_BY_STATE and (
+            context.suspended_state is not None or context.suspension_kind is not None
+        ):
+            raise PersistenceDataError("approval suspension context has nested suspension metadata")
+        if context.state not in _APPROVAL_GATE_BY_STATE and has_pending:
+            raise PersistenceDataError("non-approval suspension context has approval metadata")
         if context.suspension_kind is SuspensionKind.INTERVENTION and (
             context.suspended_state is None
             or context.state is not RunState.AWAITING_HUMAN_INTERVENTION
@@ -415,10 +530,21 @@ def _decode_suspension_context(
     return None
 
 
-def _context_from_json(raw_context: Mapping[str, object]) -> SuspensionContext:
-    expected_keys = {"state", "suspended_state", "suspension_kind"}
+def _context_from_json(raw_context: Mapping[str, object], schema_version: int) -> SuspensionContext:
+    base_keys = {"state", "suspended_state", "suspension_kind"}
+    expected_keys = (
+        base_keys
+        if schema_version == 1
+        else {
+            *base_keys,
+            "pending_gate",
+            "pending_evidence_digest",
+        }
+    )
     if set(raw_context) != expected_keys:
-        raise PersistenceDataError("suspension context keys do not match schema version 1")
+        raise PersistenceDataError(
+            f"suspension context keys do not match schema version {schema_version}"
+        )
     raw_state = raw_context["state"]
     raw_suspended_state = raw_context["suspended_state"]
     raw_kind = raw_context["suspension_kind"]
@@ -429,11 +555,22 @@ def _context_from_json(raw_context: Mapping[str, object]) -> SuspensionContext:
         else _run_state(raw_suspended_state, "suspension_context.suspended_state")
     )
     suspension_kind = None if raw_kind is None else _suspension_kind(raw_kind)
-    return SuspensionContext(
-        state=state,
-        suspended_state=suspended_state,
-        suspension_kind=suspension_kind,
+    pending_gate = None if schema_version == 1 else _pending_gate(raw_context["pending_gate"])
+    pending_digest = (
+        None
+        if schema_version == 1
+        else _pending_evidence_digest(raw_context["pending_evidence_digest"])
     )
+    try:
+        return SuspensionContext(
+            state=state,
+            suspended_state=suspended_state,
+            suspension_kind=suspension_kind,
+            pending_gate=pending_gate,
+            pending_evidence_digest=pending_digest,
+        )
+    except (TypeError, ValueError) as error:
+        raise PersistenceDataError("suspension context approval metadata is malformed") from error
 
 
 def _apply_snapshot(record: Run, snapshot: RunSnapshot) -> None:
@@ -445,6 +582,8 @@ def _apply_snapshot(record: Run, snapshot: RunSnapshot) -> None:
     record.suspension_kind = (
         snapshot.suspension_kind.value if snapshot.suspension_kind is not None else None
     )
+    record.pending_gate = snapshot.pending_gate.value if snapshot.pending_gate is not None else None
+    record.pending_evidence_digest = snapshot.pending_evidence_digest
     record.local_remediation_count = snapshot.local_remediation_count
     record.remote_remediation_count = snapshot.remote_remediation_count
     record.worktree_path = snapshot.worktree_path
@@ -456,20 +595,58 @@ def _apply_snapshot(record: Run, snapshot: RunSnapshot) -> None:
         record.suspension_context_schema_version = None
         record.suspension_context = null()
     else:
-        record.suspension_context_schema_version = 1
+        context = snapshot.suspension_context
+        has_pending = (
+            context.pending_gate is not None or context.pending_evidence_digest is not None
+        )
+        record.suspension_context_schema_version = 2 if has_pending else 1
         record.suspension_context = {
-            "state": snapshot.suspension_context.state.value,
+            "state": context.state.value,
             "suspended_state": (
-                snapshot.suspension_context.suspended_state.value
-                if snapshot.suspension_context.suspended_state is not None
-                else None
+                context.suspended_state.value if context.suspended_state is not None else None
             ),
             "suspension_kind": (
-                snapshot.suspension_context.suspension_kind.value
-                if snapshot.suspension_context.suspension_kind is not None
-                else None
+                context.suspension_kind.value if context.suspension_kind is not None else None
             ),
         }
+        if has_pending:
+            record.suspension_context["pending_gate"] = (
+                context.pending_gate.value if context.pending_gate is not None else None
+            )
+            record.suspension_context["pending_evidence_digest"] = context.pending_evidence_digest
+
+
+def _pending_gate(value: object) -> ApprovalGate | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PersistenceDataError("pending gate is not a string")
+    try:
+        return ApprovalGate(value)
+    except ValueError as error:
+        raise PersistenceDataError("pending gate is unknown") from error
+
+
+def _pending_evidence_digest(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or _APPROVAL_DIGEST.fullmatch(value) is None:
+        raise PersistenceDataError("pending evidence digest is not a lowercase SHA-256")
+    return value
+
+
+def _validate_pending_shape(
+    state: RunState,
+    pending_gate: ApprovalGate | None,
+    pending_evidence_digest: str | None,
+) -> None:
+    expected_gate = _APPROVAL_GATE_BY_STATE.get(state)
+    if expected_gate is None:
+        if pending_gate is not None or pending_evidence_digest is not None:
+            raise PersistenceDataError("non-approval run has pending approval metadata")
+        return
+    if pending_gate is not expected_gate or pending_evidence_digest is None:
+        raise PersistenceDataError("approval run has mismatched pending approval metadata")
 
 
 def _run_state(value: object, field_name: str) -> RunState:
