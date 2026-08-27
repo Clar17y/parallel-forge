@@ -185,7 +185,7 @@ class PlanningService:
                 finish_status=AgentFinishStatus.SUCCEEDED,
             )
         if binding.run.state is RunState.PLANNING:
-            await _rollback(work)
+            await work.commit()
             raise PlanningRecoveryRequired
         if binding.run.state is not RunState.CREATED:
             await _rollback(work)
