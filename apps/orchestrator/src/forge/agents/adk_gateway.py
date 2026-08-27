@@ -397,6 +397,7 @@ class GoogleAdkGateway:
         original_payload_object, original_payload = self._serialize_context(request)
         self._ensure_catalog_support(request)
 
+        self._verify_prompt(request)
         bound_tools = self._resolve_tools(request)
         first_invocation = self._invocation(
             request,
