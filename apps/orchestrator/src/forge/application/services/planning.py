@@ -240,7 +240,7 @@ class PlanningService:
                 request,
             )
             if not admitted.is_new:
-                await _rollback(work)
+                await work.commit()
                 raise PlanningRecoveryRequired
             await work.commit()
         except asyncio.CancelledError:
@@ -846,6 +846,7 @@ def _normalize_entries(
         if (
             not entry.kind.strip()
             or len(entry.kind) > 96
+            or _has_ascii_control(entry.kind)
             or type(entry.byte_count) is not int
             or entry.byte_count < 0
         ):
@@ -896,12 +897,23 @@ def _normalize_instructions(
 
 
 def _normalize_repository_path(value: str) -> str:
-    if not value or value == "." or "\\" in value or value.startswith("/") or "\x00" in value:
+    if (
+        not value
+        or value == "."
+        or "\\" in value
+        or value.startswith("/")
+        or "\x00" in value
+        or _has_ascii_control(value)
+    ):
         raise PlanningValidationError
     parts = PurePosixPath(value).parts
     if not parts or any(part in {"", ".", ".."} for part in parts) or "/".join(parts) != value:
         raise PlanningValidationError
     return value
+
+
+def _has_ascii_control(value: str) -> bool:
+    return any(ord(character) <= 0x1F or ord(character) == 0x7F for character in value)
 
 
 def _secret_path(path: str, secrets: Sequence[str]) -> bool:
