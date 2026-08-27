@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 from platformdirs import user_data_path
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.application.ports.provider_credentials import validate_provider_secret_reference
@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     web_origin: str = "http://127.0.0.1:3000"
     runner_image: str = ""
     allow_remote: bool = False
-    provider_secret_reference: str = ""
-    google_api_key_reference: str = ""
+    provider_secret_reference: str = Field(default="", repr=False)
+    google_api_key_reference: str = Field(default="", repr=False)
 
     @property
     def artifact_root(self) -> Path:
