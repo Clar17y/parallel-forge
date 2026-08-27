@@ -9,7 +9,7 @@ import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final, NoReturn, Protocol, cast, runtime_checkable
+from typing import Final, NoReturn, Protocol, TypeAlias, cast, runtime_checkable
 
 from google.adk.agents import LlmAgent
 from google.adk.runners import Runner
@@ -22,7 +22,8 @@ from pydantic import BaseModel
 _PG_INT32_MAX: Final = 2_147_483_647
 _MAX_INSTRUCTION_CHARS: Final = 1_000_000
 _MAX_OUTPUT_CHARS: Final = 1_000_000
-_MAX_PAYLOAD_BYTES: Final = 4_194_304
+ADK_MAX_PAYLOAD_BYTES: Final[int] = 8_388_608
+_MAX_PAYLOAD_BYTES: Final = ADK_MAX_PAYLOAD_BYTES
 _MAX_TOOLS: Final = 100
 _MAX_EVENTS: Final = 10_000
 _MAX_PARTS_PER_EVENT: Final = 1_000
@@ -31,6 +32,8 @@ _OPAQUE_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 _PROVIDER_REQUEST_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 _STREAM_TIMED_OUT: Final = object()
 _monotonic = time.monotonic
+
+AdkTool: TypeAlias = BaseTool | BaseToolset  # noqa: UP040 - runtime isinstance support
 
 
 class AdkRuntimeError(RuntimeError):
@@ -252,7 +255,7 @@ class AdkInvocation:
     model: str
     instruction: str
     output_schema: type[BaseModel]
-    tools: tuple[BaseTool | BaseToolset, ...]
+    tools: tuple[AdkTool, ...]
     user_id: str
     session_id: str
     user_payload_json: str
@@ -545,6 +548,7 @@ class AdkRuntime:
 
 
 __all__ = [
+    "ADK_MAX_PAYLOAD_BYTES",
     "AdkFinishReason",
     "AdkInvocation",
     "AdkInvocationInvalid",
@@ -552,5 +556,6 @@ __all__ = [
     "AdkRuntime",
     "AdkRuntimeError",
     "AdkRuntimeProtocol",
+    "AdkTool",
     "AdkUsageSummary",
 ]
