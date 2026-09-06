@@ -44,7 +44,7 @@ cover successful standalone capabilities and rejection of mismatched/forged
 identities. The script then resumed successfully using the final worktree's
 editable package, without recreating its resources.
 
-## Verification baseline
+## Historical recovery verification baseline
 
 - Final candidate HEAD remains `5b07abd1d326dd777dd8d1e6126d78b3db833ef4`.
 - Tracked uncommitted diff SHA-256:
@@ -89,3 +89,40 @@ Both the script-created development worktree and temporary
 the recovery PR is merged and their evidence is archived. Branches are retained.
 The API and worker were not launched; completing their workflow wiring is
 subsequent work. See `docs/continue-v0.1-goal.md` for the continuation contract.
+
+## Manifest publication failure recovery
+
+For current implementation progress and verification, use
+`docs/v0.1-progress.md`; the baseline above records the earlier recovery session.
+
+Standalone manifests live in `worktrees` below the configured Forge data root.
+Exclusive creation briefly gives the completed manifest and its random
+`.manifest-<uuid>.tmp` staging entry the same file identity. Successful cleanup
+removes the staging entry before creation reports success. Windows cleanup uses
+the retained native handle with bounded retries.
+
+If native cleanup permanently fails, Forge returns a redacted error and may
+retain the exact final payload plus its staging hard link. The final file then
+has two links, so `exists`, `load`, `save`, and `delete` fail closed. The
+developer-worktree coordinator propagates a failing `exists` call; it does not
+treat the error as an absent manifest or start fresh provisioning. Repeatedly
+retrying setup does not repair this condition.
+
+Manual recovery requires the underlying filesystem error to be resolved first:
+
+1. Stop processes using this Forge data root and preserve an evidence copy of
+   the affected manifest and staging entries in a protected recovery archive.
+2. Inspect native file identities and enumerate hard links. Confirm that the
+   intended final manifest and exactly one staging entry are the same file,
+   that both entries are inside this data root's `worktrees` directory, and that
+   the manifest's project, branch, repository, base and policy match the expected
+   registered worktree. Matching bytes alone do not establish file identity.
+3. Only after those checks, remove the confirmed extra staging directory entry.
+   Retain the final manifest. Verify its link count is one and retry the normal
+   lifecycle operation so Forge validates the manifest and existing resources.
+
+If identity, ownership, link count or expected worktree state is ambiguous,
+preserve the files for investigation. There is no automatic orphan sweep: an
+active publication can also temporarily have two links. A permanently failing
+native handle close likewise requires stopping the affected process before
+manual recovery; a timeout or error does not prove that handle was released.

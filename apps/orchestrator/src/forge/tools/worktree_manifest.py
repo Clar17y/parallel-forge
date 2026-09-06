@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import time
 import uuid
 from pathlib import Path
 from typing import Any, cast
@@ -21,6 +22,8 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _CHECKPOINT = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 _MAX_BYTES = 128 * 1024
 _REPARSE = 0x400
+_TEMP_CLEANUP_ATTEMPTS = 3
+_TEMP_CLEANUP_DELAY = 0.01
 
 
 class WorktreeManifestError(RuntimeError):
@@ -251,7 +254,9 @@ class WorktreeManifestStore:
         ).encode("utf-8")
         if len(payload) > _MAX_BYTES:
             raise WorktreeManifestError()
-        temporary = self._root / f".{path.name}.{uuid.uuid4().hex}.tmp"
+        temporary = self._root / f".manifest-{uuid.uuid4().hex}.tmp"
+        windows_handle: int | None = None
+        windows_identity: tuple[int, ...] | None = None
         try:
             if self._windows is None:
                 descriptor = os.open(
@@ -260,23 +265,48 @@ class WorktreeManifestStore:
                     0o600,
                 )
                 try:
-                    os.write(descriptor, payload)
+                    view = memoryview(payload)
+                    offset = 0
+                    while offset < len(view):
+                        written = os.write(descriptor, view[offset:])
+                        if written <= 0:
+                            raise WorktreeManifestError()
+                        offset += written
                     os.fsync(descriptor)
                     os.fchmod(descriptor, 0o600)
                 finally:
                     os.close(descriptor)
             else:
-                handle = self._windows.create_secret_file(temporary, temporary.name)
-                try:
-                    self._windows.write_secret(handle, payload)
-                finally:
-                    self._windows.close(handle)
+                windows_handle = self._windows.create_secret_file(temporary, temporary.name)
+                windows_identity = tuple(self._windows.identity(windows_handle))
+                self._windows.write_secret(windows_handle, payload)
             self._reject_unsafe(temporary, directory=False)
-            if not replace and os.path.lexists(path):
-                raise WorktreeManifestError()
             if replace:
                 self._reject_unsafe(path, directory=False)
-            os.replace(temporary, path)
+                if windows_handle is not None:
+                    assert self._windows is not None
+                    self._windows.close(windows_handle)
+                    windows_handle = None
+                try:
+                    os.replace(temporary, path)
+                except Exception:
+                    if self._windows is not None:
+                        self._cleanup_closed_windows_temp(temporary, windows_identity)
+                    raise
+            elif self._windows is None:
+                # link(2) creates the final name only when it is absent.  This
+                # is the create-side publication boundary: unlike replacement,
+                # it cannot clobber a concurrently published recovery record.
+                os.link(temporary, path)
+                temporary.unlink()
+            else:
+                # CreateHardLinkW has equivalent no-replace semantics and keeps
+                # the owner-protected staging file in the same directory.
+                self._windows.link_secret(temporary, path)
+                try:
+                    self._dispose_windows_temp(windows_handle, link=True)
+                finally:
+                    windows_handle = None
             self._reject_unsafe(path, directory=False)
             if self._windows is not None:
                 self._verify_windows_file(path)
@@ -286,11 +316,70 @@ class WorktreeManifestStore:
         except Exception:  # noqa: BLE001 - filesystem diagnostics are redacted
             raise WorktreeManifestError() from None
         finally:
-            try:
-                if os.path.lexists(temporary):
-                    temporary.unlink()
-            except OSError:
-                pass
+            if windows_handle is not None:
+                try:
+                    self._dispose_windows_temp(windows_handle, link=False)
+                except Exception:  # noqa: BLE001, S110 - preserve the original redacted error
+                    pass
+            elif self._windows is None:
+                try:
+                    if os.path.lexists(temporary):
+                        temporary.unlink()
+                except OSError:
+                    pass
+
+    def _dispose_windows_temp(self, handle: int | None, *, link: bool) -> None:
+        if handle is None or self._windows is None:
+            raise WorktreeManifestError()
+        try:
+            for attempt in range(_TEMP_CLEANUP_ATTEMPTS):
+                try:
+                    if link:
+                        self._windows.dispose_link(handle)
+                    else:
+                        self._windows.dispose(handle)
+                    return
+                except Exception:  # noqa: BLE001 - native diagnostics are redacted
+                    if attempt + 1 == _TEMP_CLEANUP_ATTEMPTS:
+                        raise WorktreeManifestError() from None
+                    time.sleep(_TEMP_CLEANUP_DELAY)
+        finally:
+            for attempt in range(_TEMP_CLEANUP_ATTEMPTS):
+                try:
+                    self._windows.close(handle)
+                    break
+                except Exception:  # noqa: BLE001 - native diagnostics are redacted
+                    if attempt + 1 == _TEMP_CLEANUP_ATTEMPTS:
+                        raise WorktreeManifestError() from None
+                    time.sleep(_TEMP_CLEANUP_DELAY)
+
+    def _cleanup_closed_windows_temp(
+        self,
+        temporary: Path,
+        expected_identity: tuple[int, ...] | None,
+    ) -> None:
+        if self._windows is None or expected_identity is None:
+            raise WorktreeManifestError()
+        parent = self._windows.open_secret_directory(self._root)
+        handle = None
+        try:
+            handle = self._windows.open_secret_file(
+                parent,
+                temporary.name,
+                access=0x00010000 | 0x00000080 | 0x00020000 | 0x00100000,
+                missing_ok=True,
+            )
+            if handle is None:
+                return
+            if tuple(self._windows.identity(handle)) != expected_identity:
+                raise WorktreeManifestError()
+            cleanup_handle = handle
+            handle = None
+            self._dispose_windows_temp(cleanup_handle, link=False)
+        finally:
+            if handle is not None:
+                self._windows.close(handle)
+            self._windows.close(parent)
 
     def _flush_root(self) -> None:
         if self._windows is not None:
