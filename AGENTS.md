@@ -23,6 +23,8 @@ changes; the following summarizes the current version 4 policy.
 - Use `complex_implementer` (Terra low) for complex bounded implementation;
   `planner` and `test_engineer` (Sol low) for planning and adversarial tests;
   and Luna medium for exploration, documentation, and refactor audits.
+- Classify risk once with a reason: low documentation/formatting/behavior-preserving cleanup uses direct checks; ordinary behavior changes use relevant tests and one integrated batch review; high-risk work uses that batch review plus the scoped Sol-high correctness gate after repairs. Track findings by stable ID, and after two unsuccessful repair rounds record the primary reassessment and next action.
+- The primary runs short checks. Use a verifier only for substantial independent verification or an explicit repository requirement, recording candidate HEAD and complete uncommitted identity before and after. Workers report completion, blockers, interface decisions, owned paths, and checks without routine status chatter, polling, or automatic extra agents. Records may be swept by scratch cleanup and must be reconstructible and credential-free.
 - Independent review uses `ask-claude` in fresh context with exactly
   `claude-opus-5`. If unavailable, use a fresh `reviewer` (Astra low) and
   disclose the fallback. Never route to Sonnet or Fable. Claude receives only
@@ -31,9 +33,9 @@ changes; the following summarizes the current version 4 policy.
   integrity, and release work require a separate `correctness_gate` (Sol high)
   after repairs. Explicit security analysis uses `security_reviewer` (Sol high).
   Luna max is reserved for exceptional, explicitly requested deep review.
-- Use a fresh `verifier` (Luna medium) for required command evidence. Record
-  candidate HEAD and the uncommitted diff identity. Task and whole-branch
-  reviews must be independent of the writer; changed code requires current
+- Use a verifier only for substantial independent verification or explicit repository requirements. Record
+  candidate HEAD and the complete uncommitted identity. The integrated batch
+  review must be independent of its writers; changed code requires current
   evidence. Provide Claude the base revision and a saved integrated diff.
 - Delegate bounded contracts with acceptance criteria, non-overlapping owned
   paths, and validation commands. Subagents may not delegate again without
