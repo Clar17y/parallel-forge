@@ -92,6 +92,17 @@ class RepositoryReader:
 
         return self._root
 
+    def excludes_paths(self, paths: Sequence[str]) -> bool:
+        """Whether each supplied relative path is excluded by this reader."""
+
+        if isinstance(paths, (str, bytes, bytearray)):
+            return False
+        try:
+            normalized = tuple(self._root.normalize(path) for path in paths)
+        except (TypeError, ValueError, RuntimeError, OSError):
+            return False
+        return all(self._is_excluded(path) for path in normalized)
+
     def list_files(self, path: str | os.PathLike[str] = ".") -> tuple[RepositoryEntry, ...]:
         """Return deterministic regular-file entries below a contained directory."""
 

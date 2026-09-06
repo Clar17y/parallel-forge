@@ -27,6 +27,16 @@ _MAX_INTEGER = 2**63 - 1
 _MAX_ERROR_MESSAGE_LENGTH = 1024
 
 
+def repository_resource_identity(project_id: UUID) -> str:
+    """Return the Forge-owned identity for a registered canonical repository."""
+
+    if not isinstance(project_id, UUID):
+        raise TypeError("project identifier must be a UUID")
+    if project_id.int == 0:
+        raise ValueError("project identifier must not be nil")
+    return f"forge-repository-{project_id.hex}"
+
+
 class ToolName(StrEnum):
     """The complete non-release tool vocabulary available to agent roles."""
 
@@ -339,4 +349,5 @@ __all__ = [
     "ToolRequest",
     "ToolResult",
     "ToolStatus",
+    "repository_resource_identity",
 ]

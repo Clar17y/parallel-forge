@@ -56,6 +56,7 @@ from forge.domain.tool import (
     ToolName,
     ToolRequest,
     ToolResult,
+    repository_resource_identity,
 )
 from forge.observability.context import CorrelationContext, bind_context
 from forge.observability.redaction import RedactionPolicy, Redactor
@@ -750,13 +751,29 @@ class ControlledToolService:
             return None, (ToolErrorCode.POLICY_MISMATCH, "tool policy version is not current")
         if run.state not in _ACTIVE_RUN_STATES[context.role]:
             return None, (ToolErrorCode.RUN_NOT_ACTIVE, "run is not active for this tool role")
-        if run.worktree_path is None:
-            return None, (
-                ToolErrorCode.RESOURCE_MISMATCH,
-                "managed worktree identity is unavailable",
-            )
-        if not self._resource_binding_matches(context, run, policy):
-            return None, (ToolErrorCode.RESOURCE_MISMATCH, "managed worktree path is not current")
+        planner_repository_read = (
+            context.role is AgentRole.PLANNER
+            and request.name in _REPOSITORY_READS
+            and run.worktree_path is None
+            and run.state is RunState.PLANNING
+        )
+        if planner_repository_read:
+            if not self._repository_resource_binding_matches(context, run, policy):
+                return None, (
+                    ToolErrorCode.RESOURCE_MISMATCH,
+                    "canonical repository binding is not current",
+                )
+        else:
+            if run.worktree_path is None:
+                return None, (
+                    ToolErrorCode.RESOURCE_MISMATCH,
+                    "managed worktree identity is unavailable",
+                )
+            if not self._resource_binding_matches(context, run, policy):
+                return None, (
+                    ToolErrorCode.RESOURCE_MISMATCH,
+                    "managed worktree path is not current",
+                )
         if request.name is ToolName.REPOSITORY_WRITE_FILE:
             writer = self._repository_writer
             artifact_store = self._artifact_store
@@ -786,7 +803,7 @@ class ControlledToolService:
                 binding_matches = writer.is_bound_to(controlled_git, bound, policy)
             except Exception:  # noqa: BLE001 - adapter authority checks fail closed
                 binding_matches = False
-            if binding_matches is not True or not self._reader_binding_matches(run):
+            if binding_matches is not True or not self._reader_binding_matches(run.worktree_path):
                 return None, (
                     ToolErrorCode.RESOURCE_MISMATCH,
                     "repository writer binding is not current",
@@ -804,7 +821,8 @@ class ControlledToolService:
                     ToolErrorCode.TOOL_UNAVAILABLE,
                     "controlled tool adapter is unavailable",
                 )
-            if not self._reader_binding_matches(run):
+            expected_path = policy.repository_path if planner_repository_read else run.worktree_path
+            if not self._reader_binding_matches(expected_path):
                 return None, (
                     ToolErrorCode.RESOURCE_MISMATCH,
                     "repository reader binding is not current",
@@ -875,9 +893,35 @@ class ControlledToolService:
         except TypeError, ValueError:
             return None
 
-    def _reader_binding_matches(self, run: RunSnapshot) -> bool:
+    def _repository_resource_binding_matches(
+        self,
+        context: ToolAuthorizationContext,
+        run: RunSnapshot,
+        policy: ProjectPolicy,
+    ) -> bool:
+        try:
+            expected_identity = repository_resource_identity(run.project_id)
+        except TypeError, ValueError:
+            return False
+        return (
+            context.worktree_id == expected_identity
+            and self._reader_binding_matches(policy.repository_path)
+            and self._reader_exclusions_cover(policy.effective_secret_paths)
+        )
+
+    def _reader_exclusions_cover(self, paths: Sequence[str]) -> bool:
         reader = self._repository_reader
-        expected = _canonical_path(run.worktree_path)
+        if reader is None:
+            return False
+        try:
+            excludes_paths = reader.excludes_paths
+            return excludes_paths(paths) is True
+        except (AttributeError, TypeError, ValueError, RuntimeError, OSError):
+            return False
+
+    def _reader_binding_matches(self, expected_path: str | None) -> bool:
+        reader = self._repository_reader
+        expected = _canonical_path(expected_path)
         if reader is None or expected is None:
             return False
         try:
@@ -1482,6 +1526,7 @@ def _tool_event(
         "status": result.status.value,
         "authorized": authorized,
         "policy_version": context.policy_version,
+        "resource_id": context.worktree_id,
         "step_id": str(context.step_id) if context.step_id is not None else None,
         "agent_execution_id": (
             str(context.agent_execution_id) if context.agent_execution_id is not None else None
