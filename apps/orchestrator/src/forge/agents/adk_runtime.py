@@ -17,7 +17,9 @@ from forge.application.ports.provider_credentials import (
     validate_provider_secret_reference,
 )
 from google.adk.agents import LlmAgent
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.google_llm import Gemini
+from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.base_tool import BaseTool
@@ -38,6 +40,8 @@ _GEMINI_MODEL_RE: Final = re.compile(r"\Agemini-[A-Za-z0-9][A-Za-z0-9._-]{0,127}
 _AGENT_NAME_RE: Final = re.compile(r"\A[A-Za-z][A-Za-z0-9_.-]{0,95}\Z")
 _OPAQUE_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 _PROVIDER_REQUEST_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
+_FUNCTION_CALL_ID_RE: Final = re.compile(r"\A[^\x00-\x1f\x7f]+\Z")
+_FUNCTION_CALL_ID_MAX_BYTES: Final = 255
 _STREAM_TIMED_OUT: Final = object()
 _monotonic = time.monotonic
 
@@ -234,6 +238,94 @@ def _function_call_count(event: object) -> int:
     if isinstance(calls, (str, bytes, bytearray)) or not isinstance(calls, Sequence):
         raise AdkRuntimeError()
     return _provider_count(len(calls))
+
+
+def _has_duplicate_function_call_ids(event: object) -> bool:
+    """Reject malformed or duplicate finalized provider call IDs before effects.
+
+    The public Runner iterator applies backpressure while a nonpartial event is
+    yielded.  The bridge remains responsible for validating a single call's
+    correlation fields and for read-only compatibility when an ID is absent.
+    """
+
+    if getattr(event, "partial", None) is True:
+        return False
+    get_calls = getattr(event, "get_function_calls", None)
+    if not callable(get_calls):
+        return False
+    calls = get_calls()
+    if isinstance(calls, (str, bytes, bytearray)) or not isinstance(calls, Sequence):
+        raise AdkRuntimeError()
+    # Validate public content when present. The raw-response callback below
+    # performs the earlier check before ADK can synthesize absent call IDs.
+    content_calls = _content_function_calls(getattr(event, "content", None))
+    ids: set[str] = set()
+    for call in content_calls:
+        call_id = getattr(call, "id", None)
+        if not _valid_function_call_id(call_id):
+            return True
+        assert type(call_id) is str
+        if call_id in ids:
+            return True
+        ids.add(call_id)
+    # Keep the public accessor as a compatibility fallback for event types
+    # that expose calls but no corresponding content parts.
+    if not content_calls:
+        for call in calls:
+            call_id = getattr(call, "id", None)
+            if not _valid_function_call_id(call_id):
+                return True
+            assert type(call_id) is str
+            if call_id in ids:
+                return True
+            ids.add(call_id)
+    return False
+
+
+def _content_function_calls(content: object) -> list[object]:
+    parts = getattr(content, "parts", None)
+    if parts is None:
+        return []
+    if isinstance(parts, (str, bytes, bytearray)) or not isinstance(parts, Sequence):
+        raise AdkRuntimeError()
+    if len(parts) > _MAX_PARTS_PER_EVENT:
+        raise AdkRuntimeError()
+    return [
+        function_call
+        for part in parts
+        if (function_call := getattr(part, "function_call", None)) is not None
+    ]
+
+
+def _has_invalid_or_duplicate_raw_function_call_ids(response: object) -> bool:
+    """Validate provider IDs before ADK can populate absent IDs."""
+
+    if getattr(response, "partial", None) is True:
+        return False
+    ids: set[str] = set()
+    for call in _content_function_calls(getattr(response, "content", None)):
+        call_id = getattr(call, "id", None)
+        if not _valid_function_call_id(call_id):
+            return True
+        assert type(call_id) is str
+        if call_id in ids:
+            return True
+        ids.add(call_id)
+    return False
+
+
+def _valid_function_call_id(value: object) -> bool:
+    """Match the bounded, nonempty provider-ID contract used by the bridge."""
+
+    if type(value) is not str or value != value.strip():
+        return False
+    if _FUNCTION_CALL_ID_RE.fullmatch(value) is None:
+        return False
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeError:
+        return False
+    return bool(encoded) and len(encoded) <= _FUNCTION_CALL_ID_MAX_BYTES
 
 
 @dataclass(frozen=True, slots=True)
@@ -537,6 +629,15 @@ class AdkRuntime:
         started = _monotonic()
         observed = _ObservedStream()
         stream: AsyncIterator[object] | None = None
+
+        async def reject_invalid_function_call_ids(
+            callback_context: CallbackContext, llm_response: LlmResponse
+        ) -> LlmResponse | None:
+            del callback_context
+            if _has_invalid_or_duplicate_raw_function_call_ids(llm_response):
+                raise AdkRuntimeError()
+            return None
+
         try:
             credential = await self._resolve_credential(started, request.max_duration_ms)
             if credential is _STREAM_TIMED_OUT:
@@ -553,6 +654,7 @@ class AdkRuntime:
                 include_contents="none",
                 output_schema=request.output_schema,
                 tools=list(request.tools),
+                after_model_callback=reject_invalid_function_call_ids,
             )
             sessions = InMemorySessionService()  # type: ignore[no-untyped-call]
             runner = Runner(
@@ -579,6 +681,8 @@ class AdkRuntime:
                     return self._result(observed, AdkFinishReason.BUDGET_EXHAUSTED, started=started)
                 event_count += 1
                 if event_count > _MAX_EVENTS:
+                    raise AdkRuntimeError()
+                if _has_duplicate_function_call_ids(event):
                     raise AdkRuntimeError()
                 observed.observe(event, expected_author=request.agent_name)
                 if _over_budget(observed.current_usage(), request):

@@ -150,6 +150,9 @@ class ToolAuthorizationContext:
     # allowing Forge to bind the persisted execution and step identities.
     agent_execution_id: UUID | None = None
     step_id: UUID | None = None
+    # A Forge-owned deterministic invocation identity, derived at an SDK
+    # boundary.  It is intentionally outside agent-selected ToolRequest args.
+    invocation_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if type(self.role) is not AgentRole:
@@ -173,6 +176,7 @@ class ToolAuthorizationContext:
         for value, name in (
             (self.agent_execution_id, "agent execution identifier"),
             (self.step_id, "run-step identifier"),
+            (self.invocation_id, "invocation identifier"),
         ):
             if value is not None and (not isinstance(value, UUID) or value.int == 0):
                 raise ValueError(f"tool authorization {name} must be a non-nil UUID")
