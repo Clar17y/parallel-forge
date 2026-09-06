@@ -19,6 +19,8 @@ from forge.application.ports.worktrees import (
     GitDiff,
     GitStatus,
     ManagedWorktree,
+    PreparedGitCommit,
+    PublishedGitCommit,
 )
 from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS
 from forge.domain.policy import ProjectPolicy
@@ -609,7 +611,17 @@ class ControlledGit:
         )
 
     def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit:
-        """Stage and create one verified local commit for an exact worktree."""
+        """Compatibility composition of preparation and publication.
+
+        Durable callers must persist their preparation and publication intent
+        around the two explicit methods below before invoking either effect.
+        """
+
+        published = self.commit_prepared(worktree, self.prepare_commit(worktree, message))
+        return GitCommit(previous_sha=published.previous_sha, new_sha=published.new_sha)
+
+    def prepare_commit(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit:
+        """Stage the real index and return its exact authorized snapshot."""
 
         try:
             commit_message = _validate_commit_message(message)
@@ -624,7 +636,7 @@ class ControlledGit:
             ) as access:
                 if not self._repository._directory_access_matches_path(access):
                     raise ControlledGitError()
-                return self._commit_bound(worktree, commit_message)
+                return self._prepare_commit_bound(worktree, commit_message)
         except ControlledGitError:
             raise
         except (
@@ -636,6 +648,98 @@ class ControlledGit:
             AttributeError,
         ):
             raise ControlledGitError() from None
+
+    def commit_prepared(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit:
+        """Publish one unchanged prepared index without running ``git add`` again."""
+
+        try:
+            self._validate_prepared_for_worktree(worktree, prepared)
+            identity, _expected = self._validate_handle_shape(worktree)
+            self._assert_trusted_state()
+            self._validate_handle(worktree)
+            registration = self._registration_metadata(identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                identity.worktree_name, registration.name
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                return self._commit_prepared_bound(worktree, prepared)
+        except ControlledGitError:
+            raise
+        except (
+            OSError,
+            RepositoryAccessDenied,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ):
+            raise ControlledGitError() from None
+
+    def inspect_prepared_commit(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit | None:
+        """Read-only reconciliation for a unique exact direct child on this branch."""
+
+        try:
+            self._validate_prepared_for_worktree(worktree, prepared)
+            self._validate_handle(worktree)
+            self._scan_local_config(worktree.path)
+            self._verify_branch_exists(worktree.identity.branch)
+            registration = self._registration_metadata(worktree.identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                worktree.identity.worktree_name, registration.name, create_lock=False
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                self._reject_incomplete_history_overlays()
+                return self._inspect_prepared_commit_bound(worktree, prepared)
+        except ControlledGitError:
+            raise
+        except (OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError):
+            raise ControlledGitError() from None
+
+    def _inspect_prepared_commit_bound(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit | None:
+        """Inspect while a read-only managed-worktree binding remains retained."""
+
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        result = self._run(
+            worktree.path,
+            ("rev-list", "--parents", f"refs/heads/{worktree.identity.branch}"),
+        )
+        _require_complete_result(result)
+        direct_children: list[str] = []
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if not fields or _SHA.fullmatch(fields[0]) is None:
+                raise ControlledGitError()
+            if any(_SHA.fullmatch(parent) is None for parent in fields[1:]):
+                raise ControlledGitError()
+            if prepared.previous_sha in fields[1:]:
+                direct_children.append(fields[0])
+        if len(direct_children) != 1:
+            return None
+        new_sha = direct_children[0]
+        if not self._matches_prepared_commit(worktree, prepared, new_sha):
+            return None
+        return PublishedGitCommit(
+            worktree_identity=worktree.identity,
+            previous_sha=prepared.previous_sha,
+            tree_sha=prepared.tree_sha,
+            new_sha=new_sha,
+            message=prepared.message,
+        )
 
     @contextlib.contextmanager
     def open_worktree_capability(
@@ -700,39 +804,120 @@ class ControlledGit:
                 raise
             raise ControlledGitError() from None
 
-    def _commit_bound(self, worktree: ManagedWorktree, message: str) -> GitCommit:
+    def _prepare_commit_bound(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit:
         self._validate_handle(worktree)
         self._scan_local_config(worktree.path)
         previous_sha = self._head_sha(worktree)
+        self._reject_incomplete_history_overlays()
         self._verify_ancestor_sha(worktree, worktree.base_sha)
 
         self._run(worktree.path, ("add", "-A", "--"))
         self._require_staged_changes(worktree)
 
-        # Revalidate the registration, safety configuration, branch, HEAD, and
-        # base ancestry immediately before the mutation that creates the commit.
+        tree_sha = _parse_sha(self._run(worktree.path, ("write-tree",)))
+
         self._validate_handle(worktree)
         self._scan_local_config(worktree.path)
         if self._head_sha(worktree) != previous_sha:
             raise ControlledGitError()
+        self._reject_incomplete_history_overlays()
         self._verify_ancestor_sha(worktree, worktree.base_sha)
         self._require_staged_changes(worktree)
+        if _parse_sha(self._run(worktree.path, ("write-tree",))) != tree_sha:
+            raise ControlledGitError()
+        return PreparedGitCommit(
+            worktree_identity=worktree.identity,
+            previous_sha=previous_sha,
+            tree_sha=tree_sha,
+            message=message,
+        )
+
+    def _commit_prepared_bound(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit:
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        if self._head_sha(worktree) != prepared.previous_sha:
+            raise ControlledGitError()
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        self._require_staged_changes(worktree)
+        if _parse_sha(self._run(worktree.path, ("write-tree",))) != prepared.tree_sha:
+            raise ControlledGitError()
+
+        # Revalidate the registration, safety configuration, branch, HEAD, and
+        # base ancestry immediately before the mutation that creates the commit.
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        if self._head_sha(worktree) != prepared.previous_sha:
+            raise ControlledGitError()
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        self._require_staged_changes(worktree)
+        if _parse_sha(self._run(worktree.path, ("write-tree",))) != prepared.tree_sha:
+            raise ControlledGitError()
 
         result = self._run(
             worktree.path,
-            ("commit", "--no-verify", "--no-gpg-sign", "-m", message, "--"),
+            ("commit", "--no-verify", "--no-gpg-sign", "-m", prepared.message, "--"),
         )
         _require_complete_result(result)
 
         new_sha = self._head_sha(worktree)
-        if new_sha == previous_sha:
+        if new_sha == prepared.previous_sha:
             raise ControlledGitError()
         self._validate_handle(worktree)
-        self._verify_ancestor_sha(worktree, previous_sha)
+        self._reject_incomplete_history_overlays()
         self._verify_ancestor_sha(worktree, worktree.base_sha)
-        if self._head_sha(worktree) != new_sha:
+        if self._head_sha(worktree) != new_sha or not self._matches_prepared_commit(
+            worktree, prepared, new_sha
+        ):
             raise ControlledGitError()
-        return GitCommit(previous_sha=previous_sha, new_sha=new_sha)
+        return PublishedGitCommit(
+            worktree_identity=worktree.identity,
+            previous_sha=prepared.previous_sha,
+            tree_sha=prepared.tree_sha,
+            new_sha=new_sha,
+            message=prepared.message,
+        )
+
+    def _validate_prepared_for_worktree(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> None:
+        if not isinstance(prepared, PreparedGitCommit):
+            raise ControlledGitError()
+        if prepared.worktree_identity != worktree.identity:
+            raise ControlledGitError()
+        if _validate_commit_message(prepared.message) != prepared.message:
+            raise ControlledGitError()
+
+    def _matches_prepared_commit(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit, new_sha: str
+    ) -> bool:
+        result = self._run(worktree.path, ("cat-file", "-p", new_sha))
+        _require_complete_result(result)
+        headers, separator, body = result.stdout.partition("\n\n")
+        if separator != "\n\n":
+            return False
+        tree_sha: str | None = None
+        parents: list[str] = []
+        for line in headers.splitlines():
+            key, delimiter, value = line.partition(" ")
+            if delimiter != " ":
+                return False
+            if key == "tree":
+                if tree_sha is not None or _SHA.fullmatch(value) is None:
+                    return False
+                tree_sha = value
+            elif key == "parent":
+                if _SHA.fullmatch(value) is None:
+                    return False
+                parents.append(value)
+        return (
+            tree_sha == prepared.tree_sha
+            and parents == [prepared.previous_sha]
+            and body == f"{prepared.message}\n"
+        )
 
     def _require_staged_changes(self, worktree: ManagedWorktree) -> None:
         result = self._run(
@@ -791,6 +976,7 @@ class ControlledGit:
             ("merge-base", "--is-ancestor", ancestor, "HEAD"),
             allow_return_codes=(0, 1),
         )
+        _require_complete_result(result)
         return _return_code(result) == 0
 
     def _validate_handle_shape(self, worktree: ManagedWorktree) -> tuple[WorktreeIdentity, Path]:
@@ -919,7 +1105,11 @@ class ControlledGit:
         return result
 
     def _prefix(self, worktree: Path, *, include_cwd: bool = True) -> tuple[str, ...]:
-        prefix = [str(self._git_executable)]
+        # Object replacement refs can rewrite commit ancestry and contents for
+        # read commands as well as mutations.  The controlled boundary proves
+        # real object identity, so disable that repository-controlled overlay
+        # for every Git invocation before selecting its worktree.
+        prefix = [str(self._git_executable), "--no-replace-objects"]
         if include_cwd:
             prefix.extend(("-C", str(worktree)))
         prefix.extend(
@@ -1075,6 +1265,28 @@ class ControlledGit:
         except OSError, RuntimeError, ValueError:
             raise ControlledGitError() from None
         return matches[0] if matches else None
+
+    def _reject_incomplete_history_overlays(self) -> None:
+        """Refuse retained repositories whose common graph may be incomplete."""
+
+        common_git = self._repository.path / ".git"
+        _reject_links(common_git)
+        if not common_git.is_dir():
+            raise ControlledGitError()
+        shallow = common_git / "shallow"
+        if os.path.lexists(shallow):
+            _reject_links(shallow)
+            raise ControlledGitError()
+        info = common_git / "info"
+        if not os.path.lexists(info):
+            return
+        _reject_links(info)
+        if not info.is_dir():
+            raise ControlledGitError()
+        grafts = info / "grafts"
+        if os.path.lexists(grafts):
+            _reject_links(grafts)
+            raise ControlledGitError()
 
     def _registration_quarantine_metadata(self, identity: WorktreeIdentity) -> Path | None:
         """Find exact target proof in registration quarantine, leaving foreign entries alone."""

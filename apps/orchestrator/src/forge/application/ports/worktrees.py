@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -120,6 +121,56 @@ class GitCommit:
                 raise ValueError("Git commit SHA must be lowercase hexadecimal")
 
 
+def _validate_prepared_message(value: object) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 4096:
+        raise ValueError("prepared Git commit message is invalid")
+    if any(
+        character == "\x7f"
+        or ord(character) < 0x20
+        or unicodedata.category(character) in {"Cc", "Cf"}
+        for character in value
+    ):
+        raise ValueError("prepared Git commit message is invalid")
+    return value
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PreparedGitCommit:
+    """Exact real-index snapshot authorized for a later local publication."""
+
+    worktree_identity: WorktreeIdentity
+    previous_sha: str
+    tree_sha: str
+    message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.worktree_identity, WorktreeIdentity):
+            raise TypeError("prepared Git commit worktree identity is invalid")
+        for value in (self.previous_sha, self.tree_sha):
+            if not isinstance(value, str) or _SHA.fullmatch(value) is None:
+                raise ValueError("prepared Git commit SHA must be lowercase hexadecimal")
+        object.__setattr__(self, "message", _validate_prepared_message(self.message))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PublishedGitCommit:
+    """Exact object evidence for one published prepared Git commit."""
+
+    worktree_identity: WorktreeIdentity
+    previous_sha: str
+    tree_sha: str
+    new_sha: str
+    message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.worktree_identity, WorktreeIdentity):
+            raise TypeError("published Git commit worktree identity is invalid")
+        for value in (self.previous_sha, self.tree_sha, self.new_sha):
+            if not isinstance(value, str) or _SHA.fullmatch(value) is None:
+                raise ValueError("published Git commit SHA must be lowercase hexadecimal")
+        object.__setattr__(self, "message", _validate_prepared_message(self.message))
+
+
 class ControlledGitPort(Protocol):
     """Exact managed-worktree operations exposed to the application layer."""
 
@@ -155,6 +206,16 @@ class ControlledGitPort(Protocol):
     def is_ancestor(self, worktree: ManagedWorktree) -> bool: ...
 
     def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit: ...
+
+    def prepare_commit(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit: ...
+
+    def commit_prepared(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit: ...
+
+    def inspect_prepared_commit(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit | None: ...
 
     def open_worktree_capability(self, worktree: ManagedWorktree, policy: ProjectPolicy) -> Any: ...
 
@@ -449,6 +510,8 @@ __all__ = [
     "GitStatusResult",
     "ManagedWorktree",
     "ManagedWorktreePort",
+    "PreparedGitCommit",
+    "PublishedGitCommit",
     "SecretStorePort",
     "WorktreeProvisionerPort",
 ]

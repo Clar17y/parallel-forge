@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from forge.application.ports.repository import ProcessResult
-from forge.application.ports.worktrees import GitCommit, ManagedWorktree
+from forge.application.ports.worktrees import GitCommit, ManagedWorktree, PreparedGitCommit
 from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy, RunnerMode
 from forge.domain.resource import WorktreeIdentity
 from forge.tools import git as git_module
@@ -174,6 +174,64 @@ class FailingCommitRunner(RecordingRunner):
             cwd=cwd,
             environment=environment,
             timeout_seconds=timeout_seconds,
+        )
+
+
+class TruncatedProofRunner(RecordingRunner):
+    def run_argv(
+        self,
+        argv: tuple[str, ...] | list[str],
+        *,
+        cwd: str,
+        environment: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> ProcessResult:
+        result = super().run_argv(
+            argv,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+        if "cat-file" not in tuple(argv):
+            return result
+        return ProcessResult(
+            return_code=0,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            timed_out=False,
+            stdout_original_byte_count=len(result.stdout.encode()) + 1,
+            stderr_original_byte_count=len(result.stderr.encode()),
+            stdout_truncated=True,
+            stderr_truncated=False,
+        )
+
+
+class TruncatedAncestryRunner(RecordingRunner):
+    def run_argv(
+        self,
+        argv: tuple[str, ...] | list[str],
+        *,
+        cwd: str,
+        environment: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> ProcessResult:
+        result = super().run_argv(
+            argv,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+        if "merge-base" not in tuple(argv):
+            return result
+        return ProcessResult(
+            return_code=result.return_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            timed_out=False,
+            stdout_original_byte_count=len(result.stdout.encode()),
+            stderr_original_byte_count=len(result.stderr.encode()) + 1,
+            stdout_truncated=False,
+            stderr_truncated=True,
         )
 
 
@@ -361,6 +419,30 @@ def _registration_for(worktree: Path) -> Path:
     return metadata.resolve()
 
 
+def _move_retained_branch_to_grafted_unrelated_head(
+    repository: Path, handle: ManagedWorktree
+) -> str:
+    """Point the retained branch at an unrelated commit masked by a common graft."""
+
+    _git(repository, "checkout", "--orphan", "unrelated")
+    (repository / "README.md").write_text("unrelated\n", encoding="utf-8")
+    _git(repository, "add", "README.md")
+    _git(repository, "commit", "-m", "unrelated")
+    unrelated_sha = subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.strip()
+    _git(repository, "checkout", "main")
+    _git(handle.path, "reset", "--hard", unrelated_sha)
+    (repository / ".git" / "info" / "grafts").write_text(
+        f"{unrelated_sha} {handle.base_sha}\n", encoding="ascii"
+    )
+    return unrelated_sha
+
+
 def _rename_registration(worktree: Path, basename: str) -> Path:
     marker = worktree / ".git"
     metadata = _registration_for(worktree)
@@ -417,7 +499,7 @@ def test_status_uses_exact_forge_prefix_and_sanitized_environment(
     assert Path(git_executable).is_absolute()
     for argv, cwd, environment in runner.calls:
         assert argv[0] == git_executable
-        assert argv[1:3] == ("-C", str(handle.path))
+        assert argv[1:4] == ("--no-replace-objects", "-C", str(handle.path))
         assert "--no-pager" in argv
         assert cwd == str(handle.path)
         assert environment["GIT_TERMINAL_PROMPT"] == "0"
@@ -722,6 +804,299 @@ def test_git_commit_result_is_immutable_and_lowercase_sha_bound(tmp_path: Path) 
         result.new_sha = "c" * 40  # type: ignore[misc]
     with pytest.raises(ValueError):
         GitCommit(previous_sha="A" * 40, new_sha="b" * 40)
+
+
+def test_prepared_commit_captures_real_index_and_publish_does_not_restage(tmp_path: Path) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    (handle.path / "before.txt").write_text("before\n", encoding="utf-8")
+    runner = RecordingRunner(repository)
+    controlled = _controlled(repository, tmp_path / "state", runner)
+
+    prepared = controlled.prepare_commit(handle, "prepared snapshot")
+    (handle.path / "after.txt").write_text("after\n", encoding="utf-8")
+    result = controlled.commit_prepared(handle, prepared)
+
+    assert prepared.worktree_identity == identity
+    assert result.previous_sha == handle.base_sha
+    assert _git_show(repository, result.new_sha).endswith("prepared snapshot\n")
+    names = subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(handle.path), "show", "--format=", "--name-only", result.new_sha],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.splitlines()
+    assert names == ["before.txt"]
+    add_calls = [argv for argv, _cwd, _env in runner.calls if argv[-3:] == ("add", "-A", "--")]
+    assert len(add_calls) == 1
+
+
+def test_commit_prepared_rejects_changed_index_without_committing(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+    prepared = controlled.prepare_commit(handle, "prepared snapshot")
+    (handle.path / "extra.txt").write_text("extra\n", encoding="utf-8")
+    _git(handle.path, "add", "extra.txt")
+
+    with pytest.raises(ControlledGitError):
+        controlled.commit_prepared(handle, prepared)
+
+    assert controlled.head_sha(handle) == prepared.previous_sha
+
+
+def test_commit_prepared_rejects_changed_head_without_committing(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+    prepared = controlled.prepare_commit(handle, "prepared snapshot")
+    _git(handle.path, "commit", "-m", "external commit")
+
+    with pytest.raises(ControlledGitError):
+        controlled.commit_prepared(handle, prepared)
+
+    assert controlled.head_sha(handle) != prepared.previous_sha
+
+
+def test_prepare_commit_rejects_grafted_unrelated_retained_head(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    unrelated_sha = _move_retained_branch_to_grafted_unrelated_head(repository, handle)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+
+    with pytest.raises(ControlledGitError):
+        _controlled(repository, tmp_path / "state").prepare_commit(handle, "prepared snapshot")
+
+    assert subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(handle.path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.strip() == unrelated_sha
+
+
+def test_commit_prepared_rejects_grafted_unrelated_retained_head(tmp_path: Path) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    unrelated_sha = _move_retained_branch_to_grafted_unrelated_head(repository, handle)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    _git(handle.path, "add", "change.txt")
+    tree_sha = subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(handle.path), "write-tree"],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.strip()
+    prepared = PreparedGitCommit(
+        worktree_identity=identity,
+        previous_sha=unrelated_sha,
+        tree_sha=tree_sha,
+        message="prepared snapshot",
+    )
+
+    with pytest.raises(ControlledGitError):
+        _controlled(repository, tmp_path / "state").commit_prepared(handle, prepared)
+
+    assert subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(handle.path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.strip() == unrelated_sha
+
+
+@pytest.mark.parametrize("operation", ("prepare", "publish"))
+def test_preparation_and_publication_reject_common_shallow_metadata(
+    tmp_path: Path, operation: str
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    (repository / ".git" / "shallow").write_text(f"{handle.base_sha}\n", encoding="ascii")
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    if operation == "prepare":
+        with pytest.raises(ControlledGitError):
+            controlled.prepare_commit(handle, "prepared snapshot")
+    else:
+        _git(handle.path, "add", "change.txt")
+        tree_sha = subprocess.run(
+            [str(TRUSTED_GIT), "-C", str(handle.path), "write-tree"],
+            check=True,
+            capture_output=True,
+            shell=False,
+            text=True,
+        ).stdout.strip()
+        prepared = PreparedGitCommit(
+            worktree_identity=identity,
+            previous_sha=handle.base_sha,
+            tree_sha=tree_sha,
+            message="prepared snapshot",
+        )
+        with pytest.raises(ControlledGitError):
+            controlled.commit_prepared(handle, prepared)
+
+    assert controlled.head_sha(handle) == handle.base_sha
+
+
+def test_inspect_prepared_commit_recovers_only_exact_unique_direct_child(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+    prepared = controlled.prepare_commit(handle, "prepared snapshot")
+    published = controlled.commit_prepared(handle, prepared)
+
+    assert controlled.inspect_prepared_commit(handle, prepared) == published
+    assert controlled.inspect_prepared_commit(
+        handle,
+        PreparedGitCommit(
+            worktree_identity=handle.identity,
+            previous_sha=prepared.previous_sha,
+            tree_sha=prepared.tree_sha,
+            message="other message",
+        ),
+    ) is None
+
+
+def test_inspect_prepared_commit_is_read_only_and_fails_closed_for_ambiguous_child(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+    prepared = controlled.prepare_commit(handle, "prepared snapshot")
+    controlled.commit_prepared(handle, prepared)
+
+    _git(repository, "branch", "sibling", prepared.previous_sha)
+    _git(repository, "worktree", "add", str(tmp_path / "sibling"), "sibling")
+    sibling = tmp_path / "sibling"
+    _git(sibling, "commit", "--allow-empty", "-m", "sibling")
+    _git(handle.path, "merge", "--no-ff", "sibling", "-m", "merge sibling")
+
+    runner = RecordingRunner(repository)
+    inspected = _controlled(repository, tmp_path / "inspect-state", runner).inspect_prepared_commit(
+        handle, prepared
+    )
+
+    assert inspected is None
+    assert not any(
+        argv[-3:] == ("add", "-A", "--") or "write-tree" in argv or "commit" in argv
+        for argv, _cwd, _environment in runner.calls
+    )
+
+
+@pytest.mark.parametrize("overlay", ("shallow", "grafts"))
+def test_inspect_prepared_commit_rejects_incomplete_history_overlay(
+    tmp_path: Path, overlay: str
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "expected.txt").write_text("expected\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+    prepared = controlled.prepare_commit(handle, "prepared snapshot")
+    published = controlled.commit_prepared(handle, prepared)
+
+    _git(repository, "branch", "sibling", prepared.previous_sha)
+    sibling = tmp_path / "sibling"
+    _git(repository, "worktree", "add", str(sibling), "sibling")
+    _git(sibling, "commit", "--allow-empty", "-m", "sibling")
+    sibling_sha = subprocess.run(
+        [str(TRUSTED_GIT), "-C", str(sibling), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.strip()
+    _git(handle.path, "merge", "--no-ff", "sibling", "-m", "merge sibling")
+
+    common_git = repository / ".git"
+    if overlay == "shallow":
+        (common_git / "shallow").write_text(f"{sibling_sha}\n", encoding="ascii")
+    else:
+        grafts = common_git / "info" / "grafts"
+        grafts.write_text(f"{sibling_sha} {prepared.previous_sha}\n", encoding="ascii")
+
+    runner = RecordingRunner(repository)
+    with pytest.raises(ControlledGitError):
+        _controlled(repository, tmp_path / "inspect-state", runner).inspect_prepared_commit(
+            handle, prepared
+        )
+
+    assert controlled.head_sha(handle) != published.new_sha
+    assert not any(
+        argv[-3:] == ("add", "-A", "--") or "write-tree" in argv or "commit" in argv
+        for argv, _cwd, _environment in runner.calls
+    )
+
+
+def test_inspect_prepared_commit_rejects_extra_message_body_and_truncated_proof(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+    prepared = controlled.prepare_commit(handle, "prepared snapshot")
+    _git(handle.path, "commit", "-m", "prepared snapshot", "-m", "forged trailing body")
+
+    assert controlled.inspect_prepared_commit(handle, prepared) is None
+
+    clean_root = tmp_path / "truncated"
+    clean_root.mkdir()
+    repository, _identity, handle = _managed_repository(clean_root)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    prepared = _controlled(repository, clean_root / "state").prepare_commit(
+        handle, "prepared snapshot"
+    )
+    _controlled(repository, clean_root / "publish-state").commit_prepared(handle, prepared)
+
+    with pytest.raises(ControlledGitError):
+        _controlled(
+            repository, clean_root / "inspect-state", TruncatedProofRunner(repository)
+        ).inspect_prepared_commit(handle, prepared)
+
+
+def test_inspect_prepared_commit_ignores_replacement_object_forgery(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "expected.txt").write_text("expected\n", encoding="utf-8")
+    controlled = _controlled(repository, tmp_path / "state")
+    prepared = controlled.prepare_commit(handle, "prepared snapshot")
+    expected = subprocess.run(
+        [
+            str(TRUSTED_GIT),
+            "-C",
+            str(handle.path),
+            "commit-tree",
+            prepared.tree_sha,
+            "-p",
+            prepared.previous_sha,
+            "-m",
+            prepared.message,
+        ],
+        check=True,
+        capture_output=True,
+        shell=False,
+        text=True,
+    ).stdout.strip()
+    (handle.path / "wrong.txt").write_text("wrong\n", encoding="utf-8")
+    _git(handle.path, "add", "wrong.txt")
+    _git(handle.path, "commit", "-m", "wrong message")
+    actual = controlled.head_sha(handle)
+    _git(handle.path, "replace", actual, expected)
+
+    assert controlled.inspect_prepared_commit(handle, prepared) is None
+
+
+def test_inspect_prepared_commit_rejects_truncated_ancestry_proof(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "change.txt").write_text("change\n", encoding="utf-8")
+    prepared = _controlled(repository, tmp_path / "state").prepare_commit(
+        handle, "prepared snapshot"
+    )
+    _controlled(repository, tmp_path / "publish-state").commit_prepared(handle, prepared)
+
+    with pytest.raises(ControlledGitError):
+        _controlled(
+            repository, tmp_path / "inspect-state", TruncatedAncestryRunner(repository)
+        ).inspect_prepared_commit(handle, prepared)
 
 
 @pytest.mark.parametrize(
