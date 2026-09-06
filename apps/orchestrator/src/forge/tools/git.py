@@ -108,16 +108,23 @@ class WorktreeCapability:
         worktree = object.__getattribute__(self, "_worktree")
         policy = object.__getattribute__(self, "_policy")
         identity = worktree.identity
-        if identity.project_id != policy.id or identity.run_id is None:
+        if not isinstance(identity, WorktreeIdentity) or identity.project_id != policy.id:
             raise ControlledGitError()
         try:
-            expected = WorktreeIdentity.for_run(
-                identity.project_id,
-                identity.run_id,
-                identity.branch,
-                policy.database.enabled,
-            )
-        except TypeError, ValueError:
+            if identity.run_id is None:
+                expected = WorktreeIdentity.for_developer(
+                    identity.project_id,
+                    identity.branch,
+                    policy.database.enabled,
+                )
+            else:
+                expected = WorktreeIdentity.for_run(
+                    identity.project_id,
+                    identity.run_id,
+                    identity.branch,
+                    policy.database.enabled,
+                )
+        except (TypeError, ValueError):
             raise ControlledGitError() from None
         if expected != identity:
             raise ControlledGitError()

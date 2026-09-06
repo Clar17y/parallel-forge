@@ -7,14 +7,15 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from forge.application.ports.repository import ProcessResult
 from forge.application.ports.worktrees import GitCommit, ManagedWorktree
+from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy, RunnerMode
 from forge.domain.resource import WorktreeIdentity
 from forge.tools import git as git_module
-from forge.tools.git import ControlledGit, ControlledGitError
+from forge.tools.git import ControlledGit, ControlledGitError, WorktreeCapability
 from forge.tools.paths import CanonicalRoot
 from forge.tools.process import ProcessRunner
 
@@ -1899,3 +1900,193 @@ def test_prune_only_removes_stale_registration_and_not_live_worktree(tmp_path: P
     prune_calls = [argv for argv, _cwd, _environment in runner.calls if argv[-2:-1] == ("prune",)]
     assert prune_calls
     assert prune_calls[-1][-2:] == ("prune", "--expire=now")
+
+
+def test_developer_worktree_capability_revalidates_with_database_disabled(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_developer(
+        PROJECT_ID, branch="feature/dev-no-db", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    worktree = controlled.create_worktree(identity, base_sha)
+    policy = ProjectPolicy(
+        id=PROJECT_ID,
+        version=1,
+        repository_path=str(repository),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.TRUSTED_HOST,
+        trusted_project=True,
+        database=DatabaseProvisioningPolicy(enabled=False),
+    )
+
+    with controlled.open_worktree_capability(worktree, policy) as capability:
+        capability.revalidate()
+        assert repr(capability) == "WorktreeCapability(live=True)"
+
+    with pytest.raises(ControlledGitError):
+        capability.revalidate()
+
+
+def test_developer_worktree_capability_revalidates_with_database_enabled(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_developer(
+        PROJECT_ID, branch="feature/dev-db", database_enabled=True
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    worktree = controlled.create_worktree(identity, base_sha)
+    policy = ProjectPolicy(
+        id=PROJECT_ID,
+        version=1,
+        repository_path=str(repository),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.TRUSTED_HOST,
+        trusted_project=True,
+        database=DatabaseProvisioningPolicy(
+            enabled=True,
+            admin_url_secret_reference="secret://db-admin",
+        ),
+    )
+
+    with controlled.open_worktree_capability(worktree, policy) as capability:
+        capability.revalidate()
+        assert repr(capability) == "WorktreeCapability(live=True)"
+
+    with pytest.raises(ControlledGitError):
+        capability.revalidate()
+
+
+def test_developer_worktree_capability_rejects_mismatched_project(tmp_path: Path) -> None:
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_developer(
+        PROJECT_ID, branch="feature/dev-mismatch", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    worktree = controlled.create_worktree(identity, base_sha)
+
+    mismatched_policy = ProjectPolicy(
+        id=uuid4(),
+        version=1,
+        repository_path=str(repository),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.TRUSTED_HOST,
+        trusted_project=True,
+        database=DatabaseProvisioningPolicy(enabled=False),
+    )
+
+    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
+        worktree, mismatched_policy
+    ):
+        pass
+
+
+def test_developer_worktree_capability_rejects_forged_standalone_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revalidate_entered: list[ManagedWorktree] = []
+    original_revalidate = WorktreeCapability.revalidate
+
+    def spy_revalidate(self: WorktreeCapability) -> None:
+        worktree_instance = object.__getattribute__(self, "_worktree")
+        revalidate_entered.append(worktree_instance)
+        original_revalidate(self)
+
+    monkeypatch.setattr(WorktreeCapability, "revalidate", spy_revalidate)
+
+    repository, base_sha = _source_repository(tmp_path)
+    identity = WorktreeIdentity.for_developer(
+        PROJECT_ID, branch="feature/dev-forged", database_enabled=False
+    )
+    controlled = _controlled(repository, tmp_path / "state")
+    worktree = controlled.create_worktree(identity, base_sha)
+    policy = ProjectPolicy(
+        id=PROJECT_ID,
+        version=1,
+        repository_path=str(repository),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.TRUSTED_HOST,
+        trusted_project=True,
+        database=DatabaseProvisioningPolicy(enabled=False),
+    )
+
+    forged_proj = replace(identity, project_id=uuid4())
+    forged_worktree_proj = ManagedWorktree(
+        identity=forged_proj, path=worktree.path, base_sha=base_sha
+    )
+    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
+        forged_worktree_proj, policy
+    ):
+        pass
+
+    forged_db = replace(
+        identity, database_name="forge_fake_db", database_role="forge_fake_role"
+    )
+    forged_worktree_db = ManagedWorktree(identity=forged_db, path=worktree.path, base_sha=base_sha)
+    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
+        forged_worktree_db, policy
+    ):
+        pass
+
+    forged_name = replace(identity, worktree_name="forge-wrong-name-123")
+    forged_worktree_name = ManagedWorktree(
+        identity=forged_name, path=worktree.path, base_sha=base_sha
+    )
+    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
+        forged_worktree_name, policy
+    ):
+        pass
+
+    forged_branch = replace(identity, branch="feature/other-branch")
+    forged_worktree_branch = ManagedWorktree(
+        identity=forged_branch, path=worktree.path, base_sha=base_sha
+    )
+    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
+        forged_worktree_branch, policy
+    ):
+        pass
+
+    identity_with_db = WorktreeIdentity.for_developer(
+        PROJECT_ID, branch="feature/dev-forged-db", database_enabled=True
+    )
+    worktree_with_db = controlled.create_worktree(identity_with_db, base_sha)
+    policy_with_db = ProjectPolicy(
+        id=PROJECT_ID,
+        version=1,
+        repository_path=str(repository),
+        github_repository="owner/repository",
+        default_branch="main",
+        runner_mode=RunnerMode.TRUSTED_HOST,
+        trusted_project=True,
+        database=DatabaseProvisioningPolicy(
+            enabled=True,
+            admin_url_secret_reference="secret://db-admin",
+        ),
+    )
+    forged_no_db = replace(identity_with_db, database_name=None, database_role=None)
+    forged_worktree_no_db = ManagedWorktree(
+        identity=forged_no_db, path=worktree_with_db.path, base_sha=base_sha
+    )
+    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
+        forged_worktree_no_db, policy_with_db
+    ):
+        pass
+
+    assert revalidate_entered == []
+
+    forged_enabled_db = replace(
+        identity_with_db,
+        database_name="forge_fake_db",
+        database_role="forge_fake_role",
+    )
+    forged_worktree_enabled_db = ManagedWorktree(
+        identity=forged_enabled_db, path=worktree_with_db.path, base_sha=base_sha
+    )
+    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
+        forged_worktree_enabled_db, policy_with_db
+    ):
+        pass
+
+    assert revalidate_entered == [forged_worktree_enabled_db, forged_worktree_enabled_db]

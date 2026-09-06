@@ -1,5 +1,54 @@
 # Forge repository guidance
 
+## Development agent framework
+
+Use the installed personal multi-provider framework for repository coding work.
+The routing policy is the managed framework block in
+`C:/Users/sdyer/.codex/AGENTS.md`; invocation and recovery instructions are in
+`C:/Users/sdyer/.codex/agent-framework/README.md`, with provider pins in
+`C:/Users/sdyer/.codex/agent-framework/routing.json` and native role definitions
+in `C:/Users/sdyer/.codex/agents/`. Follow those installed sources when routing
+changes; the following summarizes the current version 4 policy.
+
+- The primary agent retains the user's selected model and owns architecture,
+  decomposition, integration, and final synthesis.
+- Route routine implementation through `ask-gemini` first: `agy` with
+  `gemini-3.8-flash-medium`. Only confirmed quota exhaustion reported as
+  `fallback_required` (exit 20) permits automatic handoff to a fresh native
+  `implementer` on `gpt-5.6-luna`, medium. Preserve the contract, partial edits,
+  prior output, and unfinished checks; ensure the previous writer has stopped.
+  Authentication, permission, timeout, model, and transient network failures
+  are not quota exhaustion. Follow the framework's pending-session recovery
+  rules before retrying uncertain termination.
+- Use `complex_implementer` (Terra low) for complex bounded implementation;
+  `planner` and `test_engineer` (Sol low) for planning and adversarial tests;
+  and Luna medium for exploration, documentation, and refactor audits.
+- Independent review uses `ask-claude` in fresh context with exactly
+  `claude-opus-5`. If unavailable, use a fresh `reviewer` (Astra low) and
+  disclose the fallback. Never route to Sonnet or Fable. Claude receives only
+  read/search tools, with no MCP, shell, edit, or subagent tools.
+- High-risk concurrency, cancellation, timeouts, security, migrations, data
+  integrity, and release work require a separate `correctness_gate` (Sol high)
+  after repairs. Explicit security analysis uses `security_reviewer` (Sol high).
+  Luna max is reserved for exceptional, explicitly requested deep review.
+- Use a fresh `verifier` (Luna medium) for required command evidence. Record
+  candidate HEAD and the uncommitted diff identity. Task and whole-branch
+  reviews must be independent of the writer; changed code requires current
+  evidence. Provide Claude the base revision and a saved integrated diff.
+- Delegate bounded contracts with acceptance criteria, non-overlapping owned
+  paths, and validation commands. Subagents may not delegate again without
+  parent authorization. Use installed native roles where supported; otherwise
+  pass their exact model, effort, and instructions. Respect host concurrency
+  limits.
+- Keep task contracts and provider logs in the active managed worktree's
+  `.llm-output/`. Preserve partial edits and logs. User-authorized provider CLI
+  bypass flags do not bypass Codex sandbox or automatic approval review.
+
+This framework routes the development assistants working on this repository.
+It does not grant capabilities to the Forge application's runtime agents.
+Repository worktree rules, TDD, CI, controlled runtime tools, and human release
+gates remain binding.
+
 ## Runtime and boundaries
 
 - Use Python 3.14 only and Node.js 24.x only.
@@ -26,6 +75,10 @@
 - Preserve unrelated work and do not rewrite or reset another agent's changes.
 
 ## Controlled command runner
+
+These restrictions govern the Forge application's runtime agents and command
+runner. Development assistants use the framework above to implement and verify
+the repository; provider routing does not relax the runtime restrictions.
 
 - Repository commands are selected only by exact names from the active,
   versioned project policy. Forge agents never supply shell text, argv, mounts,
