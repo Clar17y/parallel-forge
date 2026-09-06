@@ -21,6 +21,38 @@ def _make_root(tmp_path: Path) -> Path:
     return root
 
 
+def test_windows_close_rejects_a_native_failure_and_preserves_invalid_sentinel() -> None:
+    api = object.__new__(paths._WindowsPathApi)
+    calls: list[int] = []
+
+    def close_handle(handle: int) -> int:
+        calls.append(handle)
+        return 0
+
+    api._close_handle = close_handle
+
+    with pytest.raises(OSError, match="Windows handle close failed"):
+        api.close(42)
+    api.close(paths._INVALID_HANDLE_VALUE)
+
+    assert calls == [42]
+
+
+def test_windows_close_accepts_a_successful_native_result() -> None:
+    api = object.__new__(paths._WindowsPathApi)
+    calls: list[int] = []
+
+    def close_handle(handle: int) -> int:
+        calls.append(handle)
+        return 1
+
+    api._close_handle = close_handle
+
+    api.close(42)
+
+    assert calls == [42]
+
+
 def _make_quarantine_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     root = tmp_path / "repository"
     worktree_parent = root / ".worktrees"
@@ -980,45 +1012,94 @@ def test_windows_prepared_live_bind_closes_target_when_registration_open_fails(
     assert registration.is_dir()
 
 
+class _QuarantineCloseTracker:
+    """Scoped handle close tracker for quarantine lifecycle tests.
+
+    Historical handle closes occur during quarantine preparation before live
+    resources/proof are acquired (e.g. root revalidation). On Windows, raw
+    integer handles can be recycled by the OS and reassigned to proof or
+    retained resources. To prevent false double-close failures from prior integer
+    reuse, closes are scoped strictly from when access.resources/proof are
+    acquired until access cleanup (_release) has finished.
+    """
+
+    def __init__(self, root: CanonicalRoot, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.close_attempts: list[int] = []
+        self.successful_closes: list[int] = []
+        self.raw_closes: list[int] = []
+        self.failed_close_handles: set[int] = set()
+        self._recording = False
+
+        if os.name == "nt":
+            api = root._windows
+            assert api is not None
+            original_close = api.close
+
+            def close_spy(handle: int) -> None:
+                self.raw_closes.append(handle)
+                if self._recording:
+                    self.close_attempts.append(handle)
+                if handle in self.failed_close_handles:
+                    self.failed_close_handles.remove(handle)
+                    raise OSError("injected close failure")
+                original_close(handle)
+                if self._recording:
+                    self.successful_closes.append(handle)
+
+            monkeypatch.setattr(api, "close", close_spy)
+        else:
+            original_close = os.close
+
+            def close_spy(handle: int) -> None:
+                self.raw_closes.append(handle)
+                if self._recording:
+                    self.close_attempts.append(handle)
+                if handle in self.failed_close_handles:
+                    self.failed_close_handles.remove(handle)
+                    raise OSError("injected close failure")
+                original_close(handle)
+                if self._recording:
+                    self.successful_closes.append(handle)
+
+            monkeypatch.setattr(os, "close", close_spy)
+
+        original_release = paths._QuarantineAccess._release
+
+        def release_spy(access_self: paths._QuarantineAccess, close_fn: Any) -> None:
+            try:
+                original_release(access_self, close_fn)
+            finally:
+                self._recording = False
+
+        monkeypatch.setattr(paths._QuarantineAccess, "_release", release_spy)
+
+    def start(self) -> None:
+        self._recording = True
+
+
 @pytest.mark.parametrize("state", ("prepare", "bind", "bind-failure", "exception"))
 def test_prepared_live_context_releases_all_retained_handles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
     root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
     root = CanonicalRoot(root_path)
-    closed: list[int] = []
+    tracker = _QuarantineCloseTracker(root, monkeypatch)
     retained: set[int] = set()
     proof_capabilities: list[int] = []
-    if os.name == "nt":
-        api = root._windows
-        assert api is not None
-        original_close = api.close
-
-        def close_spy(handle: int) -> None:
-            closed.append(handle)
-            original_close(handle)
-
-        monkeypatch.setattr(api, "close", close_spy)
-    else:
-        original_close = os.close
-
-        def close_spy(handle: int) -> None:
-            closed.append(handle)
-            original_close(handle)
-
-        monkeypatch.setattr(os, "close", close_spy)
 
     if state == "exception":
         with (
             pytest.raises(RuntimeError),
             root._prepare_worktree_quarantine(target.name, registration.name) as access,
         ):
+            tracker.start()
             retained.update(access._resources)
             assert access._registration_gitdir_proof is not None
             proof_capabilities.append(access._registration_gitdir_proof.capability)
             raise RuntimeError("injected context failure")
     else:
         with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+            tracker.start()
             retained.update(access._resources)
             assert access._registration_gitdir_proof is not None
             proof_capabilities.append(access._registration_gitdir_proof.capability)
@@ -1030,8 +1111,94 @@ def test_prepared_live_context_releases_all_retained_handles(
                 with pytest.raises(RepositoryAccessDenied):
                     root._bind_worktree_quarantine(access)
 
-    assert retained <= set(closed)
-    assert all(closed.count(capability) == 1 for capability in proof_capabilities)
+    assert retained <= set(tracker.successful_closes)
+    assert all(tracker.close_attempts.count(capability) == 1 for capability in proof_capabilities)
+
+
+def test_prepared_live_context_detects_missing_handle_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    tracker = _QuarantineCloseTracker(root, monkeypatch)
+    retained: set[int] = set()
+    proof_capabilities: list[int] = []
+    dropped_handles: list[int] = []
+
+    original_release = paths._QuarantineAccess._release
+
+    def defective_release(access_self: paths._QuarantineAccess, close_fn: Any) -> None:
+        if access_self._resources:
+            dropped_handles.append(access_self._resources.pop(0))
+        original_release(access_self, close_fn)
+
+    monkeypatch.setattr(paths._QuarantineAccess, "_release", defective_release)
+
+    try:
+        with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+            tracker.start()
+            retained.update(access._resources)
+            assert access._registration_gitdir_proof is not None
+            proof_capabilities.append(access._registration_gitdir_proof.capability)
+
+        assert not (retained <= set(tracker.successful_closes))
+    finally:
+        for h in dropped_handles:
+            if os.name == "nt" and root._windows is not None:
+                root._windows.close(h)
+            else:
+                os.close(h)
+
+
+def test_prepared_live_context_detects_double_handle_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    tracker = _QuarantineCloseTracker(root, monkeypatch)
+    retained: set[int] = set()
+    with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+        tracker.start()
+        retained.update(access._resources)
+        assert access._registration_gitdir_proof is not None
+        proof = access._registration_gitdir_proof.capability
+        if os.name == "nt":
+            api = root._windows
+            assert api is not None
+            api.close(proof)
+        else:
+            os.close(proof)
+
+    assert tracker.close_attempts.count(proof) == 2
+
+
+def test_prepared_live_context_detects_failed_handle_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
+    root = CanonicalRoot(root_path)
+    tracker = _QuarantineCloseTracker(root, monkeypatch)
+    retained: set[int] = set()
+    survivor: int | None = None
+
+    try:
+        with root._prepare_worktree_quarantine(target.name, registration.name) as access:
+            tracker.start()
+            retained.update(access._resources)
+            survivor = next(iter(retained))
+            tracker.failed_close_handles.add(survivor)
+
+        assert not (retained <= set(tracker.successful_closes))
+        assert tracker.close_attempts.count(survivor) == 1
+        assert survivor not in tracker.successful_closes
+    finally:
+        if survivor is not None:
+            if os.name == "nt":
+                assert root._windows is not None
+                root._windows.close(survivor)
+            else:
+                os.close(survivor)
+
 
 
 def test_quarantine_moves_exact_target_then_registration(tmp_path: Path) -> None:

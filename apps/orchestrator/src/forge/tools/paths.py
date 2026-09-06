@@ -1675,8 +1675,8 @@ class _WindowsPathApi:
         return bytes(buffer.raw[:size])
 
     def close(self, handle: int) -> None:
-        if handle != _INVALID_HANDLE_VALUE:
-            self._close_handle(handle)
+        if handle != _INVALID_HANDLE_VALUE and not self._close_handle(handle):
+            raise OSError("Windows handle close failed")
 
     def as_stream(self, handle: int) -> BinaryIO:
         import msvcrt
