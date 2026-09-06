@@ -405,6 +405,10 @@ class ControlledToolService:
     ) -> ToolResult:
         started_at = datetime.now(UTC)
         started = time.monotonic()
+        completion: asyncio.Task[ToolResult] | None = None
+        writer = self._repository_writer
+        executor = self._operation_executor
+        artifact_store = self._artifact_store
         try:
             async with self._open_uow() as work:
                 resolved_run = await self._resolve_run(work, context)
@@ -480,6 +484,12 @@ class ControlledToolService:
                     or tool_call_id is None
                 ):
                     raise ToolInvocationError()
+                if (
+                    writer is None
+                    or artifact_store is None
+                    or not isinstance(executor, OperationExecutor)
+                ):
+                    raise ToolInvocationError()
 
                 intent = await work.operations.begin(
                     run_id=context.run_id,
@@ -507,21 +517,104 @@ class ControlledToolService:
                     arguments_schema_version=1,
                 )
                 reserved = await work.tool_calls.reserve(reservation)
-                await work.commit()
+                completion = asyncio.create_task(
+                    self._settle_repository_write(
+                        work=work,
+                        context=context,
+                        request=request,
+                        normalized_arguments=normalized_arguments,
+                        tool_call_id=tool_call_id,
+                        intent=intent,
+                        reserved=reserved,
+                        prepared=prepared,
+                        writer=writer,
+                        executor=executor,
+                        artifact_store=artifact_store,
+                        started=started,
+                    ),
+                    name=f"forge-write-{intent.id}",
+                )
+                return await _await_committed_write(completion)
+        except asyncio.CancelledError:
+            if completion is not None:
+                await _await_committed_write(completion, caller_cancelled=True)
+            raise
+        except ToolInvocationError:
+            if completion is not None:
+                try:
+                    await _await_committed_write(completion)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as completion_error:  # noqa: BLE001 - original failure is preserved
+                    del completion_error
+            raise
+        except Exception:  # noqa: BLE001 - raw content and adapter details never escape
+            if completion is not None:
+                try:
+                    await _await_committed_write(completion)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as completion_error:  # noqa: BLE001 - original failure is preserved
+                    del completion_error
+            raise ToolInvocationError() from None
 
-            writer = self._repository_writer
-            executor = self._operation_executor
-            artifact_store = self._artifact_store
-            if (
-                writer is None
-                or artifact_store is None
-                or not isinstance(executor, OperationExecutor)
-            ):
-                raise ToolInvocationError()
-            adapter = _RepositoryWriteOperationAdapter(writer=writer, prepared=prepared)
-            outcome = await executor.execute_admitted(intent, adapter)
-            if outcome.status is not OperationStatus.SUCCEEDED:
-                raise ToolInvocationError()
+    async def _settle_repository_write(
+        self,
+        *,
+        work: UnitOfWork,
+        context: ToolAuthorizationContext,
+        request: ToolRequest,
+        normalized_arguments: dict[str, object],
+        tool_call_id: UUID,
+        intent: OperationIntent,
+        reserved: ToolCallRecord,
+        prepared: _PreparedWrite,
+        writer: RepositoryWriter,
+        executor: OperationExecutor,
+        artifact_store: ArtifactStore,
+        started: float,
+    ) -> ToolResult:
+        """Settle admission before finishing its admitted repository write."""
+
+        await work.commit()
+        completion = asyncio.create_task(
+            self._complete_repository_write(
+                context=context,
+                request=request,
+                normalized_arguments=normalized_arguments,
+                tool_call_id=tool_call_id,
+                intent=intent,
+                reserved=reserved,
+                prepared=prepared,
+                writer=writer,
+                executor=executor,
+                artifact_store=artifact_store,
+                started=started,
+            ),
+            name=f"forge-write-completion-{intent.id}",
+        )
+        return await _await_committed_write(completion)
+
+    async def _complete_repository_write(
+        self,
+        *,
+        context: ToolAuthorizationContext,
+        request: ToolRequest,
+        normalized_arguments: dict[str, object],
+        tool_call_id: UUID,
+        intent: OperationIntent,
+        reserved: ToolCallRecord,
+        prepared: _PreparedWrite,
+        writer: RepositoryWriter,
+        executor: OperationExecutor,
+        artifact_store: ArtifactStore,
+        started: float,
+    ) -> ToolResult:
+        """Finish a committed write even when its waiting caller is cancelled."""
+
+        adapter = _RepositoryWriteOperationAdapter(writer=writer, prepared=prepared)
+        outcome = await executor.execute_admitted(intent, adapter)
+        if outcome.status is OperationStatus.SUCCEEDED:
             result_metadata = _safe_metadata(
                 thaw_payload(outcome.payload),
                 redactor=self._redactor,
@@ -614,12 +707,7 @@ class ControlledToolService:
                 )
                 await work.commit()
                 return result
-        except asyncio.CancelledError:
-            raise
-        except ToolInvocationError:
-            raise
-        except Exception:  # noqa: BLE001 - raw content and adapter details never escape
-            raise ToolInvocationError() from None
+        raise ToolInvocationError()
 
     async def _record_write_denial(
         self,
@@ -1173,6 +1261,32 @@ class ControlledToolService:
 class _RepositoryWriteOperationError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("repository write operation failed")
+
+
+async def _await_committed_write(
+    completion: asyncio.Task[ToolResult],
+    *,
+    caller_cancelled: bool = False,
+) -> ToolResult:
+    """Join a committed write without letting caller cancellation cancel its owner."""
+
+    while True:
+        try:
+            result = await asyncio.shield(completion)
+        except asyncio.CancelledError:
+            if completion.done():
+                if caller_cancelled:
+                    raise asyncio.CancelledError() from None
+                raise
+            caller_cancelled = True
+            continue
+        except BaseException:
+            if caller_cancelled:
+                raise asyncio.CancelledError() from None
+            raise
+        if caller_cancelled:
+            raise asyncio.CancelledError()
+        return result
 
 
 @dataclass(frozen=True, slots=True)

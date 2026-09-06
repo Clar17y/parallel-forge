@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from uuid import UUID
 
@@ -16,6 +18,8 @@ from forge.domain.tool import ToolCallStatus, ToolName
 from forge.observability.redaction import Redactor
 from forge.persistence.models import AgentExecution, Step, ToolCall
 from forge.persistence.repositories.runs import PersistenceDataError
+
+_HEX_64 = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
 
 
 class ToolCallRepositoryError(RuntimeError):
@@ -175,6 +179,14 @@ class PostgresToolCallRepository:
             raise ToolCallNotFound("tool call evidence was not found")
         return _record_from_row(row)
 
+    async def find(self, tool_call_id: UUID) -> ToolCallRecord | None:
+        if not isinstance(tool_call_id, UUID):
+            raise TypeError("tool call identifier must be a UUID")
+        row = await self._session.get(ToolCall, tool_call_id)
+        if row is None:
+            return None
+        return _record_from_row(row)
+
     async def list_for_run(self, run_id: UUID) -> Sequence[ToolCallRecord]:
         if not isinstance(run_id, UUID):
             raise TypeError("tool call run identifier must be a UUID")
@@ -250,6 +262,9 @@ def _redact_record(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord
         "operation_intent_id": (
             None if record.operation_intent_id is None else str(record.operation_intent_id)
         ),
+        "request_digest": record.request_digest,
+        "resource_id": record.resource_id,
+        "invocation_schema_version": record.invocation_schema_version,
     }
     for key, expected in lineage.items():
         if key in raw_metadata:
@@ -293,6 +308,9 @@ def _redact_record(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord
                 if record.result_metadata_schema_version is not None
                 else (1 if metadata is not None else None)
             ),
+            request_digest=record.request_digest,
+            resource_id=record.resource_id,
+            invocation_schema_version=record.invocation_schema_version,
         )
         for key, expected in lineage.items():
             if expected is not None and (key != "artifact_digests" or expected):
@@ -357,6 +375,8 @@ def _same_lineage_value(actual: object, expected: object) -> bool:
         return actual in (None, [], ())
     if isinstance(expected, list):
         return isinstance(actual, (list, tuple)) and tuple(actual) == tuple(expected)
+    if isinstance(expected, int):
+        return type(actual) is int and actual == expected
     return actual == expected
 
 
@@ -396,6 +416,9 @@ def _immutable_record_json(record: ToolCallRecord) -> str:
             None if record.operation_intent_id is None else str(record.operation_intent_id)
         ),
         "arguments_schema_version": record.arguments_schema_version,
+        "request_digest": record.request_digest,
+        "resource_id": record.resource_id,
+        "invocation_schema_version": record.invocation_schema_version,
     }
     return canonical_payload(payload)
 
@@ -421,6 +444,16 @@ def _record_from_row(row: ToolCall) -> ToolCallRecord:
         if not isinstance(artifact_values, (list, tuple)):
             raise PersistenceDataError("stored tool call artifact digests are malformed")
         artifact_digests = tuple(artifact_values)
+        request_digest = _request_digest_value(values.get("request_digest"))
+        resource_id = _resource_id_value(values.get("resource_id"))
+        invocation_schema_version = _invocation_schema_version_value(
+            values.get("invocation_schema_version")
+        )
+        binding_values = (request_digest, resource_id, invocation_schema_version)
+        if any(v is not None for v in binding_values) and not all(
+            v is not None for v in binding_values
+        ):
+            raise PersistenceDataError("stored tool call invocation binding is malformed")
         result_metadata = values
         result_schema = row.result_metadata_schema_version
         if result_schema is not None and not values and metadata is None:
@@ -445,6 +478,9 @@ def _record_from_row(row: ToolCall) -> ToolCallRecord:
             operation_intent_id=operation_intent_id,
             arguments_schema_version=row.arguments_schema_version,
             result_metadata_schema_version=result_schema,
+            request_digest=request_digest,
+            resource_id=resource_id,
+            invocation_schema_version=invocation_schema_version,
         )
     except PersistenceDataError:
         raise
@@ -485,6 +521,34 @@ def _int_value(value: object, field_name: str) -> int | None:
     return value
 
 
+def _request_digest_value(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or _HEX_64.fullmatch(value) is None:
+        raise PersistenceDataError("stored tool call request digest is malformed")
+    return value
+
+
+def _resource_id_value(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PersistenceDataError("stored tool call resource identifier is malformed")
+    if not value or not value.strip() or len(value) > 512:
+        raise PersistenceDataError("stored tool call resource identifier is malformed")
+    if any(ord(c) < 32 or c == "\x7f" or unicodedata.category(c).startswith("C") for c in value):
+        raise PersistenceDataError("stored tool call resource identifier is malformed")
+    return value
+
+
+def _invocation_schema_version_value(value: object) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value != 1:
+        raise PersistenceDataError("stored tool call invocation schema version is malformed")
+    return value
+
+
 def _record_json(record: ToolCallRecord) -> str:
     payload: dict[str, object] = {
         "id": str(record.id),
@@ -508,6 +572,9 @@ def _record_json(record: ToolCallRecord) -> str:
         ),
         "arguments_schema_version": record.arguments_schema_version,
         "result_metadata_schema_version": record.result_metadata_schema_version,
+        "request_digest": record.request_digest,
+        "resource_id": record.resource_id,
+        "invocation_schema_version": record.invocation_schema_version,
     }
     return canonical_payload(payload)
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +20,8 @@ from forge.domain.tool import (
     ToolName,
     ToolRequest,
 )
+
+_HEX_64 = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
 
 
 class ToolAuthorizationDenied(PermissionError):
@@ -67,6 +71,9 @@ class ToolCallRecord:
     operation_intent_id: UUID | None = None
     arguments_schema_version: int = 1
     result_metadata_schema_version: int | None = None
+    request_digest: str | None = None
+    resource_id: str | None = None
+    invocation_schema_version: int | None = None
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -140,6 +147,53 @@ class ToolCallRecord:
         ):
             raise ValueError("tool call policy version must be positive")
 
+        binding = (self.request_digest, self.resource_id, self.invocation_schema_version)
+        if any(v is not None for v in binding):
+            if not all(v is not None for v in binding):
+                raise ValueError("tool call invocation binding fields must all be present or all absent")
+            if type(self.invocation_schema_version) is not int or self.invocation_schema_version != 1:
+                raise ValueError("tool call invocation schema version must be 1")
+            if not isinstance(self.request_digest, str) or _HEX_64.fullmatch(self.request_digest) is None:
+                raise ValueError("tool call request digest must be lowercase hexadecimal SHA-256")
+            if not isinstance(self.resource_id, str):
+                raise TypeError("tool call resource identifier must be a string")
+            if not self.resource_id or not self.resource_id.strip() or len(self.resource_id) > 512:
+                raise ValueError(
+                    "tool call resource identifier must be nonblank and at most 512 characters"
+                )
+            if any(
+                ord(c) < 32 or c == "\x7f" or unicodedata.category(c).startswith("C")
+                for c in self.resource_id
+            ):
+                raise ValueError("tool call resource identifier cannot contain control characters")
+
+        if self.result_metadata is not None:
+            for key, field_val in (
+                ("request_digest", self.request_digest),
+                ("resource_id", self.resource_id),
+                ("invocation_schema_version", self.invocation_schema_version),
+            ):
+                if key in self.result_metadata:
+                    meta_val = self.result_metadata[key]
+                    if field_val is None:
+                        if meta_val is not None:
+                            raise ValueError(
+                                f"result metadata {key} cannot be present when record field is absent"
+                            )
+                    elif (
+                        key == "invocation_schema_version"
+                        and type(meta_val) is not int
+                    ) or meta_val != field_val:
+                        raise ValueError(f"result metadata {key} conflicts with record field")
+
+            meta_present_keys = [
+                k
+                for k in ("request_digest", "resource_id", "invocation_schema_version")
+                if self.result_metadata.get(k) is not None
+            ]
+            if 0 < len(meta_present_keys) < 3:
+                raise ValueError("result metadata cannot contain partial invocation binding fields")
+
     @property
     def result(self) -> Mapping[str, object] | None:
         """Compatibility alias for callers naming result metadata ``result``."""
@@ -161,6 +215,8 @@ class ToolCallRepository(Protocol):
     async def record(self, record: ToolCallRecord) -> ToolCallRecord: ...
 
     async def get(self, tool_call_id: UUID) -> ToolCallRecord: ...
+
+    async def find(self, tool_call_id: UUID) -> ToolCallRecord | None: ...
 
     async def list_for_run(self, run_id: UUID) -> Sequence[ToolCallRecord]: ...
 
