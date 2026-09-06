@@ -17,6 +17,7 @@ from forge.application.ports.projects import (
 )
 from forge.application.ports.tasks import TaskRecord
 from forge.application.services.auth import AuthenticatedActor
+from forge.domain.approval import ApprovalGate
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState, SuspensionKind
@@ -25,6 +26,13 @@ from forge.persistence.repositories.mutations import MutationConflict
 from pydantic import ValidationError
 
 ACTOR = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+
+APPROVAL_GATES: dict[RunState, ApprovalGate] = {
+    RunState.AWAITING_PLAN_APPROVAL: ApprovalGate.PLAN,
+    RunState.AWAITING_PR_APPROVAL: ApprovalGate.PR,
+    RunState.AWAITING_MERGE_APPROVAL: ApprovalGate.MERGE,
+}
+VALID_DIGEST: str = "a" * 64
 
 
 @dataclass
@@ -312,6 +320,7 @@ def _uow(
         audit=FakeAudit(),
     )
     if state is not RunState.CREATED:
+        gate = APPROVAL_GATES.get(state)
         run = RunSnapshot(
             id=uuid4(),
             project_id=project_id,
@@ -321,6 +330,8 @@ def _uow(
             branch_name=branch_name,
             suspended_state=RunState.PLANNING if state is RunState.PAUSED else None,
             suspension_kind=SuspensionKind.PAUSE if state is RunState.PAUSED else None,
+            pending_gate=gate,
+            pending_evidence_digest=VALID_DIGEST if gate is not None else None,
         )
         work.runs.records[run.id] = run
     return work, project_id, task_id

@@ -288,6 +288,18 @@ class StateEngine:
                 target,
                 reason="approval transitions require an evidence digest",
             )
+        if target is RunState.AWAITING_HUMAN_INTERVENTION:
+            raise InvalidTransition(
+                run.suspended_state,
+                target,
+                reason="intervention cannot resolve to intervention",
+            )
+        if run.suspended_state is RunState.AWAITING_MERGE_APPROVAL and target is RunState.MERGING:
+            raise InvalidTransition(
+                run.suspended_state,
+                target,
+                reason="merging requires approval evidence",
+            )
         if target not in LEGAL[run.suspended_state]:
             raise InvalidTransition(run.suspended_state, target)
         return run.with_state(target)

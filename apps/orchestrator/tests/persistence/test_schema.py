@@ -16,6 +16,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from forge.application.services.state_engine import LEGAL, StateEngine
+from forge.domain.approval import ApprovalGate
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.models import Base
 from sqlalchemy import inspect, text
@@ -942,34 +943,65 @@ def test_suspended_state_matches_exact_state_engine_source_sets(
             "0, 0, 0, 0, 0, 'DISABLED')"
         )
 
+        approval_gates: dict[RunState, ApprovalGate] = {
+            RunState.AWAITING_PLAN_APPROVAL: ApprovalGate.PLAN,
+            RunState.AWAITING_PR_APPROVAL: ApprovalGate.PR,
+            RunState.AWAITING_MERGE_APPROVAL: ApprovalGate.MERGE,
+        }
+        valid_digest = "a" * 64
+
         def parameters(snapshot: RunSnapshot) -> dict[str, object]:
             context = snapshot.suspension_context
             serialized_context = None
+            context_version = None
             if context is not None:
-                serialized_context = json.dumps(
-                    {
-                        "state": context.state.value,
-                        "suspended_state": context.suspended_state.value
-                        if context.suspended_state is not None
-                        else None,
-                        "suspension_kind": context.suspension_kind.value
-                        if context.suspension_kind is not None
-                        else None,
-                    }
+                has_pending = (
+                    context.pending_gate is not None
+                    or context.pending_evidence_digest is not None
                 )
+                context_payload: dict[str, object] = {
+                    "state": context.state.value,
+                    "suspended_state": (
+                        context.suspended_state.value
+                        if context.suspended_state is not None
+                        else None
+                    ),
+                    "suspension_kind": (
+                        context.suspension_kind.value
+                        if context.suspension_kind is not None
+                        else None
+                    ),
+                }
+                if has_pending:
+                    context_version = 2
+                    context_payload["pending_gate"] = (
+                        context.pending_gate.value
+                        if context.pending_gate is not None
+                        else None
+                    )
+                    context_payload["pending_evidence_digest"] = (
+                        context.pending_evidence_digest
+                    )
+                else:
+                    context_version = 1
+                serialized_context = json.dumps(context_payload)
             return {
                 "id": snapshot.id,
                 "project_id": snapshot.project_id,
                 "task_id": snapshot.task_id,
                 "state": snapshot.state.value,
                 "version": snapshot.version,
-                "suspended_state": snapshot.suspended_state.value
-                if snapshot.suspended_state is not None
-                else None,
-                "suspension_kind": snapshot.suspension_kind.value
-                if snapshot.suspension_kind is not None
-                else None,
-                "context_version": 1 if context is not None else None,
+                "suspended_state": (
+                    snapshot.suspended_state.value
+                    if snapshot.suspended_state is not None
+                    else None
+                ),
+                "suspension_kind": (
+                    snapshot.suspension_kind.value
+                    if snapshot.suspension_kind is not None
+                    else None
+                ),
+                "context_version": context_version,
                 "context": serialized_context,
             }
 
@@ -986,22 +1018,28 @@ def test_suspended_state_matches_exact_state_engine_source_sets(
                             )
                         )
                     else:
+                        gate = approval_gates.get(source)
                         active = RunSnapshot(
                             id=uuid4(),
                             project_id=project_id,
                             task_id=task_id,
                             state=source,
+                            pending_gate=gate,
+                            pending_evidence_digest=valid_digest if gate is not None else None,
                         )
                     await connection.execute(
                         insert_statement, parameters(state_engine.pause(active))
                     )
 
                 for source in intervention_sources:
+                    gate = approval_gates.get(source)
                     active = RunSnapshot(
                         id=uuid4(),
                         project_id=project_id,
                         task_id=task_id,
                         state=source,
+                        pending_gate=gate,
+                        pending_evidence_digest=valid_digest if gate is not None else None,
                     )
                     await connection.execute(
                         insert_statement,
