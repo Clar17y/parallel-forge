@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from forge.application.services.worker import TransientCommandError, Worker
 from forge.domain.command import CommandEnvelope, CommandStatus
+from forge.persistence.repositories.commands import CommandLeaseError
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 
 
@@ -148,6 +149,48 @@ async def test_cancelled_handler_leaves_lease_for_expiry_reclaim(
     assert await command_repository.claim_next(worker_id="worker-b", lease_seconds=30) is None
 
 
+@pytest.mark.integration
+async def test_renewal_loss_returns_while_cancellation_suppressing_handler_drains(
+    command_repository, persisted_run, session_factory, monkeypatch
+) -> None:
+    command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="stubborn",
+        idempotency_key="worker:stubborn",
+        payload={},
+        available_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    started, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def handler(_received, _work) -> None:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+
+    async def renew_failure(*_args, **_kwargs):
+        raise CommandLeaseError("forced renewal failure")
+
+    monkeypatch.setattr(command_repository, "renew", renew_failure)
+    worker = Worker(
+        command_repository,
+        session_factory,
+        handlers={"stubborn": handler},
+        worker_id="worker-a",
+        lease_seconds=1,
+    )
+    tick = asyncio.create_task(worker.tick())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert await asyncio.wait_for(tick, timeout=2) is False
+    await asyncio.wait_for(cancelled.wait(), timeout=2)
+    release.set()
+    await asyncio.wait_for(worker.drain(), timeout=2)
+    stored = await command_repository.get(command.id)
+    assert stored.status is CommandStatus.LEASED
+
+
 def test_worker_rejects_subsecond_lease() -> None:
     with pytest.raises(ValueError, match="at least 1 second"):
         Worker(
@@ -192,6 +235,6 @@ async def test_worker_renews_no_less_often_than_one_third_of_lease(monkeypatch) 
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await worker._renew_until_done(command)
+        await worker._renew_until_done(command, asyncio.Event())
 
     assert delays == [pytest.approx(1 / 3)]

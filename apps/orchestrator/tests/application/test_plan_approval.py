@@ -687,6 +687,8 @@ async def test_authoritative_drift_invalidates_approval_and_enqueues_restart_pla
     assert restart.event_type == "approval.stale"
     assert restart.event_payload == {
         "approval_id": str(approval.id),
+        "approval_evidence_digest": approval.evidence_digest,
+        "approval_policy_version": approval.policy_version,
         "command_id": str(command.id),
         "planning_command_id": str(work.commands.enqueued[0].id),
         "planning_payload": {"semantic_attempt": 2},

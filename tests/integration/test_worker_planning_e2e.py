@@ -147,6 +147,10 @@ async def workflow_session_factory(migrated_database_url):
         "revision_substituted_command",
         "drift_before_api",
         "drift_before_worker",
+        "drift_before_worker_crash",
+        "drift_before_worker_crash_queue",
+        "drift_before_worker_crash_approval",
+        "drift_before_worker_crash_actor",
         "wrong_actor",
         "wrong_approval_policy",
     ],
@@ -388,8 +392,42 @@ async def test_http_plan_requires_exact_approval_before_preparation(
                 assert not any(c.command_type == "prepare_worktree" for c in commands)
             assert len(gateway.requests) == 1
             return
-        if scenario == "drift_before_worker":
+        if scenario.startswith("drift_before_worker"):
             git(repository, "commit", "--allow-empty", "-m", "base changed")
+            if scenario.startswith("drift_before_worker_crash"):
+                original_complete = worker._commands.complete
+
+                async def crash_stale_completion(*args, **kwargs):
+                    raise RuntimeError("injected stale-approval acknowledgement crash")
+
+                worker._commands.complete = crash_stale_completion
+                with pytest.raises(RuntimeError, match="acknowledgement crash"):
+                    await worker.tick()
+                worker._commands.complete = original_complete
+                async with session_factory() as session, session.begin():
+                    queued_approval = await session.scalar(
+                        select(RunCommand).where(
+                            RunCommand.run_id == run_id,
+                            RunCommand.command_type == "approve_plan",
+                        )
+                    )
+                    assert queued_approval.status == "LEASED"
+                    queued_approval.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                    if scenario.endswith("_queue"):
+                        await tamper_restart(session, run_id, "substituted_command")
+                    elif scenario.endswith("_approval"):
+                        approval = await session.get(Approval, UUID(accepted["approval_id"]))
+                        approval.evidence_digest = "b" * 64
+                    elif scenario.endswith("_actor"):
+                        queued_approval.actor_id = uuid4()
+                if scenario != "drift_before_worker_crash":
+                    assert await worker.tick() is False
+                    assert await worker.tick() is False
+                    assert len(gateway.requests) == 1
+                    async with session_factory() as session:
+                        run = await session.get(Run, run_id)
+                        assert run.state == "PLANNING" and run.version == version + 1
+                    return
             await tick_success(worker, session_factory, run_id)
             async with session_factory() as session:
                 run = await session.get(Run, run_id)
@@ -675,7 +713,12 @@ async def test_http_authorization_revalidates_persisted_plan_gate(
             await session.scalars(select(Approval).where(Approval.run_id == case.run_id))
         ).all()
         commands = (
-            await session.scalars(select(RunCommand).where(RunCommand.run_id == case.run_id))
+            await session.scalars(
+                select(RunCommand).where(
+                    RunCommand.run_id == case.run_id,
+                    RunCommand.command_type == "approve_plan",
+                )
+            )
         ).all()
         assert len(approvals) == len(commands) == (1 if drift == "none" else 0)
         run = await session.get(Run, case.run_id)

@@ -10,6 +10,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from forge.application.ports.commands import CommandLeaseLost
 from forge.domain.command import CommandEnvelope, CommandStatus, thaw_payload
 from forge.domain.lease import validate_lease_seconds
 from forge.domain.payload import redact_durable_text
@@ -29,7 +30,7 @@ class IdempotencyConflict(CommandError):
     """An idempotency key was reused for a different immutable request."""
 
 
-class CommandLeaseError(CommandError):
+class CommandLeaseError(CommandLeaseLost, CommandError):
     """The worker does not hold a current lease for this command."""
 
 
@@ -246,6 +247,23 @@ class PostgresCommandRepository:
             record.lease_expires_at = now + timedelta(seconds=lease_seconds)
             await session.flush()
             return _command_from_record(record)
+
+    async def assert_current_lease(self, command: CommandEnvelope) -> CommandEnvelope:
+        """Lock and validate the exact delivery that is settling a command.
+
+        This method is deliberately session-bound: the caller's final run and
+        execution updates commit only if this lease fence remains true.
+        """
+
+        if command.status is not CommandStatus.LEASED or command.lease_owner is None:
+            raise CommandLeaseError("command delivery has no lease to fence")
+        if self._session is None:
+            raise CommandError("lease fence requires an active unit of work")
+        record = await self._locked(command.id, self._session)
+        _require_owned_lease(record, command.lease_owner, _utc_now())
+        if record.attempt_count != command.attempt:
+            raise CommandLeaseError("command lease delivery was reclaimed")
+        return _command_from_record(record)
 
     async def complete(
         self,

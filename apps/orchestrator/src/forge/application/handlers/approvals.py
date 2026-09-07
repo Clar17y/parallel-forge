@@ -13,6 +13,7 @@ from forge.application.services.plan_evidence import (
     PlanEvidenceValidationError,
     PlanEvidenceValidator,
 )
+from forge.application.services.plan_restart import restart_source
 from forge.application.services.plan_revision import PlanRevisionService
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.run import RunState
@@ -41,7 +42,17 @@ class ApprovePlanHandler:
             or approval.gate != "plan"
             or approval.authenticated_actor_id != command.actor_id
             or approval.run_version != command.expected_run_version
-            or approval.policy_version != run.policy_version
+        ):
+            raise ApprovalCommandValidationError("approval evidence is stale")
+        if (
+            run.state is RunState.PLANNING
+            and run.version == command.expected_run_version + 1
+            and await self._committed_restart(command, work, approval)
+        ):
+            await work.commit()
+            return
+        if (
+            approval.policy_version != run.policy_version
             or approval.invalidated_at is not None
             or run.state is not RunState.AWAITING_PLAN_APPROVAL
             or run.version != approval.run_version
@@ -76,6 +87,8 @@ class ApprovePlanHandler:
                 event_type="approval.stale",
                 event_payload={
                     "approval_id": str(approval.id),
+                    "approval_evidence_digest": approval.evidence_digest,
+                    "approval_policy_version": approval.policy_version,
                     "command_id": str(command.id),
                     "planning_command_id": str(queued.id),
                     "planning_payload": dict(queued.payload),
@@ -107,6 +120,42 @@ class ApprovePlanHandler:
             available_at=self._clock.now(),
         )
         await work.commit()
+
+    async def _committed_restart(
+        self, command: CommandEnvelope, work: UnitOfWork, approval: Approval
+    ) -> bool:
+        if approval.invalidated_at is None:
+            return False
+        attempt = await work.executions.next_attempt(command.run_id, "plan")
+        queued = await work.commands.get_by_idempotency_key(
+            f"{command.run_id}:start-planning:{attempt}"
+        )
+        if (
+            queued is None
+            or queued.command_type != "start_planning"
+            or queued.status is not CommandStatus.PENDING
+            or queued.run_id != command.run_id
+            or queued.actor_id != command.actor_id
+            or queued.expected_run_version != command.expected_run_version + 1
+            or queued.payload != {"semantic_attempt": attempt}
+        ):
+            return False
+        source = await restart_source(work, queued, source_status=CommandStatus.LEASED)
+        if source is None or source.id != command.id:
+            return False
+        events = [
+            event
+            for event in await work.events.list_for_version(
+                command.run_id, queued.expected_run_version
+            )
+            if event.event_type == "approval.stale"
+        ]
+        return (
+            len(events) == 1
+            and events[0].payload.get("approval_id") == str(approval.id)
+            and events[0].payload.get("approval_evidence_digest") == approval.evidence_digest
+            and events[0].payload.get("approval_policy_version") == approval.policy_version
+        )
 
 
 class RequestPlanRevisionHandler:

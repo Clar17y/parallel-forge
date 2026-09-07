@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -22,7 +22,7 @@ from forge.application.services.planning import (
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.actor import AgentRole
 from forge.domain.agent import AgentFinishStatus, AgentRequest, AgentResult
-from forge.domain.command import CommandEnvelope, CommandStatus
+from forge.domain.command import CommandEnvelope
 from forge.domain.plan import PlanOutput
 from forge.domain.policy import AgentModelPolicy, CommandSpec, ProjectPolicy, StepKind
 from forge.domain.run import RunSnapshot, RunState
@@ -37,6 +37,7 @@ from forge.persistence.models import (
     Run,
     Task,
 )
+from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.tasks import compute_task_digest, derive_normalized_text
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.tools.repository import RepositoryReader
@@ -322,21 +323,20 @@ async def _build_case(
         ),
     )
     now = datetime.now(UTC)
-    command = CommandEnvelope(
-        id=uuid4(),
+    queued = await PostgresCommandRepository(session_factory).enqueue(
         run_id=run_id,
         command_type="start_planning",
         idempotency_key=f"planning:{run_id}",
         payload={},
-        status=CommandStatus.LEASED,
         expected_run_version=0,
         actor_id=None,
         payload_schema_version=1,
-        attempt=1,
         available_at=now,
-        lease_owner="test-worker",
-        lease_expires_at=now + timedelta(minutes=1),
     )
+    command = await PostgresCommandRepository(session_factory).claim_next(
+        worker_id="test-worker", lease_seconds=60
+    )
+    assert command is not None and command.id == queued.id
     return _Case(service, command, gateway, artifact_store, run_id)
 
 

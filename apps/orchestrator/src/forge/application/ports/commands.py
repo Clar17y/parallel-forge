@@ -10,6 +10,14 @@ from uuid import UUID
 from forge.domain.command import CommandEnvelope
 
 
+class CommandLeaseLost(RuntimeError):
+    """A delivery no longer owns the command lease that admitted it."""
+
+
+class CommandRecoveryRequired(RuntimeError):
+    """A delivery found durable work whose outcome needs explicit recovery."""
+
+
 class CommandRepository(Protocol):
     """Persistence boundary for idempotent commands and worker leases."""
 
@@ -38,6 +46,9 @@ class CommandRepository(Protocol):
         self, command_id: UUID, *, worker_id: str, lease_seconds: float
     ) -> CommandEnvelope: ...
 
+    async def assert_current_lease(self, command: CommandEnvelope) -> CommandEnvelope:
+        """Fence a delivery before it makes durable effects in its UoW."""
+
     async def complete(
         self, command_id: UUID, *, worker_id: str, result: Mapping[str, object] | None = None
     ) -> CommandEnvelope: ...
@@ -52,4 +63,4 @@ class CommandRepository(Protocol):
     ) -> CommandEnvelope: ...
 
 
-__all__ = ["CommandRepository"]
+__all__ = ["CommandLeaseLost", "CommandRecoveryRequired", "CommandRepository"]

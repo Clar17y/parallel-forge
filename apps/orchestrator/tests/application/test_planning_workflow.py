@@ -250,6 +250,16 @@ class _FakeCommandsRepo:
             return self.commands[command_id]
         raise LookupError(f"command not found: {command_id}")
 
+    async def assert_current_lease(self, command: CommandEnvelope) -> CommandEnvelope:
+        stored = await self.get(command.id)
+        if (
+            stored.status is not CommandStatus.LEASED
+            or stored.lease_owner != command.lease_owner
+            or stored.attempt != command.attempt
+        ):
+            raise RuntimeError("command lease was lost")
+        return stored
+
 
 class _FakeRunsRepo:
     def __init__(self, run: RunSnapshot) -> None:
@@ -539,6 +549,7 @@ def _build_fixture(
         lease_owner="worker-1",
         lease_expires_at=FIXED_NOW + timedelta(minutes=2),
     )
+    work.commands.add(command)
 
     return service, gateway, work, command, policy
 
@@ -618,6 +629,7 @@ async def test_semantic_attempt_distinction_allows_revision_retry(
         lease_owner="worker-1",
         lease_expires_at=FIXED_NOW + timedelta(minutes=2),
     )
+    work.commands.add(revision_command)
 
     source = CommandEnvelope(
         id=uuid4(),
@@ -723,6 +735,7 @@ async def test_revision_feedback_is_untrusted_and_original_task_preserved(
         lease_owner="worker-1",
         lease_expires_at=FIXED_NOW + timedelta(minutes=2),
     )
+    work.commands.add(revision_command)
 
     work.events.events.append(
         RunEvent(
@@ -778,6 +791,7 @@ async def test_queue_delivery_attempt_is_independent_from_semantic_attempt(
         lease_owner="worker-1",
         lease_expires_at=FIXED_NOW + timedelta(minutes=2),
     )
+    work.commands.add(high_delivery_command)
 
     await service.execute(high_delivery_command, work)
 

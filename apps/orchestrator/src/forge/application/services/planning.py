@@ -24,6 +24,7 @@ from forge.agents.prompt_loader import LoadedPrompt, PromptChanged, PromptLoader
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.clock import Clock, SystemClock
+from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
 from forge.application.ports.executions import (
     ExecutionAdmission,
     ExecutionStatus,
@@ -55,6 +56,7 @@ from forge.domain.agent import (
 from forge.domain.approval import ApprovalGate, PlanApprovalEvidence, canonical_digest
 from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.command import CommandEnvelope, CommandStatus
+from forge.domain.event import RunEvent
 from forge.domain.plan import PlanOutput
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
@@ -100,7 +102,7 @@ class PlanningValidationError(PlanningError):
     _MESSAGE = "planning request is invalid"
 
 
-class PlanningRecoveryRequired(PlanningError):
+class PlanningRecoveryRequired(CommandRecoveryRequired, PlanningError):
     """A prior planning admission is ambiguous and needs explicit recovery."""
 
     _MESSAGE = "planning recovery is required"
@@ -267,6 +269,9 @@ class PlanningService:
             await _rollback_preserving_cancellation(work)
             raise
         except PlanningRecoveryRequired:
+            raise
+        except CommandLeaseLost:
+            await _rollback(work)
             raise
         except Exception:  # noqa: BLE001 - persistence boundary is fail-closed
             await _rollback(work)
@@ -636,6 +641,7 @@ class PlanningService:
         attempt: int,
         request: AgentRequest,
     ) -> ExecutionAdmission:
+        await work.commands.assert_current_lease(command)
         latest = await self._snapshot(work, command)
         if latest.run.version != command.expected_run_version or (
             latest.run.state is not RunState.CREATED
@@ -704,6 +710,7 @@ class PlanningService:
         evidence_digest: str,
     ) -> PlanningOutcome:
         try:
+            await work.commands.assert_current_lease(command)
             run = await work.runs.get_for_update(command.run_id)
             task = await work.tasks.get(run.task_id, for_update=True)
             project = await work.projects.get(run.project_id, for_update=True)
@@ -781,6 +788,10 @@ class PlanningService:
         except asyncio.CancelledError:
             await _rollback_preserving_cancellation(work)
             raise
+        except CommandLeaseLost:
+            await _rollback(work)
+            await self._record_late_usage(work, command, request, usage, usage_attempts)
+            raise
         except PlanningRecoveryRequired:
             await _rollback(work)
             raise
@@ -809,6 +820,7 @@ class PlanningService:
         )
         try:
             failure_descriptor = await self._store_json(failure_bytes)
+            await work.commands.assert_current_lease(command)
             run = await work.runs.get_for_update(command.run_id)
             task = await work.tasks.get(run.task_id, for_update=True)
             project = await work.projects.get(run.project_id, for_update=True)
@@ -878,12 +890,78 @@ class PlanningService:
         except asyncio.CancelledError:
             await _rollback_preserving_cancellation(work)
             raise
+        except CommandLeaseLost:
+            await _rollback(work)
+            await self._record_late_usage(work, command, request, safe_usage, safe_attempts)
+            raise
         except PlanningRecoveryRequired:
             await _rollback(work)
             raise
         except Exception:  # noqa: BLE001 - persistence boundary is fail-closed
             await _rollback(work)
             raise PlanningError from None
+
+    async def _record_late_usage(
+        self,
+        work: UnitOfWork,
+        command: CommandEnvelope,
+        request: AgentRequest,
+        usage: UsageRecord,
+        attempts: tuple[UsageRecord, ...],
+    ) -> None:
+        """Retain measured evidence without settling an execution we no longer own."""
+        try:
+            run = await work.runs.get_for_update(command.run_id)
+            admission = await work.executions.get_admission(run.id, request.execution_id)
+            if (
+                admission is None
+                or admission.agent_execution_id != uuid5(_EXECUTION_NAMESPACE, str(command.id))
+                or admission.role is not AgentRole.PLANNER
+                or admission.provider != request.provider
+                or admission.model != request.model
+                or admission.instruction_version != request.instruction_version
+            ):
+                raise PlanningValidationError
+            descriptor = await self._store_json(
+                _canonical_json_bytes(
+                    {
+                        "schema_version": 1,
+                        "command_id": str(command.id),
+                        "delivery_attempt": command.attempt,
+                        "execution_id": str(request.execution_id),
+                        "usage": json.loads(_usage_attempts_bytes((usage,)))["attempts"][0],
+                        "attempts": json.loads(_usage_attempts_bytes(attempts))["attempts"],
+                    }
+                )
+            )
+            persisted = await work.artifacts.record(
+                descriptor,
+                run_id=run.id,
+                producer_type="planning_late_usage",
+                producer_id=request.execution_id,
+            )
+            await work.events.append(
+                RunEvent(
+                    run_id=run.id,
+                    run_version=run.version,
+                    event_type="planning.late_usage_observed",
+                    payload={
+                        "command_id": str(command.id),
+                        "execution_id": str(request.execution_id),
+                        "usage_artifact_digest": persisted.digest,
+                    },
+                    actor_class="worker",
+                )
+            )
+            await work.commit()
+        except asyncio.CancelledError:
+            await _rollback_preserving_cancellation(work)
+            raise
+        except Exception:  # noqa: BLE001 - stale receipt failure cannot authorize settlement
+            await _rollback(work)
+            # Receipt failure must never give this stale delivery authority to
+            # fail the replacement command or settle the admitted execution.
+            raise CommandLeaseLost("late usage persistence requires recovery") from None
 
     async def _require_semantic_attempt(self, work: UnitOfWork, command: CommandEnvelope) -> None:
         if command.payload == {}:
