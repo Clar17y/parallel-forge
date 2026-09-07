@@ -55,6 +55,10 @@ class Worker:
     async def tick(self) -> bool | None:
         """Process one command, returning ``None`` when the queue is idle."""
 
+        if self._draining:
+            # A cancelled handler still owns this worker's execution slot until
+            # its UoW closes. Polling may resume only after retained cleanup.
+            return None
         command = await self._commands.claim_next(
             worker_id=self._worker_id,
             lease_seconds=self._lease_seconds,

@@ -185,8 +185,22 @@ async def test_renewal_loss_returns_while_cancellation_suppressing_handler_drain
     await asyncio.wait_for(started.wait(), timeout=1)
     assert await asyncio.wait_for(tick, timeout=2) is False
     await asyncio.wait_for(cancelled.wait(), timeout=2)
-    release.set()
-    await asyncio.wait_for(worker.drain(), timeout=2)
+    claim_calls = []
+    original_claim = command_repository.claim_next
+
+    async def tracked_claim(**kwargs):
+        claim_calls.append(kwargs)
+        return await original_claim(**kwargs)
+
+    monkeypatch.setattr(command_repository, "claim_next", tracked_claim)
+    try:
+        assert await worker.tick() is None
+        assert claim_calls == []
+    finally:
+        release.set()
+        await asyncio.wait_for(worker.drain(), timeout=2)
+    assert await worker.tick() is None
+    assert len(claim_calls) == 1
     stored = await command_repository.get(command.id)
     assert stored.status is CommandStatus.LEASED
 
