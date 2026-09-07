@@ -142,6 +142,32 @@ class ArtifactRepository:
                 result.append(_descriptor_from_rows(content, lineage, parents))
             return tuple(result)
 
+    async def get_by_producer(
+        self, *, run_id: UUID, producer_type: str, producer_id: UUID
+    ) -> tuple[ArtifactDescriptor, ...]:
+        """Return every exact producer lineage; callers reject ambiguity."""
+
+        if not isinstance(run_id, UUID) or not isinstance(producer_id, UUID):
+            raise TypeError("artifact producer lookup requires UUID identifiers")
+        async with self._session_scope(transaction=False) as session:
+            rows = (
+                await session.execute(
+                    select(Artifact, ArtifactLineage)
+                    .join(ArtifactLineage, ArtifactLineage.artifact_id == Artifact.id)
+                    .where(
+                        ArtifactLineage.run_id == run_id,
+                        ArtifactLineage.producer_kind == producer_type,
+                        ArtifactLineage.producer_id == producer_id,
+                    )
+                    .order_by(ArtifactLineage.created_at, ArtifactLineage.id)
+                )
+            ).all()
+            result: list[ArtifactDescriptor] = []
+            for content, lineage in rows:
+                parents = await self._parent_digests(content.id, run_id, session)
+                result.append(_descriptor_from_rows(content, lineage, parents))
+            return tuple(result)
+
     @asynccontextmanager
     async def _session_scope(self, *, transaction: bool) -> AsyncIterator[AsyncSession]:
         if self._session is not None:

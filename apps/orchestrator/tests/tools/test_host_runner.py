@@ -7,7 +7,11 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from forge.application.ports.runner import RunCommandRequest
+from forge.application.ports.runner import (
+    LaunchOwnership,
+    LaunchOwnershipRejected,
+    RunCommandRequest,
+)
 from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.tools.host import TrustedHostRunner
@@ -230,6 +234,32 @@ async def test_trusted_host_cancellation_during_attempt_audit_does_not_launch(
         await task
     except asyncio.CancelledError:
         pass
+    assert process.calls == []
+
+
+async def test_trusted_host_rejects_prelaunch_ownership_without_running_process(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    process = _FakeProcess()
+    ownership = LaunchOwnership()
+    ownership.request_cancellation()
+    runner = TrustedHostRunner(
+        policy=_policy(),
+        root=CanonicalRoot(root),
+        process_runner=process,
+        artifact_store=_FakeArtifacts(),
+        audit=_FakeAudit(),
+        telemetry=_FakeTelemetry(),
+    )
+
+    with pytest.raises(LaunchOwnershipRejected):
+        await runner.run_terminal(
+            RunCommandRequest(
+                command_name="named-lint", kind=StepKind.LINT, launch_ownership=ownership
+            )
+        )
     assert process.calls == []
 
 

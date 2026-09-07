@@ -9,7 +9,11 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from forge.application.ports.runner import RunCommandRequest
+from forge.application.ports.runner import (
+    LaunchOwnership,
+    LaunchOwnershipRejected,
+    RunCommandRequest,
+)
 from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.domain.validation import UnknownNamedCommand
@@ -39,6 +43,32 @@ def _command(**overrides: object) -> CommandSpec:
     }
     values.update(overrides)
     return CommandSpec(**values)
+
+
+@pytest.mark.asyncio
+async def test_docker_rejects_prelaunch_ownership_without_running_process(tmp_path: Path) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    command = _command()
+    process = _FakeProcess()
+    ownership = LaunchOwnership()
+    ownership.request_cancellation()
+    runner = DockerRunner(
+        policy=_policy(command),
+        root=CanonicalRoot(worktree),
+        image_digest="sha256:" + "4" * 64,
+        process_runner=process,
+        artifact_store=_FakeArtifacts(),
+        telemetry=_FakeTelemetry(),
+    )
+
+    with pytest.raises(LaunchOwnershipRejected):
+        await runner.run_terminal(
+            RunCommandRequest(
+                command_name=command.name, kind=command.kind, launch_ownership=ownership
+            )
+        )
+    assert process.calls == []
 
 
 @dataclass

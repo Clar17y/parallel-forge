@@ -18,6 +18,37 @@ if TYPE_CHECKING:
     from forge.domain.policy import ProjectPolicy
 
 
+class LaunchOwnershipRejected(RuntimeError):
+    """A cancellation won before the concrete runner could launch a command."""
+
+
+class LaunchOwnership:
+    """One-shot handshake between named-check cancellation and command launch.
+
+    The terminal runner accepts ownership immediately before its first possible
+    process launch.  Before that point, cancellation is known to have no
+    command effect.
+    """
+
+    __slots__ = ("_accepted", "_cancelled")
+
+    def __init__(self) -> None:
+        self._accepted = False
+        self._cancelled = False
+
+    @property
+    def accepted(self) -> bool:
+        return self._accepted
+
+    def request_cancellation(self) -> None:
+        self._cancelled = True
+
+    def accept_launch(self) -> None:
+        if self._cancelled:
+            raise LaunchOwnershipRejected()
+        self._accepted = True
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunCommandRequest:
     """One agent-safe request containing no argv or runner controls."""
@@ -25,6 +56,7 @@ class RunCommandRequest:
     command_name: str
     kind: StepKind
     environment: Mapping[str, str] = field(default_factory=dict)
+    launch_ownership: LaunchOwnership | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.command_name, str):
@@ -33,6 +65,10 @@ class RunCommandRequest:
             raise TypeError("command kind must be a StepKind")
         if not isinstance(self.environment, Mapping):
             raise TypeError("command environment must be a mapping")
+        if self.launch_ownership is not None and not isinstance(
+            self.launch_ownership, LaunchOwnership
+        ):
+            raise TypeError("command launch ownership must be a LaunchOwnership")
         detached = dict(self.environment)
         for key, value in detached.items():
             if (
@@ -174,7 +210,13 @@ class RunnerPort(Protocol):
 
 
 class TerminalRunnerPort(Protocol):
-    """Runner contract that exposes completed evidence before cancellation."""
+    """Runner contract that exposes completed evidence before cancellation.
+
+    When a request carries launch ownership, implementations must accept it
+    before their first possible command effect. Until acceptance, cancellation
+    must leave the command unlaunched. After acceptance, cancellation must join
+    terminal evidence or propagate without claiming a no-effect outcome.
+    """
 
     async def run_terminal(self, request: RunCommandRequest) -> CommandTerminalResult: ...
 
@@ -209,6 +251,8 @@ class RunnerAuditSink(Protocol):
 __all__ = [
     "CommandResult",
     "CommandTerminalResult",
+    "LaunchOwnership",
+    "LaunchOwnershipRejected",
     "RunCommandRequest",
     "RunnerAuditSink",
     "RunnerPort",

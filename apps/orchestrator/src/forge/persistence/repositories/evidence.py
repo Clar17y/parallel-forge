@@ -62,7 +62,9 @@ class PostgresEvidenceRepository:
         manifest = canonical_manifest
         projection_members: tuple[tuple[ValidationEvidenceMember, UUID], ...] = ()
         if isinstance(draft, ValidationEvidenceDraft):
-            projection_members = tuple((item.member, item.output_artifact_id) for item in draft.members)
+            projection_members = tuple(
+                (item.member, item.output_artifact_id) for item in draft.members
+            )
             if not isinstance(manifest, ValidationEvidenceManifest) or (
                 tuple(member for member, _ in projection_members) != manifest.members
             ):
@@ -106,15 +108,30 @@ class PostgresEvidenceRepository:
         return self._descriptor(row, descriptor)
 
     async def bind_input(
-        self, consumer_execution_id: UUID, purpose: EvidenceInputPurpose,
-        evidence_set_id: UUID, *, run_id: UUID,
+        self,
+        consumer_execution_id: UUID,
+        purpose: EvidenceInputPurpose,
+        evidence_set_id: UUID,
+        *,
+        run_id: UUID,
     ) -> None:
-        execution = await self._session.get(AgentExecution, consumer_execution_id, with_for_update=True)
+        execution = await self._session.get(
+            AgentExecution, consumer_execution_id, with_for_update=True
+        )
         evidence = await self._session.get(EvidenceSet, evidence_set_id, with_for_update=True)
-        if execution is None or evidence is None or execution.run_id != run_id or evidence.run_id != run_id:
+        if (
+            execution is None
+            or evidence is None
+            or execution.run_id != run_id
+            or evidence.run_id != run_id
+        ):
             raise EvidenceNotFound("binding target was not found")
         expected_kind = self._purpose_kind(purpose).value
-        if execution.role != "reviewer" or execution.status != "PENDING" or evidence.kind != expected_kind:
+        if (
+            execution.role != "reviewer"
+            or execution.status != "PENDING"
+            or evidence.kind != expected_kind
+        ):
             raise EvidenceConflict("binding target is ineligible")
         existing = await self._input(consumer_execution_id, purpose)
         if existing is not None:
@@ -122,32 +139,51 @@ class PostgresEvidenceRepository:
                 return
             raise EvidenceConflict("evidence input is immutable")
         if purpose is EvidenceInputPurpose.PRIOR_REVIEW:
-            validation = await self._input(consumer_execution_id, EvidenceInputPurpose.VALIDATION_RESULTS)
+            validation = await self._input(
+                consumer_execution_id, EvidenceInputPurpose.VALIDATION_RESULTS
+            )
             if validation is None or validation.prior_review_evidence_set_id != evidence_set_id:
                 raise EvidenceConflict("prior review is not causal")
-        self._session.add(AgentExecutionEvidenceInput(
-            consumer_execution_id=consumer_execution_id, run_id=run_id,
-            purpose=purpose.value, evidence_set_id=evidence_set_id, evidence_kind=expected_kind,
-        ))
+        self._session.add(
+            AgentExecutionEvidenceInput(
+                consumer_execution_id=consumer_execution_id,
+                run_id=run_id,
+                purpose=purpose.value,
+                evidence_set_id=evidence_set_id,
+                evidence_kind=expected_kind,
+            )
+        )
         await self._session.flush()
 
     async def input_for_execution(
-        self, purpose: EvidenceInputPurpose, scope: EvidenceReadScope,
+        self,
+        purpose: EvidenceInputPurpose,
+        scope: EvidenceReadScope,
     ) -> EvidenceSetDescriptor | None:
         execution = await self._session.get(AgentExecution, scope.consumer_execution_id)
         if (
-            execution is None or execution.run_id != scope.run_id
-            or execution.step_id != scope.consumer_step_id or execution.role != "reviewer"
+            execution is None
+            or execution.run_id != scope.run_id
+            or execution.step_id != scope.consumer_step_id
+            or execution.role != "reviewer"
             or execution.status != "RUNNING"
         ):
             raise EvidenceCorruptLineage("consumer does not match read scope")
         consumer_step = await self._session.get(Step, scope.consumer_step_id)
-        if consumer_step is None or consumer_step.run_id != scope.run_id or consumer_step.status != "RUNNING":
+        if (
+            consumer_step is None
+            or consumer_step.run_id != scope.run_id
+            or consumer_step.status != "RUNNING"
+        ):
             raise EvidenceCorruptLineage("consumer step is not running")
         row = await self._input(scope.consumer_execution_id, purpose)
         if row is None:
             return None
-        if row.run_id != scope.run_id or row.policy_version != scope.policy_version or row.kind != self._purpose_kind(purpose).value:
+        if (
+            row.run_id != scope.run_id
+            or row.policy_version != scope.policy_version
+            or row.kind != self._purpose_kind(purpose).value
+        ):
             raise EvidenceCorruptLineage("input binding is malformed")
         if purpose is EvidenceInputPurpose.VALIDATION_RESULTS and row.head_sha != scope.head_sha:
             raise EvidenceCorruptLineage("validation head differs")
@@ -183,10 +219,25 @@ class PostgresEvidenceRepository:
                 or producer.completed_at > execution.started_at
             ):
                 raise EvidenceCorruptLineage("prior review producer is not eligible")
-        artifact = await self._artifacts.get_by_digest(await self._digest(row.manifest_artifact_id), run_id=row.run_id)
+        artifact = await self._artifacts.get_by_digest(
+            await self._digest(row.manifest_artifact_id), run_id=row.run_id
+        )
         return self._descriptor(row, artifact)
 
-    async def _row(self, manifest: ValidationEvidenceManifest | ReviewEvidenceManifest, descriptor: ArtifactDescriptor) -> EvidenceSet:
+    async def get_by_id(self, evidence_set_id: UUID, *, run_id: UUID) -> EvidenceSetDescriptor:
+        """Return one immutable set by its recorded ID; never select a latest set."""
+
+        row = await self._set(evidence_set_id, run_id)
+        artifact = await self._artifacts.get_by_digest(
+            await self._digest(row.manifest_artifact_id), run_id=run_id
+        )
+        return self._descriptor(row, artifact)
+
+    async def _row(
+        self,
+        manifest: ValidationEvidenceManifest | ReviewEvidenceManifest,
+        descriptor: ArtifactDescriptor,
+    ) -> EvidenceSet:
         artifact_id = descriptor.artifact_id
         if isinstance(manifest, ValidationEvidenceManifest):
             prior = None
@@ -194,18 +245,49 @@ class PostgresEvidenceRepository:
                 prior = await self._set(manifest.prior_review_evidence_set_id, manifest.run_id)
                 if prior.kind != "review" or prior.policy_version != manifest.policy_version:
                     raise EvidenceCorruptLineage("prior review parent is invalid")
-            return EvidenceSet(id=manifest.evidence_set_id, run_id=manifest.run_id, step_id=manifest.step_id, kind="validation", policy_version=manifest.policy_version, head_sha=manifest.head_sha, manifest_artifact_id=artifact_id, prior_review_evidence_set_id=manifest.prior_review_evidence_set_id, prior_review_parent_policy_version=None if prior is None else prior.policy_version, prior_review_parent_kind=None if prior is None else prior.kind, review_finding_ids=None)
+            return EvidenceSet(
+                id=manifest.evidence_set_id,
+                run_id=manifest.run_id,
+                step_id=manifest.step_id,
+                kind="validation",
+                policy_version=manifest.policy_version,
+                head_sha=manifest.head_sha,
+                manifest_artifact_id=artifact_id,
+                prior_review_evidence_set_id=manifest.prior_review_evidence_set_id,
+                prior_review_parent_policy_version=None if prior is None else prior.policy_version,
+                prior_review_parent_kind=None if prior is None else prior.kind,
+                review_finding_ids=None,
+            )
         validation = await self._set(manifest.validation_evidence_set_id, manifest.run_id)
         producer = await self._session.get(AgentExecution, manifest.producer_execution_id)
         if (
-            validation.kind != "validation" or validation.policy_version != manifest.policy_version
-            or validation.head_sha != manifest.head_sha or producer is None
-            or producer.run_id != manifest.run_id or producer.step_id != manifest.step_id
+            validation.kind != "validation"
+            or validation.policy_version != manifest.policy_version
+            or validation.head_sha != manifest.head_sha
+            or producer is None
+            or producer.run_id != manifest.run_id
+            or producer.step_id != manifest.step_id
             or producer.role != "reviewer"
         ):
             raise EvidenceCorruptLineage("review parent or producer is invalid")
         finding_ids = tuple(sorted(f.finding_id for f in manifest.review.findings))
-        return EvidenceSet(id=manifest.evidence_set_id, run_id=manifest.run_id, step_id=manifest.step_id, kind="review", policy_version=manifest.policy_version, head_sha=manifest.head_sha, producer_execution_id=manifest.producer_execution_id, producer_step_id=manifest.step_id, producer_role="reviewer", manifest_artifact_id=artifact_id, validation_evidence_set_id=validation.id, validation_parent_policy_version=validation.policy_version, validation_parent_kind=validation.kind, validation_parent_head_sha=validation.head_sha, review_finding_ids=list(finding_ids))
+        return EvidenceSet(
+            id=manifest.evidence_set_id,
+            run_id=manifest.run_id,
+            step_id=manifest.step_id,
+            kind="review",
+            policy_version=manifest.policy_version,
+            head_sha=manifest.head_sha,
+            producer_execution_id=manifest.producer_execution_id,
+            producer_step_id=manifest.step_id,
+            producer_role="reviewer",
+            manifest_artifact_id=artifact_id,
+            validation_evidence_set_id=validation.id,
+            validation_parent_policy_version=validation.policy_version,
+            validation_parent_kind=validation.kind,
+            validation_parent_head_sha=validation.head_sha,
+            review_finding_ids=list(finding_ids),
+        )
 
     async def _expected_parent_digests(
         self, manifest: ValidationEvidenceManifest | ReviewEvidenceManifest
@@ -314,12 +396,23 @@ class PostgresEvidenceRepository:
         return row
 
     async def _input(self, execution_id: UUID, purpose: EvidenceInputPurpose) -> EvidenceSet | None:
-        return (await self._session.execute(
-            select(EvidenceSet).join(AgentExecutionEvidenceInput, AgentExecutionEvidenceInput.evidence_set_id == EvidenceSet.id).where(AgentExecutionEvidenceInput.consumer_execution_id == execution_id, AgentExecutionEvidenceInput.purpose == purpose.value)
-        )).scalar_one_or_none()
+        return (
+            await self._session.execute(
+                select(EvidenceSet)
+                .join(
+                    AgentExecutionEvidenceInput,
+                    AgentExecutionEvidenceInput.evidence_set_id == EvidenceSet.id,
+                )
+                .where(
+                    AgentExecutionEvidenceInput.consumer_execution_id == execution_id,
+                    AgentExecutionEvidenceInput.purpose == purpose.value,
+                )
+            )
+        ).scalar_one_or_none()
 
     async def _digest(self, artifact_id: UUID) -> str:
         from forge.persistence.models import Artifact
+
         artifact = await self._session.get(Artifact, artifact_id)
         if artifact is None:
             raise EvidenceCorruptLineage("manifest artifact was not found")
@@ -340,11 +433,31 @@ class PostgresEvidenceRepository:
 
     @staticmethod
     def _purpose_kind(purpose: EvidenceInputPurpose) -> EvidenceKind:
-        return EvidenceKind.VALIDATION if purpose is EvidenceInputPurpose.VALIDATION_RESULTS else EvidenceKind.REVIEW
+        return (
+            EvidenceKind.VALIDATION
+            if purpose is EvidenceInputPurpose.VALIDATION_RESULTS
+            else EvidenceKind.REVIEW
+        )
 
     @staticmethod
     def _descriptor(row: EvidenceSet, artifact: ArtifactDescriptor) -> EvidenceSetDescriptor:
-        return EvidenceSetDescriptor(row.id, row.run_id, row.step_id, EvidenceKind(row.kind), row.policy_version, row.head_sha, row.producer_execution_id, row.manifest_artifact_id, artifact.digest, artifact.media_type, artifact.byte_count, artifact.schema_version, row.validation_evidence_set_id, row.prior_review_evidence_set_id, None if row.review_finding_ids is None else tuple(row.review_finding_ids))
+        return EvidenceSetDescriptor(
+            row.id,
+            row.run_id,
+            row.step_id,
+            EvidenceKind(row.kind),
+            row.policy_version,
+            row.head_sha,
+            row.producer_execution_id,
+            row.manifest_artifact_id,
+            artifact.digest,
+            artifact.media_type,
+            artifact.byte_count,
+            artifact.schema_version,
+            row.validation_evidence_set_id,
+            row.prior_review_evidence_set_id,
+            None if row.review_finding_ids is None else tuple(row.review_finding_ids),
+        )
 
     @staticmethod
     def _matches(

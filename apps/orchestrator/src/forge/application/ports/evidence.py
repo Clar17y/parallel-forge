@@ -95,9 +95,37 @@ class ReviewEvidenceDraft:
 
 
 class EvidenceRepository(Protocol):
-    async def input_for_execution(self, purpose: EvidenceInputPurpose, scope: EvidenceReadScope) -> EvidenceSetDescriptor | None: ...
-    async def record_set(self, draft: ValidationEvidenceDraft | ReviewEvidenceDraft, artifact: CanonicalEvidenceArtifact) -> EvidenceSetDescriptor: ...
-    async def bind_input(self, consumer_execution_id: UUID, purpose: EvidenceInputPurpose, evidence_set_id: UUID, *, run_id: UUID) -> None: ...
+    async def input_for_execution(
+        self, purpose: EvidenceInputPurpose, scope: EvidenceReadScope
+    ) -> EvidenceSetDescriptor | None: ...
+    async def get_by_id(self, evidence_set_id: UUID, *, run_id: UUID) -> EvidenceSetDescriptor: ...
+    async def record_set(
+        self,
+        draft: ValidationEvidenceDraft | ReviewEvidenceDraft,
+        artifact: CanonicalEvidenceArtifact,
+    ) -> EvidenceSetDescriptor: ...
+    async def bind_input(
+        self,
+        consumer_execution_id: UUID,
+        purpose: EvidenceInputPurpose,
+        evidence_set_id: UUID,
+        *,
+        run_id: UUID,
+    ) -> None: ...
 
 
-__all__ = ["CanonicalEvidenceArtifact", "EvidenceConflict", "EvidenceCorruptLineage", "EvidenceError", "EvidenceInputPurpose", "EvidenceKind", "EvidenceNotFound", "EvidenceReadScope", "EvidenceRepository", "EvidenceSetDescriptor", "ReviewEvidenceDraft", "ValidationEvidenceDraft", "ValidationProjectionMember"]
+__all__ = [
+    "CanonicalEvidenceArtifact",
+    "EvidenceConflict",
+    "EvidenceCorruptLineage",
+    "EvidenceError",
+    "EvidenceInputPurpose",
+    "EvidenceKind",
+    "EvidenceNotFound",
+    "EvidenceReadScope",
+    "EvidenceRepository",
+    "EvidenceSetDescriptor",
+    "ReviewEvidenceDraft",
+    "ValidationEvidenceDraft",
+    "ValidationProjectionMember",
+]

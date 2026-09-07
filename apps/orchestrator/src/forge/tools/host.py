@@ -148,6 +148,8 @@ class TrustedHostRunner:
         )
         if caller_cancelled:
             raise asyncio.CancelledError()
+        if request.launch_ownership is not None:
+            request.launch_ownership.accept_launch()
         started_at = self._clock.now()
         started = self._monotonic()
         with self._telemetry.start_span(

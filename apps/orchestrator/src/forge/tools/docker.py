@@ -17,6 +17,7 @@ from forge.application.ports.clock import Clock, SystemClock
 from forge.application.ports.runner import (
     CommandResult,
     CommandTerminalResult,
+    LaunchOwnershipRejected,
     RunCommandRequest,
 )
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode
@@ -254,6 +255,8 @@ class DockerRunner:
             try:
                 if before_launch is not None:
                     before_launch()
+                if request.launch_ownership is not None:
+                    request.launch_ownership.accept_launch()
                 process_result, caller_cancelled = await await_deferred_cancellation(
                     asyncio.to_thread(
                         self._process_runner.run_argv,
@@ -264,6 +267,8 @@ class DockerRunner:
                     ),
                     state=launch_cancellation,
                 )
+            except LaunchOwnershipRejected:
+                raise
             except asyncio.CancelledError:
                 await self._cleanup_for_terminal(
                     container_name,

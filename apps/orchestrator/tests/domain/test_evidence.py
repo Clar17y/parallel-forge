@@ -540,9 +540,7 @@ def test_changed_binding_output_status_changes_digest() -> None:
     assert evidence_manifest_digest(base.model_copy(update={"head_sha": "0" * 40})) != base_digest
     # Changed member status
     m_failed = make_member(result_id=_FIXED_UUID_4, status=EvidenceStatus.FAILED, exit_code=1)
-    assert (
-        evidence_manifest_digest(base.model_copy(update={"members": (m_failed,)})) != base_digest
-    )
+    assert evidence_manifest_digest(base.model_copy(update={"members": (m_failed,)})) != base_digest
 
 
 def test_decode_rejects_non_canonical_wire_representations() -> None:
@@ -659,9 +657,7 @@ def test_discriminated_union_membership() -> None:
 
 def test_error_message_does_not_leak_raw_payload_or_secrets() -> None:
     secret = "ghp_supersecretgithubtoken1234567890"
-    malformed_json_with_secret = (
-        f'{{"evidence_set_id":"bad_uuid","secret":"{secret}"}}'.encode()
-    )
+    malformed_json_with_secret = f'{{"evidence_set_id":"bad_uuid","secret":"{secret}"}}'.encode()
 
     with pytest.raises(EvidenceManifestError) as exc_info:
         decode_evidence_manifest(malformed_json_with_secret)
@@ -752,7 +748,9 @@ def test_review_dict_rejects_unknown_or_missing_required_fields() -> None:
     with pytest.raises((ValueError, TypeError, ValidationError)):
         make_review_manifest(review={**review, "unexpected": "value"})
     with pytest.raises((ValueError, TypeError, ValidationError)):
-        make_review_manifest(review={key: value for key, value in review.items() if key != "summary"})
+        make_review_manifest(
+            review={key: value for key, value in review.items() if key != "summary"}
+        )
 
 
 def test_encode_rejects_model_copy_invalid_review_decision_invariants() -> None:

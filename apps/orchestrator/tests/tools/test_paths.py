@@ -1200,7 +1200,6 @@ def test_prepared_live_context_detects_failed_handle_close(
                 os.close(survivor)
 
 
-
 def test_quarantine_moves_exact_target_then_registration(tmp_path: Path) -> None:
     root_path, target, registration, _outside = _make_quarantine_fixture(tmp_path)
     root = CanonicalRoot(root_path)

@@ -24,7 +24,7 @@ from forge.application.services.tools import (
 from forge.domain.actor import AgentRole
 from forge.domain.artifact import canonical_storage_pointer
 from forge.domain.operation import OperationIntent, OperationOutcome, OperationStatus
-from forge.domain.policy import AgentModelPolicy, ProjectPolicy
+from forge.domain.policy import AgentModelPolicy, CommandSpec, ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
 from forge.domain.tool import (
@@ -174,6 +174,7 @@ async def _seed_test_database(
     tmp_path: Path,
     *,
     max_tool_calls: int = 10,
+    commands: tuple[CommandSpec, ...] = (),
 ) -> tuple[
     UUID,
     UUID,
@@ -205,6 +206,7 @@ async def _seed_test_database(
         github_repository="Clar17y/forge-test",
         default_branch="main",
         developer_model=AgentModelPolicy(max_tool_calls=max_tool_calls),
+        commands=commands,
     )
 
     async with session_factory() as session, session.begin():
@@ -309,11 +311,7 @@ def _setup_service(
         force_python_search=True,
     )
     operation_repo = PostgresOperationRepository(session_factory)
-    executor = (
-        custom_executor
-        if custom_executor is not None
-        else OperationExecutor(operation_repo)
-    )
+    executor = custom_executor if custom_executor is not None else OperationExecutor(operation_repo)
 
     uow_factory = (
         custom_uow_factory
@@ -395,8 +393,10 @@ async def test_observe_committed_running_tool_call_and_intent_before_blocked_wri
         # Query from an independent second session before writer proceeds
         async with session_factory() as second_session:
             calls = (
-                await second_session.execute(select(ToolCall).where(ToolCall.run_id == run_id))
-            ).scalars().all()
+                (await second_session.execute(select(ToolCall).where(ToolCall.run_id == run_id)))
+                .scalars()
+                .all()
+            )
             assert len(calls) == 1
             running_call = calls[0]
             assert running_call.status == "RUNNING"
@@ -406,10 +406,14 @@ async def test_observe_committed_running_tool_call_and_intent_before_blocked_wri
             assert running_call.normalized_arguments["path"] == "src/hello.py"
 
             intents = (
-                await second_session.execute(
-                    select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+                (
+                    await second_session.execute(
+                        select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(intents) == 1
             intent = intents[0]
             assert intent.operation_kind == ToolName.REPOSITORY_WRITE_FILE.value
@@ -450,22 +454,30 @@ async def test_observe_committed_running_tool_call_and_intent_before_blocked_wri
 
         # Check recorded artifact descriptor and lineage
         lineages = (
-            await final_session.execute(
-                select(ArtifactLineage).where(
-                    ArtifactLineage.run_id == run_id,
-                    ArtifactLineage.producer_id == running_call.id,
+            (
+                await final_session.execute(
+                    select(ArtifactLineage).where(
+                        ArtifactLineage.run_id == run_id,
+                        ArtifactLineage.producer_id == running_call.id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(lineages) == 1
         lineage = lineages[0]
         assert lineage.producer_kind == "controlled_tool"
 
         artifacts = (
-            await final_session.execute(
-                select(Artifact).where(Artifact.id == lineage.artifact_id)
+            (
+                await final_session.execute(
+                    select(Artifact).where(Artifact.id == lineage.artifact_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(artifacts) == 1
         art = artifacts[0]
         assert art.digest == result.artifact_digests[0]
@@ -474,13 +486,17 @@ async def test_observe_committed_running_tool_call_and_intent_before_blocked_wri
 
         # Check completed RunEvent
         events = (
-            await final_session.execute(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "tool_call.completed",
+            (
+                await final_session.execute(
+                    select(RunEvent).where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "tool_call.completed",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(events) == 1
         ev = events[0]
         assert ev.actor_id == execution_id
@@ -556,9 +572,7 @@ async def test_failed_admission_leaves_neither_tool_call_nor_intent_nor_effect(
         assert intent_count == 0
 
         event_count = await session.scalar(
-            select(func.count())
-            .select_from(RunEvent)
-            .where(RunEvent.run_id == run_id)
+            select(func.count()).select_from(RunEvent).where(RunEvent.run_id == run_id)
         )
         assert event_count == 0
 
@@ -632,7 +646,9 @@ async def test_concurrent_identical_invocations_produce_one_effect_and_terminal_
             timeout=6.0,
         )
         assert writer.write_started_event.is_set(), "first writer failed to enter blocked state"
-        assert not writer.write_proceed_event.is_set(), "first writer proceed event should remain unset"
+        assert not writer.write_proceed_event.is_set(), (
+            "first writer proceed event should remain unset"
+        )
 
         # Launch second invocation while first writer effect is still blocked
         task2 = asyncio.create_task(service.invoke(context, request))
@@ -642,10 +658,14 @@ async def test_concurrent_identical_invocations_produce_one_effect_and_terminal_
             executor_spy.second_admitted_event.wait(),
             timeout=5.0,
         )
-        assert executor_spy.second_admitted_event.is_set(), "second caller did not reach execute_admitted"
+        assert executor_spy.second_admitted_event.is_set(), (
+            "second caller did not reach execute_admitted"
+        )
 
         # While first writer effect is STILL blocked:
-        assert not writer.write_proceed_event.is_set(), "writer must remain blocked while second caller admits"
+        assert not writer.write_proceed_event.is_set(), (
+            "writer must remain blocked while second caller admits"
+        )
         assert writer.call_count == 0, "no write effect may occur before proceed event is set"
 
         # Prove second caller reaches the same persisted still-pending intent:
@@ -659,19 +679,23 @@ async def test_concurrent_identical_invocations_produce_one_effect_and_terminal_
         # Query independent PostgreSQL session: intent is persisted and still PENDING, call is RUNNING
         async with session_factory() as probe_session:
             db_intents = (
-                await probe_session.execute(
-                    select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+                (
+                    await probe_session.execute(
+                        select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(db_intents) == 1
             assert db_intents[0].id == second_intent.id
             assert db_intents[0].status == "PENDING"
 
             db_calls = (
-                await probe_session.execute(
-                    select(ToolCall).where(ToolCall.run_id == run_id)
-                )
-            ).scalars().all()
+                (await probe_session.execute(select(ToolCall).where(ToolCall.run_id == run_id)))
+                .scalars()
+                .all()
+            )
             assert len(db_calls) == 1
             assert db_calls[0].status == "RUNNING"
 
@@ -705,42 +729,52 @@ async def test_concurrent_identical_invocations_produce_one_effect_and_terminal_
     # Exactly one ToolCall, one OperationIntent, and one Artifact row in PostgreSQL
     async with session_factory() as session:
         calls = (
-            await session.execute(select(ToolCall).where(ToolCall.run_id == run_id))
-        ).scalars().all()
+            (await session.execute(select(ToolCall).where(ToolCall.run_id == run_id)))
+            .scalars()
+            .all()
+        )
         assert len(calls) == 1
         assert calls[0].status == "SUCCEEDED"
 
         intents = (
-            await session.execute(
-                select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+            (
+                await session.execute(
+                    select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(intents) == 1
         assert intents[0].status == "SUCCEEDED"
 
         lineages = (
-            await session.execute(
-                select(ArtifactLineage).where(ArtifactLineage.run_id == run_id)
-            )
-        ).scalars().all()
+            (await session.execute(select(ArtifactLineage).where(ArtifactLineage.run_id == run_id)))
+            .scalars()
+            .all()
+        )
         assert len(lineages) == 1
         assert lineages[0].producer_kind == "controlled_tool"
 
         artifacts = (
-            await session.execute(
-                select(Artifact).where(Artifact.id == lineages[0].artifact_id)
-            )
-        ).scalars().all()
+            (await session.execute(select(Artifact).where(Artifact.id == lineages[0].artifact_id)))
+            .scalars()
+            .all()
+        )
         assert len(artifacts) == 1
 
         events = (
-            await session.execute(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "tool_call.completed",
+            (
+                await session.execute(
+                    select(RunEvent).where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "tool_call.completed",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(events) == 1
         assert events[0].payload["status"] == "succeeded"
         assert events[0].payload["authorized"] is True
@@ -806,9 +840,7 @@ async def test_terminal_replay_does_not_repeat_effect_or_budget_and_cannot_cross
         name=ToolName.REPOSITORY_WRITE_FILE,
         arguments={"path": "other.txt", "content": "other content\n"},
     )
-    budget_denied = await service.invoke(
-        replace(context, invocation_id=uuid4()), new_request
-    )
+    budget_denied = await service.invoke(replace(context, invocation_id=uuid4()), new_request)
     assert budget_denied.status is ToolCallStatus.DENIED
     assert budget_denied.error is not None
     assert budget_denied.error.code is ToolErrorCode.BUDGET_EXCEEDED
@@ -816,15 +848,19 @@ async def test_terminal_replay_does_not_repeat_effect_or_budget_and_cannot_cross
 
     async with session_factory() as session:
         events = (
-            await session.execute(
-                select(RunEvent)
-                .where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "tool_call.completed",
+            (
+                await session.execute(
+                    select(RunEvent)
+                    .where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "tool_call.completed",
+                    )
+                    .order_by(RunEvent.sequence)
                 )
-                .order_by(RunEvent.sequence)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(events) == 2
         assert events[0].payload["status"] == "succeeded"
         assert events[0].payload["authorized"] is True
@@ -871,15 +907,23 @@ async def test_terminal_replay_does_not_repeat_effect_or_budget_and_cannot_cross
     # Attempting to replay with crossed agent_execution_id raises ToolInvocationError
     with pytest.raises(ToolInvocationError):
         await _write_replay_result(
-            persisted_record, cross_exec_context, persisted_record.normalized_arguments,
-            _write_request_digest(request), artifacts=uow.artifacts, artifact_store=artifact_store,
+            persisted_record,
+            cross_exec_context,
+            persisted_record.normalized_arguments,
+            _write_request_digest(request),
+            artifacts=uow.artifacts,
+            artifact_store=artifact_store,
         )
 
     # Attempting to replay with crossed step_id raises ToolInvocationError
     with pytest.raises(ToolInvocationError):
         await _write_replay_result(
-            persisted_record, cross_step_context, persisted_record.normalized_arguments
-            , _write_request_digest(request), artifacts=uow.artifacts, artifact_store=artifact_store,
+            persisted_record,
+            cross_step_context,
+            persisted_record.normalized_arguments,
+            _write_request_digest(request),
+            artifacts=uow.artifacts,
+            artifact_store=artifact_store,
         )
 
     # Attempting to replay with crossed role raises ToolInvocationError
@@ -888,7 +932,9 @@ async def test_terminal_replay_does_not_repeat_effect_or_budget_and_cannot_cross
             persisted_record,
             replace(context, role=AgentRole.REVIEWER),
             persisted_record.normalized_arguments,
-            _write_request_digest(request), artifacts=uow.artifacts, artifact_store=artifact_store,
+            _write_request_digest(request),
+            artifacts=uow.artifacts,
+            artifact_store=artifact_store,
         )
 
     # Attempting to replay with crossed policy_version raises ToolInvocationError
@@ -897,7 +943,9 @@ async def test_terminal_replay_does_not_repeat_effect_or_budget_and_cannot_cross
             persisted_record,
             replace(context, policy_version=99),
             persisted_record.normalized_arguments,
-            _write_request_digest(request), artifacts=uow.artifacts, artifact_store=artifact_store,
+            _write_request_digest(request),
+            artifacts=uow.artifacts,
+            artifact_store=artifact_store,
         )
 
     # Attempting to replay with tampered normalized arguments raises ToolInvocationError
@@ -905,8 +953,12 @@ async def test_terminal_replay_does_not_repeat_effect_or_budget_and_cannot_cross
     tampered_args["path"] = "tampered.txt"
     with pytest.raises(ToolInvocationError):
         await _write_replay_result(
-            persisted_record, context, tampered_args, _write_request_digest(request),
-            artifacts=uow.artifacts, artifact_store=artifact_store,
+            persisted_record,
+            context,
+            tampered_args,
+            _write_request_digest(request),
+            artifacts=uow.artifacts,
+            artifact_store=artifact_store,
         )
 
 
@@ -963,8 +1015,10 @@ async def test_pre_admission_denial_never_creates_intent_or_writer_effect(
     # In database: ToolCall is recorded as DENIED, but NO OperationIntentRecord is created
     async with session_factory() as session:
         calls = (
-            await session.execute(select(ToolCall).where(ToolCall.run_id == run_id))
-        ).scalars().all()
+            (await session.execute(select(ToolCall).where(ToolCall.run_id == run_id)))
+            .scalars()
+            .all()
+        )
         assert len(calls) == 1
         assert calls[0].status == "DENIED"
         assert calls[0].authorized is False
@@ -977,13 +1031,17 @@ async def test_pre_admission_denial_never_creates_intent_or_writer_effect(
         assert intent_count == 0
 
         events = (
-            await session.execute(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "tool_call.completed",
+            (
+                await session.execute(
+                    select(RunEvent).where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "tool_call.completed",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(events) == 1
         assert events[0].payload["status"] == "denied"
         assert events[0].payload["authorized"] is False
@@ -1050,29 +1108,39 @@ async def test_post_effect_failure_retains_honest_recoverable_state(
     # In PostgreSQL: ToolCall remains in RUNNING state (honest unfinalized evidence, not fabricated success)
     async with session_factory() as session:
         calls = (
-            await session.execute(select(ToolCall).where(ToolCall.run_id == run_id))
-        ).scalars().all()
+            (await session.execute(select(ToolCall).where(ToolCall.run_id == run_id)))
+            .scalars()
+            .all()
+        )
         assert len(calls) == 1
         assert calls[0].status == "RUNNING"
         assert calls[0].completed_at is None
 
         # OperationIntent was recorded and marked SUCCEEDED by OperationExecutor
         intents = (
-            await session.execute(
-                select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+            (
+                await session.execute(
+                    select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(intents) == 1
         assert intents[0].status == "SUCCEEDED"
 
         events = (
-            await session.execute(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "tool_call.completed",
+            (
+                await session.execute(
+                    select(RunEvent).where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "tool_call.completed",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(events) == 0
 
 
@@ -1193,13 +1261,17 @@ async def test_write_persists_canonical_normalized_arguments_and_excludes_canary
 
         # Check RunEvent row
         events = (
-            await session.execute(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "tool_call.completed",
+            (
+                await session.execute(
+                    select(RunEvent).where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "tool_call.completed",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(events) == 1
         event = events[0]
         assert event.payload["resource_id"] == context.worktree_id
@@ -1210,13 +1282,17 @@ async def test_write_persists_canonical_normalized_arguments_and_excludes_canary
 
         # Check ArtifactLineage and Artifact rows
         lineages = (
-            await session.execute(
-                select(ArtifactLineage).where(
-                    ArtifactLineage.run_id == run_id,
-                    ArtifactLineage.producer_id == result.tool_call_id,
+            (
+                await session.execute(
+                    select(ArtifactLineage).where(
+                        ArtifactLineage.run_id == run_id,
+                        ArtifactLineage.producer_id == result.tool_call_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(lineages) == 1
         artifact = await session.get(Artifact, lineages[0].artifact_id)
         assert artifact is not None
@@ -1282,19 +1358,27 @@ async def test_distinct_invocation_ids_with_identical_content_create_distinct_ev
 
     async with session_factory() as session:
         calls = (
-            await session.execute(
-                select(ToolCall)
-                .where(ToolCall.run_id == run_id)
-                .order_by(ToolCall.started_at, ToolCall.id)
+            (
+                await session.execute(
+                    select(ToolCall)
+                    .where(ToolCall.run_id == run_id)
+                    .order_by(ToolCall.started_at, ToolCall.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert {call.id for call in calls} == {first_id, second_id}
         assert len(calls) == 2
         intents = (
-            await session.execute(
-                select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+            (
+                await session.execute(
+                    select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(intents) == 2
         assert {intent.id for intent in intents} == {
             first.operation_intent_id,
@@ -1302,21 +1386,25 @@ async def test_distinct_invocation_ids_with_identical_content_create_distinct_ev
         }
 
         lineages = (
-            await session.execute(
-                select(ArtifactLineage).where(ArtifactLineage.run_id == run_id)
-            )
-        ).scalars().all()
+            (await session.execute(select(ArtifactLineage).where(ArtifactLineage.run_id == run_id)))
+            .scalars()
+            .all()
+        )
         assert len(lineages) == 2
         assert {lineage.producer_id for lineage in lineages} == {first_id, second_id}
 
         events = (
-            await session.execute(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "tool_call.completed",
+            (
+                await session.execute(
+                    select(RunEvent).where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "tool_call.completed",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(events) == 2
         assert {event.payload["tool_call_id"] for event in events} == {
             str(first_id),
@@ -1401,26 +1489,36 @@ async def test_reusing_invocation_id_with_changed_secret_content_preserves_prior
     )
     async with session_factory() as session:
         calls = (
-            await session.execute(select(ToolCall).where(ToolCall.run_id == run_id))
-        ).scalars().all()
+            (await session.execute(select(ToolCall).where(ToolCall.run_id == run_id)))
+            .scalars()
+            .all()
+        )
         intents = (
-            await session.execute(
-                select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
-            )
-        ).scalars().all()
-        events = (
-            await session.execute(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "tool_call.completed",
+            (
+                await session.execute(
+                    select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
                 )
             )
-        ).scalars().all()
-        lineages = (
-            await session.execute(
-                select(ArtifactLineage).where(ArtifactLineage.run_id == run_id)
+            .scalars()
+            .all()
+        )
+        events = (
+            (
+                await session.execute(
+                    select(RunEvent).where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "tool_call.completed",
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
+        lineages = (
+            (await session.execute(select(ArtifactLineage).where(ArtifactLineage.run_id == run_id)))
+            .scalars()
+            .all()
+        )
         assert len(calls) == len(intents) == len(events) == len(lineages) == 1
         assert calls[0].id == invocation_id
 
@@ -1482,22 +1580,31 @@ async def test_terminal_replay_ignores_later_target_mutation_and_returns_origina
     assert target.read_text(encoding="utf-8") == "later legitimate mutation\n"
 
     async with session_factory() as session:
-        assert await session.scalar(
-            select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
-        ) == 1
-        assert await session.scalar(
-            select(func.count())
-            .select_from(OperationIntentRecord)
-            .where(OperationIntentRecord.run_id == run_id)
-        ) == 1
-        assert await session.scalar(
-            select(func.count())
-            .select_from(RunEvent)
-            .where(
-                RunEvent.run_id == run_id,
-                RunEvent.event_type == "tool_call.completed",
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
             )
-        ) == 1
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(OperationIntentRecord)
+                .where(OperationIntentRecord.run_id == run_id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(RunEvent)
+                .where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "tool_call.completed",
+                )
+            )
+            == 1
+        )
 
 
 async def test_terminal_replay_rejects_corrupt_blob_even_when_store_verify_returns_true(
@@ -1543,22 +1650,31 @@ async def test_terminal_replay_rejects_corrupt_blob_even_when_store_verify_retur
     assert artifact_store.verify_returns is True
     assert writer.call_count == 1
     async with session_factory() as session:
-        assert await session.scalar(
-            select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
-        ) == 1
-        assert await session.scalar(
-            select(func.count())
-            .select_from(OperationIntentRecord)
-            .where(OperationIntentRecord.run_id == run_id)
-        ) == 1
-        assert await session.scalar(
-            select(func.count())
-            .select_from(RunEvent)
-            .where(
-                RunEvent.run_id == run_id,
-                RunEvent.event_type == "tool_call.completed",
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
             )
-        ) == 1
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(OperationIntentRecord)
+                .where(OperationIntentRecord.run_id == run_id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(RunEvent)
+                .where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "tool_call.completed",
+                )
+            )
+            == 1
+        )
 
 
 async def test_terminal_replay_rejects_missing_blob_without_new_effect_or_evidence(
@@ -1602,22 +1718,31 @@ async def test_terminal_replay_rejects_missing_blob_without_new_effect_or_eviden
 
     assert writer.call_count == 1
     async with session_factory() as session:
-        assert await session.scalar(
-            select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
-        ) == 1
-        assert await session.scalar(
-            select(func.count())
-            .select_from(OperationIntentRecord)
-            .where(OperationIntentRecord.run_id == run_id)
-        ) == 1
-        assert await session.scalar(
-            select(func.count())
-            .select_from(RunEvent)
-            .where(
-                RunEvent.run_id == run_id,
-                RunEvent.event_type == "tool_call.completed",
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
             )
-        ) == 1
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(OperationIntentRecord)
+                .where(OperationIntentRecord.run_id == run_id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(RunEvent)
+                .where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "tool_call.completed",
+                )
+            )
+            == 1
+        )
 
 
 async def test_write_without_invocation_id_is_denied_without_intent_or_effect(
@@ -1667,11 +1792,14 @@ async def test_write_without_invocation_id_is_denied_without_intent_or_effect(
     assert writer.call_count == 0
     assert not (Path(worktree_path) / "no-id.txt").exists()
     async with session_factory() as session:
-        assert await session.scalar(
-            select(func.count())
-            .select_from(OperationIntentRecord)
-            .where(OperationIntentRecord.run_id == run_id)
-        ) == 0
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(OperationIntentRecord)
+                .where(OperationIntentRecord.run_id == run_id)
+            )
+            == 0
+        )
 
 
 async def test_reused_invocation_id_from_other_current_execution_preserves_prior_evidence(
@@ -1745,24 +1873,35 @@ async def test_reused_invocation_id_from_other_current_execution_preserves_prior
     assert persisted.request_digest == original.request_digest
     assert persisted.resource_id == original.resource_id == context.worktree_id
     assert persisted.invocation_schema_version == original.invocation_schema_version == 1
-    assert persisted.operation_intent_id == original.operation_intent_id == first.operation_intent_id
+    assert (
+        persisted.operation_intent_id == original.operation_intent_id == first.operation_intent_id
+    )
     assert persisted.artifact_digests == original.artifact_digests == first.artifact_digests
     assert persisted.result_metadata == original.result_metadata
 
     async with session_factory() as session:
-        assert await session.scalar(
-            select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
-        ) == 1
-        assert await session.scalar(
-            select(func.count())
-            .select_from(OperationIntentRecord)
-            .where(OperationIntentRecord.run_id == run_id)
-        ) == 1
-        assert await session.scalar(
-            select(func.count())
-            .select_from(RunEvent)
-            .where(
-                RunEvent.run_id == run_id,
-                RunEvent.event_type == "tool_call.completed",
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
             )
-        ) == 1
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(OperationIntentRecord)
+                .where(OperationIntentRecord.run_id == run_id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(RunEvent)
+                .where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "tool_call.completed",
+                )
+            )
+            == 1
+        )

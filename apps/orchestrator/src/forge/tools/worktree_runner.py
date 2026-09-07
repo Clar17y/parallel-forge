@@ -12,6 +12,7 @@ from forge.application.ports.clock import Clock
 from forge.application.ports.runner import (
     CommandResult,
     CommandTerminalResult,
+    LaunchOwnershipRejected,
     RunCommandRequest,
     RunnerPort,
     TerminalRunnerPort,
@@ -93,6 +94,8 @@ class WorktreeBoundRunner(RunnerPort, TerminalRunnerPort):
             # The concrete terminal adapters defer ordinary caller cancellation.  A
             # cancellation escaping this boundary therefore has no trustworthy
             # terminal evidence and must not be converted into a fake result.
+            raise
+        except LaunchOwnershipRejected:
             raise
         except RunnerExecutionError:
             raise

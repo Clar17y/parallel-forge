@@ -150,10 +150,18 @@ class ToolCallRecord:
         binding = (self.request_digest, self.resource_id, self.invocation_schema_version)
         if any(v is not None for v in binding):
             if not all(v is not None for v in binding):
-                raise ValueError("tool call invocation binding fields must all be present or all absent")
-            if type(self.invocation_schema_version) is not int or self.invocation_schema_version != 1:
+                raise ValueError(
+                    "tool call invocation binding fields must all be present or all absent"
+                )
+            if (
+                type(self.invocation_schema_version) is not int
+                or self.invocation_schema_version != 1
+            ):
                 raise ValueError("tool call invocation schema version must be 1")
-            if not isinstance(self.request_digest, str) or _HEX_64.fullmatch(self.request_digest) is None:
+            if (
+                not isinstance(self.request_digest, str)
+                or _HEX_64.fullmatch(self.request_digest) is None
+            ):
                 raise ValueError("tool call request digest must be lowercase hexadecimal SHA-256")
             if not isinstance(self.resource_id, str):
                 raise TypeError("tool call resource identifier must be a string")
@@ -181,8 +189,7 @@ class ToolCallRecord:
                                 f"result metadata {key} cannot be present when record field is absent"
                             )
                     elif (
-                        key == "invocation_schema_version"
-                        and type(meta_val) is not int
+                        key == "invocation_schema_version" and type(meta_val) is not int
                     ) or meta_val != field_val:
                         raise ValueError(f"result metadata {key} conflicts with record field")
 
@@ -219,6 +226,13 @@ class ToolCallRepository(Protocol):
     async def find(self, tool_call_id: UUID) -> ToolCallRecord | None: ...
 
     async def list_for_run(self, run_id: UUID) -> Sequence[ToolCallRecord]: ...
+
+    async def list_running_with_operations(
+        self,
+        *,
+        after_id: UUID | None = None,
+        limit: int = 100,
+    ) -> Sequence[ToolCallRecord]: ...
 
     async def validate_execution_context(
         self,

@@ -203,6 +203,33 @@ class PostgresToolCallRepository:
         )
         return tuple(_record_from_row(row) for row in rows)
 
+    async def list_running_with_operations(
+        self,
+        *,
+        after_id: UUID | None = None,
+        limit: int = 100,
+    ) -> Sequence[ToolCallRecord]:
+        if type(limit) is not int or isinstance(limit, bool):
+            raise TypeError("limit must be an integer")
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be an integer between 1 and 1000")
+        if after_id is not None:
+            if not isinstance(after_id, UUID):
+                raise TypeError("after_id must be a UUID")
+            if after_id.int == 0:
+                raise ValueError("after_id must be a non-nil UUID")
+
+        query = select(ToolCall).where(
+            ToolCall.status == ToolCallStatus.RUNNING.value.upper(),
+            ToolCall.result_metadata["operation_intent_id"].astext.is_not(None),
+        )
+        if after_id is not None:
+            query = query.where(ToolCall.id > after_id)
+        query = query.order_by(ToolCall.id.asc()).limit(limit)
+
+        rows = (await self._session.execute(query)).scalars().all()
+        return tuple(_record_from_row(row) for row in rows)
+
     async def count_for_execution(self, agent_execution_id: UUID) -> int:
         if not isinstance(agent_execution_id, UUID):
             raise TypeError("tool call agent execution identifier must be a UUID")
