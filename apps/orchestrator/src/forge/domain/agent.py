@@ -139,6 +139,7 @@ class UntrustedSourceKind(StrEnum):
     DIFF = "diff"
     CHECK = "check"
     REVIEW = "review"
+    OPERATOR_FEEDBACK = "operator_feedback"
     REPOSITORY = "repository"
 
 
@@ -316,6 +317,7 @@ class DeveloperInput(BaseModel):
     plan: PlanOutput
     worktree_id: str = Field(min_length=1, max_length=128)
     base_commit: str = Field(min_length=40, max_length=40)
+    operator_feedback: UntrustedContent | None = None
     remediation_findings: tuple[ReviewFinding, ...] = Field(
         default=(), max_length=_MAX_COLLECTION_SIZE
     )
@@ -357,7 +359,12 @@ class DeveloperInput(BaseModel):
     @model_validator(mode="after")
     def validate_context_size(self) -> Self:
         _validate_context_size(
-            (self.original_task, *self.check_evidence, *self.relevant_instructions)
+            (
+                self.original_task,
+                *((self.operator_feedback,) if self.operator_feedback is not None else ()),
+                *self.check_evidence,
+                *self.relevant_instructions,
+            )
         )
         return self
 
@@ -806,7 +813,11 @@ def _iter_untrusted_content(
             *((context.revision_feedback,) if context.revision_feedback is not None else ()),
         )
     if isinstance(context, DeveloperInput):
-        return (context.original_task, *context.relevant_instructions)
+        return (
+            context.original_task,
+            *((context.operator_feedback,) if context.operator_feedback is not None else ()),
+            *context.relevant_instructions,
+        )
     return (
         context.original_task,
         context.current_diff,

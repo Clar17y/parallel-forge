@@ -10,9 +10,11 @@ from contextlib import suppress
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.application.ports.commands import (
+    CommandLane,
     CommandLeaseLost,
     CommandRecoveryRequired,
     CommandRepository,
+    CommandSuspended,
 )
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
@@ -43,6 +45,7 @@ class Worker:
         handlers: Mapping[str, CommandHandler],
         worker_id: str,
         lease_seconds: float = 30,
+        lane: CommandLane = CommandLane.NORMAL,
     ) -> None:
         self._commands = commands
         self._session_factory = session_factory
@@ -50,6 +53,9 @@ class Worker:
         self._worker_id = worker_id
         validate_lease_seconds(lease_seconds)
         self._lease_seconds = lease_seconds
+        if not isinstance(lane, CommandLane):
+            raise TypeError("worker command lane is invalid")
+        self._lane = lane
         self._draining: set[asyncio.Task[object]] = set()
 
     async def tick(self) -> bool | None:
@@ -62,6 +68,7 @@ class Worker:
         command = await self._commands.claim_next(
             worker_id=self._worker_id,
             lease_seconds=self._lease_seconds,
+            lane=self._lane,
         )
         if command is None:
             return None
@@ -119,6 +126,8 @@ class Worker:
             # owner. A terminal failure could race the original provider's
             # admitted execution before it settles.
             return False
+        except CommandSuspended:
+            pass
         except Exception as error:  # noqa: BLE001 - all non-transient handler failures are terminal
             # Policy, integrity, authorization, and unknown handler errors are
             # terminal until a handler explicitly maps them to a transient error.

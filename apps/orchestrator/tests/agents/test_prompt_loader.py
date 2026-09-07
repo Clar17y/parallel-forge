@@ -103,7 +103,7 @@ class TestRepositoryPrompts:
             loaded.version
             == {
                 AgentRole.PLANNER: "2",
-                AgentRole.DEVELOPER: "4",
+                AgentRole.DEVELOPER: "5",
                 AgentRole.REVIEWER: "1",
             }[role]
         )

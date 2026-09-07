@@ -47,6 +47,32 @@ class PostgresAuthRepository:
             .values(expires_at=at)
         )
 
+    async def invalidate_pr_gate(self, *, run_id: UUID, run_version: int, at: datetime) -> None:
+        """Invalidate the current PR approval and its unused challenges."""
+        if at.utcoffset() is None or run_version < 0:
+            raise ValueError("gate invalidation requires an aware timestamp and version")
+        await self._session.execute(
+            update(Approval)
+            .where(
+                Approval.run_id == run_id,
+                Approval.run_version == run_version,
+                Approval.gate == "pr",
+                Approval.invalidated_at.is_(None),
+            )
+            .values(invalidated_at=at)
+        )
+        await self._session.execute(
+            update(ApprovalChallenge)
+            .where(
+                ApprovalChallenge.run_id == run_id,
+                ApprovalChallenge.run_version == run_version,
+                ApprovalChallenge.gate == "pr",
+                ApprovalChallenge.consumed_at.is_(None),
+                ApprovalChallenge.expires_at > at,
+            )
+            .values(expires_at=at)
+        )
+
     async def create_bootstrap(self, *, token_hash: str, expires_at: datetime) -> OperatorSession:
         record = OperatorSession(
             id=uuid4(),

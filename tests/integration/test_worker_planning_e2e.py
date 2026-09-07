@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from forge.api.app import create_app
+from forge.application.ports.commands import CommandLane
 from forge.application.services.worker import Worker
 from forge.domain.agent import AgentFinishStatus, AgentResult
 from forge.domain.plan import PlanOutput
@@ -153,6 +154,8 @@ async def workflow_session_factory(migrated_database_url):
         "drift_before_worker_crash_actor",
         "wrong_actor",
         "wrong_approval_policy",
+        "pause",
+        "cancel",
     ],
 )
 async def test_http_plan_requires_exact_approval_before_preparation(
@@ -219,7 +222,50 @@ async def test_http_plan_requires_exact_approval_before_preparation(
             handlers=handlers(settings, session_factory, gateway),
             worker_id="planning-e2e",
         )
+        if scenario in {"pause", "cancel"}:
+            original_execute = gateway.execute
+
+            async def controlled_planner(request):
+                result = await original_execute(request)
+                async with session_factory() as session:
+                    current = await session.get(Run, run_id)
+                    control_version = current.version
+                await post(
+                    client,
+                    f"/api/runs/{run_id}/commands",
+                    {
+                        "command_type": scenario,
+                        "expected_run_version": control_version,
+                    },
+                    202,
+                )
+                control_worker = Worker(
+                    PostgresCommandRepository(session_factory),
+                    session_factory,
+                    handlers=handlers(settings, session_factory, gateway),
+                    worker_id="planning-control",
+                    lane=CommandLane.CONTROL,
+                )
+                await tick_success(control_worker, session_factory, run_id)
+                return result
+
+            gateway.execute = controlled_planner
         await tick_success(worker, session_factory, run_id)
+        if scenario in {"pause", "cancel"}:
+            async with session_factory() as session:
+                stopped = await session.get(Run, run_id)
+                execution = await session.get(AgentExecution, gateway.requests[0].execution_id)
+                assert stopped.state == ("PAUSED" if scenario == "pause" else "CANCELLED")
+                assert stopped.pending_evidence_digest is None
+                assert execution.status == "CANCELLED"
+                assert execution.output_artifact_id is not None
+                usage = list(
+                    await session.scalars(select(ModelUsage).where(ModelUsage.run_id == run_id))
+                )
+                assert len(usage) == 1 and usage[0].input_tokens == 11
+            assert len(gateway.requests) == 1
+            assert await worker.tick() is None
+            return
         async with session_factory() as session:
             run = await session.get(Run, run_id)
             assert run.state == "AWAITING_PLAN_APPROVAL"

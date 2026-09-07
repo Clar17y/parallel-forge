@@ -19,7 +19,11 @@ from forge.agents.errors import (
 from forge.agents.prompt_loader import LoadedPrompt, PromptChanged, PromptLoader, PromptLoadError
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
-from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
+from forge.application.ports.commands import (
+    CommandLeaseLost,
+    CommandRecoveryRequired,
+    CommandSuspended,
+)
 from forge.application.ports.evidence import (
     CanonicalEvidenceArtifact,
     EvidenceKind,
@@ -45,6 +49,7 @@ from forge.application.services.approved_plan import (
     ApprovedPlanError,
     ApprovedPlanLoader,
 )
+from forge.application.services.control_settlement import controlled_stop
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
     AgentBudget,
@@ -523,6 +528,19 @@ class ReviewService:
         except CommandLeaseLost, ReviewRecoveryRequired:
             await work.rollback()
             if not settled:
+                if await controlled_stop(work, command, approved.run):
+                    await self._late_result(
+                        work,
+                        command,
+                        request,
+                        head,
+                        finish,
+                        usage,
+                        attempts,
+                        output,
+                        cancelled=True,
+                    )
+                    raise CommandSuspended
                 await self._late_result(
                     work, command, request, head, finish, usage, attempts, output
                 )
@@ -538,6 +556,8 @@ class ReviewService:
         usage: UsageRecord,
         attempts: tuple[UsageRecord, ...],
         output: ReviewOutput | None,
+        *,
+        cancelled: bool = False,
     ) -> None:
         """Retain a known outcome without certifying a stale candidate."""
         try:
@@ -571,6 +591,20 @@ class ReviewService:
                 producer_type="review_late_result",
                 producer_id=request.execution_id,
             )
+            if cancelled:
+                await work.executions.finalize(
+                    command.run_id,
+                    uuid5(_STEP_NAMESPACE, str(command.id)),
+                    request.execution_id,
+                    AgentFinishStatus.CANCELLED,
+                    usage,
+                    provider=request.provider,
+                    model=request.model,
+                    instruction_version=request.instruction_version,
+                    kind="review",
+                    attempt=admission.attempt,
+                    role=AgentRole.REVIEWER,
+                )
             await work.commit()
         except Exception:  # noqa: BLE001 - late evidence cannot authorize candidate publication
             await work.rollback()

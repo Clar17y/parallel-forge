@@ -7,6 +7,7 @@ import logging
 from collections.abc import Mapping
 from uuid import uuid4
 
+from forge.application.ports.commands import CommandLane
 from forge.application.ports.operations import OperationAdapter
 from forge.application.services.recovery import RecoveryError, RecoveryService
 from forge.application.services.worker import CommandHandler, Worker
@@ -38,6 +39,7 @@ async def run_worker(
     engine = create_engine(settings.database_url)
     factory = create_session_factory(engine)
     worker: Worker | None = None
+    control_worker: Worker | None = None
     try:
         commands = PostgresCommandRepository(factory)
         operations = PostgresOperationRepository(factory)
@@ -48,24 +50,40 @@ async def run_worker(
             effective_handlers = compose_worker_handlers(settings, factory)
         else:
             effective_handlers = handlers
+        base_worker_id = worker_id or f"forge-worker-{uuid4().hex}"
         worker = Worker(
             commands,
             factory,
             handlers=effective_handlers,
-            worker_id=worker_id or f"forge-worker-{uuid4().hex}",
+            worker_id=base_worker_id,
             lease_seconds=30,
+            lane=CommandLane.NORMAL,
+        )
+        control_worker = Worker(
+            commands,
+            factory,
+            handlers=effective_handlers,
+            worker_id=f"{base_worker_id}-control",
+            lease_seconds=30,
+            lane=CommandLane.CONTROL,
         )
         logger.info("Forge worker recovered and is polling")
-        while not stop_event.is_set():
-            if await worker.tick() is None:
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
-                except TimeoutError:
-                    pass
+        polls = (
+            asyncio.create_task(_poll(worker, stop_event, poll_interval)),
+            asyncio.create_task(_poll(control_worker, stop_event, poll_interval)),
+        )
+        try:
+            await asyncio.gather(*polls)
+        finally:
+            for poll in polls:
+                poll.cancel()
+            await asyncio.gather(*polls, return_exceptions=True)
     finally:
         try:
             if worker is not None:
                 await worker.drain()
+            if control_worker is not None:
+                await control_worker.drain()
         finally:
             await engine.dispose()
 
@@ -80,6 +98,15 @@ def run() -> None:
     except (RecoveryError, WorkerCompositionError) as error:
         logger.error("Forge worker failed: %s", error)
         raise SystemExit(1) from error
+
+
+async def _poll(worker: Worker, stop_event: asyncio.Event, poll_interval: float) -> None:
+    while not stop_event.is_set():
+        if await worker.tick() is None:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+            except TimeoutError:
+                pass
 
 
 __all__ = ["run", "run_worker"]

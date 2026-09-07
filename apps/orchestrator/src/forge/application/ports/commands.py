@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
@@ -16,6 +17,17 @@ class CommandLeaseLost(RuntimeError):
 
 class CommandRecoveryRequired(RuntimeError):
     """A delivery found durable work whose outcome needs explicit recovery."""
+
+
+class CommandSuspended(RuntimeError):
+    """A known completed delivery stopped at a durable pause or cancellation."""
+
+
+class CommandLane(StrEnum):
+    """Closed worker lanes for mutually constrained durable command leases."""
+
+    NORMAL = "normal"
+    CONTROL = "control"
 
 
 class CommandRepository(Protocol):
@@ -39,7 +51,7 @@ class CommandRepository(Protocol):
     async def get_by_idempotency_key(self, idempotency_key: str) -> CommandEnvelope | None: ...
 
     async def claim_next(
-        self, *, worker_id: str, lease_seconds: float
+        self, *, worker_id: str, lease_seconds: float, lane: CommandLane = CommandLane.NORMAL
     ) -> CommandEnvelope | None: ...
 
     async def renew(
@@ -63,4 +75,10 @@ class CommandRepository(Protocol):
     ) -> CommandEnvelope: ...
 
 
-__all__ = ["CommandLeaseLost", "CommandRecoveryRequired", "CommandRepository"]
+__all__ = [
+    "CommandLane",
+    "CommandLeaseLost",
+    "CommandRecoveryRequired",
+    "CommandRepository",
+    "CommandSuspended",
+]

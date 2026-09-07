@@ -21,6 +21,7 @@ from forge.application.handlers.approvals import (
 )
 from forge.application.handlers.delivery import ReviewHandler
 from forge.application.handlers.planning import PlanningHandler
+from forge.application.handlers.run_controls import CancelRunHandler, PauseRunHandler
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.clock import Clock
@@ -32,6 +33,7 @@ from forge.application.ports.provider_credentials import (
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.candidate_revision import CandidateRevisionService
 from forge.application.services.delivery import DeliveryService
 from forge.application.services.delivery_preparation import DeliveryPreparationService
 from forge.application.services.development import DevelopmentService
@@ -413,6 +415,9 @@ def compose_worker_handlers(
     review_decision = ReviewDecisionService(
         artifact_store, git_factory=delivery_dependencies.git, approved_plans=approved_plans
     )
+    candidate_revision = CandidateRevisionService(
+        artifact_store, approved_plans, delivery_dependencies.git, clock=clock
+    )
 
     return {
         "start_planning": start_planning_handler,
@@ -423,6 +428,9 @@ def compose_worker_handlers(
         "remediate": development.execute,
         "validate": delivery.validate,
         "review": ReviewHandler(review, review_decision),
+        "pause": PauseRunHandler(),
+        "cancel": CancelRunHandler(),
+        "request_candidate_changes": candidate_revision.execute,
     }
 
 

@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from forge.application.ports.commands import CommandSuspended
 from forge.application.services.worker import TransientCommandError, Worker
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.persistence.repositories.commands import CommandLeaseError
@@ -110,6 +111,32 @@ async def test_unknown_command_fails_terminally_without_retry(
     stored = await command_repository.get(command.id)
     assert stored.status is CommandStatus.FAILED
     assert stored.attempt == 1
+
+
+@pytest.mark.integration
+async def test_suspended_handler_completes_its_delivery(
+    command_repository, persisted_run, session_factory
+) -> None:
+    command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="suspended",
+        idempotency_key="worker:suspended",
+        payload={},
+    )
+
+    async def handler(_received, _work) -> None:
+        await _work.commit()
+        raise CommandSuspended
+
+    worker = Worker(
+        command_repository,
+        session_factory,
+        handlers={"suspended": handler},
+        worker_id="worker-a",
+        lease_seconds=30,
+    )
+    assert await worker.tick() is True
+    assert (await command_repository.get(command.id)).status is CommandStatus.COMPLETED
 
 
 @pytest.mark.integration

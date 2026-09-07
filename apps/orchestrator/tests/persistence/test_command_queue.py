@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from forge.application.ports.commands import CommandLane
 from forge.domain.command import CommandStatus
 from forge.persistence.repositories.commands import (
     CommandLeaseError,
@@ -150,6 +151,88 @@ async def test_expired_lease_reclaims_and_unexpired_lease_is_skipped(
     reclaimed = await command_repository.claim_next(worker_id="worker-c", lease_seconds=30)
     assert reclaimed is not None
     assert reclaimed.id == next_command.id
+
+
+@pytest.mark.integration
+async def test_control_lane_can_join_normal_lease_but_excludes_second_leases(
+    command_repository, persisted_run
+) -> None:
+    normal = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="implement",
+        idempotency_key="normal",
+        payload={},
+    )
+    claimed_normal = await command_repository.claim_next(
+        worker_id="normal", lease_seconds=30, lane=CommandLane.NORMAL
+    )
+    control = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="pause",
+        idempotency_key="pause",
+        payload={},
+    )
+    second_control = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="cancel",
+        idempotency_key="cancel",
+        payload={},
+    )
+    second_normal = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="review",
+        idempotency_key="review",
+        payload={},
+    )
+
+    claimed_control = await command_repository.claim_next(
+        worker_id="control", lease_seconds=30, lane=CommandLane.CONTROL
+    )
+
+    assert claimed_normal is not None and claimed_normal.id == normal.id
+    assert claimed_control is not None and claimed_control.id == control.id
+    assert (
+        await command_repository.claim_next(
+            worker_id="normal-2", lease_seconds=30, lane=CommandLane.NORMAL
+        )
+        is None
+    )
+    assert (
+        await command_repository.claim_next(
+            worker_id="control-2", lease_seconds=30, lane=CommandLane.CONTROL
+        )
+        is None
+    )
+    assert await command_repository.get(second_control.id)
+    assert await command_repository.get(second_normal.id)
+
+
+@pytest.mark.integration
+async def test_pending_control_prevents_normal_overtake_when_idle(
+    command_repository, persisted_run
+) -> None:
+    control = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="pause",
+        idempotency_key="pause-priority",
+        payload={},
+    )
+    await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="implement",
+        idempotency_key="normal-after-pause",
+        payload={},
+    )
+    assert (
+        await command_repository.claim_next(
+            worker_id="normal", lease_seconds=30, lane=CommandLane.NORMAL
+        )
+        is None
+    )
+    claimed = await command_repository.claim_next(
+        worker_id="control", lease_seconds=30, lane=CommandLane.CONTROL
+    )
+    assert claimed is not None and claimed.id == control.id
 
 
 @pytest.mark.integration

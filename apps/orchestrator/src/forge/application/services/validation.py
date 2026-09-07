@@ -19,7 +19,7 @@ from forge.application.adapters.named_check_receipts import (
     encode_command_result,
 )
 from forge.application.ports.artifacts import ArtifactStore
-from forge.application.ports.commands import CommandRecoveryRequired
+from forge.application.ports.commands import CommandRecoveryRequired, CommandSuspended
 from forge.application.ports.evidence import (
     CanonicalEvidenceArtifact,
     EvidenceKind,
@@ -32,6 +32,7 @@ from forge.application.ports.runner import CommandTerminalResult, WorktreeRunner
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlanLoader
+from forge.application.services.control_settlement import controlled_stop
 from forge.application.services.recovery import OperationExecutor
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
@@ -219,6 +220,8 @@ class ValidationService:
                 or current.approval_id != approved.approval_id
                 or git.head_sha(worktree) != head_sha
             ):
+                if await controlled_stop(work, command, run):
+                    await self._finish_stopped_step(work, command, step_id)
                 raise CommandRecoveryRequired("validation authority changed before check")
             values = {
                 key: value for key, value in environment.items() if key in spec.environment_keys
@@ -267,6 +270,10 @@ class ValidationService:
                 await _fence_command(command, work)
                 latest = await self._approved_plans.load(work, run.id)
                 if latest.run != run or git.head_sha(worktree) != head_sha:
+                    if await controlled_stop(work, command, run):
+                        if owner is not None:
+                            await work.operations.complete(prior.id, recovered, owner_id=owner)
+                        await self._finish_stopped_step(work, command, step_id)
                     raise CommandRecoveryRequired("validation authority changed during recovery")
                 if owner is not None:
                     await work.operations.complete(prior.id, recovered, owner_id=owner)
@@ -362,6 +369,11 @@ class ValidationService:
             await _fence_command(command, work)
             current = await self._approved_plans.load(work, run.id)
             if current.run != run or git.head_sha(worktree) != head_sha:
+                if await controlled_stop(work, command, run):
+                    await work.operations.complete(
+                        intent.id, outcome, owner_id=intent.execution_owner
+                    )
+                    await self._finish_stopped_step(work, command, step_id)
                 raise CommandRecoveryRequired("validation authority changed after check")
             await work.operations.complete(intent.id, outcome, owner_id=intent.execution_owner)
             await work.commit()
@@ -381,6 +393,8 @@ class ValidationService:
         await _fence_command(command, work)
         current = await self._approved_plans.load(work, run.id)
         if current.run != run or git.head_sha(worktree) != head_sha:
+            if await controlled_stop(work, command, run):
+                await self._finish_stopped_step(work, command, step_id)
             raise CommandRecoveryRequired("validation authority changed before publication")
         evidence = await self.publish(
             work,
@@ -402,6 +416,23 @@ class ValidationService:
             raise CommandRecoveryRequired("validation authority changed during publication")
         await work.commit()
         return evidence
+
+    async def _finish_stopped_step(
+        self, work: UnitOfWork, command: CommandEnvelope, step_id: UUID
+    ) -> None:
+        """Close known controller work without publishing partial validation."""
+        step = await work.controller_steps.get(command.run_id, step_id)
+        if step is None or step.status not in {ExecutionStatus.RUNNING, ExecutionStatus.SUCCEEDED}:
+            raise CommandRecoveryRequired("stopped validation step requires recovery")
+        if step.status is ExecutionStatus.RUNNING:
+            await work.controller_steps.finalize(
+                command.run_id,
+                step_id,
+                ExecutionStatus.CANCELLED,
+                outcome="operator control stopped validation dispatch",
+            )
+        await work.commit()
+        raise CommandSuspended("validation stopped by operator control")
 
     async def publish(
         self,

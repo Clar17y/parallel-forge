@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 from forge.agents.prompt_loader import PromptLoader
-from forge.application.ports.commands import CommandRecoveryRequired
+from forge.application.handlers.run_controls import CancelRunHandler, PauseRunHandler
+from forge.application.ports.commands import CommandLane, CommandRecoveryRequired, CommandSuspended
 from forge.application.ports.worktrees import GitCandidateDiff, GitDiff, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlanLoader
 from forge.application.services.development import DevelopmentService
@@ -182,8 +183,9 @@ async def test_developer_admits_before_gateway_and_queues_validation(
 
 
 @pytest.mark.parametrize("target", (RunState.PAUSED, RunState.CANCELLED))
+@pytest.mark.parametrize("causal", [False, True])
 async def test_suspended_after_gateway_preserves_terminal_evidence_without_dispatch(
-    tmp_path, workflow_session_factory, target
+    tmp_path, workflow_session_factory, target, causal
 ):
     case, command, _commands, path = await _implement_command(tmp_path, workflow_session_factory)
     git = _Git()
@@ -194,7 +196,23 @@ async def test_suspended_after_gateway_preserves_terminal_evidence_without_dispa
             result = await super().execute(request)
             async with PostgresUnitOfWork(self.factory) as work:
                 run = await work.runs.get(case.run_id)
-                if target is RunState.PAUSED:
+                if causal:
+                    kind = "pause" if target is RunState.PAUSED else "cancel"
+                    await _commands.enqueue(
+                        run_id=run.id,
+                        command_type=kind,
+                        idempotency_key=f"{run.id}:{kind}",
+                        payload={},
+                        expected_run_version=run.version,
+                        actor_id=command.actor_id,
+                    )
+                    control = await _commands.claim_next(
+                        worker_id="control", lease_seconds=60, lane=CommandLane.CONTROL
+                    )
+                    assert control is not None
+                    handler = PauseRunHandler() if kind == "pause" else CancelRunHandler()
+                    await handler(control, work)
+                elif target is RunState.PAUSED:
                     await work.runs.pause(run.id, run.version, "test.paused", {})
                 else:
                     await work.runs.transition(run.id, run.version, target, "test.cancelled", {})
@@ -211,7 +229,7 @@ async def test_suspended_after_gateway_preserves_terminal_evidence_without_dispa
         lambda policy, worktree: _Reader(),
     )
     async with PostgresUnitOfWork(workflow_session_factory) as work:
-        with pytest.raises(CommandRecoveryRequired):
+        with pytest.raises(CommandSuspended if causal else CommandRecoveryRequired):
             await service.execute(command, work)
     async with workflow_session_factory() as session:
         assert (await session.get(Run, case.run_id)).state == target.value
@@ -237,6 +255,10 @@ async def test_suspended_after_gateway_preserves_terminal_evidence_without_dispa
     usage = json.loads(await case.artifact_store.open_bytes(produced["developer_late_usage"]))
     assert usage["usage"][0]["input_tokens"] == 3
     assert usage["usage"][0]["output_tokens"] == 2
+    if causal:
+        async with workflow_session_factory() as session:
+            execution = await session.get(AgentExecution, gateway.requests[0].execution_id)
+            assert execution.status == "CANCELLED"
 
 
 async def test_boolean_attempt_is_not_authorized_as_integer_attempt(

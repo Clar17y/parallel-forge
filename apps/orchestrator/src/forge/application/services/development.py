@@ -20,7 +20,11 @@ from forge.agents.errors import (
 from forge.agents.prompt_loader import LoadedPrompt, PromptChanged, PromptLoader, PromptLoadError
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
-from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
+from forge.application.ports.commands import (
+    CommandLeaseLost,
+    CommandRecoveryRequired,
+    CommandSuspended,
+)
 from forge.application.ports.evidence import EvidenceKind
 from forge.application.ports.executions import ExecutionOutcome, ExecutionUnsettledError
 from forge.application.ports.repository import (
@@ -41,6 +45,7 @@ from forge.application.services.approved_plan import (
     ApprovedPlanError,
     ApprovedPlanLoader,
 )
+from forge.application.services.control_settlement import controlled_stop
 from forge.application.services.developer_result import verify_developer_output
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
@@ -124,7 +129,17 @@ class DevelopmentService:
         worktree, git = self._worktree(approved)
         # Do not retain database locks while reading untrusted repository files.
         await work.commit()
-        context = await self._context(approved, worktree, work, validation_id, prior_review_id)
+        context = await self._context(
+            approved,
+            worktree,
+            work,
+            validation_id,
+            prior_review_id,
+            cast(str | None, command.payload.get("feedback_digest")),
+            UUID(str(command.payload["feedback_command_id"]))
+            if command.payload.get("feedback_command_id") is not None
+            else None,
+        )
         prompt = self._prompt()
         request = AgentRequest(
             execution_id=execution_id,
@@ -296,7 +311,8 @@ class DevelopmentService:
         succeeded = outcome.finish_status is AgentFinishStatus.SUCCEEDED
         target = RunState.VALIDATING if succeeded else RunState.AWAITING_HUMAN_INTERVENTION
         if (
-            command.actor_id != approved.approval_actor_id
+            command.payload.get("automatic") is not False
+            and command.actor_id != approved.approval_actor_id
             or outcome.agent_execution_id != execution_id
             or outcome.step_id != step_id
             or outcome.role is not AgentRole.DEVELOPER
@@ -394,10 +410,46 @@ class DevelopmentService:
             or approved.run.version != command.expected_run_version
         ):
             raise DevelopmentRecoveryRequired("implementation run is not current")
-        if command.actor_id != approved.approval_actor_id:
+        if (
+            command.payload.get("automatic") is not False
+            and command.actor_id != approved.approval_actor_id
+        ):
             raise DevelopmentRecoveryRequired("implementation actor is invalid")
         if command.command_type == "remediate":
             _attempt, validation_id, _prior_review_id = self._validate(command)
+            if command.payload.get("automatic") is False:
+                events = [
+                    event
+                    for event in await work.events.list_after(command.run_id, 0)
+                    if event.event_type == "run.candidate_revision_requested"
+                    and event.payload.get("queued_command_id") == str(command.id)
+                ]
+                if (
+                    len(events) != 1
+                    or events[0].actor_class != "operator"
+                    or events[0].actor_id != command.actor_id
+                    or events[0].run_version != approved.run.version
+                    or events[0].payload.get("queued_payload") != command.payload
+                    or events[0].payload.get("queued_key") != command.idempotency_key
+                    or events[0].payload.get("local_remediation_count")
+                    != approved.run.local_remediation_count
+                    or events[0].payload.get("approval_id") != str(approved.approval_id)
+                    or events[0].payload.get("source_command_id")
+                    != command.payload["feedback_command_id"]
+                ):
+                    raise DevelopmentRecoveryRequired("human remediation authority differs")
+                source = await work.commands.get(UUID(str(command.payload["feedback_command_id"])))
+                if (
+                    source.run_id != command.run_id
+                    or source.command_type != "request_candidate_changes"
+                    or source.status is not CommandStatus.COMPLETED
+                    or source.actor_id != command.actor_id
+                    or source.payload_schema_version != 1
+                    or source.expected_run_version + 1 != approved.run.version
+                    or set(source.payload) != {"feedback"}
+                ):
+                    raise DevelopmentRecoveryRequired("human feedback command authority differs")
+                return approved
             events = [
                 event
                 for event in await work.events.list_after(command.run_id, 0)
@@ -456,6 +508,8 @@ class DevelopmentService:
         work: UnitOfWork,
         validation_id: UUID | None,
         prior_review_id: UUID | None,
+        feedback_digest: str | None = None,
+        feedback_command_id: UUID | None = None,
     ) -> DeveloperInput:
         def read() -> tuple[UntrustedContent, ...]:
             reader = self._reader_factory(approved.policy, worktree)
@@ -478,9 +532,52 @@ class DevelopmentService:
             raise DevelopmentError("developer context is invalid") from None
         check_evidence: tuple[UntrustedContent, ...] = ()
         findings: tuple[ReviewFinding, ...] = ()
+        operator_feedback = None
+        if feedback_digest is not None:
+            descriptor = await work.artifacts.get_by_digest(feedback_digest, run_id=approved.run.id)
+            if (
+                descriptor.producer_type != "candidate_revision_feedback"
+                or feedback_command_id is None
+                or descriptor.producer_id != feedback_command_id
+                or descriptor.media_type != "application/json"
+                or descriptor.schema_version != 1
+                or descriptor.truncated
+            ):
+                raise DevelopmentRecoveryRequired("operator feedback authority differs")
+            wire = await self._store.open_bytes(feedback_digest)
+            try:
+                payload = json.loads(wire)
+                feedback = payload["feedback"]
+            except ValueError, UnicodeError, KeyError, TypeError:
+                raise DevelopmentRecoveryRequired("operator feedback artifact is invalid") from None
+            if (
+                not isinstance(feedback, str)
+                or not feedback.strip()
+                or len(feedback.encode("utf-8")) > 16_384
+                or "\x00" in feedback
+                or descriptor.byte_count != len(wire)
+                or payload
+                != {
+                    "schema_version": 1,
+                    "command_id": str(feedback_command_id),
+                    "feedback": feedback,
+                }
+                or wire != self._json(payload)
+                or hashlib.sha256(wire).hexdigest() != feedback_digest
+            ):
+                raise DevelopmentRecoveryRequired("operator feedback artifact is invalid")
+            operator_feedback = UntrustedContent.from_text(
+                feedback,
+                source_kind=UntrustedSourceKind.OPERATOR_FEEDBACK,
+                source_reference=feedback_digest,
+            )
         if validation_id is not None:
             validation, review = await self._remediation_evidence(
-                work, approved, validation_id, prior_review_id
+                work,
+                approved,
+                validation_id,
+                prior_review_id,
+                require_blocking=feedback_digest is None,
             )
             check_evidence = (
                 UntrustedContent.from_text(
@@ -503,6 +600,7 @@ class DevelopmentService:
             plan=approved.plan,
             worktree_id=worktree.identity.worktree_name,
             base_commit=worktree.base_sha,
+            operator_feedback=operator_feedback,
             remediation_findings=findings,
             check_evidence=check_evidence,
             relevant_instructions=instructions,
@@ -535,7 +633,11 @@ class DevelopmentService:
             # Re-read immediately before durable admission: the context may only
             # claim authority from the immutable manifests it names as parents.
             validation, review = await self._remediation_evidence(
-                work, current, validation_id, prior_review_id
+                work,
+                current,
+                validation_id,
+                prior_review_id,
+                require_blocking=command.payload.get("automatic") is not False,
             )
             expected_check = UntrustedContent.from_text(
                 encode_evidence_manifest(validation).decode(),
@@ -562,6 +664,8 @@ class DevelopmentService:
                     review.evidence_set_id, run_id=current.run.id
                 )
                 parent_digests += (review_descriptor.manifest_digest,)
+        if command.payload.get("automatic") is False:
+            parent_digests += (cast(str, command.payload["feedback_digest"]),)
         persisted = await work.artifacts.record(
             descriptor,
             run_id=command.run_id,
@@ -572,7 +676,13 @@ class DevelopmentService:
         if persisted.artifact_id is None:
             raise DevelopmentError("developer input lineage is invalid")
         if validation_id is not None:
-            await self._remediation_evidence(work, current, validation_id, prior_review_id)
+            await self._remediation_evidence(
+                work,
+                current,
+                validation_id,
+                prior_review_id,
+                require_blocking=command.payload.get("automatic") is not False,
+            )
         await self._fence(command, work)
         admission = await work.executions.admit(
             command.run_id,
@@ -712,6 +822,11 @@ class DevelopmentService:
             return outcome
         except CommandLeaseLost, DevelopmentRecoveryRequired:
             await work.rollback()
+            if await controlled_stop(work, command, approved.run):
+                await self._late_usage(
+                    work, command, request, usage, attempts, output, cancelled=True
+                )
+                raise CommandSuspended("developer stopped by operator control") from None
             # A reclaimed lease may not advance the run, but measured provider
             # usage remains auditable against the already-admitted execution.
             await self._late_usage(work, command, request, usage, attempts, output)
@@ -728,6 +843,8 @@ class DevelopmentService:
         usage: UsageRecord,
         attempts: tuple[UsageRecord, ...],
         output: ArtifactDescriptor | None,
+        *,
+        cancelled: bool = False,
     ) -> None:
         try:
             await work.runs.get_for_update(command.run_id)
@@ -742,13 +859,15 @@ class DevelopmentService:
                 or admission.instruction_version != request.instruction_version
             ):
                 raise DevelopmentRecoveryRequired("implementation late usage cannot be bound")
+            output_id = None
             if output is not None:
-                await work.artifacts.record(
+                persisted_output = await work.artifacts.record(
                     output,
                     run_id=command.run_id,
                     producer_type="developer_result",
                     producer_id=request.execution_id,
                 )
+                output_id = persisted_output.artifact_id
             data = self._json(
                 {
                     "schema_version": 1,
@@ -765,6 +884,21 @@ class DevelopmentService:
                 producer_type="developer_late_usage",
                 producer_id=request.execution_id,
             )
+            if cancelled:
+                await work.executions.finalize(
+                    command.run_id,
+                    admission.step_id,
+                    request.execution_id,
+                    AgentFinishStatus.CANCELLED,
+                    usage,
+                    output_artifact_id=output_id,
+                    provider=request.provider,
+                    model=request.model,
+                    instruction_version=request.instruction_version,
+                    kind="implement",
+                    attempt=admission.attempt,
+                    role=AgentRole.DEVELOPER,
+                )
             await work.commit()
         except Exception:  # noqa: BLE001 - stale receipt failures cannot authorize settlement
             await work.rollback()
@@ -778,6 +912,8 @@ class DevelopmentService:
         approved: ApprovedPlan,
         validation_id: UUID,
         prior_review_id: UUID | None,
+        *,
+        require_blocking: bool = True,
     ) -> tuple[ValidationEvidenceManifest, ReviewEvidenceManifest | None]:
         """Load only immutable controller evidence named by the leased command."""
         descriptor = await work.evidence.get_by_id(validation_id, run_id=approved.run.id)
@@ -831,13 +967,17 @@ class DevelopmentService:
                 )
             ):
                 raise DevelopmentRecoveryRequired("remediation review evidence differs")
-        if all(member.status is EvidenceStatus.PASSED for member in validation.members) and (
-            review is None
-            or review.validation_evidence_set_id != validation_id
-            or review.head_sha != validation.head_sha
-            or (
-                not review.review.missing_evidence
-                and not approved.policy.blocks_publication(review.review.findings)
+        if (
+            require_blocking
+            and all(member.status is EvidenceStatus.PASSED for member in validation.members)
+            and (
+                review is None
+                or review.validation_evidence_set_id != validation_id
+                or review.head_sha != validation.head_sha
+                or (
+                    not review.review.missing_evidence
+                    and not approved.policy.blocks_publication(review.review.findings)
+                )
             )
         ):
             raise DevelopmentRecoveryRequired("remediation has no blocking controller evidence")
@@ -887,23 +1027,50 @@ class DevelopmentService:
             or command.payload_schema_version != 1
             or type(attempt) is not int
             or attempt < 1
-            or command.idempotency_key != f"{command.run_id}:{command.command_type}:{attempt}"
+            or command.idempotency_key
+            != (
+                f"{command.run_id}:human-remediate:{attempt}"
+                if remediation and command.payload.get("automatic") is False
+                else f"{command.run_id}:{command.command_type}:{attempt}"
+            )
         ):
             raise DevelopmentRecoveryRequired("implementation command authority is invalid")
         if not remediation:
             if command.payload != {"semantic_attempt": 1}:
                 raise DevelopmentRecoveryRequired("implementation command authority is invalid")
             return attempt, None, None
-        if (
-            set(command.payload)
-            - {
+        if command.payload.get("automatic") is False:
+            if set(command.payload) != {
                 "semantic_attempt",
+                "automatic",
+                "feedback_digest",
+                "feedback_command_id",
+                "pr_evidence_digest",
+                "candidate_commit",
                 "validation_evidence_set_id",
                 "prior_review_evidence_set_id",
-                "automatic",
-            }
-            or command.payload.get("automatic") is not True
-        ):
+            }:
+                raise DevelopmentRecoveryRequired("human remediation authority is invalid")
+            try:
+                feedback_command_id = UUID(str(command.payload["feedback_command_id"]))
+            except TypeError, ValueError:
+                raise DevelopmentRecoveryRequired("human feedback authority is invalid") from None
+            if not feedback_command_id.int or not isinstance(
+                command.payload["feedback_digest"], str
+            ):
+                raise DevelopmentRecoveryRequired("human feedback authority is invalid")
+            try:
+                human_validation_id = UUID(str(command.payload["validation_evidence_set_id"]))
+                human_prior_id = UUID(str(command.payload["prior_review_evidence_set_id"]))
+            except ValueError:
+                raise DevelopmentRecoveryRequired("human evidence authority is invalid") from None
+            return attempt, human_validation_id, human_prior_id
+        if command.payload.get("automatic") is not True or set(command.payload) - {
+            "semantic_attempt",
+            "validation_evidence_set_id",
+            "prior_review_evidence_set_id",
+            "automatic",
+        }:
             raise DevelopmentRecoveryRequired("remediation command authority is invalid")
         try:
             validation_id = UUID(validation_value) if isinstance(validation_value, str) else None

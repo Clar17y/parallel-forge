@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from forge.application.ports.commands import CommandLane
 from forge.worker import main
 
 
@@ -66,7 +67,7 @@ async def test_worker_stop_preserves_resources_until_retained_handler_finishes(
             expected = asyncio.CancelledError if exit_reason == "cancel" else RuntimeError
             with pytest.raises(expected):
                 await running
-    assert calls == ["handler_finished", "dispose"]
+    assert calls == ["handler_finished", "handler_finished", "dispose"]
 
 
 @pytest.mark.asyncio
@@ -109,12 +110,13 @@ async def test_worker_startup_recovers_before_first_poll(monkeypatch) -> None:
 
     await main.run_worker(FakeSettings(), adapters={}, handlers={}, stop_event=stop)
 
-    assert calls == ["recovery", "poll", "drain", "dispose"]
+    assert calls == ["recovery", "poll", "drain", "drain", "dispose"]
 
 
 @pytest.mark.asyncio
 async def test_worker_default_handlers_none_constructs_real_handlers(monkeypatch) -> None:
     calls: list[str] = []
+    lanes: list[tuple[CommandLane, str]] = []
     constructed_handlers = {
         "start_planning": object(),
         "approve_plan": object(),
@@ -139,6 +141,7 @@ async def test_worker_default_handlers_none_constructs_real_handlers(monkeypatch
     class FakeWorker:
         def __init__(self, _commands, _factory, *, handlers, **_kwargs) -> None:
             assert handlers == constructed_handlers
+            lanes.append((_kwargs["lane"], _kwargs["worker_id"]))
             calls.append("worker_init")
 
         async def drain(self) -> None:
@@ -161,7 +164,17 @@ async def test_worker_default_handlers_none_constructs_real_handlers(monkeypatch
 
     await main.run_worker(FakeSettings(), adapters={}, handlers=None, stop_event=stop)
 
-    assert calls == ["recovery", "worker_init", "poll", "drain", "dispose"]
+    assert calls == [
+        "recovery",
+        "worker_init",
+        "worker_init",
+        "poll",
+        "drain",
+        "drain",
+        "dispose",
+    ]
+    assert [lane for lane, _ in lanes] == [CommandLane.NORMAL, CommandLane.CONTROL]
+    assert lanes[1][1] == f"{lanes[0][1]}-control"
 
 
 @pytest.mark.asyncio

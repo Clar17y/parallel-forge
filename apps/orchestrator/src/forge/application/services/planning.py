@@ -24,7 +24,11 @@ from forge.agents.prompt_loader import LoadedPrompt, PromptChanged, PromptLoader
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.clock import Clock, SystemClock
-from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
+from forge.application.ports.commands import (
+    CommandLeaseLost,
+    CommandRecoveryRequired,
+    CommandSuspended,
+)
 from forge.application.ports.executions import (
     ExecutionAdmission,
     ExecutionStatus,
@@ -46,6 +50,7 @@ from forge.application.services.agent_results import (
     usage_bound,
     validate_agent_result,
 )
+from forge.application.services.control_settlement import controlled_stop
 from forge.application.services.plan_restart import restart_source
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
@@ -798,6 +803,22 @@ class PlanningService:
             raise
         except PlanningRecoveryRequired:
             await _rollback(work)
+            admitted_run = (
+                binding.run.with_state(RunState.PLANNING)
+                if binding.run.state is RunState.CREATED
+                else binding.run
+            )
+            if await controlled_stop(work, command, admitted_run):
+                await self._record_late_usage(
+                    work,
+                    command,
+                    request,
+                    usage,
+                    usage_attempts,
+                    cancelled=True,
+                    output=plan_descriptor,
+                )
+                raise CommandSuspended
             raise
         except Exception:  # noqa: BLE001 - persistence boundary is fail-closed
             await _rollback(work)
@@ -912,6 +933,9 @@ class PlanningService:
         request: AgentRequest,
         usage: UsageRecord,
         attempts: tuple[UsageRecord, ...],
+        *,
+        cancelled: bool = False,
+        output: ArtifactDescriptor | None = None,
     ) -> None:
         """Retain measured evidence without settling an execution we no longer own."""
         try:
@@ -957,6 +981,31 @@ class PlanningService:
                     actor_class="worker",
                 )
             )
+            if cancelled:
+                output_id = None
+                if output is not None:
+                    retained = await work.artifacts.record(
+                        output,
+                        run_id=run.id,
+                        producer_type="planning_late_result",
+                        producer_id=request.execution_id,
+                    )
+                    output_id = retained.artifact_id
+                await work.executions.finalize(
+                    run.id,
+                    uuid5(_STEP_NAMESPACE, str(command.id)),
+                    request.execution_id,
+                    AgentFinishStatus.CANCELLED,
+                    usage,
+                    output_artifact_id=output_id,
+                    completed_at=self._clock.now(),
+                    provider=request.provider,
+                    model=request.model,
+                    instruction_version=request.instruction_version,
+                    kind="plan",
+                    attempt=_semantic_attempt(command),
+                    role=AgentRole.PLANNER,
+                )
             await work.commit()
         except asyncio.CancelledError:
             await _rollback_preserving_cancellation(work)

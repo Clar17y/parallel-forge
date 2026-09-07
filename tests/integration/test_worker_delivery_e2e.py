@@ -34,16 +34,19 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 
 
-@pytest.mark.parametrize("repair_failed_check", [False, True])
+@pytest.mark.parametrize(
+    ("repair_failed_check", "operator_revision"), [(False, False), (True, False), (False, True)]
+)
 async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_check(
-    tmp_path, workflow_session_factory, monkeypatch, repair_failed_check
+    tmp_path, workflow_session_factory, monkeypatch, repair_failed_check, operator_revision
 ):
     repository = tmp_path / "repository"
     repository.mkdir()
     (repository / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
     (repository / "README.md").write_text("Original README\n", encoding="utf-8")
     (repository / "check_readme.py").write_text(
-        "from pathlib import Path\nassert Path('README.md').read_text() == 'Verified delivery\\n'\n",
+        "from pathlib import Path\nassert Path('README.md').read_text() in "
+        "('Verified delivery\\n', 'Operator revised delivery\\n')\n",
         encoding="utf-8",
     )
     git(repository, "init", "-b", "main")
@@ -104,10 +107,23 @@ async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_che
 
             if request.role is AgentRole.DEVELOPER:
                 needs_repair = repair_failed_check and roles.count(AgentRole.DEVELOPER) == 1
+                revised = operator_revision and roles.count(AgentRole.DEVELOPER) == 2
+                if revised:
+                    assert request.context.operator_feedback is not None
+                    assert request.context.operator_feedback.content == (
+                        "Use Operator revised delivery as the README text."
+                    )
+                    assert request.context.check_evidence
                 await call(
                     "repository.write_file",
                     path="README.md",
-                    content="Repair needed\n" if needs_repair else "Verified delivery\n",
+                    content=(
+                        "Repair needed\n"
+                        if needs_repair
+                        else "Operator revised delivery\n"
+                        if revised
+                        else "Verified delivery\n"
+                    ),
                 )
                 await call("git.commit", message="Clarify README")
                 candidate = await call("git.diff", scope="candidate")
@@ -222,12 +238,36 @@ async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_che
         for _ in range(7 if repair_failed_check else 5):
             await tick_success(worker, factory, run_id)
         assert await worker.tick() is None
+        if operator_revision:
+            async with factory() as session:
+                frozen = await session.get(Run, run_id)
+                frozen_version = frozen.version
+                frozen_digest = frozen.pending_evidence_digest
+                frozen_head = git(Path(frozen.worktree_path), "rev-parse", "HEAD")
+            await post(
+                client,
+                f"/api/runs/{run_id}/commands",
+                {
+                    "command_type": "request_candidate_changes",
+                    "expected_run_version": frozen_version,
+                    "feedback": "Use Operator revised delivery as the README text.",
+                },
+                202,
+            )
+            for _ in range(4):
+                await tick_success(worker, factory, run_id)
+            assert await worker.tick() is None
     async with factory() as session:
         run = await session.get(Run, run_id)
         assert run.state == "AWAITING_PR_APPROVAL"
         assert run.pending_evidence_digest
         assert run.local_remediation_count == int(repair_failed_check)
-        assert Path(run.worktree_path, "README.md").read_text() == "Verified delivery\n"
+        assert Path(run.worktree_path, "README.md").read_text() == (
+            "Operator revised delivery\n" if operator_revision else "Verified delivery\n"
+        )
+        if operator_revision:
+            assert run.pending_evidence_digest != frozen_digest
+            assert git(Path(run.worktree_path), "rev-parse", "HEAD") != frozen_head
         assert git(Path(run.worktree_path), "rev-parse", "HEAD") != base
         audit = (
             await session.scalars(
@@ -242,7 +282,7 @@ async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_che
         assert [event.event_type for event in audit] == [
             "runner.trusted_host.attempt",
             "runner.trusted_host.completed",
-        ] * (2 if repair_failed_check else 1)
+        ] * (2 if repair_failed_check or operator_revision else 1)
         assert all(
             event.actor_class == "worker"
             and event.payload["priority"] == "high"
@@ -253,5 +293,8 @@ async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_che
     expected_roles = [AgentRole.PLANNER, AgentRole.DEVELOPER]
     if repair_failed_check:
         expected_roles.append(AgentRole.DEVELOPER)
-    assert roles == [*expected_roles, AgentRole.REVIEWER]
+    expected_roles.append(AgentRole.REVIEWER)
+    if operator_revision:
+        expected_roles.extend((AgentRole.DEVELOPER, AgentRole.REVIEWER))
+    assert roles == expected_roles
     assert git(repository, "rev-parse", "HEAD") == base

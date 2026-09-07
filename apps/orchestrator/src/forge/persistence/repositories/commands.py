@@ -10,7 +10,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from forge.application.ports.commands import CommandLeaseLost
+from forge.application.ports.commands import CommandLane, CommandLeaseLost
 from forge.domain.command import CommandEnvelope, CommandStatus, thaw_payload
 from forge.domain.lease import validate_lease_seconds
 from forge.domain.payload import redact_durable_text
@@ -39,6 +39,7 @@ class CommandStateConflict(CommandError):
 
 
 _MAX_ERROR_LENGTH = 1024
+_CONTROL_COMMAND_TYPES = frozenset({"pause", "cancel"})
 
 
 class PostgresCommandRepository:
@@ -175,8 +176,16 @@ class PostgresCommandRepository:
             ).scalar_one_or_none()
             return None if record is None else _command_from_record(record)
 
-    async def claim_next(self, *, worker_id: str, lease_seconds: float) -> CommandEnvelope | None:
+    async def claim_next(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: float,
+        lane: CommandLane = CommandLane.NORMAL,
+    ) -> CommandEnvelope | None:
         _validate_worker_and_lease(worker_id, lease_seconds)
+        if not isinstance(lane, CommandLane):
+            raise TypeError("command lane is invalid")
         now = _utc_now()
         expiry = now + timedelta(seconds=lease_seconds)
         async with self._factory()() as session, session.begin():
@@ -192,6 +201,10 @@ class PostgresCommandRepository:
                         ),
                     ),
                 ]
+                if lane is CommandLane.CONTROL:
+                    eligibility.append(RunCommand.command_type.in_(_CONTROL_COMMAND_TYPES))
+                else:
+                    eligibility.append(RunCommand.command_type.not_in(_CONTROL_COMMAND_TYPES))
                 if skipped:
                     eligibility.append(~RunCommand.id.in_(skipped))
                 result = await session.execute(
@@ -214,7 +227,7 @@ class PostgresCommandRepository:
                 )
                 if run_exists is None:
                     raise PersistenceDataError(f"command {record.id} references a missing run")
-                active_lease = await session.scalar(
+                active_normal_lease = await session.scalar(
                     select(func.count())
                     .select_from(RunCommand)
                     .where(
@@ -222,9 +235,39 @@ class PostgresCommandRepository:
                         RunCommand.id != record.id,
                         RunCommand.status == "LEASED",
                         RunCommand.lease_expires_at > now,
+                        RunCommand.command_type.not_in(_CONTROL_COMMAND_TYPES),
                     )
                 )
-                if int(active_lease or 0) > 0:
+                active_control_lease = await session.scalar(
+                    select(func.count())
+                    .select_from(RunCommand)
+                    .where(
+                        RunCommand.run_id == record.run_id,
+                        RunCommand.id != record.id,
+                        RunCommand.status == "LEASED",
+                        RunCommand.lease_expires_at > now,
+                        RunCommand.command_type.in_(_CONTROL_COMMAND_TYPES),
+                    )
+                )
+                pending_control = await session.scalar(
+                    select(func.count())
+                    .select_from(RunCommand)
+                    .where(
+                        RunCommand.run_id == record.run_id,
+                        RunCommand.id != record.id,
+                        RunCommand.status == "PENDING",
+                        RunCommand.available_at <= now,
+                        RunCommand.command_type.in_(_CONTROL_COMMAND_TYPES),
+                    )
+                )
+                blocked = (
+                    int(active_control_lease or 0) > 0
+                    if lane is CommandLane.CONTROL
+                    else int(active_normal_lease or 0) > 0
+                    or int(active_control_lease or 0) > 0
+                    or int(pending_control or 0) > 0
+                )
+                if blocked:
                     skipped.add(record.id)
                     continue
 
