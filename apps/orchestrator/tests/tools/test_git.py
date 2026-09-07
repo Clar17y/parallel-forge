@@ -552,6 +552,58 @@ def test_status_and_diff_use_deterministic_safety_flags(tmp_path: Path) -> None:
     )
 
 
+def test_candidate_diff_is_base_pinned_and_returns_machine_paths(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "space name.txt").write_text("candidate\n", encoding="utf-8")
+    _git(handle.path, "add", "space name.txt")
+    _git(handle.path, "commit", "-m", "candidate")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    candidate = controlled.candidate_diff(handle)
+
+    assert candidate.head_sha == controlled.head_sha(handle)
+    assert candidate.changed_paths == ("space name.txt",)
+    assert "candidate" in candidate.diff.text
+    assert candidate.diff.truncated is False
+
+
+def test_candidate_diff_includes_rename_paths(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    _git(handle.path, "mv", "README.md", "new name.txt")
+    _git(handle.path, "commit", "-m", "rename candidate")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    candidate = controlled.candidate_diff(handle)
+
+    assert candidate.changed_paths == ("README.md", "new name.txt")
+
+
+@pytest.mark.parametrize("mutation", ("dirty", "head", "truncated_names", "malformed_names"))
+def test_candidate_diff_rejects_changed_or_incomplete_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    original = controlled._run
+
+    def altered(worktree, arguments, **kwargs):
+        result = original(worktree, arguments, **kwargs)
+        if "--name-only" in arguments and "diff" in arguments:
+            if mutation == "dirty":
+                (handle.path / "unexpected.txt").write_text("late change", encoding="utf-8")
+            elif mutation == "head":
+                _git(handle.path, "commit", "--allow-empty", "-m", "late commit")
+            elif mutation == "truncated_names":
+                return replace(result, stdout_truncated=True)
+            elif mutation == "malformed_names":
+                return replace(result, stdout="README.md", stdout_original_byte_count=9)
+        return result
+
+    monkeypatch.setattr(controlled, "_run", altered)
+    with pytest.raises(ControlledGitError):
+        controlled.candidate_diff(handle)
+
+
 @pytest.mark.parametrize("basename", ("-", "registered-under-another-name"))
 def test_registered_worktree_metadata_basename_is_not_identity_name(
     tmp_path: Path, basename: str

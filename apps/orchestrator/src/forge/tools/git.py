@@ -15,6 +15,7 @@ from forge.application.ports.worktrees import (
     EnvironmentFileEvidence,
     EnvironmentStagingInspection,
     EnvironmentStagingPlan,
+    GitCandidateDiff,
     GitCommit,
     GitDiff,
     GitStatus,
@@ -608,6 +609,73 @@ class ControlledGit:
             text=result.stdout,
             original_byte_count=_original_count(result, "stdout"),
             truncated=_truncated(result, "stdout"),
+        )
+
+    def candidate_diff(self, worktree: ManagedWorktree) -> GitCandidateDiff:
+        """Return a stable, complete diff from the managed base to HEAD."""
+
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        self._verify_current_branch(worktree)
+        status = self.status(worktree)
+        if status.truncated:
+            raise ControlledGitError()
+        status_entries = status.text.split("\x00")
+        if any(entry and not entry.startswith("##") for entry in status_entries):
+            raise ControlledGitError()
+        before = self._head_sha(worktree)
+        if not self._has_ancestor(worktree, worktree.base_sha):
+            raise ControlledGitError()
+        diff_result = self._run(
+            worktree.path,
+            (
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--binary",
+                "--full-index",
+                "--no-color",
+                f"{worktree.base_sha}..{before}",
+                "--",
+            ),
+        )
+        names_result = self._run(
+            worktree.path,
+            (
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                f"{worktree.base_sha}..{before}",
+                "--",
+            ),
+        )
+        _require_complete_result(diff_result)
+        _require_complete_result(names_result)
+        if names_result.stdout and not names_result.stdout.endswith("\x00"):
+            raise ControlledGitError()
+        names = names_result.stdout.split("\x00")
+        if names and names[-1] == "":
+            names.pop()
+        if any(not path or "\ufffd" in path for path in names):
+            raise ControlledGitError()
+        final_status = self.status(worktree)
+        if final_status.truncated:
+            raise ControlledGitError()
+        final_entries = final_status.text.split("\x00")
+        if any(entry and not entry.startswith("##") for entry in final_entries):
+            raise ControlledGitError()
+        if self._head_sha(worktree) != before:
+            raise ControlledGitError()
+        return GitCandidateDiff(
+            head_sha=before,
+            diff=GitDiff(
+                text=diff_result.stdout,
+                original_byte_count=_original_count(diff_result, "stdout"),
+                truncated=_truncated(diff_result, "stdout"),
+            ),
+            changed_paths=tuple(names),
         )
 
     def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit:

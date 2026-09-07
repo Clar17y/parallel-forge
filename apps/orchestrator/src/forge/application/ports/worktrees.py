@@ -109,6 +109,25 @@ class GitDiff(GitOutput):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class GitCandidateDiff:
+    """Complete base-to-HEAD diff plus machine-readable changed paths."""
+
+    head_sha: str
+    diff: GitDiff
+    changed_paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.head_sha, str) or _SHA.fullmatch(self.head_sha) is None:
+            raise ValueError("candidate HEAD SHA is invalid")
+        if not isinstance(self.diff, GitDiff):
+            raise TypeError("candidate diff is invalid")
+        if not isinstance(self.changed_paths, tuple) or any(
+            not isinstance(path, str) or not path for path in self.changed_paths
+        ):
+            raise TypeError("candidate changed paths are invalid")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class GitCommit:
     """The verified parent and result of one controlled local commit."""
 
@@ -196,6 +215,8 @@ class ControlledGitPort(Protocol):
     def status(self, worktree: ManagedWorktree) -> GitStatus: ...
 
     def diff(self, worktree: ManagedWorktree) -> GitDiff: ...
+
+    def candidate_diff(self, worktree: ManagedWorktree) -> GitCandidateDiff: ...
 
     def branch_exists(self, worktree: ManagedWorktree) -> bool: ...
 
@@ -500,6 +521,7 @@ __all__ = [
     "EnvironmentStagingInspection",
     "EnvironmentStagingPlan",
     "EnvironmentStagingPort",
+    "GitCandidateDiff",
     "GitCommit",
     "GitCommitResult",
     "GitDiff",
