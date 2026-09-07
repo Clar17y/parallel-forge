@@ -67,6 +67,21 @@ class RunRepository(Protocol):
         payload_schema_version: int = 1,
     ) -> RunSnapshot: ...
 
+    async def restart_planning(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        policy_version: int,
+        base_ref: str,
+        base_sha: str,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+    ) -> RunSnapshot: ...
+
     async def update_resource(
         self,
         run_id: UUID,

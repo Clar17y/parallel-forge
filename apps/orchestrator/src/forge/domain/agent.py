@@ -286,6 +286,7 @@ class PlannerInput(BaseModel):
     relevant_instructions: tuple[UntrustedContent, ...] = Field(
         default=(), max_length=_MAX_COLLECTION_SIZE
     )
+    revision_feedback: UntrustedContent | None = None
     policy_summary: PolicySummary
 
     @field_validator("base_commit")
@@ -296,7 +297,12 @@ class PlannerInput(BaseModel):
     @model_validator(mode="after")
     def validate_context_size(self) -> Self:
         _validate_context_size(
-            (self.original_task, self.repository_tree, *self.relevant_instructions)
+            (
+                self.original_task,
+                self.repository_tree,
+                *self.relevant_instructions,
+                *((self.revision_feedback,) if self.revision_feedback is not None else ()),
+            )
         )
         return self
 
@@ -788,7 +794,12 @@ def _iter_untrusted_content(
     context: PlannerInput | DeveloperInput | ReviewerInput,
 ) -> tuple[UntrustedContent, ...]:
     if isinstance(context, PlannerInput):
-        return (context.original_task, context.repository_tree, *context.relevant_instructions)
+        return (
+            context.original_task,
+            context.repository_tree,
+            *context.relevant_instructions,
+            *((context.revision_feedback,) if context.revision_feedback is not None else ()),
+        )
     if isinstance(context, DeveloperInput):
         return (context.original_task, *context.relevant_instructions)
     return (

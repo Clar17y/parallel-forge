@@ -37,6 +37,8 @@ class EvidenceModel(BaseModel):
 
 class PlanApprovalEvidence(EvidenceModel):
     task_version: int = Field(ge=1)
+    plan_attempt: int = Field(default=1, ge=1)
+    task_digest: str
     plan_digest: str
     repository: str = Field(min_length=1)
     base_ref: str = Field(min_length=1)
@@ -50,8 +52,8 @@ class PlanApprovalEvidence(EvidenceModel):
     cost_budget_minor: int = Field(ge=0)
     duration_budget_seconds: int = Field(ge=1)
 
-    _validate_digests = field_validator("plan_digest")(
-        lambda value: _require_digest(value, "plan_digest")
+    _validate_digests = field_validator("task_digest", "plan_digest")(
+        lambda value: _require_digest(value, "evidence digest")
     )
     _validate_base_sha = field_validator("base_sha")(lambda value: _require_sha(value, "base_sha"))
     _normalize_dependencies = field_validator("dependency_changes", mode="before")(

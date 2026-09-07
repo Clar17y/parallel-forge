@@ -14,6 +14,7 @@ from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.operations import PostgresOperationRepository
 from forge.settings import Settings
+from forge.worker.composition import WorkerCompositionError, compose_worker_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,6 @@ async def run_worker(
         raise ValueError("worker idle poll interval must be between zero and one second")
     settings = settings or Settings(process_role="worker")
     adapters = adapters or {}
-    handlers = handlers or {}
     stop_event = stop_event or asyncio.Event()
     engine = create_engine(settings.database_url)
     factory = create_session_factory(engine)
@@ -42,10 +42,15 @@ async def run_worker(
         operations = PostgresOperationRepository(factory)
         recovery = RecoveryService(operations)
         await recovery.reconcile_all(adapters)
+        effective_handlers: Mapping[str, CommandHandler]
+        if handlers is None:
+            effective_handlers = compose_worker_handlers(settings, factory)
+        else:
+            effective_handlers = handlers
         worker = Worker(
             commands,
             factory,
-            handlers=handlers,
+            handlers=effective_handlers,
             worker_id=worker_id or f"forge-worker-{uuid4().hex}",
             lease_seconds=30,
         )
@@ -67,8 +72,8 @@ def run() -> None:
         asyncio.run(run_worker())
     except KeyboardInterrupt:
         logger.info("Forge worker stopped")
-    except RecoveryError as error:
-        logger.error("Forge worker recovery failed: %s", error)
+    except (RecoveryError, WorkerCompositionError) as error:
+        logger.error("Forge worker failed: %s", error)
         raise SystemExit(1) from error
 
 

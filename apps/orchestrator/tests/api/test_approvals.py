@@ -9,7 +9,9 @@ from typing import Self
 from uuid import UUID, uuid4
 
 import pytest
+import pytest_asyncio
 from forge.application.services.approvals import (
+    ApprovalAuthorizationService,
     ApprovalChallengeService,
     AuthorizationError,
 )
@@ -158,6 +160,11 @@ def _route_app() -> tuple[object, FakeApprovalStore, FakeRouteAuthService, FakeC
         unit_of_work_factory=lambda: FakeUow(store),
         clock=clock,
         auth_service=auth,
+        # Route/session/challenge unit boundary; the production default validator
+        # is exercised by the real planning workflow integration tests.
+        approval_authorization_service=ApprovalAuthorizationService(
+            lambda: FakeUow(store), clock=clock
+        ),
     )
     return app, store, auth, clock, run_id
 
@@ -601,16 +608,27 @@ async def test_approval_route_rechecks_session_after_dependency_race() -> None:
     assert store.commands == []
 
 
+@pytest_asyncio.fixture
+async def session_factory(migrated_database_url):
+    from forge.persistence.database import create_engine, create_session_factory
+
+    engine = create_engine(migrated_database_url)
+    try:
+        yield create_session_factory(engine)
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_postgres_approval_routes_issue_and_authorize_once(
+async def test_postgres_approval_rejects_incomplete_plan_gate_without_spending_challenge(
     session_factory, persisted_run
 ) -> None:
     from forge.api.app import create_app
-    from forge.persistence.models import Run
+    from forge.persistence.models import Approval, ApprovalChallenge, Run, RunCommand
     from forge.settings import Settings
     from httpx import ASGITransport, AsyncClient
-    from sqlalchemy import update
+    from sqlalchemy import select, update
 
     digest = "c" * 64
     async with session_factory() as db, db.begin():
@@ -662,5 +680,12 @@ async def test_postgres_approval_routes_issue_and_authorize_once(
         )
 
     assert challenge_response.status_code == 200
-    assert approval_response.status_code == 202
-    assert set(approval_response.json()) == {"approval_id"}
+    assert approval_response.status_code == 409
+    async with session_factory() as db:
+        assert not (await db.scalars(select(Approval))).all()
+        assert not (await db.scalars(select(RunCommand))).all()
+        challenges = (await db.scalars(select(ApprovalChallenge))).all()
+        assert len(challenges) == 1 and challenges[0].consumed_at is None
+        run = await db.get(Run, persisted_run.id)
+        assert run.state == "AWAITING_PLAN_APPROVAL" and run.version == 0
+        assert run.pending_evidence_digest == digest

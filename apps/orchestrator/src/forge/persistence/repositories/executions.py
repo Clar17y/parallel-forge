@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Final
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from forge.application.ports.executions import (
     ExecutionAdmission,
     ExecutionOutcome,
     ExecutionStatus,
+    ExecutionUnsettledError,
     database_status_for_finish,
 )
 from forge.domain.actor import AgentRole
@@ -343,6 +344,86 @@ class PostgresExecutionRepository:
             raise ExecutionConflict() from None
         except PersistenceError, SQLAlchemyError:
             raise ExecutionRepositoryError() from None
+
+    async def get_admission(
+        self, run_id: UUID, agent_execution_id: UUID
+    ) -> ExecutionAdmission | None:
+        """Resolve one running execution without exposing the session to callers."""
+
+        if not isinstance(run_id, UUID) or not isinstance(agent_execution_id, UUID):
+            raise TypeError("run and execution identifiers must be UUID values")
+        try:
+            run = await self._locked_run(run_id)
+            execution = await self._locked_execution(run_id, agent_execution_id)
+            if execution is None or execution.step_id is None:
+                return None
+            step = await self._locked_step(run_id, execution.step_id)
+            if step is None or execution.step_id != step.id:
+                raise ExecutionConflict()
+            finish_status, _usage = await self._inspect_pair(step, execution)
+            if finish_status is not None:
+                return None
+            return _admission_from_rows(run, step, execution, is_new=False, finish_status=None)
+        except ExecutionConflict, ExecutionDataError, ExecutionNotFound:
+            raise
+        except PersistenceError, SQLAlchemyError:
+            raise ExecutionRepositoryError() from None
+
+    async def get_outcome(self, run_id: UUID, kind: str, attempt: int) -> ExecutionOutcome | None:
+        """Resolve one terminal attempt while validating its stored execution pair."""
+
+        if (
+            not isinstance(run_id, UUID)
+            or not isinstance(kind, str)
+            or not kind
+            or type(attempt) is not int
+            or attempt < 1
+        ):
+            raise TypeError("run identifier, kind, and positive attempt are required")
+        try:
+            await self._locked_run(run_id)
+            step = await self._locked_step_for_key(run_id, kind, attempt)
+            if step is None:
+                return None
+            executions = await self._locked_executions_for_step(step.id)
+            if len(executions) != 1:
+                raise ExecutionDataError()
+            execution = executions[0]
+            finish_status, usage = await self._inspect_pair(step, execution)
+            if finish_status is None or usage is None:
+                return None
+            return _outcome_from_rows(
+                step,
+                execution,
+                usage,
+                finish_status=finish_status,
+                changed=False,
+            )
+        except ExecutionConflict, ExecutionDataError, ExecutionNotFound:
+            raise
+        except PersistenceError, SQLAlchemyError:
+            raise ExecutionRepositoryError() from None
+
+    async def next_attempt(self, run_id: UUID, kind: str) -> int:
+        if not isinstance(run_id, UUID) or not isinstance(kind, str) or not kind:
+            raise TypeError("run identifier and kind are required")
+        await self._locked_run(run_id)
+        unsettled = await self._session.scalar(
+            select(Step.id)
+            .outerjoin(AgentExecution, AgentExecution.step_id == Step.id)
+            .where(
+                Step.run_id == run_id,
+                Step.kind == kind,
+                (Step.status == "RUNNING") | (AgentExecution.status == "RUNNING"),
+            )
+            .limit(1)
+        )
+        if unsettled is not None:
+            raise ExecutionUnsettledError("previous execution requires recovery")
+        value = await self._session.scalar(
+            select(func.max(Step.attempt)).where(Step.run_id == run_id, Step.kind == kind)
+        )
+        return (value or 0) + 1
 
     async def _locked_run(self, run_id: UUID) -> Run:
         result = await self._session.execute(select(Run).where(Run.id == run_id).with_for_update())

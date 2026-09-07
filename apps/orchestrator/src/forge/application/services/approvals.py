@@ -14,11 +14,16 @@ from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.ports.clock import Clock, SystemClock
+from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.auth import (
     AuthenticatedActor,
     AuthRepository,
     AuthUnitOfWork,
     hash_token,
+)
+from forge.application.services.plan_evidence import (
+    PlanEvidenceValidationError,
+    PlanEvidenceValidator,
 )
 from forge.domain.approval import ApprovalGate, ApprovalRecord
 from forge.domain.command import CommandEnvelope
@@ -221,9 +226,11 @@ class ApprovalAuthorizationService:
         unit_of_work_factory: Callable[[], ApprovalUnitOfWork],
         *,
         clock: Clock | None = None,
+        plan_evidence_validator: PlanEvidenceValidator | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._clock = clock or SystemClock()
+        self._plan_evidence_validator = plan_evidence_validator
 
     async def authorize(
         self,
@@ -262,6 +269,11 @@ class ApprovalAuthorizationService:
             )
             if session is None:
                 raise AuthorizationError("invalid or expired session")
+            if gate == "plan" and self._plan_evidence_validator is not None:
+                try:
+                    await self._plan_evidence_validator.validate(cast(UnitOfWork, work), run_id)
+                except PlanEvidenceValidationError:
+                    raise AuthorizationError("approval evidence is stale") from None
             challenge = await work.auth.get_challenge(
                 token_hash=hash_token(challenge_token),
                 for_update=True,

@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     allow_remote: bool = False
     provider_secret_reference: str = Field(default="", repr=False)
     google_api_key_reference: str = Field(default="", repr=False)
+    pricing_catalog_path: Path | None = None
+    prompt_root: Path | None = None
 
     @property
     def artifact_root(self) -> Path:

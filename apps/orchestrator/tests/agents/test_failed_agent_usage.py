@@ -223,7 +223,8 @@ class _FailureCapturingPlanningService(PlanningService):
             ),
         )
 
-    async def _read_context(self, _binding: object) -> PlannerInput:
+    async def _read_context(self, _binding: object, *, feedback=None) -> PlannerInput:
+        assert feedback is None
         return _request().context
 
     def _load_prompt(self) -> LoadedPrompt:

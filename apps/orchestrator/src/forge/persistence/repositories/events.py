@@ -83,6 +83,14 @@ class PostgresEventRepository:
         await self._session.flush()
         return stored
 
+    async def list_for_version(self, run_id: UUID, version: int) -> list[RunEvent]:
+        result = await self._session.execute(
+            select(RunEventRecord)
+            .where(RunEventRecord.run_id == run_id, RunEventRecord.run_version == version)
+            .order_by(RunEventRecord.sequence.asc())
+        )
+        return [_event_from_record(record) for record in result.scalars().all()]
+
     async def list_after(self, run_id: UUID, sequence: int) -> list[RunEvent]:
         """List events strictly after a nonnegative cursor in sequence order."""
 

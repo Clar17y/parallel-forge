@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -260,6 +261,65 @@ class PostgresRunRepository:
             occurred_at=occurred_at,
             payload_schema_version=payload_schema_version,
         )
+
+    async def restart_planning(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        policy_version: int,
+        base_ref: str,
+        base_sha: str,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+    ) -> RunSnapshot:
+        """Refresh authoritative planning bindings while leaving a plan gate."""
+        try:
+            if (
+                policy_version < 1
+                or not base_ref
+                or re.fullmatch(r"[0-9a-f]{40}", base_sha) is None
+            ):
+                raise PersistenceError("planning bindings are invalid")
+            result = await self._session.execute(
+                select(Run).where(Run.id == run_id).with_for_update()
+            )
+            record = result.scalar_one_or_none()
+            if record is None:
+                raise RunNotFound(run_id)
+            if record.version != expected_version:
+                raise ConcurrencyConflict(run_id, expected_version, record.version)
+            current = _snapshot_from_record(record)
+            if current.state is not RunState.AWAITING_PLAN_APPROVAL:
+                raise PersistenceError("planning restart requires plan approval state")
+            changed = self._state_engine.transition(current, RunState.PLANNING)
+            _apply_snapshot(record, changed)
+            record.policy_version = policy_version
+            record.base_ref = base_ref
+            record.base_sha = base_sha
+            if self._events is None:
+                raise PersistenceError("run repository is not bound to an event repository")
+            await self._events.append(
+                RunEvent(
+                    run_id=run_id,
+                    run_version=changed.version,
+                    event_type=event_type,
+                    payload=event_payload,
+                    actor_class=actor_class,
+                    actor_id=actor_id,
+                    occurred_at=occurred_at or _utc_now(),
+                )
+            )
+            await self._session.flush()
+            return replace(
+                changed, policy_version=policy_version, base_ref=base_ref, base_sha=base_sha
+            )
+        except BaseException:
+            await self._session.rollback()
+            raise
 
     async def _change_state(
         self,

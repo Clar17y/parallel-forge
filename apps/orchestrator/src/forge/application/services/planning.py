@@ -24,7 +24,11 @@ from forge.agents.prompt_loader import LoadedPrompt, PromptChanged, PromptLoader
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.clock import Clock, SystemClock
-from forge.application.ports.executions import ExecutionAdmission, ExecutionStatus
+from forge.application.ports.executions import (
+    ExecutionAdmission,
+    ExecutionStatus,
+    ExecutionUnsettledError,
+)
 from forge.application.ports.projects import ProjectPolicyRecord, ProjectRecord
 from forge.application.ports.repository import (
     InstructionDocument,
@@ -34,6 +38,7 @@ from forge.application.ports.repository import (
 )
 from forge.application.ports.tasks import TaskRecord
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.plan_restart import restart_source
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
     AgentBudget,
@@ -55,6 +60,7 @@ from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.tool import ToolName
 from forge.observability.usage import UsageRecord
+from forge.persistence.repositories.artifacts import ArtifactNotFound
 
 _MAX_JSON_BYTES: Final = 1_048_576
 _MAX_TREE_ENTRIES: Final = 10_000
@@ -162,7 +168,8 @@ class PlanningService:
         self._validate_command(command)
         step_id = uuid5(_STEP_NAMESPACE, str(command.id))
         execution_id = uuid5(_EXECUTION_NAMESPACE, str(command.id))
-        attempt = max(1, command.attempt)
+        semantic_attempt = _semantic_attempt(command)
+        attempt = semantic_attempt
 
         # Snapshot and durable command.started admission must be committed before
         # any potentially slow or untrusted boundary is touched.
@@ -192,20 +199,25 @@ class PlanningService:
                 evidence_digest=binding.run.pending_evidence_digest,
                 finish_status=AgentFinishStatus.SUCCEEDED,
             )
-        if binding.run.state is RunState.PLANNING:
+        if binding.run.state is RunState.PLANNING and command.payload == {}:
             await work.commit()
             raise PlanningRecoveryRequired
-        if binding.run.state is not RunState.CREATED:
+        if binding.run.state is not RunState.CREATED and not (
+            binding.run.state is RunState.PLANNING and semantic_attempt > 1
+        ):
             await _rollback(work)
             raise PlanningValidationError
         if binding.run.version != command.expected_run_version:
             await _rollback(work)
             raise PlanningValidationError
 
+        await self._require_semantic_attempt(work, command)
+
         await work.commit()
 
         try:
-            planner_input = await self._read_context(binding)
+            feedback = await self._revision_feedback(command, work, binding.run.id)
+            planner_input = await self._read_context(binding, feedback=feedback)
             loaded_prompt = self._load_prompt()
             budget = AgentBudget.from_model_policy(binding.policy.planner_model)
             request = AgentRequest(
@@ -414,7 +426,9 @@ class PlanningService:
             plan_bytes = _canonical_json_bytes(plan.model_dump(mode="json"))
             plan_descriptor = await self._store_json(plan_bytes)
             evidence = PlanApprovalEvidence(
+                plan_attempt=attempt,
                 task_version=1,
+                task_digest=binding.task.task_digest,
                 plan_digest=_sha256(plan_bytes),
                 repository=binding.project.github_repository,
                 base_ref=_required_text(binding.run.base_ref),
@@ -483,7 +497,9 @@ class PlanningService:
         except Exception:  # noqa: BLE001 - persistence boundary is fail-closed
             raise PlanningValidationError from None
 
-    async def _read_context(self, binding: _Binding) -> PlannerInput:
+    async def _read_context(
+        self, binding: _Binding, *, feedback: UntrustedContent | None = None
+    ) -> PlannerInput:
         task_bytes = binding.task.normalized_text.encode("utf-8")
         if not task_bytes or len(task_bytes) > _MAX_JSON_BYTES:
             raise PlanningValidationError
@@ -536,9 +552,56 @@ class PlanningService:
                 repository_tree=tree,
                 relevant_instructions=instruction_envelopes,
                 policy_summary=PolicySummary.from_policy(binding.policy),
+                revision_feedback=feedback,
             )
 
         return await asyncio.to_thread(read)
+
+    async def _revision_feedback(
+        self, command: CommandEnvelope, work: UnitOfWork, run_id: UUID
+    ) -> UntrustedContent | None:
+        digest = command.payload.get("feedback_digest")
+        if digest is None:
+            return None
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise PlanningValidationError
+        descriptor = await work.artifacts.get_by_digest(digest, run_id=run_id)
+        if (
+            descriptor.run_id != run_id
+            or descriptor.producer_type != "plan_revision_feedback"
+            or descriptor.producer_id is None
+            or descriptor.truncated
+        ):
+            raise PlanningValidationError
+        revision = await work.commands.get(descriptor.producer_id)
+        if (
+            revision.run_id != run_id
+            or revision.command_type != "request_plan_revision"
+            or revision.actor_id != command.actor_id
+            or revision.expected_run_version + 1 != command.expected_run_version
+            or revision.status is not CommandStatus.COMPLETED
+        ):
+            raise PlanningValidationError
+        await work.commit()
+        raw = await self._artifact_store.open_bytes(descriptor.digest)
+        if hashlib.sha256(raw).hexdigest() != digest or not raw or len(raw) > 131_072:
+            raise PlanningValidationError
+        document = json.loads(raw)
+        if (
+            not isinstance(document, dict)
+            or set(document) != {"schema_version", "command_id", "feedback"}
+            or type(document["schema_version"]) is not int
+            or document["schema_version"] != 1
+            or document["command_id"] != str(revision.id)
+            or document["feedback"] != revision.payload.get("feedback")
+        ):
+            raise PlanningValidationError
+        text = document["feedback"]
+        if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 16_384:
+            raise PlanningValidationError
+        return UntrustedContent.from_text(
+            text, source_kind=UntrustedSourceKind.TASK, source_reference=f"revision:{digest}"
+        )
 
     def _load_prompt(self) -> LoadedPrompt:
         try:
@@ -574,13 +637,15 @@ class PlanningService:
         request: AgentRequest,
     ) -> ExecutionAdmission:
         latest = await self._snapshot(work, command)
-        if (
+        if latest.run.version != command.expected_run_version or (
             latest.run.state is not RunState.CREATED
-            or latest.run.version != command.expected_run_version
+            and not (latest.run.state is RunState.PLANNING and attempt > 1)
         ):
             await _rollback(work)
             raise PlanningRecoveryRequired
-        persisted_input = await work.artifacts.record(
+        await self._require_semantic_attempt(work, command)
+        persisted_input = await self._record_shared_content(
+            work,
             input_descriptor,
             run_id=latest.run.id,
             producer_type="planning_context",
@@ -589,18 +654,19 @@ class PlanningService:
         input_id = _artifact_id(persisted_input)
         if input_id is None:
             raise PlanningValidationError
-        await work.runs.transition(
-            latest.run.id,
-            latest.run.version,
-            RunState.PLANNING,
-            "run.planning_started",
-            {
-                "command_id": str(command.id),
-                "step_id": str(step_id),
-                "agent_execution_id": str(execution_id),
-            },
-            occurred_at=self._clock.now(),
-        )
+        if latest.run.state is RunState.CREATED:
+            await work.runs.transition(
+                latest.run.id,
+                latest.run.version,
+                RunState.PLANNING,
+                "run.planning_started",
+                {
+                    "command_id": str(command.id),
+                    "step_id": str(step_id),
+                    "agent_execution_id": str(execution_id),
+                },
+                occurred_at=self._clock.now(),
+            )
         admission = await work.executions.admit(
             latest.run.id,
             step_id,
@@ -612,8 +678,12 @@ class PlanningService:
             request.provider,
             request.model,
             input_artifact_id=input_id,
-            transition_from=RunState.CREATED.value,
-            transition_to=RunState.PLANNING.value,
+            transition_from=(
+                RunState.CREATED.value if latest.run.state is RunState.CREATED else None
+            ),
+            transition_to=(
+                RunState.PLANNING.value if latest.run.state is RunState.CREATED else None
+            ),
             admitted_at=self._clock.now(),
         )
         return admission
@@ -644,19 +714,20 @@ class PlanningService:
             )
             policy = _parse_policy(policy_record)
             self._validate_binding(command, run, task, project, policy_record, policy)
-            if (
-                run.state is not RunState.PLANNING
-                or run.version != command.expected_run_version + 1
+            if run.state is not RunState.PLANNING or run.version != command.expected_run_version + (
+                1 if command.payload == {} else 0
             ):
                 raise PlanningRecoveryRequired
             await self._record_usage_attempts(work, run.id, execution_id, usage_attempts)
-            persisted_plan = await work.artifacts.record(
+            persisted_plan = await self._record_shared_content(
+                work,
                 plan_descriptor,
                 run_id=run.id,
                 producer_type="implementation_plan",
                 producer_id=execution_id,
             )
-            persisted_evidence = await work.artifacts.record(
+            persisted_evidence = await self._record_shared_content(
+                work,
                 evidence_descriptor,
                 run_id=run.id,
                 producer_type="plan_approval_evidence",
@@ -748,9 +819,8 @@ class PlanningService:
             )
             policy = _parse_policy(policy_record)
             self._validate_binding(command, run, task, project, policy_record, policy)
-            if (
-                run.state is not RunState.PLANNING
-                or run.version != command.expected_run_version + 1
+            if run.state is not RunState.PLANNING or run.version != command.expected_run_version + (
+                1 if command.payload == {} else 0
             ):
                 raise PlanningRecoveryRequired
             await self._record_usage_attempts(work, run.id, execution_id, safe_attempts)
@@ -815,6 +885,53 @@ class PlanningService:
             await _rollback(work)
             raise PlanningError from None
 
+    async def _require_semantic_attempt(self, work: UnitOfWork, command: CommandEnvelope) -> None:
+        if command.payload == {}:
+            return
+        try:
+            expected = await work.executions.next_attempt(command.run_id, "plan")
+        except ExecutionUnsettledError:
+            await work.rollback()
+            raise PlanningRecoveryRequired from None
+        if _semantic_attempt(command) != expected:
+            await work.rollback()
+            raise PlanningValidationError
+        if await restart_source(work, command) is None:
+            await work.rollback()
+            raise PlanningValidationError
+
+    async def _record_shared_content(
+        self,
+        work: UnitOfWork,
+        descriptor: ArtifactDescriptor,
+        *,
+        run_id: UUID,
+        producer_type: str,
+        producer_id: UUID,
+        parent_digests: tuple[str, ...] = (),
+    ) -> ArtifactDescriptor:
+        """Reuse identical content without rewriting its original provenance.
+
+        Each execution retains its own input/output artifact references. Repeated
+        plans and contexts therefore share bytes while their executions remain
+        distinct. The repository still verifies every immutable metadata field.
+        """
+        try:
+            existing = await work.artifacts.get_by_digest(descriptor.digest, run_id=run_id)
+        except ArtifactNotFound:
+            existing = None
+        if existing is not None:
+            if existing.producer_type != producer_type or existing.producer_id is None:
+                raise PlanningValidationError
+            producer_id = existing.producer_id
+        return await work.artifacts.record(
+            descriptor,
+            run_id=run_id,
+            producer_type=producer_type,
+            producer_id=producer_id,
+            parent_digests=parent_digests,
+        )
+
     async def _record_usage_attempts(
         self,
         work: UnitOfWork,
@@ -837,7 +954,7 @@ class PlanningService:
         if (
             type(command) is not CommandEnvelope
             or command.command_type != "start_planning"
-            or command.payload != {}
+            or not _valid_planning_payload(command.payload)
             or command.payload_schema_version != 1
             or command.status is not CommandStatus.LEASED
             or command.expected_run_version < 0
@@ -1167,6 +1284,32 @@ __all__ = [
     "PlanningValidationError",
     "canonical_json_bytes",
 ]
+
+
+def _semantic_attempt(command: CommandEnvelope) -> int:
+    if command.payload == {}:
+        return 1
+    value = command.payload.get("semantic_attempt")
+    if type(value) is not int or value < 2:
+        raise PlanningValidationError
+    return value
+
+
+def _valid_planning_payload(payload: Mapping[str, object]) -> bool:
+    if payload == {}:
+        return True
+    if set(payload) not in ({"semantic_attempt"}, {"semantic_attempt", "feedback_digest"}):
+        return False
+    value = payload.get("semantic_attempt")
+    digest = payload.get("feedback_digest")
+    return (
+        type(value) is int
+        and value >= 2
+        and (
+            digest is None
+            or (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None)
+        )
+    )
 
 
 canonical_json_bytes = _canonical_json_bytes

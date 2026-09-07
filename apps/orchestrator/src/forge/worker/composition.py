@@ -1,0 +1,335 @@
+"""Validated production dependency composition for the Forge worker."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from forge.agents.adk_gateway import BoundAdkTools, GoogleAdkGateway
+from forge.agents.adk_runtime import AdkRuntime, AdkRuntimeError, AdkRuntimeProtocol
+from forge.agents.errors import AgentGatewayError
+from forge.agents.prompt_loader import PromptLoader, PromptLoadError
+from forge.agents.tool_bridge import build_adk_tools
+from forge.application.adapters.git import LocalGitRepositoryInspector
+from forge.application.handlers.approvals import (
+    ApprovePlanHandler,
+    RequestPlanRevisionHandler,
+)
+from forge.application.handlers.planning import PlanningHandler
+from forge.application.ports.agents import AgentGateway
+from forge.application.ports.artifacts import ArtifactStore
+from forge.application.ports.clock import Clock
+from forge.application.ports.executions import ExecutionAdmission, ExecutionStatus
+from forge.application.ports.provider_credentials import (
+    ProviderCredentialError,
+    validate_provider_secret_reference,
+)
+from forge.application.services.plan_evidence import (
+    PlanEvidenceValidator,
+)
+from forge.application.services.planning import PlanningService
+from forge.application.services.tools import ControlledToolService
+from forge.application.services.worker import CommandHandler
+from forge.artifacts.filesystem import FilesystemArtifactStore
+from forge.domain.actor import AgentRole
+from forge.domain.agent import AgentBudget, AgentRequest, AgentResult, PlannerInput, PolicySummary
+from forge.domain.policy import ProjectPolicy
+from forge.domain.run import RunState
+from forge.domain.tool import (
+    ToolAuthorizationContext,
+    ToolName,
+    repository_resource_identity,
+)
+from forge.observability.redaction import Redactor
+from forge.observability.usage import PricingCatalog
+from forge.persistence.unit_of_work import PostgresUnitOfWork
+from forge.settings import Settings
+from forge.tools.provider_credentials import LocalProviderCredentialResolver
+from forge.tools.repository import RepositoryReader
+from forge.tools.secrets import LocalSecretStore, SecretStoreError
+
+
+class WorkerCompositionError(RuntimeError):
+    """Context-free failure when composing worker dependencies."""
+
+    def __init__(self, message: str = "worker configuration is invalid") -> None:
+        super().__init__(message)
+
+
+def load_pricing_catalog(path: Path | str) -> PricingCatalog:
+    """Load and validate an operator-supplied versioned pricing catalog from JSON."""
+    try:
+        catalog_path = Path(path)
+        content = catalog_path.read_text(encoding="utf-8")
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            raise TypeError
+        version = data.get("version")
+        entries = data.get("entries")
+        if not isinstance(version, str) or not isinstance(entries, dict):
+            raise TypeError
+        if not entries:
+            raise ValueError
+
+        # Require cache/input/output prices for configured models before effect.
+        for raw_entry in entries.values():
+            if not isinstance(raw_entry, dict):
+                raise TypeError
+            if not {
+                "input_per_million",
+                "output_per_million",
+                "cached_input_per_million",
+            }.issubset(raw_entry):
+                raise ValueError
+
+        exponents = data.get("currency_minor_exponents")
+        if exponents is not None and not isinstance(exponents, dict):
+            raise TypeError
+
+        return PricingCatalog.from_mapping(
+            version=version,
+            entries=entries,
+            currency_minor_exponents=exponents,
+        )
+    except OSError, json.JSONDecodeError, ValueError, TypeError, KeyError:
+        raise WorkerCompositionError("pricing catalog is invalid") from None
+
+
+class _PerRequestToolProvider:
+    """Synchronous source of already-authorized, closure-bound tools for one request."""
+
+    def __init__(self, bound_tools: BoundAdkTools, request: AgentRequest) -> None:
+        self._bound_tools = bound_tools
+        self._request = request
+
+    def tools_for(self, request: AgentRequest) -> BoundAdkTools:
+        if type(request) is not AgentRequest or request != self._request:
+            raise AgentGatewayError("request execution mismatch")
+        return self._bound_tools
+
+
+class BoundPlanningGateway:
+    """Derive durable request bindings in a short UoW, then invoke gateway outside DB tx."""
+
+    def __init__(
+        self,
+        *,
+        unit_of_work_factory: Callable[[], Any],
+        artifact_store: ArtifactStore,
+        prompt_loader: PromptLoader,
+        redactor: Redactor,
+        runtime: AdkRuntimeProtocol | None = None,
+        pricing_catalog: PricingCatalog | None = None,
+        supported_provider: str = "google",
+        currency: str = "USD",
+        underlying_gateway_factory: (
+            Callable[[_PerRequestToolProvider], AgentGateway] | None
+        ) = None,
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._artifact_store = artifact_store
+        self._prompt_loader = prompt_loader
+        self._redactor = redactor
+        self._runtime = runtime
+        self._pricing_catalog = pricing_catalog
+        self._supported_provider = supported_provider
+        self._currency = currency
+        self._underlying_gateway_factory = underlying_gateway_factory
+
+    async def execute(self, request: AgentRequest) -> AgentResult:
+        if type(request) is not AgentRequest:
+            raise AgentGatewayError("invalid agent request")
+        if request.role is not AgentRole.PLANNER:
+            raise AgentGatewayError("bound planning gateway only supports planner role")
+
+        # Derive durable rows using UoW in short transaction
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.get(request.run_id)
+            if run is None or run.task_id != request.task_id or run.state is not RunState.PLANNING:
+                raise AgentGatewayError()
+
+            execution = await uow.executions.get_admission(request.run_id, request.execution_id)
+            if (
+                type(execution) is not ExecutionAdmission
+                or execution.run_id != request.run_id
+                or execution.agent_execution_id != request.execution_id
+                or execution.kind != "plan"
+                or execution.role is not request.role
+                or execution.status is not ExecutionStatus.RUNNING
+                or execution.instruction_version != request.instruction_version
+                or execution.provider != request.provider
+                or execution.model != request.model
+            ):
+                raise AgentGatewayError()
+
+            if run.policy_version is None:
+                raise AgentGatewayError("run policy version is missing")
+
+            policy_record = await uow.projects.get_policy(run.project_id, run.policy_version)
+            if policy_record is None:
+                raise AgentGatewayError("policy record not found")
+            policy = ProjectPolicy.model_validate(policy_record.document)
+            if policy.id != run.project_id or policy.version != run.policy_version:
+                raise AgentGatewayError("policy mismatch")
+
+            if (
+                policy.planner_model.provider != request.provider
+                or policy.planner_model.model != request.model
+                or request.budget != AgentBudget.from_model_policy(policy.planner_model)
+                or type(request.context) is not PlannerInput
+                or request.context.policy_summary != PolicySummary.from_policy(policy)
+                or request.context.base_commit != run.base_sha
+            ):
+                raise AgentGatewayError("policy planner model mismatch")
+
+            step_id = execution.step_id
+            project_id = run.project_id
+            policy_version = run.policy_version
+            repo_path = policy.repository_path
+            secret_paths = policy.effective_secret_paths
+
+        # Outside DB transaction: construct per-request bound tools
+        resource_id = repository_resource_identity(project_id)
+        tool_context = ToolAuthorizationContext(
+            role=request.role,
+            run_id=request.run_id,
+            worktree_id=resource_id,
+            policy_version=policy_version,
+            agent_execution_id=request.execution_id,
+            step_id=step_id,
+        )
+        reader = RepositoryReader(
+            root=repo_path,
+            secret_paths=secret_paths,
+        )
+        tool_service = ControlledToolService(
+            unit_of_work_factory=self._unit_of_work_factory,
+            artifact_store=self._artifact_store,
+            repository_reader=reader,
+            redactor=self._redactor,
+        )
+        adk_tools = build_adk_tools(tool_service, tool_context)
+        tool_names = tuple(ToolName(t.name) for t in adk_tools)
+        if tool_names != request.allowed_tools:
+            raise AgentGatewayError("bound tools mismatch role allowed tools")
+        bound_tools = BoundAdkTools(names=tool_names, tools=adk_tools)
+
+        tool_provider = _PerRequestToolProvider(bound_tools, request)
+
+        if self._underlying_gateway_factory is not None:
+            gateway = self._underlying_gateway_factory(tool_provider)
+        else:
+            if self._runtime is None or self._pricing_catalog is None:
+                raise AgentGatewayError("gateway runtime or pricing catalog not configured")
+            gateway = GoogleAdkGateway(
+                runtime=self._runtime,
+                prompt_loader=self._prompt_loader,
+                tool_provider=tool_provider,
+                pricing_catalog=self._pricing_catalog,
+                supported_provider=self._supported_provider,
+                currency=self._currency,
+            )
+
+        return await gateway.execute(request)
+
+
+def compose_worker_handlers(
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    agent_gateway: AgentGateway | None = None,
+    redactor: Redactor | None = None,
+    clock: Clock | None = None,
+    repository_inspector: LocalGitRepositoryInspector | None = None,
+) -> Mapping[str, CommandHandler]:
+    """Compose production worker command handlers with verified dependencies."""
+    shared_redactor = redactor or Redactor()
+    artifact_store = FilesystemArtifactStore(settings.artifact_root)
+
+    prompt_root = settings.prompt_root or Path("agents")
+    try:
+        prompt_loader = PromptLoader(prompt_root)
+    except PromptLoadError, TypeError, OSError:
+        raise WorkerCompositionError("prompt loader root is unavailable") from None
+
+    uow_factory = lambda: PostgresUnitOfWork(session_factory, redactor=shared_redactor)
+
+    if agent_gateway is None:
+        if not settings.effective_provider_secret_reference:
+            raise WorkerCompositionError("provider secret reference is not configured")
+        try:
+            validate_provider_secret_reference(settings.effective_provider_secret_reference)
+        except ProviderCredentialError, ValueError, TypeError:
+            raise WorkerCompositionError("provider secret reference is invalid") from None
+
+        if settings.pricing_catalog_path is None:
+            raise WorkerCompositionError("pricing catalog path is not configured")
+        pricing_catalog = load_pricing_catalog(settings.pricing_catalog_path)
+
+        try:
+            secret_store = LocalSecretStore(settings.data_root)
+        except SecretStoreError, OSError, ValueError, TypeError:
+            raise WorkerCompositionError("secret store initialization failed") from None
+        credential_resolver = LocalProviderCredentialResolver(secret_store)
+        try:
+            runtime = AdkRuntime(
+                credential_resolver=credential_resolver,
+                credential_reference=settings.effective_provider_secret_reference,
+            )
+        except AdkRuntimeError, ProviderCredentialError, ValueError, TypeError:
+            raise WorkerCompositionError("adk runtime initialization failed") from None
+
+        resolved_gateway: AgentGateway = BoundPlanningGateway(
+            unit_of_work_factory=uow_factory,
+            artifact_store=artifact_store,
+            prompt_loader=prompt_loader,
+            redactor=shared_redactor,
+            runtime=runtime,
+            pricing_catalog=pricing_catalog,
+        )
+    else:
+        resolved_gateway = agent_gateway
+
+    def make_repository_reader(policy: ProjectPolicy) -> RepositoryReader:
+        return RepositoryReader(
+            root=policy.repository_path,
+            secret_paths=policy.effective_secret_paths,
+        )
+
+    planning_service = PlanningService(
+        agent_gateway=resolved_gateway,
+        artifact_store=artifact_store,
+        prompt_loader=prompt_loader,
+        repository_reader_factory=make_repository_reader,
+        clock=clock,
+    )
+    start_planning_handler = PlanningHandler(planning_service)
+
+    inspector = repository_inspector or LocalGitRepositoryInspector()
+    validator = PlanEvidenceValidator(
+        artifact_store,
+        inspector,
+        data_root=str(settings.data_root),
+    )
+    approve_plan_handler = ApprovePlanHandler(validator, clock=clock)
+    request_plan_revision_handler = RequestPlanRevisionHandler(
+        artifact_store, validator, clock=clock
+    )
+
+    return {
+        "start_planning": start_planning_handler,
+        "approve_plan": approve_plan_handler,
+        "request_plan_revision": request_plan_revision_handler,
+    }
+
+
+__all__ = [
+    "BoundPlanningGateway",
+    "WorkerCompositionError",
+    "compose_worker_handlers",
+    "load_pricing_catalog",
+]

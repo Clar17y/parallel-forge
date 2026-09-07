@@ -7,6 +7,7 @@ from typing import Protocol, Self
 from uuid import UUID
 
 from forge.application.ports.artifacts import ArtifactRepository
+from forge.application.ports.commands import CommandRepository
 from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.operations import OperationRepository
@@ -14,6 +15,7 @@ from forge.application.ports.projects import ProjectRepository
 from forge.application.ports.runs import RunRepository
 from forge.application.ports.tasks import TaskRepository
 from forge.application.ports.tools import ToolCallRepository
+from forge.application.services.auth import AuthRepository
 from forge.domain.event import RunEvent
 
 
@@ -23,6 +25,8 @@ class EventRepository(Protocol):
     async def append(self, event: RunEvent) -> RunEvent: ...
 
     async def list_after(self, run_id: UUID, sequence: int) -> Sequence[RunEvent]: ...
+
+    async def list_for_version(self, run_id: UUID, version: int) -> Sequence[RunEvent]: ...
 
 
 class UnitOfWork(Protocol):
@@ -37,6 +41,8 @@ class UnitOfWork(Protocol):
     executions: ExecutionRepository
     evidence: EvidenceRepository
     tasks: TaskRepository
+    commands: CommandRepository
+    auth: AuthRepository
 
     async def __aenter__(self) -> Self: ...
 

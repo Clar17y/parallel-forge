@@ -37,6 +37,10 @@ class ExecutionStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class ExecutionUnsettledError(RuntimeError):
+    """A prior execution requires recovery before another attempt is admissible."""
+
+
 def database_status_for_finish(status: AgentFinishStatus) -> ExecutionStatus:
     """Map the richer gateway result to the database's closed state set."""
 
@@ -283,6 +287,18 @@ class ExecutionRepository(Protocol):
         attempt: int | None = None,
         role: AgentRole | None = None,
     ) -> ExecutionOutcome: ...
+
+    async def get_admission(
+        self, run_id: UUID, agent_execution_id: UUID
+    ) -> ExecutionAdmission | None:
+        """Return the exact still-running admission, if one exists."""
+        ...
+
+    async def get_outcome(self, run_id: UUID, kind: str, attempt: int) -> ExecutionOutcome | None:
+        """Return the exact settled execution for one immutable step key."""
+        ...
+
+    async def next_attempt(self, run_id: UUID, kind: str) -> int: ...
 
 
 __all__ = [

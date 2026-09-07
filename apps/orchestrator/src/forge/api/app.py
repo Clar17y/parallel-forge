@@ -18,15 +18,18 @@ from forge.api.routes.projects import router_for as project_router_for
 from forge.api.routes.runs import router_for as run_router_for
 from forge.api.routes.tasks import router_for as task_router_for
 from forge.api.security import parse_web_origin
+from forge.application.adapters.git import LocalGitRepositoryInspector
 from forge.application.ports.clock import Clock
 from forge.application.services.approvals import (
     ApprovalAuthorizationService,
     ApprovalChallengeService,
 )
 from forge.application.services.auth import AuthService
+from forge.application.services.plan_evidence import PlanEvidenceValidator
 from forge.application.services.projects import ProjectService
 from forge.application.services.runs import RunCommandService, RunService
 from forge.application.services.tasks import TaskService
+from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.settings import Settings
@@ -67,7 +70,13 @@ def create_app(
         clock=clock,
     )
     resolved_authorization_service = approval_authorization_service or ApprovalAuthorizationService(
-        resolved_uow_factory, clock=clock
+        resolved_uow_factory,
+        clock=clock,
+        plan_evidence_validator=PlanEvidenceValidator(
+            FilesystemArtifactStore(resolved_settings.artifact_root),
+            LocalGitRepositoryInspector(),
+            data_root=str(resolved_settings.data_root),
+        ),
     )
     resolved_project_service = project_service or ProjectService(
         resolved_uow_factory, settings=resolved_settings

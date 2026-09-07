@@ -39,6 +39,7 @@ def merge_evidence(**overrides: object) -> MergeApprovalEvidence:
 def plan_evidence(**overrides: object) -> PlanApprovalEvidence:
     values: dict[str, object] = {
         "task_version": 1,
+        "task_digest": "0" * 64,
         "plan_digest": "a" * 64,
         "repository": "Clar17y/Parallel",
         "base_ref": "main",
@@ -75,6 +76,7 @@ def test_merge_digest_changes_for_head_base_or_runner() -> None:
 def test_canonical_digest_is_stable_for_mapping_and_set_like_order() -> None:
     first = PlanApprovalEvidence(
         task_version=1,
+        task_digest="0" * 64,
         plan_digest="a" * 64,
         repository="Clar17y/Parallel",
         base_ref="main",
@@ -96,6 +98,22 @@ def test_canonical_digest_is_stable_for_mapping_and_set_like_order() -> None:
     )
 
     assert canonical_digest(first) == canonical_digest(second)
+
+
+def test_plan_evidence_requires_and_binds_immutable_task_digest() -> None:
+    with pytest.raises(ValidationError):
+        PlanApprovalEvidence(
+            **{
+                key: value
+                for key, value in plan_evidence().model_dump().items()
+                if key != "task_digest"
+            }
+        )
+
+    evidence = plan_evidence(task_digest="c" * 64)
+    assert canonical_digest(evidence) != canonical_digest(
+        evidence.model_copy(update={"task_digest": "d" * 64})
+    )
 
 
 @pytest.mark.parametrize("evidence", [plan_evidence(), merge_evidence()])

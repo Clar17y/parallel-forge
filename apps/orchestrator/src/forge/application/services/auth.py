@@ -121,6 +121,10 @@ class AuthRepository(Protocol):
 
     async def consume_challenge(self, *, challenge_id: UUID, at: datetime) -> None: ...
 
+    async def invalidate_plan_gate(
+        self, *, run_id: UUID, run_version: int, at: datetime
+    ) -> None: ...
+
     async def create_approval(self, **values: object) -> object: ...
 
     async def get_approval(

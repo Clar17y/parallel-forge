@@ -145,6 +145,11 @@ class PostgresCommandRepository:
         return actual
 
     async def get(self, command_id: UUID) -> CommandEnvelope:
+        if self._session is not None:
+            record = await self._session.get(RunCommand, command_id)
+            if record is None:
+                raise CommandNotFound(f"command {command_id} was not found")
+            return _command_from_record(record)
         async with self._factory()() as session:
             record = await session.get(RunCommand, command_id)
             if record is None:
