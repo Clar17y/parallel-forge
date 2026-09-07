@@ -6,8 +6,9 @@ from uuid import uuid4
 import pytest
 from forge.application.handlers.run_controls import CancelRunHandler, PauseRunHandler
 from forge.application.ports.commands import CommandLane, CommandRecoveryRequired
+from forge.application.services.worker import Worker
 from forge.domain.approval import ApprovalGate
-from forge.domain.command import CommandEnvelope
+from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.commands import PostgresCommandRepository
@@ -15,6 +16,45 @@ from forge.persistence.unit_of_work import PostgresUnitOfWork
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
+
+
+async def test_stale_control_is_terminally_rejected_instead_of_retaining_lease(
+    persisted_run, session_factory
+) -> None:
+    commands = PostgresCommandRepository(session_factory)
+    control = await commands.enqueue(
+        run_id=persisted_run.id,
+        command_type="pause",
+        idempotency_key="stale-control",
+        payload={},
+        expected_run_version=persisted_run.version,
+        actor_id=uuid4(),
+    )
+    async with PostgresUnitOfWork(session_factory) as work:
+        current = await work.runs.transition(
+            persisted_run.id, persisted_run.version, RunState.PLANNING, "test.planning", {}
+        )
+        await work.commit()
+    stage = await commands.enqueue(
+        run_id=persisted_run.id,
+        command_type="start_planning",
+        idempotency_key="new-stage",
+        payload={},
+        expected_run_version=current.version,
+    )
+    worker = Worker(
+        commands,
+        session_factory,
+        handlers={"pause": PauseRunHandler()},
+        worker_id="control-worker",
+        lane=CommandLane.CONTROL,
+    )
+    assert await worker.tick() is False
+    rejected = await commands.get(control.id)
+    assert rejected.status is CommandStatus.FAILED
+    assert rejected.lease_owner is None
+    claimed = await commands.claim_next(worker_id="normal", lease_seconds=30)
+    assert claimed is not None and claimed.id == stage.id
 
 
 async def _approval_run(factory, run: RunSnapshot) -> RunSnapshot:

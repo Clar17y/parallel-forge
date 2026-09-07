@@ -11,6 +11,10 @@ from forge.domain.run import RunState
 from forge.persistence.repositories.commands import CommandNotFound
 
 
+class ControlCommandRejected(RuntimeError):
+    """A current delivery conclusively lacks authority for this run version."""
+
+
 class PauseRunHandler:
     """Fence and apply one operator-authorized pause transition."""
 
@@ -45,7 +49,7 @@ async def _execute(command: CommandEnvelope, work: UnitOfWork, *, target: RunSta
         await work.commit()
         return
     if run.version != command.expected_run_version:
-        raise CommandRecoveryRequired("control command version is stale")
+        raise ControlCommandRejected("control command version is stale")
     if target is RunState.PAUSED:
         await work.runs.pause(
             run.id,
@@ -128,4 +132,4 @@ async def _replayed(
     )
 
 
-__all__ = ["CancelRunHandler", "PauseRunHandler"]
+__all__ = ["CancelRunHandler", "ControlCommandRejected", "PauseRunHandler"]

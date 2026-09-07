@@ -9,12 +9,58 @@ from uuid import uuid4
 import pytest
 from forge.application.ports.commands import CommandLane
 from forge.domain.command import CommandStatus
+from forge.domain.run import RunState
 from forge.persistence.repositories.commands import (
     CommandLeaseError,
     IdempotencyConflict,
     PersistenceDataError,
 )
+from forge.persistence.unit_of_work import PostgresUnitOfWork
 from sqlalchemy import text
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("paused", [True, False])
+@pytest.mark.parametrize("expired_delivery", [False, True])
+async def test_stopped_run_keeps_stage_undispatched_and_allows_operator_command(
+    command_repository, persisted_run, session_factory, paused, expired_delivery
+) -> None:
+    stage = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="start_planning",
+        idempotency_key="stopped-stage",
+        payload={},
+    )
+    if expired_delivery:
+        claimed = await command_repository.claim_next(worker_id="old", lease_seconds=30)
+        assert claimed is not None and claimed.id == stage.id
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                text("UPDATE run_commands SET lease_expires_at = :expired WHERE id = :id"),
+                {"expired": datetime.now(UTC) - timedelta(seconds=1), "id": stage.id},
+            )
+    async with PostgresUnitOfWork(session_factory) as work:
+        if paused:
+            stopped = await work.runs.pause(
+                persisted_run.id, persisted_run.version, "test.paused", {}
+            )
+        else:
+            stopped = await work.runs.transition(
+                persisted_run.id, persisted_run.version, RunState.CANCELLED, "test.cancelled", {}
+            )
+        await work.commit()
+    operator = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="resume" if paused else "teardown_run_resources",
+        idempotency_key="stopped-operator",
+        payload={},
+        expected_run_version=stopped.version,
+    )
+    claimed = await command_repository.claim_next(worker_id="operator", lease_seconds=30)
+    assert claimed is not None and claimed.id == operator.id
+    retained = await command_repository.get(stage.id)
+    assert retained.status is (CommandStatus.LEASED if expired_delivery else CommandStatus.PENDING)
+    assert retained.attempt == int(expired_delivery)
 
 
 @pytest.mark.integration

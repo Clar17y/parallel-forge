@@ -222,11 +222,20 @@ class PostgresCommandRepository:
                 if record is None:
                     return None
 
-                run_exists = await session.scalar(
-                    select(Run.id).where(Run.id == record.run_id).with_for_update()
+                run_state = await session.scalar(
+                    select(Run.state).where(Run.id == record.run_id).with_for_update()
                 )
-                if run_exists is None:
+                if run_state is None:
                     raise PersistenceDataError(f"command {record.id} references a missing run")
+                if lane is CommandLane.NORMAL and (
+                    (run_state == "PAUSED" and record.command_type != "resume")
+                    or (
+                        run_state in {"CANCELLED", "COMPLETED", "FAILED"}
+                        and record.command_type != "teardown_run_resources"
+                    )
+                ):
+                    skipped.add(record.id)
+                    continue
                 active_normal_lease = await session.scalar(
                     select(func.count())
                     .select_from(RunCommand)
