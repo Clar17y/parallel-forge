@@ -77,8 +77,10 @@ class _MismatchingProvisioner(_PersistingProvisioner):
         return replace(worktree, path=self._path.parent / "different-worktree")
 
 
-async def _prepared_command(tmp_path, factory, *, database_enabled=False):
-    case, approval_id = await approved_case(tmp_path, factory, database_enabled=database_enabled)
+async def _prepared_command(tmp_path, factory, *, database_enabled=False, commands=None):
+    case, approval_id = await approved_case(
+        tmp_path, factory, database_enabled=database_enabled, commands=commands
+    )
     commands = PostgresCommandRepository(factory)
     await commands.complete(case.command.id, worker_id="test-worker")
     async with factory() as session, session.begin():

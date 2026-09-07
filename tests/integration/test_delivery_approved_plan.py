@@ -18,9 +18,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 
 
-async def approved_case(tmp_path, factory, *, database_enabled=False):
+async def approved_case(tmp_path, factory, *, database_enabled=False, commands=None):
     case = await _build_case(tmp_path, factory, fail_invalid=False)
-    if database_enabled:
+    if database_enabled or commands is not None:
         # Fixture configuration precedes planning and the human approval.
         async with factory() as session, session.begin():
             run = await session.get(Run, case.run_id)
@@ -28,8 +28,14 @@ async def approved_case(tmp_path, factory, *, database_enabled=False):
             document = {
                 **row.document,
                 "version": 2,
-                "database": {"enabled": True, "admin_url_secret_reference": "secret://test-admin"},
             }
+            if database_enabled:
+                document["database"] = {
+                    "enabled": True,
+                    "admin_url_secret_reference": "secret://test-admin",
+                }
+            if commands is not None:
+                document["commands"] = [command.model_dump(mode="json") for command in commands]
             digest = hashlib.sha256(
                 json.dumps(
                     document,
@@ -51,6 +57,21 @@ async def approved_case(tmp_path, factory, *, database_enabled=False):
             project = await session.get(Project, run.project_id)
             project.current_policy_version = 2
             run.policy_version = 2
+    if commands is not None:
+        original_execute = case.gateway.execute
+
+        async def plan_configured_checks(request):
+            result = await original_execute(request)
+            plan = result.output.model_copy(
+                update={
+                    "required_checks": tuple(
+                        command.name for command in commands if command.required
+                    ),
+                }
+            )
+            return result.model_copy(update={"output": plan})
+
+        case.gateway.execute = plan_configured_checks
     async with PostgresUnitOfWork(factory) as work:
         await case.service.execute(case.command, work)
         run = await work.runs.get(case.run_id)
