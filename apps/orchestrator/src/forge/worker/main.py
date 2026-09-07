@@ -37,6 +37,7 @@ async def run_worker(
     stop_event = stop_event or asyncio.Event()
     engine = create_engine(settings.database_url)
     factory = create_session_factory(engine)
+    worker: Worker | None = None
     try:
         commands = PostgresCommandRepository(factory)
         operations = PostgresOperationRepository(factory)
@@ -62,7 +63,11 @@ async def run_worker(
                 except TimeoutError:
                     pass
     finally:
-        await engine.dispose()
+        try:
+            if worker is not None:
+                await worker.drain()
+        finally:
+            await engine.dispose()
 
 
 def run() -> None:
