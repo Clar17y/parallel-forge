@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Sequence
+from dataclasses import replace
 from enum import StrEnum
 from typing import Self
 from uuid import UUID
@@ -659,6 +660,7 @@ class AgentResult(BaseModel):
     model: str = Field(min_length=1, max_length=255)
     instruction_digest: str = Field(min_length=64, max_length=64)
     usage: UsageRecord
+    usage_attempts: tuple[UsageRecord, ...] = Field(default=(), max_length=2)
     tool_call_count: int = Field(ge=0)
     duration_ms: int = Field(ge=0)
 
@@ -697,6 +699,9 @@ class AgentResult(BaseModel):
             raise ValueError("result tool_call_count must agree with usage tool_call_count")
         if self.duration_ms != self.usage.duration_ms:
             raise ValueError("result duration_ms must agree with usage duration_ms")
+        object.__setattr__(
+            self, "usage_attempts", validated_usage_attempts(self.usage, self.usage_attempts)
+        )
 
         if self.finish_status == AgentFinishStatus.SUCCEEDED:
             if self.output is None:
@@ -718,6 +723,65 @@ class AgentResult(BaseModel):
         validate_durable_payload(self.model_dump(mode="json"))
 
         return self
+
+
+def validated_usage_attempts(
+    aggregate: UsageRecord,
+    attempts: Sequence[UsageRecord],
+) -> tuple[UsageRecord, ...]:
+    """Validate and detach at most two measured attempts for one aggregate request."""
+
+    if type(aggregate) is not UsageRecord or type(attempts) is not tuple or len(attempts) > 2:
+        raise ValueError("usage attempts must be a tuple containing at most two UsageRecord values")
+    if not attempts:
+        return ()
+    identities = (
+        "provider",
+        "model",
+        "prompt_version",
+        "run_id",
+        "agent_execution_id",
+    )
+    for attempt in attempts:
+        if type(attempt) is not UsageRecord:
+            raise TypeError("usage attempts must contain exact UsageRecord values")
+        for identifier in (attempt.id, attempt.run_id, attempt.agent_execution_id):
+            if identifier is not None and identifier.int == 0:
+                raise ValueError("usage attempt identifiers must be non-nil")
+        if any(getattr(attempt, name) != getattr(aggregate, name) for name in identities):
+            raise ValueError("usage attempts must match aggregate identity")
+        validate_usage_durable_metadata(attempt)
+    for field in (
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "duration_ms",
+        "tool_call_count",
+    ):
+        if sum(getattr(attempt, field) for attempt in attempts) != getattr(aggregate, field):
+            raise ValueError("usage attempts must sum to aggregate measured usage")
+    return tuple(replace(attempt) for attempt in attempts)
+
+
+def validate_usage_durable_metadata(usage: UsageRecord) -> None:
+    """Reject unsafe provider metadata before it crosses a durable boundary."""
+
+    if type(usage) is not UsageRecord:
+        raise TypeError("usage must be an exact UsageRecord")
+    validate_durable_payload(
+        {
+            name: getattr(usage, name)
+            for name in (
+                "provider",
+                "model",
+                "prompt_version",
+                "provider_request_id",
+                "pricing_version",
+                "currency",
+                "unknown_price_reason",
+            )
+        }
+    )
 
 
 def _iter_untrusted_content(
@@ -755,4 +819,5 @@ __all__ = [
     "ReviewerInput",
     "UntrustedContent",
     "UntrustedSourceKind",
+    "validated_usage_attempts",
 ]

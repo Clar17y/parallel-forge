@@ -43,6 +43,7 @@ _PROVIDER_REQUEST_ID_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254
 _FUNCTION_CALL_ID_RE: Final = re.compile(r"\A[^\x00-\x1f\x7f]+\Z")
 _FUNCTION_CALL_ID_MAX_BYTES: Final = 255
 _STREAM_TIMED_OUT: Final = object()
+_STREAM_CLOSE_TIMEOUT_SECONDS: Final = 0.05
 _monotonic = time.monotonic
 
 AdkTool: TypeAlias = BaseTool | BaseToolset  # noqa: UP040 - runtime isinstance support
@@ -69,7 +70,12 @@ class AdkInvocationInvalid(ValueError):
 
 
 class AdkFinishReason(StrEnum):
-    """Closed outcomes emitted by the raw runtime boundary."""
+    """Closed outcomes emitted by the raw runtime boundary.
+
+    Forge deadline expiry exhausts the configured duration budget and reports
+    BUDGET_EXHAUSTED, like token/tool/cost limits. TIMED_OUT denotes a timeout
+    reported by the provider, independently of Forge's duration limit.
+    """
 
     COMPLETED = "completed"
     BUDGET_EXHAUSTED = "budget_exhausted"
@@ -347,6 +353,12 @@ class AdkUsageSummary:
             _strict_nonnegative_int32(self.cost_minor)
 
 
+class AdkCostEstimator(Protocol):
+    """Trusted pricing boundary for detached, cumulative observed usage."""
+
+    def __call__(self, usage: AdkUsageSummary, /) -> int: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AdkInvocation:
     """Immutable inputs admitted to the raw ADK runtime."""
@@ -364,13 +376,20 @@ class AdkInvocation:
     max_tool_calls: int
     max_duration_ms: int
     max_cost_minor: int
+    cost_estimator: AdkCostEstimator | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         name = _strict_text(self.agent_name, maximum=96)
         if _AGENT_NAME_RE.fullmatch(name) is None:
             raise AdkInvocationInvalid()
         _strict_text(self.model, maximum=255)
-        _strict_text(self.instruction, maximum=_MAX_INSTRUCTION_CHARS)
+        if (
+            type(self.instruction) is not str
+            or not self.instruction
+            or not self.instruction.strip()
+            or len(self.instruction) > _MAX_INSTRUCTION_CHARS
+        ):
+            raise AdkInvocationInvalid()
         if not isinstance(self.output_schema, type) or not issubclass(
             self.output_schema, BaseModel
         ):
@@ -387,6 +406,8 @@ class AdkInvocation:
         _strict_nonnegative_int32(self.max_tool_calls)
         _strict_nonnegative_int32(self.max_duration_ms)
         _strict_nonnegative_int32(self.max_cost_minor)
+        if self.cost_estimator is not None and not callable(self.cost_estimator):
+            raise AdkInvocationInvalid()
 
     def __repr__(self) -> str:
         return (
@@ -522,16 +543,46 @@ def _duration_ms(started: float) -> int:
     return elapsed
 
 
+def _effective_cost_minor(usage: AdkUsageSummary, request: AdkInvocation) -> int | None:
+    """Return the conservative cost used to authorize the next stream advance."""
+
+    provider_cost = usage.cost_minor
+    estimator = request.cost_estimator
+    if estimator is None:
+        # ADK yields finalized calls before resuming its iterator to execute
+        # them. Measured token use without a price cannot authorize that next
+        # advance; tokenless legacy/offline events remain compatible.
+        if provider_cost is None and (
+            usage.input_tokens or usage.output_tokens or usage.cached_input_tokens
+        ):
+            return None
+        return provider_cost if provider_cost is not None else 0
+    try:
+        estimated_cost = estimator(usage)
+        _strict_nonnegative_int32(estimated_cost)
+    except Exception:  # noqa: BLE001 - estimator failures must deny further effects
+        return None
+    return estimated_cost if provider_cost is None else max(provider_cost, estimated_cost)
+
+
 def _over_budget(usage: AdkUsageSummary, request: AdkInvocation) -> bool:
+    effective_cost = _effective_cost_minor(usage, request)
     return (
         usage.input_tokens > request.max_input_tokens
         or usage.output_tokens > request.max_output_tokens
         or usage.tool_call_count > request.max_tool_calls
-        or (usage.cost_minor is not None and usage.cost_minor > request.max_cost_minor)
+        or effective_cost is None
+        or effective_cost > request.max_cost_minor
     )
 
 
 async def _close_stream(stream: object) -> None:
+    """Close a provider stream without retaining its owner beyond a short grace period.
+
+    A provider coroutine that ignores cancellation cannot be forcibly stopped by
+    Python. Its task is therefore observed when it eventually finishes, while
+    this owner proceeds after the bounded cleanup attempt.
+    """
     close = getattr(stream, "aclose", None)
     if not callable(close):
         return
@@ -543,17 +594,40 @@ async def _close_stream(stream: object) -> None:
             return
 
     cleanup = asyncio.create_task(call_close())
-    extra_cancellations = 0
+    cleanup.add_done_callback(_observe_cleanup_result)
+    try:
+        done, _ = await asyncio.wait({cleanup}, timeout=_STREAM_CLOSE_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        await _cancel_cleanup(cleanup)
+        raise
+    if not done:
+        await _cancel_cleanup(cleanup)
+
+
+def _observe_cleanup_result(cleanup: asyncio.Task[None]) -> None:
+    """Consume detached cleanup errors without exposing provider details."""
+    try:
+        cleanup.result()
+    except asyncio.CancelledError, Exception:  # noqa: BLE001 - cleanup is best effort
+        return
+
+
+async def _cancel_cleanup(cleanup: asyncio.Task[None]) -> None:
+    """Drain child cancellation within one fixed grace period, retaining owner cancellation."""
+    cleanup.cancel()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _STREAM_CLOSE_TIMEOUT_SECONDS
+    owner_cancelled = False
     while not cleanup.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
         try:
-            await asyncio.shield(cleanup)
+            # wait observes completion without propagating the child's CancelledError.
+            await asyncio.wait({cleanup}, timeout=remaining)
         except asyncio.CancelledError:
-            extra_cancellations += 1
-    if extra_cancellations:
-        current = asyncio.current_task()
-        if current is not None:
-            for _ in range(extra_cancellations):
-                current.cancel()
+            owner_cancelled = True
+    if owner_cancelled:
         raise asyncio.CancelledError
 
 
@@ -725,6 +799,7 @@ class AdkRuntime:
 
 __all__ = [
     "ADK_MAX_PAYLOAD_BYTES",
+    "AdkCostEstimator",
     "AdkFinishReason",
     "AdkInvocation",
     "AdkInvocationInvalid",

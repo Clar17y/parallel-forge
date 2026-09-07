@@ -13,7 +13,13 @@ from pathlib import PurePosixPath
 from typing import Final
 from uuid import UUID, uuid5
 
-from forge.agents.errors import AgentBudgetExceeded, AgentGatewayError, AgentOutputInvalid
+from forge.agents.errors import (
+    AgentBudgetExceeded,
+    AgentGatewayError,
+    AgentOutputInvalid,
+    AgentPromptDrift,
+    AgentRepairFailure,
+)
 from forge.agents.prompt_loader import LoadedPrompt, PromptChanged, PromptLoader, PromptLoadError
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
@@ -38,6 +44,8 @@ from forge.domain.agent import (
     PolicySummary,
     UntrustedContent,
     UntrustedSourceKind,
+    validate_usage_durable_metadata,
+    validated_usage_attempts,
 )
 from forge.domain.approval import ApprovalGate, PlanApprovalEvidence, canonical_digest
 from forge.domain.artifact import ArtifactDescriptor
@@ -261,7 +269,7 @@ class PlanningService:
             result = await self._gateway.execute(request)
         except asyncio.CancelledError:
             raise
-        except AgentOutputInvalid:
+        except AgentOutputInvalid as error:
             return await self._failure(
                 work,
                 command,
@@ -272,9 +280,10 @@ class PlanningService:
                 attempt,
                 AgentFinishStatus.INVALID_OUTPUT,
                 "agent_output_invalid",
-                None,
+                error.usage,
+                error.usage_attempts,
             )
-        except AgentBudgetExceeded:
+        except AgentBudgetExceeded as error:
             return await self._failure(
                 work,
                 command,
@@ -285,7 +294,36 @@ class PlanningService:
                 attempt,
                 AgentFinishStatus.BUDGET_EXCEEDED,
                 "budget_exceeded",
-                None,
+                error.usage,
+                error.usage_attempts,
+            )
+        except AgentPromptDrift as error:
+            return await self._failure(
+                work,
+                command,
+                binding,
+                request,
+                step_id,
+                execution_id,
+                attempt,
+                AgentFinishStatus.FAILED,
+                "prompt_drift",
+                error.usage,
+                error.usage_attempts,
+            )
+        except AgentRepairFailure as error:
+            return await self._failure(
+                work,
+                command,
+                binding,
+                request,
+                step_id,
+                execution_id,
+                attempt,
+                AgentFinishStatus.FAILED,
+                "gateway_failure",
+                error.usage,
+                error.usage_attempts,
             )
         except PromptChanged, PromptLoadError:
             return await self._failure(
@@ -327,7 +365,7 @@ class PlanningService:
                 None,
             )
 
-        status, usage, reason = self._validate_result(result, request)
+        status, usage, usage_attempts, reason = self._validate_result(result, request)
         if status is not AgentFinishStatus.SUCCEEDED:
             return await self._failure(
                 work,
@@ -340,6 +378,7 @@ class PlanningService:
                 status,
                 reason,
                 usage,
+                usage_attempts,
             )
         if type(result.output) is not PlanOutput:
             return await self._failure(
@@ -353,6 +392,7 @@ class PlanningService:
                 AgentFinishStatus.INVALID_OUTPUT,
                 "plan_output_invalid",
                 usage,
+                usage_attempts,
             )
         plan = result.output
         required = {command_spec.name for command_spec in binding.policy.required_checks}
@@ -368,6 +408,7 @@ class PlanningService:
                 AgentFinishStatus.FAILED,
                 "required_checks_missing",
                 usage,
+                usage_attempts,
             )
         try:
             plan_bytes = _canonical_json_bytes(plan.model_dump(mode="json"))
@@ -407,6 +448,7 @@ class PlanningService:
                 AgentFinishStatus.FAILED,
                 "plan_artifact_invalid",
                 usage,
+                usage_attempts,
             )
         return await self._finalize_success(
             work,
@@ -417,6 +459,7 @@ class PlanningService:
             execution_id,
             attempt,
             usage,
+            usage_attempts,
             plan_descriptor,
             evidence_descriptor,
             _evidence_digest(evidence),
@@ -585,6 +628,7 @@ class PlanningService:
         execution_id: UUID,
         attempt: int,
         usage: UsageRecord,
+        usage_attempts: tuple[UsageRecord, ...],
         plan_descriptor: ArtifactDescriptor,
         evidence_descriptor: ArtifactDescriptor,
         evidence_digest: str,
@@ -605,6 +649,7 @@ class PlanningService:
                 or run.version != command.expected_run_version + 1
             ):
                 raise PlanningRecoveryRequired
+            await self._record_usage_attempts(work, run.id, execution_id, usage_attempts)
             persisted_plan = await work.artifacts.record(
                 plan_descriptor,
                 run_id=run.id,
@@ -684,8 +729,10 @@ class PlanningService:
         finish_status: AgentFinishStatus,
         reason: str,
         usage: UsageRecord | None,
+        usage_attempts: tuple[UsageRecord, ...] = (),
     ) -> PlanningOutcome:
         safe_usage = _safe_usage(usage, request)
+        safe_attempts = _safe_usage_attempts(usage, usage_attempts, request)
         failure_bytes = _canonical_json_bytes(
             {"finish_status": finish_status.value, "reason": reason}
         )
@@ -706,6 +753,7 @@ class PlanningService:
                 or run.version != command.expected_run_version + 1
             ):
                 raise PlanningRecoveryRequired
+            await self._record_usage_attempts(work, run.id, execution_id, safe_attempts)
             persisted_failure = await work.artifacts.record(
                 failure_descriptor,
                 run_id=run.id,
@@ -767,6 +815,23 @@ class PlanningService:
             await _rollback(work)
             raise PlanningError from None
 
+    async def _record_usage_attempts(
+        self,
+        work: UnitOfWork,
+        run_id: UUID,
+        execution_id: UUID,
+        attempts: tuple[UsageRecord, ...],
+    ) -> None:
+        if not attempts:
+            return
+        descriptor = await self._store_json(_usage_attempts_bytes(attempts))
+        await work.artifacts.record(
+            descriptor,
+            run_id=run_id,
+            producer_type="agent_usage_attempts",
+            producer_id=execution_id,
+        )
+
     @staticmethod
     def _validate_command(command: CommandEnvelope) -> None:
         if (
@@ -783,7 +848,7 @@ class PlanningService:
     @staticmethod
     def _validate_result(
         result: object, request: AgentRequest
-    ) -> tuple[AgentFinishStatus, UsageRecord, str]:
+    ) -> tuple[AgentFinishStatus, UsageRecord, tuple[UsageRecord, ...], str]:
         """Validate provider identity before trusting status or measured usage."""
 
         return _validate_result(result, request)
@@ -970,6 +1035,11 @@ def _required_text(value: str | None) -> str:
 
 def _safe_usage(usage: UsageRecord | None, request: AgentRequest) -> UsageRecord:
     if usage is not None and _usage_bound(usage, request):
+        try:
+            validate_usage_durable_metadata(usage)
+        except TypeError, ValueError:
+            usage = None
+    if usage is not None and _usage_bound(usage, request):
         if usage.pricing_version is not None and usage.currency is not None:
             return usage
         return UsageRecord(
@@ -996,6 +1066,52 @@ def _safe_usage(usage: UsageRecord | None, request: AgentRequest) -> UsageRecord
     )
 
 
+def _safe_usage_attempts(
+    aggregate: UsageRecord | None,
+    attempts: tuple[UsageRecord, ...],
+    request: AgentRequest,
+) -> tuple[UsageRecord, ...]:
+    if aggregate is None or not _usage_bound(aggregate, request):
+        return ()
+    try:
+        validated = validated_usage_attempts(aggregate, attempts)
+    except TypeError, ValueError:
+        return ()
+    return validated if all(_usage_bound(attempt, request) for attempt in validated) else ()
+
+
+def _usage_attempts_bytes(attempts: tuple[UsageRecord, ...]) -> bytes:
+    return _canonical_json_bytes(
+        {
+            "schema_version": 1,
+            "attempts": [
+                {
+                    "provider": attempt.provider,
+                    "model": attempt.model,
+                    "prompt_version": attempt.prompt_version,
+                    "input_tokens": attempt.input_tokens,
+                    "output_tokens": attempt.output_tokens,
+                    "cached_input_tokens": attempt.cached_input_tokens,
+                    "duration_ms": attempt.duration_ms,
+                    "tool_call_count": attempt.tool_call_count,
+                    "provider_request_id": attempt.provider_request_id,
+                    "pricing_version": attempt.pricing_version,
+                    "estimated_cost_minor": attempt.estimated_cost_minor,
+                    "currency": attempt.currency,
+                    "unknown_price_reason": attempt.unknown_price_reason,
+                    "run_id": str(attempt.run_id) if attempt.run_id is not None else None,
+                    "agent_execution_id": (
+                        str(attempt.agent_execution_id)
+                        if attempt.agent_execution_id is not None
+                        else None
+                    ),
+                }
+                for attempt in attempts
+            ],
+        }
+    )
+
+
 def _usage_bound(usage: UsageRecord, request: AgentRequest) -> bool:
     return (
         type(usage) is UsageRecord
@@ -1009,9 +1125,9 @@ def _usage_bound(usage: UsageRecord, request: AgentRequest) -> bool:
 
 def _validate_result(
     result: object, request: AgentRequest
-) -> tuple[AgentFinishStatus, UsageRecord, str]:
+) -> tuple[AgentFinishStatus, UsageRecord, tuple[UsageRecord, ...], str]:
     if type(result) is not AgentResult:
-        return AgentFinishStatus.FAILED, _safe_usage(None, request), "result_identity_mismatch"
+        return AgentFinishStatus.FAILED, _safe_usage(None, request), (), "result_identity_mismatch"
     usage = _safe_usage(result.usage, request)
     if (
         result.execution_id != request.execution_id
@@ -1024,10 +1140,13 @@ def _validate_result(
         or result.tool_call_count != result.usage.tool_call_count
         or result.duration_ms != result.usage.duration_ms
     ):
-        return AgentFinishStatus.FAILED, usage, "result_identity_mismatch"
+        return AgentFinishStatus.FAILED, usage, (), "result_identity_mismatch"
+    attempts = _safe_usage_attempts(result.usage, result.usage_attempts, request)
+    if attempts != result.usage_attempts:
+        return AgentFinishStatus.FAILED, usage, (), "result_identity_mismatch"
     if result.finish_status is AgentFinishStatus.SUCCEEDED:
-        return AgentFinishStatus.SUCCEEDED, usage, ""
-    return result.finish_status, usage, result.finish_status.value
+        return AgentFinishStatus.SUCCEEDED, usage, attempts, ""
+    return result.finish_status, usage, attempts, result.finish_status.value
 
 
 async def _rollback(work: UnitOfWork) -> None:

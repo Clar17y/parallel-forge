@@ -16,8 +16,15 @@ from forge.agents.adk_runtime import (
     AdkInvocationResult,
     AdkRuntimeProtocol,
     AdkTool,
+    AdkUsageSummary,
 )
-from forge.agents.errors import AgentBudgetExceeded, AgentGatewayError, AgentOutputInvalid
+from forge.agents.errors import (
+    AgentBudgetExceeded,
+    AgentGatewayError,
+    AgentOutputInvalid,
+    AgentPromptDrift,
+    AgentRepairFailure,
+)
 from forge.agents.prompt_loader import PromptChanged, PromptLoader
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
@@ -27,6 +34,7 @@ from forge.domain.agent import (
     DeveloperOutput,
     ReviewOutput,
 )
+from forge.domain.payload import validate_durable_payload
 from forge.domain.plan import PlanOutput
 from forge.domain.tool import ToolName
 from forge.observability.usage import PricingCatalog, UsageRecord
@@ -273,7 +281,9 @@ def _unpriced_usage(
             provider=request.provider,
             model=request.model,
             prompt_version=request.instruction_version,
-            input_tokens=aggregate.input_tokens,
+            # ADK reports total prompt tokens; pricing stores uncached and
+            # cached inputs separately. Budget checks retain the total above.
+            input_tokens=aggregate.input_tokens - aggregate.cached_input_tokens,
             output_tokens=aggregate.output_tokens,
             cached_input_tokens=aggregate.cached_input_tokens,
             duration_ms=aggregate.duration_ms,
@@ -292,16 +302,99 @@ def _price_usage(
     *,
     currency: str,
 ) -> UsageRecord:
+    version = _catalog_version(catalog)
+    if version is None:
+        raise AgentBudgetExceeded()
     try:
         priced = catalog.price(usage, currency=currency)
     except Exception:  # noqa: BLE001 - catalog implementations may fail arbitrarily
         raise AgentBudgetExceeded() from None
+    if type(priced) is not UsageRecord:
+        raise AgentBudgetExceeded()
     estimate = priced.estimated_cost_minor
+    if not _preserves_measured_usage(priced, usage, version=version, currency=currency):
+        raise AgentBudgetExceeded()
     if priced.unknown_price_reason is not None or estimate is None:
         raise AgentBudgetExceeded()
     if type(estimate) is not int or estimate < 0 or estimate > _PG_INT32_MAX:
         raise AgentBudgetExceeded()
     return priced
+
+
+def _catalog_version(catalog: PricingCatalog) -> str | None:
+    try:
+        version = _strict_metadata(catalog.version, maximum=96)
+        validate_durable_payload({"pricing_version": version})
+        return version
+    except Exception:  # noqa: BLE001 - catalog implementations are an untrusted seam
+        return None
+
+
+def _preserves_measured_usage(
+    priced: UsageRecord, usage: UsageRecord, *, version: str, currency: str
+) -> bool:
+    return (
+        type(priced) is UsageRecord
+        and all(
+            getattr(priced, name) == getattr(usage, name)
+            for name in (
+                "provider",
+                "model",
+                "prompt_version",
+                "input_tokens",
+                "output_tokens",
+                "cached_input_tokens",
+                "duration_ms",
+                "tool_call_count",
+                "provider_request_id",
+                "id",
+                "run_id",
+                "agent_execution_id",
+                "created_at",
+            )
+        )
+        and priced.pricing_version == version
+        and priced.currency == currency
+    )
+
+
+def _unknown_priced_usage(
+    catalog: PricingCatalog,
+    usage: UsageRecord,
+    *,
+    currency: str,
+) -> UsageRecord:
+    """Keep valid measured counters when the catalog cannot produce a known price."""
+
+    try:
+        priced = catalog.price(usage, currency=currency)
+    except Exception:  # noqa: BLE001 - catalog implementations may fail arbitrarily
+        priced = None
+    version = _catalog_version(catalog)
+    if (
+        version is not None
+        and type(priced) is UsageRecord
+        and _preserves_measured_usage(priced, usage, version=version, currency=currency)
+        and priced.estimated_cost_minor is None
+        and priced.unknown_price_reason is not None
+    ):
+        return priced
+    return UsageRecord(
+        provider=usage.provider,
+        model=usage.model,
+        prompt_version=usage.prompt_version,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cached_input_tokens=usage.cached_input_tokens,
+        duration_ms=usage.duration_ms,
+        tool_call_count=usage.tool_call_count,
+        provider_request_id=usage.provider_request_id,
+        pricing_version=version or "unavailable-v1",
+        currency=currency,
+        unknown_price_reason="pricing_unavailable",
+        run_id=usage.run_id,
+        agent_execution_id=usage.agent_execution_id,
+    )
 
 
 def _aggregate_effective_cost(aggregate: _AggregateUsage, priced: UsageRecord) -> int:
@@ -408,10 +501,15 @@ class GoogleAdkGateway:
         )
         self._verify_prompt(request)
         first_result = await self._invoke(first_invocation)
-        first_priced = self._price_attempt(request, first_result)
-
         aggregate = _AggregateUsage()
         aggregate.add(first_result)
+        try:
+            first_priced = self._price_attempt(request, first_result)
+        except AgentBudgetExceeded:
+            first_unknown = self._unknown_price_attempt(request, first_result)
+            raise AgentBudgetExceeded(
+                usage=first_unknown, usage_attempts=(first_unknown,)
+            ) from None
         first_effective_cost = self._effective_cost(first_result, first_priced)
         if _attempt_over_budget(first_result, limits, first_effective_cost):
             return self._result(
@@ -420,6 +518,7 @@ class GoogleAdkGateway:
                 first_priced,
                 AgentFinishStatus.BUDGET_EXCEEDED,
                 None,
+                usage_attempts=(first_priced,),
             )
 
         if first_result.finish_reason is not AdkFinishReason.COMPLETED:
@@ -429,6 +528,7 @@ class GoogleAdkGateway:
                 first_priced,
                 _status_for_finish(first_result.finish_reason),
                 None,
+                usage_attempts=(first_priced,),
             )
 
         first_output, first_errors = _validate_role_output(binding.schema, first_result.output_text)
@@ -439,6 +539,7 @@ class GoogleAdkGateway:
                 first_priced,
                 AgentFinishStatus.SUCCEEDED,
                 cast(PlanOutput | DeveloperOutput | ReviewOutput, first_output),
+                usage_attempts=(first_priced,),
             )
 
         remaining = _BudgetLimits(
@@ -448,20 +549,38 @@ class GoogleAdkGateway:
             duration_ms=_remaining(limits.duration_ms, aggregate.duration_ms),
             cost_minor=_remaining(limits.cost_minor, first_effective_cost),
         )
-        repair_payload = _repair_payload(original_payload_object, first_errors)
-        repair_invocation = self._invocation(
-            request,
-            binding,
-            bound_tools,
-            repair_payload,
-            remaining,
-        )
-        self._verify_prompt(request)
-        second_result = await self._invoke(repair_invocation)
-        second_priced = self._price_attempt(request, second_result)
+        try:
+            repair_payload = _repair_payload(original_payload_object, first_errors)
+            repair_invocation = self._invocation(
+                request,
+                binding,
+                bound_tools,
+                repair_payload,
+                remaining,
+            )
+            self._verify_prompt(request)
+            second_result = await self._invoke(repair_invocation)
+        except PromptChanged:
+            raise AgentPromptDrift(usage=first_priced, usage_attempts=(first_priced,)) from None
+        except Exception:  # noqa: BLE001 - preserve already measured first usage
+            raise AgentRepairFailure(usage=first_priced, usage_attempts=(first_priced,)) from None
         aggregate.add(second_result)
+        try:
+            second_priced = self._price_attempt(request, second_result)
+        except AgentBudgetExceeded:
+            second_unknown = self._unknown_price_attempt(request, second_result)
+            raise AgentBudgetExceeded(
+                usage=self._unknown_price_aggregate(request, aggregate),
+                usage_attempts=(first_priced, second_unknown),
+            ) from None
         second_effective_cost = self._effective_cost(second_result, second_priced)
-        aggregate_priced = self._price_aggregate(request, aggregate)
+        try:
+            aggregate_priced = self._price_aggregate(request, aggregate)
+        except AgentBudgetExceeded:
+            raise AgentBudgetExceeded(
+                usage=self._unknown_price_aggregate(request, aggregate),
+                usage_attempts=(first_priced, second_priced),
+            ) from None
         aggregate_effective_cost = _aggregate_effective_cost(aggregate, aggregate_priced)
 
         if (
@@ -474,6 +593,7 @@ class GoogleAdkGateway:
                 aggregate_priced,
                 AgentFinishStatus.BUDGET_EXCEEDED,
                 None,
+                usage_attempts=(first_priced, second_priced),
             )
         if second_result.finish_reason is not AdkFinishReason.COMPLETED:
             return self._result(
@@ -482,17 +602,21 @@ class GoogleAdkGateway:
                 aggregate_priced,
                 _status_for_finish(second_result.finish_reason),
                 None,
+                usage_attempts=(first_priced, second_priced),
             )
 
         second_output, _ = _validate_role_output(binding.schema, second_result.output_text)
         if second_output is None:
-            raise AgentOutputInvalid()
+            raise AgentOutputInvalid(
+                usage=aggregate_priced, usage_attempts=(first_priced, second_priced)
+            )
         return self._result(
             request,
             aggregate,
             aggregate_priced,
             AgentFinishStatus.SUCCEEDED,
             cast(PlanOutput | DeveloperOutput | ReviewOutput, second_output),
+            usage_attempts=(first_priced, second_priced),
         )
 
     def _serialize_context(self, request: AgentRequest) -> tuple[object, str]:
@@ -521,14 +645,18 @@ class GoogleAdkGateway:
             raise AgentGatewayError()
         return bound
 
-    @staticmethod
     def _invocation(
+        self,
         request: AgentRequest,
         binding: _RoleBinding,
         bound_tools: BoundAdkTools,
         payload: str,
         limits: _BudgetLimits,
     ) -> AdkInvocation:
+        def estimate_cost(usage: AdkUsageSummary) -> int:
+            measured = AdkInvocationResult(finish_reason=AdkFinishReason.COMPLETED, usage=usage)
+            return self._effective_cost(measured, self._price_attempt(request, measured))
+
         try:
             return AdkInvocation(
                 agent_name=binding.name,
@@ -544,6 +672,7 @@ class GoogleAdkGateway:
                 max_tool_calls=limits.tool_calls,
                 max_duration_ms=limits.duration_ms,
                 max_cost_minor=limits.cost_minor,
+                cost_estimator=estimate_cost,
             )
         except TypeError, ValueError:
             raise AgentBudgetExceeded() from None
@@ -570,15 +699,15 @@ class GoogleAdkGateway:
         return _price_usage(self._pricing_catalog, unpriced, currency=self._currency)
 
     def _ensure_catalog_support(self, request: AgentRequest) -> None:
-        zero = _AggregateUsage()
+        probe = _AggregateUsage(input_tokens=1, cached_input_tokens=1)
         try:
             reason = self._pricing_catalog.unknown_reason(
-                _unpriced_usage(request, zero, provider_request_id=None),
+                _unpriced_usage(request, probe, provider_request_id=None),
                 currency=self._currency,
             )
         except Exception:  # noqa: BLE001 - catalog implementations may fail arbitrarily
             raise AgentBudgetExceeded() from None
-        if reason in {"unknown_currency", "unknown_model_price"}:
+        if reason is not None:
             raise AgentBudgetExceeded()
 
     @staticmethod
@@ -605,6 +734,32 @@ class GoogleAdkGateway:
             currency=self._currency,
         )
 
+    def _unknown_price_attempt(
+        self, request: AgentRequest, result: AdkInvocationResult
+    ) -> UsageRecord:
+        aggregate = _AggregateUsage()
+        aggregate.add(result)
+        return _unknown_priced_usage(
+            self._pricing_catalog,
+            _unpriced_usage(request, aggregate, provider_request_id=result.provider_request_id),
+            currency=self._currency,
+        )
+
+    def _unknown_price_aggregate(
+        self, request: AgentRequest, aggregate: _AggregateUsage
+    ) -> UsageRecord:
+        return _unknown_priced_usage(
+            self._pricing_catalog,
+            _unpriced_usage(
+                request,
+                aggregate,
+                provider_request_id=(
+                    aggregate.provider_request_id if aggregate.attempt_count == 1 else None
+                ),
+            ),
+            currency=self._currency,
+        )
+
     @staticmethod
     def _result(
         request: AgentRequest,
@@ -612,6 +767,8 @@ class GoogleAdkGateway:
         priced: UsageRecord,
         status: AgentFinishStatus,
         output: PlanOutput | DeveloperOutput | ReviewOutput | None,
+        *,
+        usage_attempts: tuple[UsageRecord, ...],
     ) -> AgentResult:
         if status is not AgentFinishStatus.SUCCEEDED:
             output = None
@@ -626,6 +783,7 @@ class GoogleAdkGateway:
                 model=request.model,
                 instruction_digest=request.instruction_digest,
                 usage=priced,
+                usage_attempts=usage_attempts,
                 tool_call_count=aggregate.tool_call_count,
                 duration_ms=aggregate.duration_ms,
             )
