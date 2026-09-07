@@ -7,6 +7,7 @@ from typing import Self
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.application.ports.artifacts import ArtifactRepository as ArtifactRepositoryPort
+from forge.application.ports.controller_steps import ControllerStepRepository
 from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.operations import OperationRepository
@@ -16,6 +17,7 @@ from forge.persistence.repositories.artifacts import ArtifactRepository
 from forge.persistence.repositories.audit import PostgresAuditRepository
 from forge.persistence.repositories.auth import PostgresAuthRepository
 from forge.persistence.repositories.commands import PostgresCommandRepository
+from forge.persistence.repositories.controller_steps import PostgresControllerStepRepository
 from forge.persistence.repositories.events import PostgresEventRepository
 from forge.persistence.repositories.evidence import PostgresEvidenceRepository
 from forge.persistence.repositories.executions import PostgresExecutionRepository
@@ -56,6 +58,7 @@ class PostgresUnitOfWork:
         self.operations: OperationRepository
         self.artifacts: ArtifactRepositoryPort
         self.executions: ExecutionRepository
+        self.controller_steps: ControllerStepRepository
         self.evidence: EvidenceRepository
 
     @property
@@ -85,7 +88,11 @@ class PostgresUnitOfWork:
         self.executions = PostgresExecutionRepository(
             self._session,
             events=self.events,
+            evidence=self.evidence,
             redactor=self._redactor,
+        )
+        self.controller_steps = PostgresControllerStepRepository(
+            self._session, events=self.events, redactor=self._redactor
         )
         self.runs = PostgresRunRepository(
             self._session,

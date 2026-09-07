@@ -41,6 +41,29 @@ class ExecutionUnsettledError(RuntimeError):
     """A prior execution requires recovery before another attempt is admissible."""
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviewerEvidenceBinding:
+    """Immutable evidence identity required before a reviewer starts."""
+
+    validation_evidence_set_id: UUID
+    prior_review_evidence_set_id: UUID | None
+    policy_version: int
+    head_sha: str
+
+    def __post_init__(self) -> None:
+        _non_nil_uuid(self.validation_evidence_set_id, "validation evidence-set identifier")
+        if self.prior_review_evidence_set_id is not None:
+            _non_nil_uuid(self.prior_review_evidence_set_id, "prior-review evidence-set identifier")
+        if type(self.policy_version) is not int or self.policy_version < 1:
+            raise ValueError("policy version must be a positive integer")
+        if (
+            not isinstance(self.head_sha, str)
+            or len(self.head_sha) != 40
+            or any(character not in "0123456789abcdef" for character in self.head_sha)
+        ):
+            raise ValueError("head SHA must be a lowercase 40-character hexadecimal string")
+
+
 def database_status_for_finish(status: AgentFinishStatus) -> ExecutionStatus:
     """Map the richer gateway result to the database's closed state set."""
 
@@ -268,6 +291,7 @@ class ExecutionRepository(Protocol):
         transition_from: str | None = None,
         transition_to: str | None = None,
         admitted_at: datetime | None = None,
+        reviewer_input: ReviewerEvidenceBinding | None = None,
     ) -> ExecutionAdmission: ...
 
     async def finalize(
@@ -306,5 +330,6 @@ __all__ = [
     "ExecutionOutcome",
     "ExecutionRepository",
     "ExecutionStatus",
+    "ReviewerEvidenceBinding",
     "database_status_for_finish",
 ]

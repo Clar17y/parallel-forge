@@ -67,6 +67,47 @@ class RunRepository(Protocol):
         payload_schema_version: int = 1,
     ) -> RunSnapshot: ...
 
+    async def pause(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
+    async def resume(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
+    async def begin_local_remediation(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        automatic: bool,
+        limit: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
     async def restart_planning(
         self,
         run_id: UUID,

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.services.state_engine import LEGAL, StateEngine
 from forge.domain.approval import ApprovalGate
+from forge.domain.errors import InvalidTransition
 from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState, SuspensionContext, SuspensionKind
@@ -261,6 +262,115 @@ class PostgresRunRepository:
             occurred_at=occurred_at,
             payload_schema_version=payload_schema_version,
         )
+
+    async def pause(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        """Pause one active run while retaining its complete suspension context."""
+
+        return await self._change_state(
+            run_id,
+            expected_version,
+            self._state_engine.pause,
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+        )
+
+    async def resume(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        """Resume one paused run using the exact state-engine restoration rules."""
+
+        return await self._change_state(
+            run_id,
+            expected_version,
+            self._state_engine.resume,
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+        )
+
+    async def begin_local_remediation(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        automatic: bool,
+        limit: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        """Start allowed local remediation, atomically accounting for automatic attempts."""
+
+        if type(limit) is not int or limit < 0:
+            raise PersistenceError("local remediation limit must be a nonnegative integer")
+        if not isinstance(automatic, bool):
+            raise TypeError("automatic must be a bool")
+        return await self._change_state(
+            run_id,
+            expected_version,
+            lambda current: self._begin_local_remediation(
+                current, automatic=automatic, limit=limit
+            ),
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+        )
+
+    def _begin_local_remediation(
+        self, current: RunSnapshot, *, automatic: bool, limit: int
+    ) -> RunSnapshot:
+        if automatic:
+            if current.state not in {RunState.VALIDATING, RunState.REVIEWING}:
+                raise InvalidTransition(
+                    current.state,
+                    RunState.REMEDIATING,
+                    reason="automatic local remediation requires validation or review",
+                )
+            if current.local_remediation_count >= limit:
+                return self._state_engine.intervene(current)
+            counted = replace(current, local_remediation_count=current.local_remediation_count + 1)
+            return self._state_engine.transition(counted, RunState.REMEDIATING)
+
+        if current.state is not RunState.AWAITING_PR_APPROVAL:
+            raise InvalidTransition(
+                current.state,
+                RunState.REMEDIATING,
+                reason="human local remediation requires PR approval",
+            )
+        return self._state_engine.transition(current, RunState.REMEDIATING)
 
     async def restart_planning(
         self,

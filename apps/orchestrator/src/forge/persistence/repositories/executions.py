@@ -11,11 +11,18 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.application.ports.evidence import (
+    EvidenceConflict,
+    EvidenceInputPurpose,
+    EvidenceNotFound,
+    EvidenceRepository,
+)
 from forge.application.ports.executions import (
     ExecutionAdmission,
     ExecutionOutcome,
     ExecutionStatus,
     ExecutionUnsettledError,
+    ReviewerEvidenceBinding,
     database_status_for_finish,
 )
 from forge.domain.actor import AgentRole
@@ -23,8 +30,17 @@ from forge.domain.agent import AgentFinishStatus
 from forge.domain.event import RunEvent
 from forge.observability.redaction import Redactor
 from forge.observability.usage import UsageRecord
-from forge.persistence.models import AgentExecution, ModelUsage, Run, Step
+from forge.persistence.models import (
+    AgentExecution,
+    AgentExecutionEvidenceInput,
+    EvidenceSet,
+    ModelUsage,
+    Run,
+    Step,
+)
+from forge.persistence.repositories.artifacts import ArtifactRepository
 from forge.persistence.repositories.events import PostgresEventRepository
+from forge.persistence.repositories.evidence import PostgresEvidenceRepository
 from forge.persistence.repositories.runs import PersistenceError
 
 
@@ -85,10 +101,14 @@ class PostgresExecutionRepository:
         session: AsyncSession,
         *,
         events: PostgresEventRepository | None = None,
+        evidence: EvidenceRepository | None = None,
         redactor: Redactor | None = None,
     ) -> None:
         self._session = session
         self._events = events or PostgresEventRepository(session, redactor=redactor)
+        self._evidence = evidence or PostgresEvidenceRepository(
+            session, artifacts=ArtifactRepository(session=session, redactor=redactor)
+        )
 
     @property
     def session(self) -> AsyncSession:
@@ -112,6 +132,7 @@ class PostgresExecutionRepository:
         transition_from: str | None = None,
         transition_to: str | None = None,
         admitted_at: datetime | None = None,
+        reviewer_input: ReviewerEvidenceBinding | None = None,
     ) -> ExecutionAdmission:
         """Admit one running step and execution in the caller's transaction."""
 
@@ -131,8 +152,14 @@ class PostgresExecutionRepository:
             transition_to,
             admitted_at,
         )
+        if reviewer_input is not None and not isinstance(reviewer_input, ReviewerEvidenceBinding):
+            raise TypeError("reviewer input must be a ReviewerEvidenceBinding")
+        if reviewer_input is not None and role is not AgentRole.REVIEWER:
+            raise ExecutionConflict()
         try:
             run = await self._locked_run(run_id)
+            if reviewer_input is not None:
+                await self._validate_reviewer_input(run, reviewer_input)
             step = await self._locked_step_for_key(run_id, kind, attempt)
             if step is None:
                 # Lock both caller-supplied identities before inserting.  A
@@ -143,12 +170,13 @@ class PostgresExecutionRepository:
                 linked_execution = await self._locked_executions_for_step(step_id)
                 if existing_step is not None or existing_execution is not None or linked_execution:
                     raise ExecutionConflict()
+                pending_reviewer = reviewer_input is not None
                 step = Step(
                     id=step_id,
                     run_id=run_id,
                     kind=kind,
                     attempt=attempt,
-                    status=ExecutionStatus.RUNNING.value,
+                    status="PENDING" if pending_reviewer else ExecutionStatus.RUNNING.value,
                     transition_from=transition_from,
                     transition_to=transition_to,
                     started_at=timestamp,
@@ -161,7 +189,7 @@ class PostgresExecutionRepository:
                     instruction_version=instruction_version,
                     provider=provider,
                     model=model,
-                    status=ExecutionStatus.RUNNING.value,
+                    status="PENDING" if pending_reviewer else ExecutionStatus.RUNNING.value,
                     input_artifact_id=input_artifact_id,
                     started_at=timestamp,
                 )
@@ -169,6 +197,11 @@ class PostgresExecutionRepository:
                 await self._session.flush()
                 self._session.add(execution)
                 await self._session.flush()
+                if reviewer_input is not None:
+                    await self._bind_reviewer_input(execution, reviewer_input)
+                    step.status = ExecutionStatus.RUNNING.value
+                    execution.status = ExecutionStatus.RUNNING.value
+                    await self._session.flush()
                 admission = _admission_from_rows(
                     run,
                     step,
@@ -202,6 +235,8 @@ class PostgresExecutionRepository:
                 transition_to=transition_to,
                 requested_admitted_at=requested_admitted_at,
             )
+            if reviewer_input is not None:
+                await self._validate_stored_reviewer_input(execution, reviewer_input)
             finish_status, _usage = await self._inspect_pair(step, execution)
             return _admission_from_rows(
                 run,
@@ -424,6 +459,88 @@ class PostgresExecutionRepository:
             select(func.max(Step.attempt)).where(Step.run_id == run_id, Step.kind == kind)
         )
         return (value or 0) + 1
+
+    async def _validate_reviewer_input(self, run: Run, binding: ReviewerEvidenceBinding) -> None:
+        validation = await self._session.get(
+            EvidenceSet, binding.validation_evidence_set_id, with_for_update=True
+        )
+        if (
+            validation is None
+            or validation.run_id != run.id
+            or validation.kind != "validation"
+            or validation.policy_version != run.policy_version
+            or validation.policy_version != binding.policy_version
+            or validation.head_sha != binding.head_sha
+            or validation.prior_review_evidence_set_id != binding.prior_review_evidence_set_id
+        ):
+            raise ExecutionConflict()
+        if binding.prior_review_evidence_set_id is not None:
+            review = await self._session.get(
+                EvidenceSet, binding.prior_review_evidence_set_id, with_for_update=True
+            )
+            if (
+                review is None
+                or review.run_id != run.id
+                or review.kind != "review"
+                or review.policy_version != binding.policy_version
+            ):
+                raise ExecutionConflict()
+
+    async def _bind_reviewer_input(
+        self, execution: AgentExecution, binding: ReviewerEvidenceBinding
+    ) -> None:
+        try:
+            await self._evidence.bind_input(
+                execution.id,
+                EvidenceInputPurpose.VALIDATION_RESULTS,
+                binding.validation_evidence_set_id,
+                run_id=execution.run_id,
+            )
+            if binding.prior_review_evidence_set_id is not None:
+                await self._evidence.bind_input(
+                    execution.id,
+                    EvidenceInputPurpose.PRIOR_REVIEW,
+                    binding.prior_review_evidence_set_id,
+                    run_id=execution.run_id,
+                )
+        except EvidenceConflict, EvidenceNotFound:
+            raise ExecutionConflict() from None
+
+    async def _validate_stored_reviewer_input(
+        self, execution: AgentExecution, binding: ReviewerEvidenceBinding
+    ) -> None:
+        validation = await self._locked_input(execution.id, EvidenceInputPurpose.VALIDATION_RESULTS)
+        prior_review = await self._locked_input(execution.id, EvidenceInputPurpose.PRIOR_REVIEW)
+        if (
+            validation is None
+            or validation.run_id != execution.run_id
+            or validation.evidence_set_id != binding.validation_evidence_set_id
+            or validation.evidence_kind != "validation"
+            or (binding.prior_review_evidence_set_id is None and prior_review is not None)
+            or (
+                binding.prior_review_evidence_set_id is not None
+                and (
+                    prior_review is None
+                    or prior_review.run_id != execution.run_id
+                    or prior_review.evidence_set_id != binding.prior_review_evidence_set_id
+                    or prior_review.evidence_kind != "review"
+                )
+            )
+        ):
+            raise ExecutionConflict()
+
+    async def _locked_input(
+        self, execution_id: UUID, purpose: EvidenceInputPurpose
+    ) -> AgentExecutionEvidenceInput | None:
+        result = await self._session.execute(
+            select(AgentExecutionEvidenceInput)
+            .where(
+                AgentExecutionEvidenceInput.consumer_execution_id == execution_id,
+                AgentExecutionEvidenceInput.purpose == purpose.value,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
 
     async def _locked_run(self, run_id: UUID) -> Run:
         result = await self._session.execute(select(Run).where(Run.id == run_id).with_for_update())

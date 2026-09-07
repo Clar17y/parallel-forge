@@ -8,6 +8,7 @@ from uuid import UUID
 
 from forge.application.ports.artifacts import ArtifactRepository
 from forge.application.ports.commands import CommandRepository
+from forge.application.ports.controller_steps import ControllerStepRepository
 from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.operations import OperationRepository
@@ -39,6 +40,7 @@ class UnitOfWork(Protocol):
     operations: OperationRepository
     artifacts: ArtifactRepository
     executions: ExecutionRepository
+    controller_steps: ControllerStepRepository
     evidence: EvidenceRepository
     tasks: TaskRepository
     commands: CommandRepository
