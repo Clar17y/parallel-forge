@@ -94,7 +94,9 @@ async def _reviewer(
     return execution_id
 
 
-async def _blob(work: PostgresUnitOfWork, store: FilesystemArtifactStore, run_id: UUID, data: bytes):
+async def _blob(
+    work: PostgresUnitOfWork, store: FilesystemArtifactStore, run_id: UUID, data: bytes
+):
     stored = await store.put_bytes(data, media_type="text/plain")
     return await work.artifacts.record(stored, run_id=run_id, producer_type="test")
 
@@ -385,11 +387,14 @@ async def test_same_id_replay_after_newer_causal_review_does_not_reapply_old_pro
         assert row.status == "RESOLVED"
         assert row.summary == "resolved finding"
         assert row.reviewer_execution_id == producer2
-        assert await session.scalar(
-            select(func.count())
-            .select_from(EvidenceSet)
-            .where(EvidenceSet.run_id == persisted_run.id)
-        ) == 4
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(EvidenceSet)
+                .where(EvidenceSet.run_id == persisted_run.id)
+            )
+            == 4
+        )
 
 
 @pytest.mark.integration
@@ -450,11 +455,14 @@ async def test_failed_projection_rolls_back_evidence_set_and_partial_validation_
 
     async with session_factory() as session:
         assert await session.get(EvidenceSet, evidence_set_id) is None
-        assert await session.scalar(
-            select(func.count())
-            .select_from(ValidationResult)
-            .where(ValidationResult.run_id == persisted_run.id)
-        ) == 1
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ValidationResult)
+                .where(ValidationResult.run_id == persisted_run.id)
+            )
+            == 1
+        )
 
 
 @pytest.mark.integration
@@ -464,14 +472,10 @@ async def test_reader_rejects_consumer_step_that_is_not_running(
     store = FilesystemArtifactStore(tmp_path)
     async with PostgresUnitOfWork(session_factory) as work:
         validation_step = await _step(work, persisted_run.id, "validation")
-        draft, artifact = await _validation(
-            work, store, persisted_run.id, validation_step
-        )
+        draft, artifact = await _validation(work, store, persisted_run.id, validation_step)
         evidence = await work.evidence.record_set(draft, artifact)
         consumer_step = await _step(work, persisted_run.id, "review")
-        consumer_id = await _reviewer(
-            work, persisted_run.id, consumer_step, status="PENDING"
-        )
+        consumer_id = await _reviewer(work, persisted_run.id, consumer_step, status="PENDING")
         await work.evidence.bind_input(
             consumer_id,
             EvidenceInputPurpose.VALIDATION_RESULTS,
@@ -487,9 +491,7 @@ async def test_reader_rejects_consumer_step_that_is_not_running(
         with pytest.raises(EvidenceCorruptLineage):
             await work.evidence.input_for_execution(
                 EvidenceInputPurpose.VALIDATION_RESULTS,
-                EvidenceReadScope(
-                    persisted_run.id, 1, consumer_id, consumer_step, _HEAD
-                ),
+                EvidenceReadScope(persisted_run.id, 1, consumer_id, consumer_step, _HEAD),
             )
 
 
@@ -500,13 +502,9 @@ async def test_reader_rejects_validation_whose_producer_step_is_not_succeeded(
     store = FilesystemArtifactStore(tmp_path)
     async with PostgresUnitOfWork(session_factory) as work:
         validation_step = await _step(work, persisted_run.id, "validation")
-        draft, artifact = await _validation(
-            work, store, persisted_run.id, validation_step
-        )
+        draft, artifact = await _validation(work, store, persisted_run.id, validation_step)
         evidence = await work.evidence.record_set(draft, artifact)
-        consumer_step = await _step(
-            work, persisted_run.id, "review", status="RUNNING"
-        )
+        consumer_step = await _step(work, persisted_run.id, "review", status="RUNNING")
         consumer_id = await _reviewer(
             work,
             persisted_run.id,
@@ -530,9 +528,7 @@ async def test_reader_rejects_validation_whose_producer_step_is_not_succeeded(
         with pytest.raises(EvidenceCorruptLineage):
             await work.evidence.input_for_execution(
                 EvidenceInputPurpose.VALIDATION_RESULTS,
-                EvidenceReadScope(
-                    persisted_run.id, 1, consumer_id, consumer_step, _HEAD
-                ),
+                EvidenceReadScope(persisted_run.id, 1, consumer_id, consumer_step, _HEAD),
             )
 
 
@@ -668,9 +664,7 @@ async def test_prior_review_reader_rechecks_causal_validation_and_producer_eligi
         validation1, validation_artifact1 = await _validation(
             work, store, persisted_run.id, validation_step1
         )
-        validation_set1 = await work.evidence.record_set(
-            validation1, validation_artifact1
-        )
+        validation_set1 = await work.evidence.record_set(validation1, validation_artifact1)
         review_step = await _step(work, persisted_run.id, "review")
         producer_id = await _reviewer(
             work,
@@ -700,12 +694,8 @@ async def test_prior_review_reader_rechecks_causal_validation_and_producer_eligi
             prior_review_id=review_set.evidence_set_id,
             prior_review_digest=review_set.manifest_digest,
         )
-        validation_set2 = await work.evidence.record_set(
-            validation2, validation_artifact2
-        )
-        consumer_step = await _step(
-            work, persisted_run.id, "review", status="RUNNING"
-        )
+        validation_set2 = await work.evidence.record_set(validation2, validation_artifact2)
+        consumer_step = await _step(work, persisted_run.id, "review", status="RUNNING")
         consumer_id = await _reviewer(
             work,
             persisted_run.id,
@@ -812,12 +802,12 @@ async def test_initial_insert_projects_snapshot_taken_before_caller_mutates_draf
 
     async with session_factory() as session:
         rows = (
-            await session.execute(
-                select(ValidationResult).where(
-                    ValidationResult.run_id == persisted_run.id
+            (
+                await session.execute(
+                    select(ValidationResult).where(ValidationResult.run_id == persisted_run.id)
                 )
             )
-        ).scalars().all()
-        assert [(row.id, row.check_name) for row in rows] == [
-            (original.result_id, "original")
-        ]
+            .scalars()
+            .all()
+        )
+        assert [(row.id, row.check_name) for row in rows] == [(original.result_id, "original")]

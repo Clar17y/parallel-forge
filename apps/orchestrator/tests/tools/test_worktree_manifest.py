@@ -172,9 +172,7 @@ def test_posix_create_reports_cleanup_failure_after_publication_without_corrupti
     store = _posix_store(tmp_path / "data", monkeypatch)
     manifest = _manifest(tmp_path)
     target = store.path_for(manifest.project_id, manifest.branch)
-    expected = json.dumps(
-        manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    )
+    expected = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     original_unlink = Path.unlink
 
     def fail_staging_unlink(path: Path, missing_ok: bool = False) -> None:
@@ -334,9 +332,7 @@ def test_windows_create_fails_closed_when_native_cleanup_never_succeeds(
     store, api = _windows_store(tmp_path / "data", monkeypatch, dispose_failures=3)
     manifest = _manifest(tmp_path)
     target = store.path_for(manifest.project_id, manifest.branch)
-    expected = json.dumps(
-        manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    )
+    expected = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
     with pytest.raises(WorktreeManifestError, match="manifest operation failed"):
         store.create(manifest)
@@ -503,9 +499,7 @@ def _padded_data_root_for_native_limit(
     target_final_len: int = 250,
 ) -> Path:
     probe = WorktreeManifestStore(base)
-    suffix_length = len(
-        str(probe.path_for(manifest.project_id, manifest.branch))
-    ) - len(str(base))
+    suffix_length = len(str(probe.path_for(manifest.project_id, manifest.branch))) - len(str(base))
     target_root_length = target_final_len - suffix_length
     if len(str(base)) + 2 > target_root_length:
         raise RuntimeError("OS temporary directory is too long for native path regression")

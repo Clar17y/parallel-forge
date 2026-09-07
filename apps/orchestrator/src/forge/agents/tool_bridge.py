@@ -75,9 +75,7 @@ def build_adk_tools(
 
         return await invoke(ToolName.REPOSITORY_LIST_FILES, {"path": path}, tool_context)
 
-    async def repository_read_file(
-        path: str, tool_context: ToolContext
-    ) -> dict[str, object]:
+    async def repository_read_file(path: str, tool_context: ToolContext) -> dict[str, object]:
         """Read one bounded UTF-8 file from the retained managed worktree."""
 
         return await invoke(ToolName.REPOSITORY_READ_FILE, {"path": path}, tool_context)
@@ -123,9 +121,7 @@ def build_adk_tools(
 
         return await invoke(ToolName.GIT_DIFF, {}, tool_context)
 
-    async def git_commit(
-        message: str, tool_context: ToolContext
-    ) -> dict[str, object]:
+    async def git_commit(message: str, tool_context: ToolContext) -> dict[str, object]:
         """Create one controlled commit with a bounded commit message."""
 
         return await invoke(ToolName.GIT_COMMIT, {"message": message}, tool_context)
@@ -203,7 +199,11 @@ def _derive_invocation_id(
 
 
 def _sdk_correlation_id(value: object) -> bytes | None:
-    if type(value) is not str or value != value.strip() or _SDK_CORRELATION_ID.fullmatch(value) is None:
+    if (
+        type(value) is not str
+        or value != value.strip()
+        or _SDK_CORRELATION_ID.fullmatch(value) is None
+    ):
         return None
     try:
         encoded = value.encode("utf-8")

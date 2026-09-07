@@ -155,9 +155,11 @@ async def test_prepare_calls_typed_git_and_returns_exact_authority_bound_receipt
 
     assert git.prepare_calls == 1
     assert outcome.status is OperationStatus.SUCCEEDED
-    assert outcome.payload == {
-        key: value for key, value in payload.items() if key != "message"
-    } | {"preparation_intent_id": str(intent.id), "previous_sha": "a" * 40, "tree_sha": "b" * 40}
+    assert outcome.payload == {key: value for key, value in payload.items() if key != "message"} | {
+        "preparation_intent_id": str(intent.id),
+        "previous_sha": "a" * 40,
+        "tree_sha": "b" * 40,
+    }
 
 
 @pytest.mark.asyncio
@@ -217,9 +219,9 @@ async def test_publish_and_reconcile_return_exact_receipt_without_repeat_publica
     published = await adapter.invoke(intent)
     reconciled = await adapter.reconcile(intent)
 
-    expected = {
-        key: value for key, value in intent.request_payload.items() if key != "message"
-    } | {"new_sha": "c" * 40}
+    expected = {key: value for key, value in intent.request_payload.items() if key != "message"} | {
+        "new_sha": "c" * 40
+    }
     assert published.status is OperationStatus.SUCCEEDED
     assert published.payload == expected
     assert reconciled == published
@@ -286,19 +288,35 @@ async def test_publish_rejects_preparation_receipt_with_mismatched_authority_bin
     preparation_payload = _payload(worktree, run_id)
     preparation = _intent(PREPARE_GIT_COMMIT_KIND, run_id, preparation_payload)
     receipt = {key: value for key, value in preparation_payload.items() if key != "message"} | {
-        "preparation_intent_id": str(preparation.id), "previous_sha": "a" * 40, "tree_sha": "b" * 40,
+        "preparation_intent_id": str(preparation.id),
+        "previous_sha": "a" * 40,
+        "tree_sha": "b" * 40,
     }
     receipt["tool_call_id"] = str(uuid4())
     preparation = OperationIntent(
-        id=preparation.id, run_id=preparation.run_id, kind=preparation.kind,
-        idempotency_key=preparation.idempotency_key, request_digest=preparation.request_digest,
-        request_payload=preparation.request_payload, status=OperationStatus.SUCCEEDED,
-        outcome=receipt, outcome_schema_version=1, completed_at=datetime.now(UTC),
+        id=preparation.id,
+        run_id=preparation.run_id,
+        kind=preparation.kind,
+        idempotency_key=preparation.idempotency_key,
+        request_digest=preparation.request_digest,
+        request_payload=preparation.request_payload,
+        status=OperationStatus.SUCCEEDED,
+        outcome=receipt,
+        outcome_schema_version=1,
+        completed_at=datetime.now(UTC),
     )
     publication_payload = _payload(worktree, run_id) | {
-        "preparation_intent_id": str(preparation.id), "previous_sha": "a" * 40, "tree_sha": "b" * 40,
+        "preparation_intent_id": str(preparation.id),
+        "previous_sha": "a" * 40,
+        "tree_sha": "b" * 40,
     }
-    for key in ("agent_execution_id", "policy_version", "request_digest", "step_id", "tool_call_id"):
+    for key in (
+        "agent_execution_id",
+        "policy_version",
+        "request_digest",
+        "step_id",
+        "tool_call_id",
+    ):
         publication_payload[key] = preparation_payload[key]
     intent = _intent(PUBLISH_GIT_COMMIT_KIND, run_id, publication_payload)
     git = _Git(worktree)
@@ -317,17 +335,27 @@ async def test_publish_rejects_paired_receipt_and_publication_authority_tamper()
     preparation = _intent(PREPARE_GIT_COMMIT_KIND, run_id, preparation_payload)
     tampered_tool_call_id = str(uuid4())
     receipt = {key: value for key, value in preparation_payload.items() if key != "message"} | {
-        "preparation_intent_id": str(preparation.id), "previous_sha": "a" * 40, "tree_sha": "b" * 40,
+        "preparation_intent_id": str(preparation.id),
+        "previous_sha": "a" * 40,
+        "tree_sha": "b" * 40,
         "tool_call_id": tampered_tool_call_id,
     }
     preparation = OperationIntent(
-        id=preparation.id, run_id=preparation.run_id, kind=preparation.kind,
-        idempotency_key=preparation.idempotency_key, request_digest=preparation.request_digest,
-        request_payload=preparation.request_payload, status=OperationStatus.SUCCEEDED,
-        outcome=receipt, outcome_schema_version=1, completed_at=datetime.now(UTC),
+        id=preparation.id,
+        run_id=preparation.run_id,
+        kind=preparation.kind,
+        idempotency_key=preparation.idempotency_key,
+        request_digest=preparation.request_digest,
+        request_payload=preparation.request_payload,
+        status=OperationStatus.SUCCEEDED,
+        outcome=receipt,
+        outcome_schema_version=1,
+        completed_at=datetime.now(UTC),
     )
     publication_payload = _payload(worktree, run_id) | {
-        "preparation_intent_id": str(preparation.id), "previous_sha": "a" * 40, "tree_sha": "b" * 40,
+        "preparation_intent_id": str(preparation.id),
+        "previous_sha": "a" * 40,
+        "tree_sha": "b" * 40,
         "tool_call_id": tampered_tool_call_id,
     }
     for key in ("agent_execution_id", "policy_version", "request_digest", "step_id"):

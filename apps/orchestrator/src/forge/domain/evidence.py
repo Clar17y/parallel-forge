@@ -67,7 +67,7 @@ def _validate_non_nil_uuid(value: Any, field_name: str) -> UUID:
             raise ValueError(f"{field_name} must be a canonical lowercase UUID string")
         try:
             value = UUID(value)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             raise ValueError(f"{field_name} must be a valid UUID") from None
     if not isinstance(value, UUID):
         raise TypeError(f"{field_name} must be a UUID")
@@ -119,7 +119,7 @@ def _validate_timezone_aware(value: Any, field_name: str) -> datetime:
     if isinstance(value, str):
         try:
             value = datetime.fromisoformat(value)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             raise ValueError(f"{field_name} must be a valid ISO format datetime") from None
     if not isinstance(value, datetime):
         raise TypeError(f"{field_name} must be a datetime")
@@ -127,7 +127,7 @@ def _validate_timezone_aware(value: Any, field_name: str) -> datetime:
         raise ValueError(f"{field_name} must be a timezone-aware datetime")
     try:
         value.astimezone(UTC)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         raise ValueError(f"{field_name} out of range for UTC conversion") from None
     return value
 
@@ -388,7 +388,7 @@ class ReviewEvidenceManifest(BaseModel):
                 if isinstance(resolved_at, str):
                     try:
                         resolved_at = datetime.fromisoformat(resolved_at)
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         raise ValueError(
                             "finding resolved_at must be a valid ISO format datetime"
                         ) from None
@@ -398,7 +398,7 @@ class ReviewEvidenceManifest(BaseModel):
                     raise ValueError("finding resolved_at must be timezone-aware")
                 try:
                     resolved_at.astimezone(UTC)
-                except (OverflowError, ValueError):
+                except OverflowError, ValueError:
                     raise ValueError(
                         "finding resolved_at out of range for UTC conversion"
                     ) from None
@@ -406,9 +406,7 @@ class ReviewEvidenceManifest(BaseModel):
 
             parsed_findings.append(ReviewFinding.model_validate(f_data))
 
-        review_state["findings"] = tuple(
-            sorted(parsed_findings, key=lambda item: item.finding_id)
-        )
+        review_state["findings"] = tuple(sorted(parsed_findings, key=lambda item: item.finding_id))
         return ReviewOutput.model_validate(review_state)
 
     @model_validator(mode="after")
@@ -429,7 +427,7 @@ def _format_datetime(dt: datetime) -> str:
         raise EvidenceManifestError("invalid datetime for canonical serialization")
     try:
         return dt.astimezone(UTC).isoformat()
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         raise EvidenceManifestError("datetime out of range for UTC conversion") from None
 
 
@@ -501,9 +499,7 @@ def _to_canonical_dict(
                         "path": f.path,
                         "proposed_resolution": f.proposed_resolution,
                         "resolved_at": (
-                            _format_datetime(f.resolved_at)
-                            if f.resolved_at is not None
-                            else None
+                            _format_datetime(f.resolved_at) if f.resolved_at is not None else None
                         ),
                         "severity": f.severity.value,
                         "start_line": f.start_line,
@@ -539,7 +535,15 @@ def _deep_validate_manifest(
         return ReviewEvidenceManifest.model_validate(state)
     except EvidenceManifestError:
         raise
-    except (AttributeError, ValidationError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+    except (
+        AttributeError,
+        ValidationError,
+        ValueError,
+        TypeError,
+        KeyError,
+        OverflowError,
+        RecursionError,
+    ):
         raise EvidenceManifestError("evidence manifest validation failed") from None
 
 
@@ -559,7 +563,7 @@ def encode_evidence_manifest(
         encoded = json_str.encode("utf-8")
     except EvidenceManifestError:
         raise
-    except (UnicodeEncodeError, OverflowError, ValueError, TypeError, RecursionError):
+    except UnicodeEncodeError, OverflowError, ValueError, TypeError, RecursionError:
         raise EvidenceManifestError("evidence manifest encoding failed") from None
 
     if len(encoded) > _MAX_MANIFEST_BYTES:
@@ -612,18 +616,14 @@ def decode_evidence_manifest(
             object_pairs_hook=_pairs_hook,
             parse_constant=_reject_constant,
         )
-    except (json.JSONDecodeError, ValueError, RecursionError):
+    except json.JSONDecodeError, ValueError, RecursionError:
         raise EvidenceManifestError("manifest is not valid JSON") from None
 
     if not isinstance(raw, dict):
         raise EvidenceManifestError("evidence manifest root must be a JSON object")
 
     schema_version = raw.get("schema_version")
-    if (
-        type(schema_version) is not int
-        or isinstance(schema_version, bool)
-        or schema_version != 1
-    ):
+    if type(schema_version) is not int or isinstance(schema_version, bool) or schema_version != 1:
         raise EvidenceManifestError("unsupported or invalid schema_version")
 
     kind = raw.get("kind")
@@ -684,7 +684,7 @@ def decode_evidence_manifest(
             manifest = ReviewEvidenceManifest.model_validate(raw)
     except EvidenceManifestError:
         raise
-    except (ValidationError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+    except ValidationError, ValueError, TypeError, KeyError, OverflowError, RecursionError:
         raise EvidenceManifestError("evidence manifest validation failed") from None
 
     canonical_bytes = encode_evidence_manifest(manifest)

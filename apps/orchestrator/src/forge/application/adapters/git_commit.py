@@ -76,7 +76,9 @@ class PublishGitCommitAdapter:
 
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
         values, prepared = await self._publication(intent)
-        published = await asyncio.to_thread(self._git.inspect_prepared_commit, self._worktree, prepared)
+        published = await asyncio.to_thread(
+            self._git.inspect_prepared_commit, self._worktree, prepared
+        )
         if published is None:
             return _needs_reconciliation()
         return _publish_outcome(intent, values, prepared, published)
@@ -87,30 +89,63 @@ class PublishGitCommitAdapter:
         values = _publish_request(intent, self._worktree)
         try:
             preparation = await self._receipts.get(UUID(_text(values, "preparation_intent_id")))
-        except (TypeError, ValueError, LookupError):
+        except TypeError, ValueError, LookupError:
             raise GitCommitOperationError("prepared commit receipt is unavailable") from None
         return values, _prepared_from_intent(preparation, values, self._worktree)
 
 
 _AUTHORITY_KEYS: Final = {
-    "agent_execution_id", "policy_version", "request_digest", "run_id", "step_id", "tool_call_id",
+    "agent_execution_id",
+    "policy_version",
+    "request_digest",
+    "run_id",
+    "step_id",
+    "tool_call_id",
     "worktree_id",
 }
 
 
 def _prepare_request(intent: OperationIntent, worktree: ManagedWorktree) -> dict[str, object]:
-    return _request(intent, worktree, PREPARE_GIT_COMMIT_KIND, {
-        "agent_execution_id", "base_sha", "message", "message_digest", "policy_version",
-        "request_digest", "run_id", "step_id", "tool_call_id", "worktree_id",
-    })
+    return _request(
+        intent,
+        worktree,
+        PREPARE_GIT_COMMIT_KIND,
+        {
+            "agent_execution_id",
+            "base_sha",
+            "message",
+            "message_digest",
+            "policy_version",
+            "request_digest",
+            "run_id",
+            "step_id",
+            "tool_call_id",
+            "worktree_id",
+        },
+    )
 
 
 def _publish_request(intent: OperationIntent, worktree: ManagedWorktree) -> dict[str, object]:
-    return _request(intent, worktree, PUBLISH_GIT_COMMIT_KIND, {
-        "agent_execution_id", "base_sha", "message", "message_digest", "policy_version",
-        "preparation_intent_id", "previous_sha", "request_digest", "run_id", "step_id",
-        "tool_call_id", "tree_sha", "worktree_id",
-    })
+    return _request(
+        intent,
+        worktree,
+        PUBLISH_GIT_COMMIT_KIND,
+        {
+            "agent_execution_id",
+            "base_sha",
+            "message",
+            "message_digest",
+            "policy_version",
+            "preparation_intent_id",
+            "previous_sha",
+            "request_digest",
+            "run_id",
+            "step_id",
+            "tool_call_id",
+            "tree_sha",
+            "worktree_id",
+        },
+    )
 
 
 def _request(
@@ -119,7 +154,11 @@ def _request(
     kind: str,
     keys: set[str],
 ) -> dict[str, object]:
-    if not isinstance(intent, OperationIntent) or intent.kind != kind or intent.request_schema_version != 1:
+    if (
+        not isinstance(intent, OperationIntent)
+        or intent.kind != kind
+        or intent.request_schema_version != 1
+    ):
         raise GitCommitOperationError("Git commit operation request is invalid")
     payload = intent.request_payload
     if set(payload) != keys or canonical_digest(payload) != intent.request_digest:
@@ -127,11 +166,17 @@ def _request(
     if any(not isinstance(payload[key], str) for key in keys - {"policy_version"}):
         raise GitCommitOperationError("Git commit operation request is invalid")
     values = {key: payload[key] for key in keys}
-    if values["run_id"] != str(intent.run_id) or values["worktree_id"] != worktree.identity.worktree_name:
+    if (
+        values["run_id"] != str(intent.run_id)
+        or values["worktree_id"] != worktree.identity.worktree_name
+    ):
         raise GitCommitOperationError("Git commit operation binding is invalid")
     if intent.run_id != worktree.identity.run_id:
         raise GitCommitOperationError("Git commit operation binding is invalid")
-    if values["base_sha"] != worktree.base_sha or _message_digest(_text(values, "message")) != values["message_digest"]:
+    if (
+        values["base_sha"] != worktree.base_sha
+        or _message_digest(_text(values, "message")) != values["message_digest"]
+    ):
         raise GitCommitOperationError("Git commit operation binding is invalid")
     if values["request_digest"] != canonical_digest({"message": _text(values, "message")}):
         raise GitCommitOperationError("Git commit operation binding is invalid")
@@ -151,7 +196,7 @@ def _request(
                 raise ValueError
         if type(values["policy_version"]) is not int or values["policy_version"] <= 0:
             raise ValueError
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise GitCommitOperationError("Git commit operation request is invalid") from None
     return values
 
@@ -174,10 +219,18 @@ def _prepared_from_intent(
         raise GitCommitOperationError("prepared commit receipt is invalid")
     request = _prepare_request(intent, worktree)
     receipt = intent.outcome
-    required = _AUTHORITY_KEYS | {"base_sha", "message_digest", "preparation_intent_id", "previous_sha", "tree_sha"}
-    if set(receipt) != required or any(
-        not isinstance(receipt[key], str) for key in required - {"policy_version"}
-    ) or type(receipt["policy_version"]) is not int:
+    required = _AUTHORITY_KEYS | {
+        "base_sha",
+        "message_digest",
+        "preparation_intent_id",
+        "previous_sha",
+        "tree_sha",
+    }
+    if (
+        set(receipt) != required
+        or any(not isinstance(receipt[key], str) for key in required - {"policy_version"})
+        or type(receipt["policy_version"]) is not int
+    ):
         raise GitCommitOperationError("prepared commit receipt is invalid")
     values = {key: receipt[key] for key in required}
     if (
@@ -197,7 +250,7 @@ def _prepared_from_intent(
             tree_sha=str(values["tree_sha"]),
             message=str(publication["message"]),
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise GitCommitOperationError("prepared commit receipt is invalid") from None
 
 
@@ -206,16 +259,23 @@ def _prepare_receipt(
 ) -> dict[str, object]:
     if _message_digest(prepared.message) != values["message_digest"]:
         raise GitCommitOperationError("controlled Git preparation result is invalid")
-    return {**{key: values[key] for key in _AUTHORITY_KEYS},
-        "base_sha": values["base_sha"], "message_digest": values["message_digest"],
-        "preparation_intent_id": str(intent.id), "previous_sha": prepared.previous_sha,
-        "request_digest": values["request_digest"], "tree_sha": prepared.tree_sha,
+    return {
+        **{key: values[key] for key in _AUTHORITY_KEYS},
+        "base_sha": values["base_sha"],
+        "message_digest": values["message_digest"],
+        "preparation_intent_id": str(intent.id),
+        "previous_sha": prepared.previous_sha,
+        "request_digest": values["request_digest"],
+        "tree_sha": prepared.tree_sha,
         "worktree_id": values["worktree_id"],
     }
 
 
 def _publish_outcome(
-    intent: OperationIntent, values: Mapping[str, object], prepared: PreparedGitCommit, published: object
+    intent: OperationIntent,
+    values: Mapping[str, object],
+    prepared: PreparedGitCommit,
+    published: object,
 ) -> OperationOutcome:
     if not isinstance(published, PublishedGitCommit) or (
         published.worktree_identity != prepared.worktree_identity
@@ -224,12 +284,19 @@ def _publish_outcome(
         or published.message != prepared.message
     ):
         raise GitCommitOperationError("controlled Git publication result is invalid")
-    return OperationOutcome(payload={**{key: values[key] for key in _AUTHORITY_KEYS},
-        "base_sha": values["base_sha"], "message_digest": values["message_digest"],
-        "new_sha": published.new_sha, "preparation_intent_id": values["preparation_intent_id"],
-        "previous_sha": prepared.previous_sha, "request_digest": values["request_digest"],
-        "tree_sha": prepared.tree_sha, "worktree_id": values["worktree_id"],
-    })
+    return OperationOutcome(
+        payload={
+            **{key: values[key] for key in _AUTHORITY_KEYS},
+            "base_sha": values["base_sha"],
+            "message_digest": values["message_digest"],
+            "new_sha": published.new_sha,
+            "preparation_intent_id": values["preparation_intent_id"],
+            "previous_sha": prepared.previous_sha,
+            "request_digest": values["request_digest"],
+            "tree_sha": prepared.tree_sha,
+            "worktree_id": values["worktree_id"],
+        }
+    )
 
 
 def _message_digest(message: str) -> str:

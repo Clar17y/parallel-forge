@@ -154,7 +154,9 @@ class _UnreadableReplayStore(_ReplayStore):
         return await super().open_bytes(digest)
 
 
-def _replay_inputs(*, extra_json: str = "") -> tuple[
+def _replay_inputs(
+    *, extra_json: str = ""
+) -> tuple[
     ToolCallRecord, ToolAuthorizationContext, dict[str, object], str, _ReplayArtifacts, _ReplayStore
 ]:
     call_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -250,7 +252,14 @@ def _replay_inputs(*, extra_json: str = "") -> tuple[
             "invocation_schema_version": 1,
         },
     )
-    return record, context, normalized, request_digest, _ReplayArtifacts(descriptor), _ReplayStore(data)
+    return (
+        record,
+        context,
+        normalized,
+        request_digest,
+        _ReplayArtifacts(descriptor),
+        _ReplayStore(data),
+    )
 
 
 @pytest.mark.parametrize(

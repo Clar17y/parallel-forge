@@ -340,7 +340,9 @@ async def test_canonical_reader_requires_every_policy_secret_exclusion(tmp_path:
             name=ToolName.REPOSITORY_SEARCH,
             arguments={"literal": "SECRET_CANARY", "path": "."},
         ),
-        ToolRequest(name=ToolName.REPOSITORY_READ_INSTRUCTIONS, arguments={"target_path": "config"}),
+        ToolRequest(
+            name=ToolName.REPOSITORY_READ_INSTRUCTIONS, arguments={"target_path": "config"}
+        ),
     ),
 )
 async def test_canonical_reader_with_policy_exclusions_hides_configured_secrets(
@@ -547,9 +549,7 @@ async def test_non_planner_without_worktree_cannot_use_canonical_reader(
         ToolRequest(name=ToolName.REPOSITORY_LIST_FILES, arguments={"path": "."}),
         ToolRequest(name=ToolName.REPOSITORY_READ_FILE, arguments={"path": "README.md"}),
         ToolRequest(name=ToolName.REPOSITORY_SEARCH, arguments={"literal": "Forge", "path": "."}),
-        ToolRequest(
-            name=ToolName.REPOSITORY_READ_INSTRUCTIONS, arguments={"target_path": "."}
-        ),
+        ToolRequest(name=ToolName.REPOSITORY_READ_INSTRUCTIONS, arguments={"target_path": "."}),
     ),
 )
 async def test_planner_repository_reads_are_bounded_untrusted_and_audited(

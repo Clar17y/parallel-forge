@@ -126,7 +126,7 @@ class WorktreeCapability:
                     identity.branch,
                     policy.database.enabled,
                 )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             raise ControlledGitError() from None
         if expected != identity:
             raise ControlledGitError()
@@ -702,7 +702,7 @@ class ControlledGit:
                 return self._inspect_prepared_commit_bound(worktree, prepared)
         except ControlledGitError:
             raise
-        except (OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError):
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
             raise ControlledGitError() from None
 
     def _inspect_prepared_commit_bound(

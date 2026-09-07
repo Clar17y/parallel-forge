@@ -598,9 +598,7 @@ def test_evidence_run_foreign_keys_restrict_retention_deletion(
             and tuple(foreign_key["constrained_columns"]) == ("run_id",)
         ]
 
-    foreign_keys = asyncio.run(
-        _inspect_database(migrated_database_url, evidence_run_foreign_keys)
-    )
+    foreign_keys = asyncio.run(_inspect_database(migrated_database_url, evidence_run_foreign_keys))
     assert isinstance(foreign_keys, list)
     assert len(foreign_keys) == 2
     assert all(foreign_key["options"].get("ondelete") == "RESTRICT" for foreign_key in foreign_keys)
@@ -982,8 +980,7 @@ def test_suspended_state_matches_exact_state_engine_source_sets(
             context_version = None
             if context is not None:
                 has_pending = (
-                    context.pending_gate is not None
-                    or context.pending_evidence_digest is not None
+                    context.pending_gate is not None or context.pending_evidence_digest is not None
                 )
                 context_payload: dict[str, object] = {
                     "state": context.state.value,
@@ -1001,13 +998,9 @@ def test_suspended_state_matches_exact_state_engine_source_sets(
                 if has_pending:
                     context_version = 2
                     context_payload["pending_gate"] = (
-                        context.pending_gate.value
-                        if context.pending_gate is not None
-                        else None
+                        context.pending_gate.value if context.pending_gate is not None else None
                     )
-                    context_payload["pending_evidence_digest"] = (
-                        context.pending_evidence_digest
-                    )
+                    context_payload["pending_evidence_digest"] = context.pending_evidence_digest
                 else:
                     context_version = 1
                 serialized_context = json.dumps(context_payload)
@@ -1018,14 +1011,10 @@ def test_suspended_state_matches_exact_state_engine_source_sets(
                 "state": snapshot.state.value,
                 "version": snapshot.version,
                 "suspended_state": (
-                    snapshot.suspended_state.value
-                    if snapshot.suspended_state is not None
-                    else None
+                    snapshot.suspended_state.value if snapshot.suspended_state is not None else None
                 ),
                 "suspension_kind": (
-                    snapshot.suspension_kind.value
-                    if snapshot.suspension_kind is not None
-                    else None
+                    snapshot.suspension_kind.value if snapshot.suspension_kind is not None else None
                 ),
                 "context_version": context_version,
                 "context": serialized_context,

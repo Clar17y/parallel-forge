@@ -44,7 +44,9 @@ def _sample_record(
         run_id=uuid4() if run_id is None else run_id,
         agent_execution_id=uuid4() if agent_execution_id is None else agent_execution_id,
         tool_name=ToolName.BUILD_RUN_NAMED_CHECK,
-        normalized_arguments={"command": "build"} if normalized_arguments is None else normalized_arguments,
+        normalized_arguments={"command": "build"}
+        if normalized_arguments is None
+        else normalized_arguments,
         authorized=authorized,
         status=status,
         started_at=now if started_at is None else started_at,
@@ -87,33 +89,55 @@ def test_tool_call_record_binding_validation_partial_and_invalid() -> None:
     with pytest.raises(ValueError, match="binding"):
         _sample_record(request_digest=None, resource_id=valid_resource, invocation_schema_version=1)
     with pytest.raises(ValueError, match="binding"):
-        _sample_record(request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version=None)
+        _sample_record(
+            request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version=None
+        )
     with pytest.raises(ValueError, match="binding"):
-        _sample_record(request_digest=valid_digest, resource_id=None, invocation_schema_version=None)
+        _sample_record(
+            request_digest=valid_digest, resource_id=None, invocation_schema_version=None
+        )
     with pytest.raises(ValueError, match="binding"):
-        _sample_record(request_digest=None, resource_id=valid_resource, invocation_schema_version=None)
+        _sample_record(
+            request_digest=None, resource_id=valid_resource, invocation_schema_version=None
+        )
     with pytest.raises(ValueError, match="binding"):
         _sample_record(request_digest=None, resource_id=None, invocation_schema_version=1)
 
     # Invocation schema version must be strict int 1
     with pytest.raises(ValueError, match="schema"):
-        _sample_record(request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version=2)
+        _sample_record(
+            request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version=2
+        )
     with pytest.raises(ValueError, match="schema"):
-        _sample_record(request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version=0)
+        _sample_record(
+            request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version=0
+        )
     with pytest.raises((TypeError, ValueError)):
-        _sample_record(request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version="1")  # type: ignore[arg-type]
+        _sample_record(
+            request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version="1"
+        )  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="schema"):
-        _sample_record(request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version=True)  # type: ignore[arg-type]
+        _sample_record(
+            request_digest=valid_digest, resource_id=valid_resource, invocation_schema_version=True
+        )  # type: ignore[arg-type]
 
     # Digest must be lowercase 64 hex
     with pytest.raises(ValueError, match="digest"):
-        _sample_record(request_digest="A" * 64, resource_id=valid_resource, invocation_schema_version=1)
+        _sample_record(
+            request_digest="A" * 64, resource_id=valid_resource, invocation_schema_version=1
+        )
     with pytest.raises(ValueError, match="digest"):
-        _sample_record(request_digest="g" * 64, resource_id=valid_resource, invocation_schema_version=1)
+        _sample_record(
+            request_digest="g" * 64, resource_id=valid_resource, invocation_schema_version=1
+        )
     with pytest.raises(ValueError, match="digest"):
-        _sample_record(request_digest="a" * 63, resource_id=valid_resource, invocation_schema_version=1)
+        _sample_record(
+            request_digest="a" * 63, resource_id=valid_resource, invocation_schema_version=1
+        )
     with pytest.raises(ValueError, match="digest"):
-        _sample_record(request_digest="a" * 65, resource_id=valid_resource, invocation_schema_version=1)
+        _sample_record(
+            request_digest="a" * 65, resource_id=valid_resource, invocation_schema_version=1
+        )
     with pytest.raises((TypeError, ValueError)):
         _sample_record(request_digest=123, resource_id=valid_resource, invocation_schema_version=1)  # type: ignore[arg-type]
 
@@ -123,10 +147,14 @@ def test_tool_call_record_binding_validation_partial_and_invalid() -> None:
     with pytest.raises(ValueError, match="resource"):
         _sample_record(request_digest=valid_digest, resource_id="   ", invocation_schema_version=1)
     with pytest.raises(ValueError, match="resource"):
-        _sample_record(request_digest=valid_digest, resource_id="x" * 513, invocation_schema_version=1)
+        _sample_record(
+            request_digest=valid_digest, resource_id="x" * 513, invocation_schema_version=1
+        )
     for ctrl in ("\x00", "\r", "\n", "\x1f", "\x7f"):
         with pytest.raises(ValueError, match="control"):
-            _sample_record(request_digest=valid_digest, resource_id=f"res{ctrl}id", invocation_schema_version=1)
+            _sample_record(
+                request_digest=valid_digest, resource_id=f"res{ctrl}id", invocation_schema_version=1
+            )
 
 
 def test_tool_call_record_metadata_lineage_conflict_validation() -> None:
@@ -706,7 +734,9 @@ async def test_no_raw_canary_in_stored_evidence_and_redaction_failure_safety(
 
     # Query raw database row directly using a fresh session
     async with session_factory() as session:  # type: ignore[operator]
-        raw_row = (await session.execute(select(ToolCall).where(ToolCall.id == call_id))).scalar_one()
+        raw_row = (
+            await session.execute(select(ToolCall).where(ToolCall.id == call_id))
+        ).scalar_one()
         stored_args = raw_row.normalized_arguments
         assert canary_token not in str(stored_args)
         assert "[REDACTED]" in str(stored_args)
@@ -834,23 +864,29 @@ async def test_malformed_persisted_records_fail_closed(
     # 1. Partial binding in DB: only request_digest
     partial_id1 = await _insert_malformed({"request_digest": "9" * 64})
     # 2. Invalid schema in DB: invocation_schema_version=2
-    invalid_schema_id = await _insert_malformed({
-        "request_digest": "9" * 64,
-        "resource_id": "valid-resource",
-        "invocation_schema_version": 2,
-    })
+    invalid_schema_id = await _insert_malformed(
+        {
+            "request_digest": "9" * 64,
+            "resource_id": "valid-resource",
+            "invocation_schema_version": 2,
+        }
+    )
     # 3. Invalid digest in DB: uppercase / malformed
-    invalid_digest_id = await _insert_malformed({
-        "request_digest": "NOT_A_VALID_HEX_DIGEST",
-        "resource_id": "valid-resource",
-        "invocation_schema_version": 1,
-    })
+    invalid_digest_id = await _insert_malformed(
+        {
+            "request_digest": "NOT_A_VALID_HEX_DIGEST",
+            "resource_id": "valid-resource",
+            "invocation_schema_version": 1,
+        }
+    )
     # 4. Control character in resource in DB
-    invalid_resource_id = await _insert_malformed({
-        "request_digest": "9" * 64,
-        "resource_id": "bad\x1fresource",
-        "invocation_schema_version": 1,
-    })
+    invalid_resource_id = await _insert_malformed(
+        {
+            "request_digest": "9" * 64,
+            "resource_id": "bad\x1fresource",
+            "invocation_schema_version": 1,
+        }
+    )
 
     async with session_factory() as session:  # type: ignore[operator]
         repo = PostgresToolCallRepository(session)

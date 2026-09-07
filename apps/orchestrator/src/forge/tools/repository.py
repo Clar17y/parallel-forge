@@ -99,7 +99,7 @@ class RepositoryReader:
             return False
         try:
             normalized = tuple(self._root.normalize(path) for path in paths)
-        except (TypeError, ValueError, RuntimeError, OSError):
+        except TypeError, ValueError, RuntimeError, OSError:
             return False
         return all(self._is_excluded(path) for path in normalized)
 

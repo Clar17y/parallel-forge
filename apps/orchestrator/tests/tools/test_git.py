@@ -820,7 +820,15 @@ def test_prepared_commit_captures_real_index_and_publish_does_not_restage(tmp_pa
     assert result.previous_sha == handle.base_sha
     assert _git_show(repository, result.new_sha).endswith("prepared snapshot\n")
     names = subprocess.run(
-        [str(TRUSTED_GIT), "-C", str(handle.path), "show", "--format=", "--name-only", result.new_sha],
+        [
+            str(TRUSTED_GIT),
+            "-C",
+            str(handle.path),
+            "show",
+            "--format=",
+            "--name-only",
+            result.new_sha,
+        ],
         check=True,
         capture_output=True,
         shell=False,
@@ -866,13 +874,16 @@ def test_prepare_commit_rejects_grafted_unrelated_retained_head(tmp_path: Path) 
     with pytest.raises(ControlledGitError):
         _controlled(repository, tmp_path / "state").prepare_commit(handle, "prepared snapshot")
 
-    assert subprocess.run(
-        [str(TRUSTED_GIT), "-C", str(handle.path), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        shell=False,
-        text=True,
-    ).stdout.strip() == unrelated_sha
+    assert (
+        subprocess.run(
+            [str(TRUSTED_GIT), "-C", str(handle.path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            shell=False,
+            text=True,
+        ).stdout.strip()
+        == unrelated_sha
+    )
 
 
 def test_commit_prepared_rejects_grafted_unrelated_retained_head(tmp_path: Path) -> None:
@@ -897,13 +908,16 @@ def test_commit_prepared_rejects_grafted_unrelated_retained_head(tmp_path: Path)
     with pytest.raises(ControlledGitError):
         _controlled(repository, tmp_path / "state").commit_prepared(handle, prepared)
 
-    assert subprocess.run(
-        [str(TRUSTED_GIT), "-C", str(handle.path), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        shell=False,
-        text=True,
-    ).stdout.strip() == unrelated_sha
+    assert (
+        subprocess.run(
+            [str(TRUSTED_GIT), "-C", str(handle.path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            shell=False,
+            text=True,
+        ).stdout.strip()
+        == unrelated_sha
+    )
 
 
 @pytest.mark.parametrize("operation", ("prepare", "publish"))
@@ -947,15 +961,18 @@ def test_inspect_prepared_commit_recovers_only_exact_unique_direct_child(tmp_pat
     published = controlled.commit_prepared(handle, prepared)
 
     assert controlled.inspect_prepared_commit(handle, prepared) == published
-    assert controlled.inspect_prepared_commit(
-        handle,
-        PreparedGitCommit(
-            worktree_identity=handle.identity,
-            previous_sha=prepared.previous_sha,
-            tree_sha=prepared.tree_sha,
-            message="other message",
-        ),
-    ) is None
+    assert (
+        controlled.inspect_prepared_commit(
+            handle,
+            PreparedGitCommit(
+                worktree_identity=handle.identity,
+                previous_sha=prepared.previous_sha,
+                tree_sha=prepared.tree_sha,
+                message="other message",
+            ),
+        )
+        is None
+    )
 
 
 def test_inspect_prepared_commit_is_read_only_and_fails_closed_for_ambiguous_child(
@@ -2351,8 +2368,9 @@ def test_developer_worktree_capability_rejects_mismatched_project(tmp_path: Path
         database=DatabaseProvisioningPolicy(enabled=False),
     )
 
-    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
-        worktree, mismatched_policy
+    with (
+        pytest.raises(ControlledGitError),
+        controlled.open_worktree_capability(worktree, mismatched_policy),
     ):
         pass
 
@@ -2391,17 +2409,17 @@ def test_developer_worktree_capability_rejects_forged_standalone_identity(
     forged_worktree_proj = ManagedWorktree(
         identity=forged_proj, path=worktree.path, base_sha=base_sha
     )
-    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
-        forged_worktree_proj, policy
+    with (
+        pytest.raises(ControlledGitError),
+        controlled.open_worktree_capability(forged_worktree_proj, policy),
     ):
         pass
 
-    forged_db = replace(
-        identity, database_name="forge_fake_db", database_role="forge_fake_role"
-    )
+    forged_db = replace(identity, database_name="forge_fake_db", database_role="forge_fake_role")
     forged_worktree_db = ManagedWorktree(identity=forged_db, path=worktree.path, base_sha=base_sha)
-    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
-        forged_worktree_db, policy
+    with (
+        pytest.raises(ControlledGitError),
+        controlled.open_worktree_capability(forged_worktree_db, policy),
     ):
         pass
 
@@ -2409,8 +2427,9 @@ def test_developer_worktree_capability_rejects_forged_standalone_identity(
     forged_worktree_name = ManagedWorktree(
         identity=forged_name, path=worktree.path, base_sha=base_sha
     )
-    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
-        forged_worktree_name, policy
+    with (
+        pytest.raises(ControlledGitError),
+        controlled.open_worktree_capability(forged_worktree_name, policy),
     ):
         pass
 
@@ -2418,8 +2437,9 @@ def test_developer_worktree_capability_rejects_forged_standalone_identity(
     forged_worktree_branch = ManagedWorktree(
         identity=forged_branch, path=worktree.path, base_sha=base_sha
     )
-    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
-        forged_worktree_branch, policy
+    with (
+        pytest.raises(ControlledGitError),
+        controlled.open_worktree_capability(forged_worktree_branch, policy),
     ):
         pass
 
@@ -2444,8 +2464,9 @@ def test_developer_worktree_capability_rejects_forged_standalone_identity(
     forged_worktree_no_db = ManagedWorktree(
         identity=forged_no_db, path=worktree_with_db.path, base_sha=base_sha
     )
-    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
-        forged_worktree_no_db, policy_with_db
+    with (
+        pytest.raises(ControlledGitError),
+        controlled.open_worktree_capability(forged_worktree_no_db, policy_with_db),
     ):
         pass
 
@@ -2459,8 +2480,9 @@ def test_developer_worktree_capability_rejects_forged_standalone_identity(
     forged_worktree_enabled_db = ManagedWorktree(
         identity=forged_enabled_db, path=worktree_with_db.path, base_sha=base_sha
     )
-    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(
-        forged_worktree_enabled_db, policy_with_db
+    with (
+        pytest.raises(ControlledGitError),
+        controlled.open_worktree_capability(forged_worktree_enabled_db, policy_with_db),
     ):
         pass
 

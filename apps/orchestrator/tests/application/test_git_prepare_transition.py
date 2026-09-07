@@ -64,7 +64,9 @@ class _Adapter:
         raise AssertionError("invoke_admitted must never reconcile")
 
 
-def _intent(*, is_new: bool = True, owner: str | None = "owner", live: bool = True) -> OperationIntent:
+def _intent(
+    *, is_new: bool = True, owner: str | None = "owner", live: bool = True
+) -> OperationIntent:
     payload = {"binding": "value"}
     return OperationIntent(
         run_id=uuid4(),
@@ -92,7 +94,9 @@ async def test_invoke_admitted_returns_outcome_without_complete_or_fail() -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("intent", [_intent(is_new=False), _intent(live=False), _intent(owner=None)])
+@pytest.mark.parametrize(
+    "intent", [_intent(is_new=False), _intent(live=False), _intent(owner=None)]
+)
 async def test_invoke_admitted_rejects_non_new_expired_or_unowned_before_effect(
     intent: OperationIntent,
 ) -> None:
@@ -151,7 +155,9 @@ async def test_invoke_admitted_does_not_effect_when_renewed_lease_is_already_exp
 
 
 @pytest.mark.asyncio
-async def test_invoke_admitted_cancellation_before_initial_renewal_completes_has_no_effect() -> None:
+async def test_invoke_admitted_cancellation_before_initial_renewal_completes_has_no_effect() -> (
+    None
+):
     intent = _intent()
     operations = _Operations(intent)
     operations.renew_release = asyncio.Event()
@@ -220,11 +226,14 @@ def _request(run_id, *, kind: str, key: str) -> dict[str, object]:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_caller_uow_commits_preparation_receipt_and_publication_intent_together(
-    operation_repository, persisted_run, uow,
+    operation_repository,
+    persisted_run,
+    uow,
 ) -> None:
     preparation = await operation_repository.begin(
         **_request(persisted_run.id, kind="git.commit.prepare.v1", key=f"prepare:{uuid4()}"),
-        execution_owner="prepare-owner", execution_lease_seconds=30,
+        execution_owner="prepare-owner",
+        execution_lease_seconds=30,
     )
     publication_key = f"publish:{uuid4()}"
     async with uow:
@@ -233,7 +242,8 @@ async def test_caller_uow_commits_preparation_receipt_and_publication_intent_tog
         )
         publication = await uow.operations.begin(
             **_request(persisted_run.id, kind="git.commit.publish.v1", key=publication_key),
-            execution_owner="publish-owner", execution_lease_seconds=30,
+            execution_owner="publish-owner",
+            execution_lease_seconds=30,
         )
         await uow.commit()
 
@@ -245,11 +255,14 @@ async def test_caller_uow_commits_preparation_receipt_and_publication_intent_tog
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_caller_uow_rollback_leaves_neither_preparation_receipt_nor_publication(
-    operation_repository, persisted_run, uow,
+    operation_repository,
+    persisted_run,
+    uow,
 ) -> None:
     preparation = await operation_repository.begin(
         **_request(persisted_run.id, kind="git.commit.prepare.v1", key=f"prepare:{uuid4()}"),
-        execution_owner="prepare-owner", execution_lease_seconds=30,
+        execution_owner="prepare-owner",
+        execution_lease_seconds=30,
     )
     publication_key = f"publish:{uuid4()}"
     async with uow:
@@ -258,7 +271,8 @@ async def test_caller_uow_rollback_leaves_neither_preparation_receipt_nor_public
         )
         await uow.operations.begin(
             **_request(persisted_run.id, kind="git.commit.publish.v1", key=publication_key),
-            execution_owner="publish-owner", execution_lease_seconds=30,
+            execution_owner="publish-owner",
+            execution_lease_seconds=30,
         )
 
     assert (await operation_repository.get(preparation.id)).status is OperationStatus.PENDING
@@ -268,11 +282,14 @@ async def test_caller_uow_rollback_leaves_neither_preparation_receipt_nor_public
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_wrong_preparation_owner_cannot_authorize_publication(
-    operation_repository, persisted_run, uow,
+    operation_repository,
+    persisted_run,
+    uow,
 ) -> None:
     preparation = await operation_repository.begin(
         **_request(persisted_run.id, kind="git.commit.prepare.v1", key=f"prepare:{uuid4()}"),
-        execution_owner="prepare-owner", execution_lease_seconds=30,
+        execution_owner="prepare-owner",
+        execution_lease_seconds=30,
     )
     publication_key = f"publish:{uuid4()}"
     async with uow:

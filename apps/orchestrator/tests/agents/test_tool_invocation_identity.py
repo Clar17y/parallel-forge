@@ -50,29 +50,43 @@ def test_v1_derivation_is_stable_and_excludes_agent_selected_call_details() -> N
     assert first == UUID("dd92e2d0-3881-5132-b705-4a29b81b08bc")
     assert second == first
     assert _derive_invocation_id(_context(), _sdk_context("inv-1", "call-2")) != first
-    assert _derive_invocation_id(_context(step_id=UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")), _sdk_context("inv-1", "call-1")) != first
+    assert (
+        _derive_invocation_id(
+            _context(step_id=UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")),
+            _sdk_context("inv-1", "call-1"),
+        )
+        != first
+    )
 
 
 def test_derivation_rejects_untrusted_or_incomplete_sdk_correlation() -> None:
     assert _derive_invocation_id(_context(), _sdk_context("", "call")) is None
     assert _derive_invocation_id(_context(), _sdk_context("inv\n", "call")) is None
     assert _derive_invocation_id(_context(), _sdk_context("x" * 256, "call")) is None
-    assert _derive_invocation_id(_context(agent_execution_id=None), _sdk_context("inv", "call")) is None
+    assert (
+        _derive_invocation_id(_context(agent_execution_id=None), _sdk_context("inv", "call"))
+        is None
+    )
 
 
 def test_derivation_namespace_includes_every_trusted_execution_identity() -> None:
     sdk = _sdk_context("inv-1", "call-1")
     baseline = _derive_invocation_id(_context(), sdk)
 
-    assert _derive_invocation_id(
-        _context(run_id=UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")), sdk
-    ) != baseline
-    assert _derive_invocation_id(
-        _context(agent_execution_id=UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")), sdk
-    ) != baseline
-    assert _derive_invocation_id(
-        _context(step_id=UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")), sdk
-    ) != baseline
+    assert (
+        _derive_invocation_id(_context(run_id=UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")), sdk)
+        != baseline
+    )
+    assert (
+        _derive_invocation_id(
+            _context(agent_execution_id=UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")), sdk
+        )
+        != baseline
+    )
+    assert (
+        _derive_invocation_id(_context(step_id=UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")), sdk)
+        != baseline
+    )
 
 
 @pytest.mark.parametrize("bad_id", [None, "", " leading", "trailing ", "line\nfeed", "x" * 256])
@@ -154,7 +168,9 @@ async def test_bridge_uses_fresh_contexts_and_denies_effect_without_correlation(
     write = tools[ToolName.REPOSITORY_WRITE_FILE.value]
     status = tools[ToolName.GIT_STATUS.value]
 
-    denied = await write.func(path="result.txt", content="ok", tool_context=_sdk_context(None, None))
+    denied = await write.func(
+        path="result.txt", content="ok", tool_context=_sdk_context(None, None)
+    )
     first, second = await asyncio.gather(
         status.func(tool_context=_sdk_context("inv-1", "call-1")),
         status.func(tool_context=_sdk_context("inv-1", "call-2")),
