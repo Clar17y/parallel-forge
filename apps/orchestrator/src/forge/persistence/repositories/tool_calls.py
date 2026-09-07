@@ -16,7 +16,7 @@ from forge.domain.actor import AgentRole
 from forge.domain.operation import canonical_payload
 from forge.domain.tool import ToolCallStatus, ToolName
 from forge.observability.redaction import Redactor
-from forge.persistence.models import AgentExecution, Step, ToolCall
+from forge.persistence.models import AgentExecution, Run, RunCommand, Step, ToolCall
 from forge.persistence.repositories.runs import PersistenceDataError
 
 _HEX_64 = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
@@ -260,6 +260,23 @@ class PostgresToolCallRepository:
                 raise TypeError(f"tool call {name} identifier must be a UUID")
         if not isinstance(role, AgentRole):
             raise TypeError("tool call execution role must be an AgentRole")
+        # The caller holds the run lock shared with operator command admission.
+        # A stop accepted first must prevent another tool even before the control
+        # worker has committed the PAUSED/CANCELLED state transition.
+        pending_stop = (
+            select(RunCommand.id)
+            .join(Run, Run.id == RunCommand.run_id)
+            .where(
+                Run.id == run_id,
+                RunCommand.command_type.in_({"pause", "cancel"}),
+                RunCommand.status.in_({"PENDING", "LEASED"}),
+                RunCommand.expected_run_version == Run.version,
+                RunCommand.payload_schema_version == 1,
+                RunCommand.payload == {},
+                RunCommand.actor_id.is_not(None),
+            )
+            .exists()
+        )
         execution_id = (
             await self._session.execute(
                 select(AgentExecution.id)
@@ -271,6 +288,7 @@ class PostgresToolCallRepository:
                     AgentExecution.role == role.value,
                     AgentExecution.status == "RUNNING",
                     Step.run_id == run_id,
+                    ~pending_stop,
                 )
             )
         ).scalar_one_or_none()
