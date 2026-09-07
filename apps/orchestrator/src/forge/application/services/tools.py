@@ -113,7 +113,7 @@ _TOOL_ARGUMENT_SCHEMAS = {
     ToolName.REPOSITORY_READ_INSTRUCTIONS: (frozenset(), frozenset({"target_path"})),
     ToolName.REPOSITORY_WRITE_FILE: (frozenset({"content", "path"}), frozenset()),
     ToolName.GIT_STATUS: (frozenset(), frozenset()),
-    ToolName.GIT_DIFF: (frozenset(), frozenset()),
+    ToolName.GIT_DIFF: (frozenset(), frozenset({"scope"})),
     ToolName.GIT_COMMIT: (frozenset({"message"}), frozenset()),
     ToolName.BUILD_RUN_NAMED_CHECK: (frozenset({"command_name"}), frozenset()),
     ToolName.VALIDATION_RESULTS_READ: (frozenset(), frozenset()),
@@ -179,6 +179,11 @@ def _arguments_match_schema(
 ) -> bool:
     fields = frozenset(arguments)
     required, optional = _TOOL_ARGUMENT_SCHEMAS[tool_name]
+    if tool_name is ToolName.GIT_DIFF and arguments.get("scope", "working_tree") not in (
+        "working_tree",
+        "candidate",
+    ):
+        return False
     return required <= fields <= required | optional and all(
         type(value) is str for value in arguments.values()
     )
@@ -1764,6 +1769,8 @@ class ControlledToolService:
                     "controlled Git binding is not current",
                 )
             method_name = request.name.value.rsplit(".", 1)[-1]
+            if request.name is ToolName.GIT_DIFF and request.arguments.get("scope") == "candidate":
+                method_name = "candidate_diff"
             if not callable(getattr(self._git, method_name, None)):
                 return None, (
                     ToolErrorCode.TOOL_UNAVAILABLE,
@@ -2057,6 +2064,16 @@ class ControlledToolService:
                 worktree = self._worktree
                 if worktree is None or self._git is None:
                     raise ToolInvocationError()
+                if authorization.request.arguments.get("scope") == "candidate":
+                    candidate = self._git.candidate_diff(worktree)
+                    metadata = _git_output(candidate.diff)
+                    metadata.update(
+                        head_sha=candidate.head_sha,
+                        diff_digest=hashlib.sha256(candidate.diff.text.encode("utf-8")).hexdigest(),
+                        changed_paths=candidate.changed_paths,
+                        untrusted_repository_content=True,
+                    )
+                    return self._result(name, ToolCallStatus.SUCCEEDED, metadata=metadata)
                 diff = self._git.diff(worktree)
                 return self._result(name, ToolCallStatus.SUCCEEDED, metadata=_git_output(diff))
             if name in {

@@ -32,18 +32,23 @@ DIFF = "diff --git a/README.md b/README.md\n+change\n"
 
 
 class _Git:
+    head = HEAD
+
     def inspect_worktree(self, identity, base_sha):
         return ManagedWorktree(identity=identity, path=self.path, base_sha=base_sha)
 
     def candidate_diff(self, worktree):
         return GitCandidateDiff(
-            head_sha=HEAD,
+            head_sha=self.head,
             diff=GitDiff(text=DIFF, original_byte_count=len(DIFF), truncated=False),
             changed_paths=("README.md",),
         )
 
     def is_ancestor(self, worktree):
         return True
+
+    def head_sha(self, worktree):
+        return self.head
 
 
 class _Reader:
@@ -281,4 +286,96 @@ async def test_unknown_provider_outcome_is_not_reinvoked(tmp_path, workflow_sess
     async with PostgresUnitOfWork(workflow_session_factory) as work:
         with pytest.raises(CommandRecoveryRequired):
             await service.execute(command, work)
+    assert len(gateway.requests) == 1
+
+
+async def _service_case(tmp_path, factory):
+    case, command, _commands, path = await _implement_command(tmp_path, factory)
+    git = _Git()
+    git.path = path
+    gateway = _Gateway(factory)
+    service = DevelopmentService(
+        gateway,
+        case.artifact_store,
+        PromptLoader(Path(__file__).resolve().parents[2] / "agents"),
+        ApprovedPlanLoader(case.artifact_store),
+        lambda policy: git,
+        lambda policy, worktree: _Reader(),
+    )
+    return case, command, service, gateway, git
+
+
+async def test_successful_settlement_replay_has_no_provider_call(
+    tmp_path, workflow_session_factory
+):
+    _case, command, service, gateway, _git = await _service_case(tmp_path, workflow_session_factory)
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        first = await service.execute(command, work)
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        replay = await service.execute(command, work)
+    assert replay.agent_execution_id == first.agent_execution_id
+    assert replay.output_artifact_id == first.output_artifact_id
+    assert replay.changed is False
+    assert len(gateway.requests) == 1
+
+
+async def test_candidate_changed_during_output_storage_cannot_advance(
+    tmp_path, workflow_session_factory
+):
+    case, command, service, _gateway, git = await _service_case(tmp_path, workflow_session_factory)
+    original = service._put
+
+    async def changed_after_put(value):
+        descriptor = await original(value)
+        if "local_commit_sha" in json.loads(value):
+            git.head = "c" * 40
+        return descriptor
+
+    service._put = changed_after_put
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        with pytest.raises(CommandRecoveryRequired):
+            await service.execute(command, work)
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        assert (await work.runs.get(case.run_id)).state is RunState.IMPLEMENTING
+        assert await work.commands.get_by_idempotency_key(f"{case.run_id}:validate:1") is None
+
+
+@pytest.mark.parametrize("mutation", ("candidate", "queue"))
+async def test_successful_replay_rejects_changed_authority(
+    tmp_path, workflow_session_factory, mutation
+):
+    case, command, service, gateway, git = await _service_case(tmp_path, workflow_session_factory)
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        await service.execute(command, work)
+    if mutation == "candidate":
+        git.head = "c" * 40
+    else:
+        async with workflow_session_factory() as session:
+            queued = await session.scalar(
+                select(RunCommand).where(RunCommand.idempotency_key == f"{case.run_id}:validate:1")
+            )
+            queued.payload = {"semantic_attempt": 2}
+            await session.commit()
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        with pytest.raises(CommandRecoveryRequired):
+            await service.execute(command, work)
+    assert len(gateway.requests) == 1
+
+
+async def test_failed_execution_replay_preserves_intervention(tmp_path, workflow_session_factory):
+    case, command, service, gateway, _git = await _service_case(tmp_path, workflow_session_factory)
+    original = gateway.execute
+
+    async def invalid_identity(request):
+        result = await original(request)
+        return result.model_copy(update={"execution_id": request.run_id})
+
+    gateway.execute = invalid_identity
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        first = await service.execute(command, work)
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        replay = await service.execute(command, work)
+        assert (await work.runs.get(case.run_id)).state is RunState.AWAITING_HUMAN_INTERVENTION
+    assert replay.agent_execution_id == first.agent_execution_id
+    assert replay.changed is False
     assert len(gateway.requests) == 1

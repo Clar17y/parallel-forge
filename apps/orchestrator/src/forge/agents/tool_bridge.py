@@ -116,10 +116,16 @@ def build_adk_tools(
 
         return await invoke(ToolName.GIT_STATUS, {}, tool_context)
 
-    async def git_diff(tool_context: ToolContext) -> dict[str, object]:
-        """Return the bounded uncommitted Git diff for the managed worktree."""
+    async def git_diff(tool_context: ToolContext, scope: str = "working_tree") -> dict[str, object]:
+        """Read working_tree changes, or candidate evidence after committing all changes.
 
-        return await invoke(ToolName.GIT_DIFF, {}, tool_context)
+        Candidate requires a clean worktree and returns the approved-base-to-HEAD
+        patch, head_sha, changed_paths and diff_digest for structured agent output.
+        Only working_tree and candidate scopes are accepted; no refs or argv.
+        """
+
+        arguments = {} if scope == "working_tree" else {"scope": scope}
+        return await invoke(ToolName.GIT_DIFF, arguments, tool_context)
 
     async def git_commit(message: str, tool_context: ToolContext) -> dict[str, object]:
         """Create one controlled commit with a bounded commit message."""

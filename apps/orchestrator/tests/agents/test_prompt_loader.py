@@ -99,7 +99,7 @@ class TestRepositoryPrompts:
     def test_load_all_repository_roles(self, repo_loader: PromptLoader, role: AgentRole) -> None:
         loaded = repo_loader.load(role)
         assert loaded.role is role
-        assert loaded.version == "1"
+        assert loaded.version == ("2" if role is AgentRole.DEVELOPER else "1")
         assert len(loaded.instruction) > 0
         assert len(loaded.instruction.encode("utf-8")) <= 10_000
         assert loaded.digest == hashlib.sha256(loaded.instruction.encode("utf-8")).hexdigest()

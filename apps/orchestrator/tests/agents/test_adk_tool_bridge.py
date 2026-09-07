@@ -187,6 +187,16 @@ def test_all_roles_strictly_match_capability_matrix() -> None:
         assert tool_enum_set == matrix.capabilities_for(role)
 
 
+def test_git_diff_bridge_selects_candidate_without_exposing_refs() -> None:
+    service = _RecordingControlledToolService()
+    tools = {t.name: t for t in build_adk_tools(service, _context(role=AgentRole.DEVELOPER))}
+    diff = tools[ToolName.GIT_DIFF.value]
+    asyncio.run(diff.func(tool_context=_sdk_context(), scope="candidate"))
+    assert service.requests[-1].arguments == {"scope": "candidate"}
+    asyncio.run(diff.func(tool_context=_sdk_context()))
+    assert service.requests[-1].arguments == {}
+
+
 def test_cannot_override_forge_identity_via_tool_invocation() -> None:
     """Invoking a bridge function retains Forge authorization context identity."""
     service = _RecordingControlledToolService()

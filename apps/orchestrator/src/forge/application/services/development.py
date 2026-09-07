@@ -39,6 +39,7 @@ from forge.application.services.approved_plan import (
     ApprovedPlanError,
     ApprovedPlanLoader,
 )
+from forge.application.services.developer_result import verify_developer_output
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
     AgentBudget,
@@ -103,6 +104,9 @@ class DevelopmentService:
             uuid5(_STEP_NAMESPACE, str(command.id)),
             uuid5(_EXECUTION_NAMESPACE, str(command.id)),
         )
+        replay = await self._replay(command, work, step_id, execution_id)
+        if replay is not None:
+            return replay
         approved = await self._load_current(command, work)
         worktree, git = self._worktree(approved)
         # Do not retain database locks while reading untrusted repository files.
@@ -208,10 +212,7 @@ class DevelopmentService:
                 None,
                 reason or "developer_output_invalid",
             )
-        # Developer result evidence is independently checked by the dedicated helper when wired.
         try:
-            from forge.application.services.developer_result import verify_developer_output
-
             verification = await verify_developer_output(
                 output, git=git, worktree=worktree, approved_plan=approved.plan
             )
@@ -244,7 +245,84 @@ class DevelopmentService:
             attempts,
             descriptor,
             "",
+            verified_output=output,
         )
+
+    async def _replay(
+        self, command: CommandEnvelope, work: UnitOfWork, step_id: UUID, execution_id: UUID
+    ) -> ExecutionOutcome | None:
+        await self._fence(command, work)
+        outcome = await work.executions.get_outcome(command.run_id, "implement", 1)
+        if outcome is None:
+            return None
+        approved = await self._approved.load(work, command.run_id)
+        succeeded = outcome.finish_status is AgentFinishStatus.SUCCEEDED
+        target = RunState.VALIDATING if succeeded else RunState.AWAITING_HUMAN_INTERVENTION
+        if (
+            command.actor_id != approved.approval_actor_id
+            or outcome.agent_execution_id != execution_id
+            or outcome.step_id != step_id
+            or outcome.role is not AgentRole.DEVELOPER
+            or outcome.provider != approved.policy.developer_model.provider
+            or outcome.model != approved.policy.developer_model.model
+            or approved.run.state is not target
+            or approved.run.version != command.expected_run_version + 1
+        ):
+            raise DevelopmentRecoveryRequired("implementation replay authority differs")
+        event_type = "run.implementation_completed" if succeeded else "run.intervention_required"
+        events = [
+            event
+            for event in await work.events.list_after(command.run_id, 0)
+            if event.event_type == event_type
+            and event.payload.get("execution_id") == str(execution_id)
+        ]
+        if (
+            len(events) != 1
+            or events[0].run_version != approved.run.version
+            or events[0].actor_class != "worker"
+            or events[0].actor_id is not None
+            or events[0].payload.get("command_id") != str(command.id)
+            or events[0].payload.get("approval_id") != str(approved.approval_id)
+        ):
+            raise DevelopmentRecoveryRequired("implementation replay evidence differs")
+        if succeeded:
+            artifacts = await work.artifacts.get_by_producer(
+                run_id=command.run_id, producer_type="developer_result", producer_id=execution_id
+            )
+            if len(artifacts) != 1 or artifacts[0].artifact_id != outcome.output_artifact_id:
+                raise DevelopmentRecoveryRequired("implementation replay output differs")
+            descriptor = artifacts[0]
+            wire = await self._store.open_bytes(descriptor.digest)
+            output = DeveloperOutput.model_validate_json(wire)
+            if (
+                descriptor.media_type != "application/json"
+                or hashlib.sha256(wire).hexdigest() != descriptor.digest
+                or wire != self._json(output.model_dump(mode="json"))
+            ):
+                raise DevelopmentRecoveryRequired("implementation replay output differs")
+            worktree, git = self._worktree(approved)
+            verified = await verify_developer_output(
+                output, git=git, worktree=worktree, approved_plan=approved.plan
+            )
+            if not verified.accepted:
+                raise DevelopmentRecoveryRequired("implementation replay candidate differs")
+            queued = await work.commands.get_by_idempotency_key(f"{command.run_id}:validate:1")
+            if (
+                queued is None
+                or queued.command_type != "validate"
+                or queued.status is not CommandStatus.PENDING
+                or queued.payload != {"semantic_attempt": 1}
+                or type(queued.payload.get("semantic_attempt")) is not int
+                or queued.payload_schema_version != 1
+                or queued.actor_id != approved.approval_actor_id
+                or queued.expected_run_version != approved.run.version
+                or events[0].payload.get("queued_command_id") != str(queued.id)
+                or events[0].payload.get("output_artifact_id") != str(outcome.output_artifact_id)
+            ):
+                raise DevelopmentRecoveryRequired("implementation replay queue differs")
+        await self._fence(command, work)
+        await work.commit()
+        return outcome
 
     async def _load_current(self, command: CommandEnvelope, work: UnitOfWork) -> ApprovedPlan:
         await self._fence(command, work)
@@ -322,8 +400,9 @@ class DevelopmentService:
         step_id: UUID,
     ) -> None:
         current = await self._load_current(command, work)
-        if current.approval_id != approved.approval_id:
+        if current.approval_id != approved.approval_id or current.run != approved.run:
             raise DevelopmentRecoveryRequired("implementation approval changed")
+        self._worktree(current)
         try:
             expected = await work.executions.next_attempt(command.run_id, "implement")
         except ExecutionUnsettledError:
@@ -365,12 +444,14 @@ class DevelopmentService:
         attempts: tuple[UsageRecord, ...],
         output: ArtifactDescriptor | None,
         reason: str,
+        *,
+        verified_output: DeveloperOutput | None = None,
     ) -> ExecutionOutcome:
         usage = safe_usage(usage, request)
         attempts = safe_usage_attempts(usage, attempts, request)
         try:
             current = await self._load_current(command, work)
-            if current.approval_id != approved.approval_id:
+            if current.approval_id != approved.approval_id or current.run != approved.run:
                 raise DevelopmentRecoveryRequired("implementation approval changed")
             for attempt in attempts:
                 d = await self._put(usage_attempts_bytes((attempt,)))
@@ -389,6 +470,16 @@ class DevelopmentService:
                     producer_id=request.execution_id,
                 )
                 output_id = output.artifact_id
+            if finish is AgentFinishStatus.SUCCEEDED:
+                if verified_output is None:
+                    raise DevelopmentRecoveryRequired("implementation output is absent")
+                worktree, git = self._worktree(current)
+                verified = await verify_developer_output(
+                    verified_output, git=git, worktree=worktree, approved_plan=current.plan
+                )
+                if not verified.accepted:
+                    raise DevelopmentRecoveryRequired("implementation candidate changed")
+            await self._fence(command, work)
             outcome = await work.executions.finalize(
                 command.run_id,
                 step_id,
@@ -422,6 +513,7 @@ class DevelopmentService:
                     "run.implementation_completed",
                     {
                         "command_id": str(command.id),
+                        "approval_id": str(approved.approval_id),
                         "execution_id": str(request.execution_id),
                         "output_artifact_id": str(output_id),
                         "queued_command_id": str(queued.id),
@@ -433,7 +525,12 @@ class DevelopmentService:
                     run.id,
                     run.version,
                     "run.intervention_required",
-                    {"reason": reason, "execution_id": str(request.execution_id)},
+                    {
+                        "reason": reason,
+                        "execution_id": str(request.execution_id),
+                        "command_id": str(command.id),
+                        "approval_id": str(approved.approval_id),
+                    },
                     actor_class="worker",
                 )
             await work.commit()
