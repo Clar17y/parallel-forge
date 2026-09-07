@@ -248,10 +248,15 @@ def managed_case(tmp_path: Path) -> tuple[ControlledGit, ManagedWorktree, Projec
     return controlled, worktree, policy, process
 
 
+@pytest.mark.parametrize("committed", [False, True])
 def test_bound_runner_uses_exact_managed_worktree_cwd(
     managed_case: tuple[ControlledGit, ManagedWorktree, ProjectPolicy, _Process],
+    committed: bool,
 ) -> None:
     controlled, worktree, policy, process = managed_case
+    if committed:
+        (worktree.path / "README.md").write_text("changed\n", encoding="utf-8")
+        controlled.commit(worktree, "Change README")
     runner = WorktreeRunnerFactory(
         controlled,
         process_runner=process,
@@ -266,6 +271,37 @@ def test_bound_runner_uses_exact_managed_worktree_cwd(
     assert terminal.result.exit_code == 0
     assert process.calls[0][1]["cwd"] == worktree.path
     assert str(worktree.path) not in repr(runner)
+
+
+def test_writer_can_repair_a_committed_candidate_without_relaxing_environment_capability(
+    managed_case,
+) -> None:
+    from forge.tools.git import ControlledGitError
+    from forge.tools.repository_writer import WorktreeRepositoryWriter
+
+    controlled, worktree, policy, _ = managed_case
+    (worktree.path / "README.md").write_text("first change\n", encoding="utf-8")
+    controlled.commit(worktree, "First change")
+    writer = WorktreeRepositoryWriter(controlled, worktree, policy)
+    result = writer.write_file("README.md", "repaired\n")
+    assert writer.inspect_file("README.md", result.output_digest) is not None
+    assert (worktree.path / "README.md").read_text() == "repaired\n"
+    with pytest.raises(ControlledGitError), controlled.open_worktree_capability(worktree, policy):
+        pytest.fail("environment capability must still require the base commit")
+
+
+def test_operational_capability_rejects_head_changes_during_its_lifetime(managed_case) -> None:
+    from forge.tools.git import ControlledGitError
+
+    controlled, worktree, policy, _ = managed_case
+    with (
+        pytest.raises(ControlledGitError),
+        controlled.open_worktree_capability(
+            worktree, policy, allow_committed_changes=True
+        ) as capability,
+    ):
+        _git(worktree.path, "commit", "--allow-empty", "-m", "External candidate change")
+        capability.revalidate()
 
 
 def test_bound_docker_runner_uses_one_capability_mount_and_ownership_label(

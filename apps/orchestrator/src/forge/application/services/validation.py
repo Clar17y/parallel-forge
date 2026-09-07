@@ -47,7 +47,7 @@ from forge.domain.operation import OperationIntent, OperationOutcome, OperationS
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
-from forge.domain.validation import command_spec_digest
+from forge.domain.validation import command_spec_digest, effective_network_enabled
 
 
 class ValidationError(RuntimeError):
@@ -448,7 +448,8 @@ class ValidationService:
                 or result.command_digest != command_spec_digest(command)
                 or result.policy_version != policy.version
                 or result.runner_mode is not policy.runner_mode
-                or result.network_enabled != command.network_enabled
+                or result.network_enabled
+                != effective_network_enabled(policy.runner_mode, command.network_enabled)
                 or result.unsandboxed is not (policy.runner_mode is RunnerMode.TRUSTED_HOST)
             ):
                 raise ValidationError("validation result does not match policy")

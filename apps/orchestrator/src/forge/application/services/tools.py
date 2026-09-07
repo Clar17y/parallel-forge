@@ -2936,7 +2936,13 @@ def _record_metadata(
     thawed = thaw_payload(result.metadata)
     if not isinstance(thawed, Mapping):
         raise TypeError("tool result metadata is not an object")
-    metadata: dict[str, object] = dict(thawed)
+    # Evidence describes the producing controller/reviewer step, whereas audit
+    # lineage identifies this tool's consuming execution. Keep both identities.
+    metadata: dict[str, object] = (
+        {"evidence": dict(thawed)}
+        if result.tool_name in {ToolName.VALIDATION_RESULTS_READ, ToolName.REVIEW_ARTIFACTS_READ}
+        else dict(thawed)
+    )
     metadata["result_status"] = result.status.value
     metadata["authorized"] = authorized
     metadata["started_at"] = started_at.isoformat()

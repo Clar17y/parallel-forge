@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 
-from forge.domain.policy import CommandSpec
+from forge.domain.policy import CommandSpec, RunnerMode
 
 _DIGEST = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
 _IMAGE_REPOSITORY = re.compile(r"\A[a-z0-9][a-z0-9._:/-]*\Z", re.ASCII)
@@ -66,6 +66,14 @@ def command_spec_digest(spec: CommandSpec) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def effective_network_enabled(mode: RunnerMode, requested: bool) -> bool:
+    """Return the network capability a runner can truthfully report."""
+
+    if not isinstance(mode, RunnerMode) or not isinstance(requested, bool):
+        raise TypeError("runner network capability requires a mode and bool")
+    return mode is RunnerMode.TRUSTED_HOST or requested
+
+
 def require_evidence_digest(value: str, field_name: str) -> str:
     """Validate one canonical lower-case SHA-256 evidence digest."""
 
@@ -77,6 +85,7 @@ def require_evidence_digest(value: str, field_name: str) -> str:
 __all__ = [
     "UnknownNamedCommand",
     "command_spec_digest",
+    "effective_network_enabled",
     "require_evidence_digest",
     "runner_image_digest",
     "validate_runner_image_reference",

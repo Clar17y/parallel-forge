@@ -62,7 +62,9 @@ async def _case(session_factory, persisted_run, tmp_path, *, exit_code=None, tim
             stderr_digest=outputs[1].digest,
             runner_mode=RunnerMode.TRUSTED_HOST,
             image_digest=None,
-            network_enabled=False,
+            # Trusted-host execution cannot contain network access, so its
+            # evidence must report the effective capability truthfully.
+            network_enabled=True,
             stdout_original_byte_count=6,
             stderr_original_byte_count=6,
             stdout_truncated=False,
@@ -149,6 +151,28 @@ async def test_check_outcomes_and_controller_completion_are_atomic(
         assert (
             await work.evidence.get_by_id(evidence_id, run_id=persisted_run.id)
         ).step_id == step_id
+
+
+async def test_trusted_host_false_network_evidence_is_rejected(
+    session_factory, persisted_run, tmp_path
+):
+    store, policy, step_id, result_id, result = await _case(
+        session_factory, persisted_run, tmp_path, exit_code=0, timed_out=False
+    )
+    terminal = CommandTerminalResult(
+        result=replace(result, network_enabled=False), caller_cancelled=False
+    )
+    async with PostgresUnitOfWork(session_factory) as work:
+        with pytest.raises(ValidationError, match="does not match policy"):
+            await ValidationService(store).publish(
+                work,
+                run_id=persisted_run.id,
+                step_id=step_id,
+                evidence_set_id=uuid4(),
+                policy=policy,
+                head_sha="a" * 40,
+                results=((result_id, terminal),),
+            )
 
 
 @pytest.mark.parametrize("mutation", ("missing", "duplicate", "changed_result", "foreign_producer"))

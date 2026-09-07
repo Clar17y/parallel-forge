@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from forge.application.ports.worktrees import GitCandidateDiff, GitDiff, ManagedWorktree
+from forge.application.ports.worktrees import (
+    GitCandidateDiff,
+    GitCandidateFile,
+    GitDiff,
+    ManagedWorktree,
+)
 from forge.application.services.developer_result import DeveloperResultVerifier
 from forge.domain.agent import DeveloperOutput
 from forge.domain.plan import PlanOutput
@@ -42,6 +48,14 @@ class FakeGit:
             head_sha=self.head_sha(worktree),
             diff=diff,
             changed_paths=(path,),
+        )
+
+    def candidate_file(self, worktree: ManagedWorktree, path: str) -> GitCandidateFile:
+        return GitCandidateFile(
+            path=path,
+            head_sha=self.head_sha(worktree),
+            base_content=b"[project]\ndependencies = []\n",
+            head_content=b'[project]\ndependencies = ["demo==1"]\n',
         )
 
 
@@ -127,14 +141,51 @@ async def test_rejects_path_mismatch_and_plan_deviation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reports_dependency_authorization_limitation_without_guessing() -> None:
+async def test_requires_exact_approved_dependency_declaration() -> None:
     diff = "diff --git a/pyproject.toml b/pyproject.toml\n+change\n"
     result = await DeveloperResultVerifier().verify(
         _output(paths=("pyproject.toml",)), _plan(), FakeGit(diff), _worktree()
     )
 
+    assert result.accepted is False
+    assert result.intervention_reason == "undeclared_dependency_change"
+
+    result = await DeveloperResultVerifier().verify(
+        _output(paths=("pyproject.toml",)),
+        _plan(
+            dependencies=(
+                'dependency:v1:{"after":"demo==1","before":null,"group":"project.dependencies","package":"demo","path":"pyproject.toml"}',
+            )
+        ),
+        FakeGit(diff),
+        _worktree(),
+    )
     assert result.accepted is True
-    assert result.dependency_authorization_limitation is not None
+    assert result.dependency_authorization_limitation is None
+
+
+@pytest.mark.parametrize("path", ["apps/web/Package.json", "requirements-prod.txt"])
+async def test_ambiguous_or_unsupported_manifest_names_intervene(path: str) -> None:
+    diff = f"diff --git a/{path} b/{path}\n+change\n"
+    result = await DeveloperResultVerifier().verify(
+        _output(paths=(path,)), _plan(), FakeGit(diff), _worktree()
+    )
+    assert not result.accepted
+
+
+async def test_candidate_manifest_must_match_the_requested_path() -> None:
+    class SubstitutedGit(FakeGit):
+        def candidate_file(self, worktree, path):
+            snapshot = super().candidate_file(worktree, path)
+            return replace(
+                snapshot, path="other/pyproject.toml", head_content=snapshot.base_content
+            )
+
+    diff = "diff --git a/pyproject.toml b/pyproject.toml\n+change\n"
+    result = await DeveloperResultVerifier().verify(
+        _output(paths=("pyproject.toml",)), _plan(), SubstitutedGit(diff), _worktree()
+    )
+    assert not result.accepted
 
 
 @pytest.mark.asyncio

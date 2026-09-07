@@ -98,7 +98,7 @@ async def test_evidence_tool_uses_live_head_and_caller_context_scope(tmp_path: P
         head_sha=_LIVE_HEAD,
     )
     reader = _Reader(manifest)
-    service, _, git = _review_service(tmp_path, reader)
+    service, work, git = _review_service(tmp_path, reader)
     context = _context(role=AgentRole.REVIEWER, worktree_id=_WORKTREE_ID)
 
     result = await service.invoke(
@@ -108,6 +108,9 @@ async def test_evidence_tool_uses_live_head_and_caller_context_scope(tmp_path: P
     assert result.status is ToolCallStatus.SUCCEEDED
     assert result.metadata["head_sha"] == _LIVE_HEAD
     assert result.artifact_digests
+    recorded = work.tool_calls.records[-1]
+    assert recorded.step_id == context.step_id
+    assert recorded.result_metadata["evidence"]["step_id"] == str(manifest.step_id)
     assert reader.scopes == [
         (
             EvidenceInputPurpose.VALIDATION_RESULTS,

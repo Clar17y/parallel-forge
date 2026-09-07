@@ -261,7 +261,16 @@ def test_compose_worker_handlers_production_construction(tmp_path: Path) -> None
         session_factory=object(),  # type: ignore[arg-type]
     )
 
-    assert set(handlers) == {"start_planning", "approve_plan", "request_plan_revision"}
+    assert set(handlers) == {
+        "start_planning",
+        "approve_plan",
+        "request_plan_revision",
+        "prepare_worktree",
+        "implement",
+        "remediate",
+        "validate",
+        "review",
+    }
     assert isinstance(handlers["start_planning"], PlanningHandler)
     assert isinstance(handlers["approve_plan"], ApprovePlanHandler)
     assert isinstance(handlers["request_plan_revision"], RequestPlanRevisionHandler)

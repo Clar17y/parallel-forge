@@ -58,7 +58,9 @@ class WorktreeRepositoryWriter:
         failed = False
         result: tuple[str | None, str, int, str] | None = None
         try:
-            with self._git.open_worktree_capability(self._worktree, self._policy) as capability:
+            with self._git.open_worktree_capability(
+                self._worktree, self._policy, allow_committed_changes=True
+            ) as capability:
                 result = capability.write_repository_file(
                     path,
                     encoded,
@@ -92,6 +94,7 @@ class WorktreeRepositoryWriter:
                 self._worktree,
                 self._policy,
                 read_only=True,
+                allow_committed_changes=True,
             ) as capability:
                 result = capability.inspect_repository_file(
                     path,

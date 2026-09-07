@@ -128,6 +128,25 @@ class GitCandidateDiff:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class GitCandidateFile:
+    """Bounded base/HEAD regular-file contents tied to one candidate HEAD."""
+
+    path: str
+    head_sha: str
+    base_content: bytes | None
+    head_content: bytes | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError("candidate file path is invalid")
+        if not isinstance(self.head_sha, str) or _SHA.fullmatch(self.head_sha) is None:
+            raise ValueError("candidate file HEAD SHA is invalid")
+        for value in (self.base_content, self.head_content):
+            if value is not None and not isinstance(value, bytes):
+                raise TypeError("candidate file content must be bytes or None")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class GitCommit:
     """The verified parent and result of one controlled local commit."""
 
@@ -218,6 +237,8 @@ class ControlledGitPort(Protocol):
 
     def candidate_diff(self, worktree: ManagedWorktree) -> GitCandidateDiff: ...
 
+    def candidate_file(self, worktree: ManagedWorktree, path: str) -> GitCandidateFile: ...
+
     def branch_exists(self, worktree: ManagedWorktree) -> bool: ...
 
     def current_branch(self, worktree: ManagedWorktree) -> str: ...
@@ -238,7 +259,14 @@ class ControlledGitPort(Protocol):
         self, worktree: ManagedWorktree, prepared: PreparedGitCommit
     ) -> PublishedGitCommit | None: ...
 
-    def open_worktree_capability(self, worktree: ManagedWorktree, policy: ProjectPolicy) -> Any: ...
+    def open_worktree_capability(
+        self,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+        *,
+        read_only: bool = False,
+        allow_committed_changes: bool = False,
+    ) -> Any: ...
 
 
 @runtime_checkable
@@ -522,6 +550,7 @@ __all__ = [
     "EnvironmentStagingPlan",
     "EnvironmentStagingPort",
     "GitCandidateDiff",
+    "GitCandidateFile",
     "GitCommit",
     "GitCommitResult",
     "GitDiff",

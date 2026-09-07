@@ -42,7 +42,7 @@ from forge.domain.operation import (
     canonical_digest,
 )
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode
-from forge.domain.validation import command_spec_digest
+from forge.domain.validation import command_spec_digest, effective_network_enabled
 
 NAMED_CHECK_KIND: Final = "named_check"
 _STREAMS: Final[tuple[Literal["stdout", "stderr"], ...]] = ("stdout", "stderr")
@@ -397,7 +397,8 @@ class NamedCheckOperationAdapter(OperationAdapter):
             or result.command_digest != command_spec_digest(command)
             or result.policy_version != values["policy_version"]
             or result.runner_mode is not self._policy.runner_mode
-            or result.network_enabled != command.network_enabled
+            or result.network_enabled
+            != effective_network_enabled(self._policy.runner_mode, command.network_enabled)
             or result.unsandboxed is not (self._policy.runner_mode is RunnerMode.TRUSTED_HOST)
         ):
             raise NamedCheckOperationError("named check result is not admitted")

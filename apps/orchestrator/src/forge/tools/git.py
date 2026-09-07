@@ -16,6 +16,7 @@ from forge.application.ports.worktrees import (
     EnvironmentStagingInspection,
     EnvironmentStagingPlan,
     GitCandidateDiff,
+    GitCandidateFile,
     GitCommit,
     GitDiff,
     GitStatus,
@@ -23,7 +24,7 @@ from forge.application.ports.worktrees import (
     PreparedGitCommit,
     PublishedGitCommit,
 )
-from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS
+from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS, normalize_policy_path
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.paths import CanonicalRoot
@@ -64,7 +65,16 @@ _CAPABILITY_SEAL = object()
 class WorktreeCapability:
     """Opaque owner-sealed operations for one retained managed worktree."""
 
-    __slots__ = ("_access", "_git", "_live", "_owner", "_policy", "_sealed", "_worktree")
+    __slots__ = (
+        "_access",
+        "_git",
+        "_head_sha",
+        "_live",
+        "_owner",
+        "_policy",
+        "_sealed",
+        "_worktree",
+    )
 
     def __init__(
         self,
@@ -75,12 +85,14 @@ class WorktreeCapability:
         worktree: ManagedWorktree,
         policy: ProjectPolicy,
         access: object,
+        head_sha: str | None = None,
     ) -> None:
         if seal is not _CAPABILITY_SEAL:
             raise TypeError("worktree capability is internal")
         self._owner = owner
         self._git = git
         self._worktree = worktree
+        self._head_sha = worktree.base_sha if head_sha is None else head_sha
         self._policy = policy
         self._access = access
         self._live = True
@@ -133,7 +145,7 @@ class WorktreeCapability:
             raise ControlledGitError()
         git._repository._verify_directory_access(access.normalized, access)
         git._validate_handle(worktree)
-        if git._head_sha(worktree) != worktree.base_sha:
+        if git._head_sha(worktree) != object.__getattribute__(self, "_head_sha"):
             raise ControlledGitError()
         git._verify_ancestor_sha(worktree, worktree.base_sha)
 
@@ -678,6 +690,69 @@ class ControlledGit:
             changed_paths=tuple(names),
         )
 
+    def candidate_file(self, worktree: ManagedWorktree, path: str) -> GitCandidateFile:
+        """Read one regular UTF-8 file at the approved base and pinned HEAD."""
+
+        self._validate_handle(worktree)
+        try:
+            path = normalize_policy_path(path)
+        except TypeError, ValueError:
+            raise ControlledGitError()
+        self._scan_local_config(worktree.path)
+        self._verify_current_branch(worktree)
+        status = self.status(worktree)
+        if status.truncated or any(
+            entry and not entry.startswith("##") for entry in status.text.split("\x00")
+        ):
+            raise ControlledGitError()
+        before = self._head_sha(worktree)
+        if not self._has_ancestor(worktree, worktree.base_sha):
+            raise ControlledGitError()
+
+        def read_blob(revision: str) -> bytes | None:
+            tree = self._run(
+                worktree.path,
+                ("ls-tree", "-z", revision, "--", path),
+                allow_return_codes=(0, 1),
+            )
+            _require_complete_result(tree)
+            if tree.return_code == 1:
+                return None
+            raw = tree.stdout
+            if not raw:
+                return None
+            if not raw.endswith("\x00"):
+                raise ControlledGitError()
+            entries = raw[:-1].split("\x00")
+            if len(entries) != 1 or "\t" not in entries[0]:
+                raise ControlledGitError()
+            mode_type, listed_path = entries[0].split("\t", 1)
+            fields = mode_type.split(" ")
+            if len(fields) != 3 or fields[1] != "blob" or listed_path != path:
+                raise ControlledGitError()
+            if fields[0] not in {"100644", "100755"}:
+                raise ControlledGitError()
+            shown = self._run(worktree.path, ("show", f"{revision}:{path}", "--"))
+            _require_complete_result(shown)
+            return shown.stdout.encode("utf-8")
+
+        base_content = read_blob(worktree.base_sha)
+        head_content = read_blob(before)
+        after = self._head_sha(worktree)
+        if after != before:
+            raise ControlledGitError()
+        final = self.status(worktree)
+        if final.truncated or any(
+            entry and not entry.startswith("##") for entry in final.text.split("\x00")
+        ):
+            raise ControlledGitError()
+        return GitCandidateFile(
+            path=path,
+            head_sha=before,
+            base_content=base_content,
+            head_content=head_content,
+        )
+
     def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit:
         """Compatibility composition of preparation and publication.
 
@@ -811,12 +886,19 @@ class ControlledGit:
 
     @contextlib.contextmanager
     def open_worktree_capability(
-        self, worktree: ManagedWorktree, policy: ProjectPolicy, *, read_only: bool = False
+        self,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+        *,
+        read_only: bool = False,
+        allow_committed_changes: bool = False,
     ) -> Iterator[WorktreeCapability]:
-        """Retain one exact Git registration and target for environment staging."""
+        """Retain registration and a fixed HEAD; staging defaults to the base."""
 
         caller_failed = False
         try:
+            if type(allow_committed_changes) is not bool:
+                raise ControlledGitError()
             if not isinstance(policy, ProjectPolicy):
                 raise ControlledGitError()
             if worktree.identity.project_id != policy.id:
@@ -844,6 +926,9 @@ class ControlledGit:
                     worktree=worktree,
                     policy=policy,
                     access=access,
+                    head_sha=self._head_sha(worktree)
+                    if allow_committed_changes
+                    else worktree.base_sha,
                 )
                 operation_failed = False
                 try:

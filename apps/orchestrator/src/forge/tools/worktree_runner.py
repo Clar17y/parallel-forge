@@ -71,7 +71,9 @@ class WorktreeBoundRunner(RunnerPort, TerminalRunnerPort):
         try:
             if not isinstance(request, RunCommandRequest):
                 raise RunnerExecutionError()
-            with self._git.open_worktree_capability(self._worktree, self._policy) as capability:
+            with self._git.open_worktree_capability(
+                self._worktree, self._policy, allow_committed_changes=True
+            ) as capability:
                 capability.revalidate()
                 if self._policy.runner_mode is RunnerMode.DOCKER:
                     terminal = await cast(DockerRunner, self._delegate)._run_terminal_at(

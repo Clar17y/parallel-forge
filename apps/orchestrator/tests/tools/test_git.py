@@ -578,6 +578,55 @@ def test_candidate_diff_includes_rename_paths(tmp_path: Path) -> None:
     assert candidate.changed_paths == ("README.md", "new name.txt")
 
 
+def test_candidate_file_reads_approved_base_and_head_regular_blob(tmp_path: Path) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    (handle.path / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['demo==1']\n", encoding="utf-8"
+    )
+    _git(handle.path, "add", "pyproject.toml")
+    _git(handle.path, "commit", "-m", "candidate")
+    controlled = _controlled(repository, tmp_path / "state")
+
+    snapshot = controlled.candidate_file(handle, "pyproject.toml")
+
+    assert snapshot.head_sha == controlled.head_sha(handle)
+    assert snapshot.base_content is None
+    assert snapshot.head_content in {
+        b"[project]\ndependencies = ['demo==1']\n",
+        b"[project]\r\ndependencies = ['demo==1']\r\n",
+    }
+
+
+@pytest.mark.parametrize("mutation", ["head", "truncated", "invalid_utf8", "symlink", "submodule"])
+def test_candidate_file_rejects_untrustworthy_blob_snapshot(tmp_path, monkeypatch, mutation):
+    repository, _, handle = _managed_repository(tmp_path)
+    (handle.path / "package.json").write_text('{"dependencies":{}}', encoding="utf-8")
+    _git(handle.path, "add", "package.json")
+    _git(handle.path, "commit", "-m", "Add candidate manifest")
+    controlled = _controlled(repository, tmp_path / "state")
+    original = controlled._run
+
+    def altered(worktree, arguments, **kwargs):
+        result = original(worktree, arguments, **kwargs)
+        if "ls-tree" in arguments and result.stdout:
+            if mutation == "symlink":
+                return replace(result, stdout=result.stdout.replace("100644 blob", "120000 blob"))
+            if mutation == "submodule":
+                return replace(result, stdout=result.stdout.replace("100644 blob", "160000 commit"))
+        if arguments[0] in {"show", "cat-file"}:
+            if mutation == "head":
+                _git(handle.path, "commit", "--allow-empty", "-m", "Late candidate")
+            elif mutation == "truncated":
+                return replace(result, stdout_truncated=True)
+            elif mutation == "invalid_utf8":
+                return replace(result, stdout='{"dependencies":{"bad":"\ufffd"}}')
+        return result
+
+    monkeypatch.setattr(controlled, "_run", altered)
+    with pytest.raises(ControlledGitError):
+        controlled.candidate_file(handle, "package.json")
+
+
 @pytest.mark.parametrize("mutation", ("dirty", "head", "truncated_names", "malformed_names"))
 def test_candidate_diff_rejects_changed_or_incomplete_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,6 +19,7 @@ from forge.application.handlers.approvals import (
     ApprovePlanHandler,
     RequestPlanRevisionHandler,
 )
+from forge.application.handlers.delivery import ReviewHandler
 from forge.application.handlers.planning import PlanningHandler
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
@@ -28,11 +29,20 @@ from forge.application.ports.provider_credentials import (
     ProviderCredentialError,
     validate_provider_secret_reference,
 )
+from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.ports.worktrees import ManagedWorktree
+from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.delivery import DeliveryService
+from forge.application.services.delivery_preparation import DeliveryPreparationService
+from forge.application.services.development import DevelopmentService
 from forge.application.services.plan_evidence import (
     PlanEvidenceValidator,
 )
 from forge.application.services.planning import PlanningService
+from forge.application.services.review import ReviewService
+from forge.application.services.review_decision import ReviewDecisionService
 from forge.application.services.tools import ControlledToolService
+from forge.application.services.validation import ValidationService
 from forge.application.services.worker import CommandHandler
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.actor import AgentRole
@@ -51,6 +61,9 @@ from forge.settings import Settings
 from forge.tools.provider_credentials import LocalProviderCredentialResolver
 from forge.tools.repository import RepositoryReader
 from forge.tools.secrets import LocalSecretStore, SecretStoreError
+from forge.worker.agent_tools import PerRequestToolProvider as _PerRequestToolProvider
+from forge.worker.bound_delivery import BoundDeliveryGateway
+from forge.worker.delivery_runtime import DeliveryRuntime
 
 
 class WorkerCompositionError(RuntimeError):
@@ -97,19 +110,6 @@ def load_pricing_catalog(path: Path | str) -> PricingCatalog:
         )
     except OSError, json.JSONDecodeError, ValueError, TypeError, KeyError:
         raise WorkerCompositionError("pricing catalog is invalid") from None
-
-
-class _PerRequestToolProvider:
-    """Synchronous source of already-authorized, closure-bound tools for one request."""
-
-    def __init__(self, bound_tools: BoundAdkTools, request: AgentRequest) -> None:
-        self._bound_tools = bound_tools
-        self._request = request
-
-    def tools_for(self, request: AgentRequest) -> BoundAdkTools:
-        if type(request) is not AgentRequest or request != self._request:
-            raise AgentGatewayError("request execution mismatch")
-        return self._bound_tools
 
 
 class BoundPlanningGateway:
@@ -245,6 +245,7 @@ def compose_worker_handlers(
     redactor: Redactor | None = None,
     clock: Clock | None = None,
     repository_inspector: LocalGitRepositoryInspector | None = None,
+    delivery_runtime: DeliveryRuntime | None = None,
 ) -> Mapping[str, CommandHandler]:
     """Compose production worker command handlers with verified dependencies."""
     shared_redactor = redactor or Redactor()
@@ -256,7 +257,11 @@ def compose_worker_handlers(
     except PromptLoadError, TypeError, OSError:
         raise WorkerCompositionError("prompt loader root is unavailable") from None
 
-    uow_factory = lambda: PostgresUnitOfWork(session_factory, redactor=shared_redactor)
+    # The concrete repositories narrow writable protocol attributes; the UoW
+    # still exposes the complete service port used by these production adapters.
+    uow_factory = lambda: cast(
+        UnitOfWork, PostgresUnitOfWork(session_factory, redactor=shared_redactor)
+    )
 
     if agent_gateway is None:
         if not settings.effective_provider_secret_reference:
@@ -294,6 +299,61 @@ def compose_worker_handlers(
     else:
         resolved_gateway = agent_gateway
 
+    delivery_dependencies = delivery_runtime or DeliveryRuntime(
+        settings, session_factory, artifact_store, shared_redactor, clock
+    )
+    delivery_gateway = resolved_gateway
+    if agent_gateway is None:
+
+        async def delivery_tools(
+            request: AgentRequest,
+            approved: ApprovedPlan,
+            tree: ManagedWorktree,
+        ) -> ControlledToolService:
+            policy = approved.policy
+            git = delivery_dependencies.git(policy)
+            developer = request.role is AgentRole.DEVELOPER
+            environment = (
+                await delivery_dependencies.environment(approved.run, policy, tree)
+                if developer
+                else {}
+            )
+            return ControlledToolService(
+                unit_of_work_factory=uow_factory,
+                artifact_store=artifact_store,
+                repository_reader=delivery_dependencies.reader(policy, tree),
+                repository_writer=(
+                    delivery_dependencies.writer(policy, tree, controlled_git=git)
+                    if developer
+                    else None
+                ),
+                controlled_git=git,
+                operation_executor=delivery_dependencies.operation_executor,
+                redactor=shared_redactor,
+                worktree=tree,
+                runner_factory=delivery_dependencies if developer else None,
+                command_environment=environment,
+            )
+
+        def delivery_provider(tools: _PerRequestToolProvider) -> AgentGateway:
+            return GoogleAdkGateway(
+                runtime=runtime,
+                prompt_loader=prompt_loader,
+                tool_provider=tools,
+                pricing_catalog=pricing_catalog,
+                supported_provider="google",
+                currency="USD",
+            )
+
+        delivery_gateway = BoundDeliveryGateway(
+            unit_of_work_factory=uow_factory,
+            artifact_store=artifact_store,
+            prompt_loader=prompt_loader,
+            git_factory=delivery_dependencies.git,
+            tool_service_factory=delivery_tools,
+            gateway_factory=delivery_provider,
+        )
+
     def make_repository_reader(policy: ProjectPolicy) -> RepositoryReader:
         return RepositoryReader(
             root=policy.repository_path,
@@ -320,10 +380,49 @@ def compose_worker_handlers(
         artifact_store, validator, clock=clock
     )
 
+    approved_plans = ApprovedPlanLoader(artifact_store)
+    preparation = DeliveryPreparationService(approved_plans, delivery_dependencies)
+    development = DevelopmentService(
+        delivery_gateway,
+        artifact_store,
+        prompt_loader,
+        approved_plans,
+        delivery_dependencies.git,
+        delivery_dependencies.reader,
+    )
+    validation = ValidationService(
+        artifact_store,
+        uow_factory=uow_factory,
+        operation_executor=delivery_dependencies.operation_executor,
+        git_factory=delivery_dependencies.git,
+        runner_factory=delivery_dependencies,
+        environment_resolver=delivery_dependencies.environment,
+        approved_plans=approved_plans,
+    )
+    delivery = DeliveryService(
+        artifact_store, validation=validation, git_factory=delivery_dependencies.git
+    )
+    review = ReviewService(
+        delivery_gateway,
+        artifact_store,
+        prompt_loader,
+        approved_plans,
+        delivery_dependencies.git,
+        delivery_dependencies.reader,
+    )
+    review_decision = ReviewDecisionService(
+        artifact_store, git_factory=delivery_dependencies.git, approved_plans=approved_plans
+    )
+
     return {
         "start_planning": start_planning_handler,
         "approve_plan": approve_plan_handler,
         "request_plan_revision": request_plan_revision_handler,
+        "prepare_worktree": preparation.execute,
+        "implement": development.execute,
+        "remediate": development.execute,
+        "validate": delivery.validate,
+        "review": ReviewHandler(review, review_decision),
     }
 
 

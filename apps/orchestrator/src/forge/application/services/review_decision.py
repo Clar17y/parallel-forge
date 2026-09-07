@@ -35,7 +35,7 @@ from forge.domain.evidence import (
 from forge.domain.policy import ProjectPolicy, RunnerMode
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
-from forge.domain.validation import command_spec_digest
+from forge.domain.validation import command_spec_digest, effective_network_enabled
 
 
 class ReviewDecisionRecoveryRequired(CommandRecoveryRequired):
@@ -309,7 +309,8 @@ class ReviewDecisionService:
                 or result.command_digest != member.command_digest
                 or result.policy_version != approved.policy.version
                 or result.runner_mode is not approved.policy.runner_mode
-                or result.network_enabled != spec.network_enabled
+                or result.network_enabled
+                != effective_network_enabled(approved.policy.runner_mode, spec.network_enabled)
                 or result.unsandboxed
                 is not (approved.policy.runner_mode is RunnerMode.TRUSTED_HOST)
                 or result.stdout_digest != member.stdout_digest

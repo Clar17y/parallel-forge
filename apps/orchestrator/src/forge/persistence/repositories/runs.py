@@ -538,6 +538,67 @@ class PostgresRunRepository:
             raise
         return changed
 
+    async def bind_preparation_branch(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        branch_name: str,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        """Bind a branch before any worktree resource can be created."""
+
+        if not branch_name.strip() or len(branch_name) > 512:
+            raise PersistenceError("preparation branch name is invalid")
+        try:
+            result = await self._session.execute(
+                select(Run).where(Run.id == run_id).with_for_update()
+            )
+            record = result.scalar_one_or_none()
+            if record is None:
+                raise RunNotFound(run_id)
+            if record.version != expected_version:
+                raise ConcurrencyConflict(run_id, expected_version, record.version)
+            current = _snapshot_from_record(record)
+            if current.state is not RunState.PREPARING_WORKTREE:
+                raise PersistenceError("preparation branch requires worktree preparation state")
+            if current.branch_name is not None:
+                raise PersistenceError("preparation branch is already bound")
+            if (
+                current.worktree_path is not None
+                or current.database_state is not ResourceState.DISABLED
+                or current.database_name is not None
+                or current.database_role is not None
+                or current.secret_id is not None
+            ):
+                raise PersistenceError("preparation branch requires no resource effects")
+            changed = replace(current, branch_name=branch_name, version=current.version + 1)
+            if self._events is None:
+                raise PersistenceError("run repository is not bound to an event repository")
+            _apply_snapshot(record, changed)
+            await self._events.append(
+                RunEvent(
+                    run_id=run_id,
+                    run_version=changed.version,
+                    event_type=event_type,
+                    payload=event_payload,
+                    actor_class=actor_class,
+                    actor_id=actor_id,
+                    payload_schema_version=payload_schema_version,
+                    occurred_at=occurred_at or _utc_now(),
+                )
+            )
+            await self._session.flush()
+        except BaseException:
+            await self._session.rollback()
+            raise
+        return changed
+
 
 def _validate_new_snapshot(run: RunSnapshot) -> None:
     """Reject any input that is not an untouched new run."""
@@ -757,6 +818,7 @@ def _apply_snapshot(record: Run, snapshot: RunSnapshot) -> None:
     record.local_remediation_count = snapshot.local_remediation_count
     record.remote_remediation_count = snapshot.remote_remediation_count
     record.worktree_path = snapshot.worktree_path
+    record.branch_name = snapshot.branch_name
     record.database_state = snapshot.database_state.value
     record.database_name = snapshot.database_name
     record.database_role = snapshot.database_role

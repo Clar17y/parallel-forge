@@ -9,7 +9,14 @@ from typing import Protocol
 from forge.application.ports.worktrees import (
     ControlledGitPort,
     GitCandidateDiff,
+    GitCandidateFile,
     ManagedWorktree,
+)
+from forge.application.services.dependency_scope import (
+    DependencyDelta,
+    DependencyScopeError,
+    dependency_deltas,
+    verify_dependency_declarations,
 )
 from forge.domain.agent import DeveloperOutput
 from forge.domain.plan import PlanOutput
@@ -33,6 +40,8 @@ class DeveloperResultVerification:
 
 class _GitReadPort(Protocol):
     def candidate_diff(self, worktree: ManagedWorktree) -> GitCandidateDiff: ...
+
+    def candidate_file(self, worktree: ManagedWorktree, path: str) -> GitCandidateFile: ...
 
 
 class DeveloperResultVerifier:
@@ -85,10 +94,70 @@ class DeveloperResultVerifier:
                 False, "plan_deviation_reported", head_sha, actual_digest, paths
             )
 
-        # PlanOutput stores dependency descriptions, but no authorized path or
-        # package identity. Keep this limitation explicit for the orchestrator.
-        limitation = "dependency authorization is not represented by the PlanOutput contract"
-        return DeveloperResultVerification(True, None, head_sha, actual_digest, paths, limitation)
+        dependency_paths = _dependency_paths(paths)
+        unsupported = _unsupported_dependency_path(paths)
+        if unsupported is not None:
+            return DeveloperResultVerification(False, unsupported, head_sha, actual_digest, paths)
+        deltas: list[DependencyDelta] = []
+        for path in dependency_paths:
+            try:
+                snapshot = git.candidate_file(worktree, path)
+                if snapshot.path != path or snapshot.head_sha != head_sha:
+                    return DeveloperResultVerification(
+                        False, "candidate_file_head_drifted", head_sha, actual_digest, paths
+                    )
+                deltas.extend(dependency_deltas(snapshot))
+            except DependencyScopeError:
+                return DeveloperResultVerification(
+                    False,
+                    "dependency_manifest_is_unsupported_or_ambiguous",
+                    head_sha,
+                    actual_digest,
+                    paths,
+                )
+        dependency_reason = verify_dependency_declarations(tuple(deltas), plan.dependency_changes)
+        if dependency_reason is not None:
+            return DeveloperResultVerification(
+                False, dependency_reason, head_sha, actual_digest, paths
+            )
+        return DeveloperResultVerification(True, None, head_sha, actual_digest, paths)
+
+
+_DEPENDENCY_NAMES = frozenset({"pyproject.toml", "package.json"})
+_UNSUPPORTED_DEPENDENCY_NAMES = frozenset(
+    {
+        "uv.lock",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "requirements.txt",
+        "requirements-dev.txt",
+        "setup.py",
+        "setup.cfg",
+        "pipfile",
+        "pipfile.lock",
+        ".npmrc",
+    }
+)
+
+
+def _dependency_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(path for path in paths if path.rsplit("/", 1)[-1] in _DEPENDENCY_NAMES)
+
+
+def _unsupported_dependency_path(paths: tuple[str, ...]) -> str | None:
+    for path in paths:
+        name = path.rsplit("/", 1)[-1].casefold()
+        if name in _DEPENDENCY_NAMES and name != path.rsplit("/", 1)[-1]:
+            return "dependency_manifest_format_is_unsupported"
+        if name in _UNSUPPORTED_DEPENDENCY_NAMES or name.startswith("constraints"):
+            return "dependency_manifest_format_is_unsupported"
+        if name.startswith("requirements") and name.endswith((".txt", ".in")):
+            return "dependency_manifest_format_is_unsupported"
+        if "/requirements/" in f"/{path.casefold()}/":
+            return "dependency_manifest_format_is_unsupported"
+    return None
 
 
 async def verify_developer_output(

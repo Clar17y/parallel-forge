@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import WorktreeProvisionerPort
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
 from forge.domain.command import CommandEnvelope, CommandStatus
+from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState, WorktreeIdentity, database_secret_id
 from forge.domain.run import RunSnapshot, RunState
 
@@ -62,6 +64,42 @@ class DeliveryPreparationService:
             return
         if approved.run.state is not RunState.PREPARING_WORKTREE:
             raise CommandRecoveryRequired("preparation command authority is invalid")
+        branch_events = [
+            event
+            for event in await work.events.list_after(command.run_id, 0)
+            if event.event_type == "run.preparation_branch_bound"
+        ]
+        if approved.run.branch_name is None:
+            if branch_events or approved.run.version != command.expected_run_version:
+                raise CommandRecoveryRequired("preparation branch binding requires recovery")
+            branch_name = f"forge/run/{command.run_id.hex}"
+            approval_id = approved.approval_id
+            bound = await work.runs.bind_preparation_branch(
+                command.run_id,
+                command.expected_run_version,
+                branch_name=branch_name,
+                event_type="run.preparation_branch_bound",
+                event_payload={
+                    "source_command_id": str(command.id),
+                    "approval_id": str(approved.approval_id),
+                    "branch_name": branch_name,
+                },
+                actor_class="worker",
+                actor_id=command.actor_id,
+            )
+            if bound.branch_name != branch_name:
+                raise CommandRecoveryRequired("preparation branch binding differs")
+            await work.commit()
+            approved = await self._approved_plans.load(work, command.run_id)
+            if (
+                approved.run.state is not RunState.PREPARING_WORKTREE
+                or approved.approval_id != approval_id
+                or approved.run.branch_name != branch_name
+            ):
+                raise CommandRecoveryRequired("preparation branch binding requires recovery")
+        elif branch_events or approved.run.branch_name == f"forge/run/{command.run_id.hex}":
+            if not _valid_branch_binding(command, approved, branch_events):
+                raise CommandRecoveryRequired("preparation branch binding requires recovery")
         await work.commit()
         try:
             worktree = await self._provisioner.prepare(command.run_id, approved.policy)
@@ -132,6 +170,27 @@ def _valid_implementation(queued: CommandEnvelope, approved: ApprovedPlan, versi
         and type(queued.payload.get("semantic_attempt")) is int
         and queued.actor_id == approved.approval_actor_id
         and queued.expected_run_version == version
+    )
+
+
+def _valid_branch_binding(
+    command: CommandEnvelope, approved: ApprovedPlan, events: Sequence[RunEvent]
+) -> bool:
+    if len(events) != 1:
+        return False
+    event = events[0]
+    branch_name = f"forge/run/{command.run_id.hex}"
+    return (
+        approved.run.branch_name == branch_name
+        and event.run_version == command.expected_run_version + 1
+        and event.actor_class == "worker"
+        and event.actor_id == command.actor_id
+        and event.payload
+        == {
+            "source_command_id": str(command.id),
+            "approval_id": str(approved.approval_id),
+            "branch_name": branch_name,
+        }
     )
 
 
