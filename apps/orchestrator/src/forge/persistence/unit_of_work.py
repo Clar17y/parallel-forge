@@ -7,6 +7,7 @@ from typing import Self
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.application.ports.artifacts import ArtifactRepository as ArtifactRepositoryPort
+from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.operations import OperationRepository
 from forge.application.services.state_engine import StateEngine
@@ -16,6 +17,7 @@ from forge.persistence.repositories.audit import PostgresAuditRepository
 from forge.persistence.repositories.auth import PostgresAuthRepository
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.events import PostgresEventRepository
+from forge.persistence.repositories.evidence import PostgresEvidenceRepository
 from forge.persistence.repositories.executions import PostgresExecutionRepository
 from forge.persistence.repositories.mutations import PostgresMutationRepository
 from forge.persistence.repositories.operations import PostgresOperationRepository
@@ -54,6 +56,7 @@ class PostgresUnitOfWork:
         self.operations: OperationRepository
         self.artifacts: ArtifactRepositoryPort
         self.executions: ExecutionRepository
+        self.evidence: EvidenceRepository
 
     @property
     def session(self) -> AsyncSession:
@@ -78,6 +81,7 @@ class PostgresUnitOfWork:
         self.tool_calls = PostgresToolCallRepository(self._session, redactor=self._redactor)
         self.operations = PostgresOperationRepository(session=self._session)
         self.artifacts = ArtifactRepository(session=self._session, redactor=self._redactor)
+        self.evidence = PostgresEvidenceRepository(self._session, artifacts=self.artifacts)
         self.executions = PostgresExecutionRepository(
             self._session,
             events=self.events,

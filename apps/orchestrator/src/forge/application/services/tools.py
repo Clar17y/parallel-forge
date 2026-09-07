@@ -12,9 +12,9 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 
-from forge.application.ports.artifacts import ArtifactStore
+from forge.application.ports.artifacts import ArtifactRepository, ArtifactStore
 from forge.application.ports.projects import ProjectRecord
 from forge.application.ports.repository import (
     MAX_REPOSITORY_WRITE_BYTES,
@@ -191,7 +191,6 @@ _UNAVAILABLE_TOOLS = frozenset(
         ToolName.REVIEW_ARTIFACTS_READ,
     }
 )
-_WRITE_CALL_NAMESPACE = UUID("01e47e14-31c1-5e57-94f2-9f34ae8ae8ae")
 _WRITE_EXECUTION_LEASE_SECONDS = 30.0
 _WRITE_RESULT_ARTIFACT_MAX_BYTES = 64 * 1024
 _TERMINAL_TOOL_STATUSES = frozenset(
@@ -434,27 +433,35 @@ class ControlledToolService:
                 payload: dict[str, object] | None = None
                 tool_call_id: UUID | None = None
                 existing: ToolCallRecord | None = None
+                request_digest: str | None = None
                 if (
                     validation_error is None
                     and authorization is not None
                     and resolved_policy is not None
                     and prepared is not None
                 ):
-                    payload = _write_operation_payload(context, resolved_run, prepared)
-                    tool_call_id = _write_tool_call_id(payload)
-                    existing = next(
-                        (
-                            item
-                            for item in await work.tool_calls.list_for_run(context.run_id)
-                            if item.id == tool_call_id
-                        ),
-                        None,
-                    )
+                    if context.invocation_id is None:
+                        validation_error = (
+                            ToolErrorCode.INVALID_REQUEST,
+                            "repository write requires an invocation identifier",
+                        )
+                    else:
+                        request_digest = _write_request_digest(request)
+                        tool_call_id = _write_tool_call_id(context.invocation_id)
+                        existing = await work.tool_calls.find(tool_call_id)
+                        if existing is not None and not _write_record_matches_request(
+                            existing, context, request.name, normalized_arguments, request_digest
+                        ):
+                            raise ToolInvocationError()
+                        payload = _write_operation_payload(
+                            context, resolved_run, prepared, request_digest
+                        )
                     if existing is not None and existing.status in _TERMINAL_TOOL_STATUSES:
-                        replay = _write_replay_result(
-                            existing,
-                            context,
-                            normalized_arguments,
+                        if request_digest is None:
+                            raise ToolInvocationError()
+                        replay = await _write_replay_result(
+                            existing, context, normalized_arguments, request_digest,
+                            artifacts=work.artifacts, artifact_store=artifact_store,
                         )
                         await work.rollback()
                         return replay
@@ -482,6 +489,7 @@ class ControlledToolService:
                     or prepared is None
                     or payload is None
                     or tool_call_id is None
+                    or request_digest is None
                 ):
                     raise ToolInvocationError()
                 if (
@@ -515,6 +523,9 @@ class ControlledToolService:
                     correlation_id=tool_call_id,
                     operation_intent_id=intent.id,
                     arguments_schema_version=1,
+                    request_digest=request_digest,
+                    resource_id=context.worktree_id,
+                    invocation_schema_version=1,
                 )
                 reserved = await work.tool_calls.reserve(reservation)
                 completion = asyncio.create_task(
@@ -530,6 +541,7 @@ class ControlledToolService:
                         writer=writer,
                         executor=executor,
                         artifact_store=artifact_store,
+                        request_digest=request_digest,
                         started=started,
                     ),
                     name=f"forge-write-{intent.id}",
@@ -572,6 +584,7 @@ class ControlledToolService:
         writer: RepositoryWriter,
         executor: OperationExecutor,
         artifact_store: ArtifactStore,
+        request_digest: str,
         started: float,
     ) -> ToolResult:
         """Settle admission before finishing its admitted repository write."""
@@ -589,6 +602,7 @@ class ControlledToolService:
                 writer=writer,
                 executor=executor,
                 artifact_store=artifact_store,
+                request_digest=request_digest,
                 started=started,
             ),
             name=f"forge-write-completion-{intent.id}",
@@ -608,6 +622,7 @@ class ControlledToolService:
         writer: RepositoryWriter,
         executor: OperationExecutor,
         artifact_store: ArtifactStore,
+        request_digest: str,
         started: float,
     ) -> ToolResult:
         """Finish a committed write even when its waiting caller is cancelled."""
@@ -619,7 +634,9 @@ class ControlledToolService:
                 thaw_payload(outcome.payload),
                 redactor=self._redactor,
             )
-            artifact_bytes = _write_result_artifact_bytes(intent.id, result_metadata)
+            artifact_bytes = _write_result_artifact_bytes(
+                intent.id, tool_call_id, request_digest, context.worktree_id, result_metadata
+            )
             descriptor = await artifact_store.put_bytes(
                 artifact_bytes,
                 media_type="application/json",
@@ -633,10 +650,9 @@ class ControlledToolService:
                 terminal_run = await work.runs.get_for_update(context.run_id)
                 current = await work.tool_calls.get(tool_call_id)
                 if current.status in _TERMINAL_TOOL_STATUSES:
-                    replay = _write_replay_result(
-                        current,
-                        context,
-                        normalized_arguments,
+                    replay = await _write_replay_result(
+                        current, context, normalized_arguments, request_digest,
+                        artifacts=work.artifacts, artifact_store=artifact_store,
                     )
                     await work.rollback()
                     return replay
@@ -667,11 +683,9 @@ class ControlledToolService:
                     status=ToolCallStatus.SUCCEEDED,
                     started_at=reserved.started_at,
                     completed_at=completed_at,
-                    result_metadata=_record_metadata(
-                        result,
-                        authorized=True,
-                        started_at=reserved.started_at,
-                        completed_at=completed_at,
+                    result_metadata=_write_record_metadata(
+                        result, request_digest, context.worktree_id,
+                        started_at=reserved.started_at, completed_at=completed_at,
                         redactor=self._redactor,
                     ),
                     step_id=context.step_id,
@@ -683,6 +697,9 @@ class ControlledToolService:
                     operation_intent_id=intent.id,
                     arguments_schema_version=1,
                     result_metadata_schema_version=1,
+                    request_digest=request_digest,
+                    resource_id=context.worktree_id,
+                    invocation_schema_version=1,
                 )
                 await work.artifacts.record(
                     descriptor,
@@ -691,8 +708,12 @@ class ControlledToolService:
                     producer_id=tool_call_id,
                     metadata={
                         "operation_intent_id": str(intent.id),
+                        "producer_id": str(tool_call_id),
+                        "request_digest": request_digest,
+                        "resource_id": context.worktree_id,
                         "result_schema_version": 1,
                         "tool_name": request.name.value,
+                        "invocation_schema_version": 1,
                     },
                 )
                 await work.tool_calls.finalize(final_record)
@@ -1343,6 +1364,7 @@ def _write_operation_payload(
     context: ToolAuthorizationContext,
     run: RunSnapshot,
     prepared: _PreparedWrite,
+    request_digest: str,
 ) -> dict[str, object]:
     return {
         "agent_execution_id": str(_required_uuid(context.agent_execution_id)),
@@ -1352,13 +1374,47 @@ def _write_operation_payload(
         "policy_version": context.policy_version,
         "project_id": str(run.project_id),
         "run_id": str(context.run_id),
+        "request_digest": request_digest,
         "step_id": str(_required_uuid(context.step_id)),
         "worktree_id": context.worktree_id,
     }
 
 
-def _write_tool_call_id(payload: Mapping[str, object]) -> UUID:
-    return uuid5(_WRITE_CALL_NAMESPACE, canonical_payload(payload))
+def _write_tool_call_id(invocation_id: UUID) -> UUID:
+    """Use only the Forge-supplied invocation identity for write idempotency."""
+
+    return _required_uuid(invocation_id)
+
+
+def _write_request_digest(request: ToolRequest) -> str:
+    """Digest the original bounded request without persisting its raw content."""
+
+    return hashlib.sha256(_json_bytes(request.arguments)).hexdigest()
+
+
+def _write_record_matches_request(
+    record: ToolCallRecord,
+    context: ToolAuthorizationContext,
+    tool_name: ToolName,
+    normalized_arguments: Mapping[str, object],
+    request_digest: str,
+) -> bool:
+    """Reject cross-authority, legacy, and changed-request invocation reuse."""
+
+    return (
+        record.tool_name is tool_name
+        and record.run_id == context.run_id
+        and record.agent_execution_id == context.agent_execution_id
+        and record.step_id == context.step_id
+        and record.role is context.role
+        and record.policy_version == context.policy_version
+        and record.resource_id == context.worktree_id
+        and record.invocation_schema_version == 1
+        and record.request_digest == request_digest
+        and canonical_payload(record.normalized_arguments) == canonical_payload(normalized_arguments)
+        and record.correlation_id == record.id
+        and record.operation_intent_id is not None
+    )
 
 
 def _file_write(value: FileWrite, *, reconciled: bool) -> dict[str, object]:
@@ -1376,11 +1432,17 @@ def _file_write(value: FileWrite, *, reconciled: bool) -> dict[str, object]:
 
 def _write_result_artifact_bytes(
     operation_intent_id: UUID,
+    tool_call_id: UUID,
+    request_digest: str,
+    resource_id: str,
     result_metadata: Mapping[str, object],
 ) -> bytes:
     value = _json_bytes(
         {
             "operation_intent_id": str(operation_intent_id),
+            "producer_id": str(tool_call_id),
+            "request_digest": request_digest,
+            "resource_id": resource_id,
             "result": dict(result_metadata),
             "schema_version": 1,
             "status": ToolCallStatus.SUCCEEDED.value,
@@ -1392,26 +1454,31 @@ def _write_result_artifact_bytes(
     return value
 
 
-def _write_replay_result(
+async def _write_replay_result(
     record: ToolCallRecord,
     context: ToolAuthorizationContext,
     normalized_arguments: Mapping[str, object],
+    request_digest: str,
+    *,
+    artifacts: ArtifactRepository,
+    artifact_store: ArtifactStore | None,
 ) -> ToolResult:
     if (
         record.status is not ToolCallStatus.SUCCEEDED
         or record.tool_name is not ToolName.REPOSITORY_WRITE_FILE
         or not record.authorized
         or record.run_id != context.run_id
-        or record.agent_execution_id != context.agent_execution_id
-        or record.step_id != context.step_id
-        or record.role is not context.role
-        or record.policy_version != context.policy_version
-        or record.correlation_id != record.id
-        or record.operation_intent_id is None
         or not record.artifact_digests
-        or canonical_payload(record.normalized_arguments) != canonical_payload(normalized_arguments)
         or record.result_metadata is None
+        or not _write_record_matches_request(
+            record, context, record.tool_name,
+            normalized_arguments, request_digest,
+        )
     ):
+        raise ToolInvocationError()
+    if artifact_store is None:
+        raise ToolInvocationError()
+    if len(record.artifact_digests) != 1:
         raise ToolInvocationError()
     metadata = {
         key: thaw_payload(record.result_metadata[key])
@@ -1425,6 +1492,77 @@ def _write_replay_result(
         )
         if key in record.result_metadata
     }
+    operation_intent_id = record.operation_intent_id
+    if operation_intent_id is None:
+        raise ToolInvocationError()
+    digest = record.artifact_digests[0]
+    try:
+        descriptor = await artifacts.get_by_digest(digest, run_id=context.run_id)
+        descriptor_metadata = descriptor.metadata
+        if (
+            descriptor.digest != digest
+            or descriptor.media_type != "application/json"
+            or descriptor.run_id != context.run_id
+            or descriptor.producer_type != "controlled_tool"
+            or descriptor.producer_id != record.id
+            or descriptor.parent_digests
+            or type(descriptor.schema_version) is not int
+            or descriptor.schema_version != 1
+            or descriptor.truncated is not False
+            or descriptor.original_byte_count != descriptor.byte_count
+            or descriptor.truncation_policy != "none"
+            or descriptor.byte_count > _WRITE_RESULT_ARTIFACT_MAX_BYTES
+            or descriptor_metadata.get("operation_intent_id") != str(operation_intent_id)
+            or descriptor_metadata.get("producer_id") != str(record.id)
+            or descriptor_metadata.get("request_digest") != request_digest
+            or descriptor_metadata.get("resource_id") != context.worktree_id
+            or descriptor_metadata.get("tool_name") != record.tool_name.value
+            or type(descriptor_metadata.get("result_schema_version")) is not int
+            or descriptor_metadata.get("result_schema_version") != 1
+            or type(descriptor_metadata.get("invocation_schema_version")) is not int
+            or descriptor_metadata.get("invocation_schema_version") != 1
+        ):
+            raise ToolInvocationError()
+        if await artifact_store.verify(digest) is not True:
+            raise ToolInvocationError()
+        artifact_bytes = await artifact_store.open_bytes(digest)
+        if (
+            len(artifact_bytes) > _WRITE_RESULT_ARTIFACT_MAX_BYTES
+            or descriptor.byte_count != len(artifact_bytes)
+            or hashlib.sha256(artifact_bytes).hexdigest() != digest
+        ):
+            raise ToolInvocationError()
+        artifact = json.loads(artifact_bytes.decode("utf-8"))
+    except (
+        AttributeError,
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        json.JSONDecodeError,
+    ):
+        raise ToolInvocationError() from None
+    if (
+        not isinstance(artifact, Mapping)
+        or artifact.get("operation_intent_id") != str(operation_intent_id)
+        or artifact.get("producer_id") != str(record.id)
+        or artifact.get("request_digest") != request_digest
+        or artifact.get("resource_id") != context.worktree_id
+        or artifact.get("schema_version") != 1
+        or artifact.get("status") != ToolCallStatus.SUCCEEDED.value
+        or artifact.get("tool_name") != record.tool_name.value
+        or artifact.get("result") != metadata
+        or artifact_bytes
+        != _write_result_artifact_bytes(
+            operation_intent_id,
+            record.id,
+            request_digest,
+            context.worktree_id,
+            metadata,
+        )
+    ):
+        raise ToolInvocationError()
     if (
         metadata.get("path") != normalized_arguments.get("path")
         or metadata.get("output_digest") != normalized_arguments.get("content_digest")
@@ -1443,6 +1581,26 @@ def _write_replay_result(
         step_id=record.step_id,
         duration_ms=record.duration_ms or 0,
     )
+
+
+def _write_record_metadata(
+    result: ToolResult,
+    request_digest: str,
+    resource_id: str,
+    *,
+    started_at: datetime,
+    completed_at: datetime,
+    redactor: Redactor | None,
+) -> dict[str, object]:
+    metadata = _record_metadata(
+        result, authorized=True, started_at=started_at, completed_at=completed_at, redactor=redactor
+    )
+    metadata.update(
+        request_digest=request_digest,
+        resource_id=resource_id,
+        invocation_schema_version=1,
+    )
+    return metadata
 
 
 def _new_result(

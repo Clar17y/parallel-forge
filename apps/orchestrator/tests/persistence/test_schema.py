@@ -49,6 +49,8 @@ EXPECTED_TABLES = {
     "operation_intents",
     "artifact_lineages",
     "artifact_lineage_parents",
+    "evidence_sets",
+    "agent_execution_evidence_inputs",
 }
 
 
@@ -264,7 +266,7 @@ def test_task10_downgrade_refuses_cross_project_external_identity_duplicates(
         assert isinstance(value, str)
         return value
 
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260822_0002"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260906_0003"
 
     def duplicate_count(connection: Any) -> int:
         value = connection.execute(
@@ -323,6 +325,8 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
     assert _table_names(test_database_url) == EXPECTED_TABLES - {
         "api_mutations",
         "operator_audit_events",
+        "evidence_sets",
+        "agent_execution_evidence_inputs",
     }
 
     def task_constraints(connection: Any) -> set[str]:
@@ -334,7 +338,7 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
 
     command.upgrade(config, "head")
     assert _table_names(test_database_url) == EXPECTED_TABLES
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260822_0002"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260906_0003"
 
     def reupgraded_task(connection: Any) -> tuple[str, str, bool, str, str]:
         row = connection.execute(
@@ -580,6 +584,28 @@ def test_every_execution_and_evidence_table_is_linked_to_a_run(
     assert all("runs" in targets for targets in result.values())
 
 
+@pytest.mark.integration
+def test_evidence_run_foreign_keys_restrict_retention_deletion(
+    migrated_database_url: str,
+) -> None:
+    def evidence_run_foreign_keys(connection: Any) -> list[dict[str, object]]:
+        inspector = inspect(connection)
+        return [
+            foreign_key
+            for table in ("evidence_sets", "agent_execution_evidence_inputs")
+            for foreign_key in inspector.get_foreign_keys(table)
+            if foreign_key["referred_table"] == "runs"
+            and tuple(foreign_key["constrained_columns"]) == ("run_id",)
+        ]
+
+    foreign_keys = asyncio.run(
+        _inspect_database(migrated_database_url, evidence_run_foreign_keys)
+    )
+    assert isinstance(foreign_keys, list)
+    assert len(foreign_keys) == 2
+    assert all(foreign_key["options"].get("ondelete") == "RESTRICT" for foreign_key in foreign_keys)
+
+
 def test_database_name_guard_rejects_non_test_databases(
     database_name_validator: Callable[[str], str],
 ) -> None:
@@ -592,7 +618,7 @@ def test_migration_has_one_exact_reviewable_head(
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
     config = alembic_config_factory("postgresql+asyncpg://unused:unused@127.0.0.1/unused")
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260822_0002"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260906_0003"]
 
 
 def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
@@ -618,7 +644,7 @@ def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
         assert not any(isinstance(column.type, SqlEnum) for column in table.columns)
         if table.name == "project_policy_versions":
             assert isinstance(table.c.project_id.type, Uuid)
-        else:
+        elif table.name != "agent_execution_evidence_inputs":
             assert isinstance(table.c.id.type, Uuid)
             assert table.c.id.primary_key
         for column in table.columns:

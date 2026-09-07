@@ -19,6 +19,7 @@ from forge.application.services.tools import (
     ControlledToolService,
     ToolInvocationError,
     _write_replay_result,
+    _write_request_digest,
 )
 from forge.domain.actor import AgentRole
 from forge.domain.artifact import canonical_storage_pointer
@@ -152,6 +153,9 @@ class _ControlledArtifactStore:
 
     async def verify(self, digest: str) -> bool:
         return self.verify_returns and (digest in self.stored)
+
+    async def open_bytes(self, digest: str) -> bytes:
+        return self.stored[digest]
 
 
 class _Git:
@@ -330,6 +334,7 @@ def _setup_service(
         run_id=run_id,
         worktree_id=identity.worktree_name,
         policy_version=1,
+        invocation_id=UUID("f1111111-1111-4111-8111-111111111111"),
     )
     return service, context, managed_worktree
 
@@ -691,6 +696,7 @@ async def test_concurrent_identical_invocations_produce_one_effect_and_terminal_
     # Both invocations report success
     assert all(r.status is ToolCallStatus.SUCCEEDED for r in results)
     assert results[0].tool_call_id == results[1].tool_call_id
+    assert results[0].tool_call_id == context.invocation_id
     assert results[0].operation_intent_id == results[1].operation_intent_id
 
     # Exactly ONE write effect occurred
@@ -800,7 +806,9 @@ async def test_terminal_replay_does_not_repeat_effect_or_budget_and_cannot_cross
         name=ToolName.REPOSITORY_WRITE_FILE,
         arguments={"path": "other.txt", "content": "other content\n"},
     )
-    budget_denied = await service.invoke(context, new_request)
+    budget_denied = await service.invoke(
+        replace(context, invocation_id=uuid4()), new_request
+    )
     assert budget_denied.status is ToolCallStatus.DENIED
     assert budget_denied.error is not None
     assert budget_denied.error.code is ToolErrorCode.BUDGET_EXCEEDED
@@ -848,45 +856,58 @@ async def test_terminal_replay_does_not_repeat_effect_or_budget_and_cannot_cross
     # Note: Direct _write_replay_result checks below are helper-level unit checks
     # on the replay builder function, not end-to-end service proof.
     # Valid replay returns ToolResult without errors
-    replay_res = _write_replay_result(
-        persisted_record, context, persisted_record.normalized_arguments
-    )
+    async with PostgresUnitOfWork(session_factory) as uow:
+        replay_res = await _write_replay_result(
+            persisted_record,
+            context,
+            persisted_record.normalized_arguments,
+            _write_request_digest(request),
+            artifacts=uow.artifacts,
+            artifact_store=artifact_store,
+        )
     assert replay_res.status is ToolCallStatus.SUCCEEDED
     assert replay_res.tool_call_id == res1.tool_call_id
 
     # Attempting to replay with crossed agent_execution_id raises ToolInvocationError
     with pytest.raises(ToolInvocationError):
-        _write_replay_result(
-            persisted_record, cross_exec_context, persisted_record.normalized_arguments
+        await _write_replay_result(
+            persisted_record, cross_exec_context, persisted_record.normalized_arguments,
+            _write_request_digest(request), artifacts=uow.artifacts, artifact_store=artifact_store,
         )
 
     # Attempting to replay with crossed step_id raises ToolInvocationError
     with pytest.raises(ToolInvocationError):
-        _write_replay_result(
+        await _write_replay_result(
             persisted_record, cross_step_context, persisted_record.normalized_arguments
+            , _write_request_digest(request), artifacts=uow.artifacts, artifact_store=artifact_store,
         )
 
     # Attempting to replay with crossed role raises ToolInvocationError
     with pytest.raises(ToolInvocationError):
-        _write_replay_result(
+        await _write_replay_result(
             persisted_record,
             replace(context, role=AgentRole.REVIEWER),
             persisted_record.normalized_arguments,
+            _write_request_digest(request), artifacts=uow.artifacts, artifact_store=artifact_store,
         )
 
     # Attempting to replay with crossed policy_version raises ToolInvocationError
     with pytest.raises(ToolInvocationError):
-        _write_replay_result(
+        await _write_replay_result(
             persisted_record,
             replace(context, policy_version=99),
             persisted_record.normalized_arguments,
+            _write_request_digest(request), artifacts=uow.artifacts, artifact_store=artifact_store,
         )
 
     # Attempting to replay with tampered normalized arguments raises ToolInvocationError
     tampered_args = dict(persisted_record.normalized_arguments)
     tampered_args["path"] = "tampered.txt"
     with pytest.raises(ToolInvocationError):
-        _write_replay_result(persisted_record, context, tampered_args)
+        await _write_replay_result(
+            persisted_record, context, tampered_args, _write_request_digest(request),
+            artifacts=uow.artifacts, artifact_store=artifact_store,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1210,3 +1231,538 @@ async def test_write_persists_canonical_normalized_arguments_and_excludes_canary
         artifact_doc = json.loads(stored_bytes.decode("utf-8"))
         assert canary_token not in json.dumps(artifact_doc)
         assert artifact_doc["result"]["output_digest"] == canary_digest
+
+
+async def test_distinct_invocation_ids_with_identical_content_create_distinct_evidence(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    (
+        project_id,
+        run_id,
+        step_id,
+        execution_id,
+        base_sha,
+        branch_name,
+        repo_path,
+        worktree_path,
+        _policy,
+    ) = await _seed_test_database(session_factory, tmp_path)
+    writer = _ControlledWriter(Path(worktree_path))
+    artifact_store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service, base_context, _ = _setup_service(
+        session_factory,
+        project_id,
+        run_id,
+        branch_name,
+        base_sha,
+        repo_path,
+        worktree_path,
+        writer,
+        artifact_store,
+    )
+    first_id = UUID("11111111-1111-4111-8111-111111111111")
+    second_id = UUID("22222222-2222-4222-8222-222222222222")
+    context = replace(base_context, step_id=step_id, agent_execution_id=execution_id)
+    request = ToolRequest(
+        name=ToolName.REPOSITORY_WRITE_FILE,
+        arguments={"path": "same.txt", "content": "identical content\n"},
+    )
+
+    first = await service.invoke(replace(context, invocation_id=first_id), request)
+    second = await service.invoke(replace(context, invocation_id=second_id), request)
+
+    assert first.status is ToolCallStatus.SUCCEEDED
+    assert second.status is ToolCallStatus.SUCCEEDED
+    assert first.tool_call_id == first_id
+    assert second.tool_call_id == second_id
+    assert first.operation_intent_id != second.operation_intent_id
+    assert first.artifact_digests != second.artifact_digests
+    assert writer.call_count == 2
+
+    async with session_factory() as session:
+        calls = (
+            await session.execute(
+                select(ToolCall)
+                .where(ToolCall.run_id == run_id)
+                .order_by(ToolCall.started_at, ToolCall.id)
+            )
+        ).scalars().all()
+        assert {call.id for call in calls} == {first_id, second_id}
+        assert len(calls) == 2
+        intents = (
+            await session.execute(
+                select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+            )
+        ).scalars().all()
+        assert len(intents) == 2
+        assert {intent.id for intent in intents} == {
+            first.operation_intent_id,
+            second.operation_intent_id,
+        }
+
+        lineages = (
+            await session.execute(
+                select(ArtifactLineage).where(ArtifactLineage.run_id == run_id)
+            )
+        ).scalars().all()
+        assert len(lineages) == 2
+        assert {lineage.producer_id for lineage in lineages} == {first_id, second_id}
+
+        events = (
+            await session.execute(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "tool_call.completed",
+                )
+            )
+        ).scalars().all()
+        assert len(events) == 2
+        assert {event.payload["tool_call_id"] for event in events} == {
+            str(first_id),
+            str(second_id),
+        }
+
+    async with PostgresUnitOfWork(session_factory) as uow:
+        first_record = await uow.tool_calls.get(first_id)
+        second_record = await uow.tool_calls.get(second_id)
+    assert first_record.request_digest == second_record.request_digest
+    assert first_record.resource_id == second_record.resource_id == context.worktree_id
+    assert first_record.invocation_schema_version == 1
+    assert second_record.invocation_schema_version == 1
+    assert first_record.operation_intent_id == first.operation_intent_id
+    assert second_record.operation_intent_id == second.operation_intent_id
+    assert first_record.artifact_digests == first.artifact_digests
+    assert second_record.artifact_digests == second.artifact_digests
+
+
+async def test_reusing_invocation_id_with_changed_secret_content_preserves_prior_evidence(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    (
+        project_id,
+        run_id,
+        step_id,
+        execution_id,
+        base_sha,
+        branch_name,
+        repo_path,
+        worktree_path,
+        _policy,
+    ) = await _seed_test_database(session_factory, tmp_path)
+    writer = _ControlledWriter(Path(worktree_path))
+    artifact_store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service, base_context, _ = _setup_service(
+        session_factory,
+        project_id,
+        run_id,
+        branch_name,
+        base_sha,
+        repo_path,
+        worktree_path,
+        writer,
+        artifact_store,
+    )
+    invocation_id = UUID("33333333-3333-4333-8333-333333333333")
+    context = replace(
+        base_context,
+        step_id=step_id,
+        agent_execution_id=execution_id,
+        invocation_id=invocation_id,
+    )
+    first_request = ToolRequest(
+        name=ToolName.REPOSITORY_WRITE_FILE,
+        arguments={"path": "secret.txt", "content": "TOKEN=first-secret\n"},
+    )
+    changed_request = ToolRequest(
+        name=ToolName.REPOSITORY_WRITE_FILE,
+        arguments={"path": "secret.txt", "content": "TOKEN=second-secret\n"},
+    )
+
+    first = await service.invoke(context, first_request)
+    assert first.status is ToolCallStatus.SUCCEEDED
+
+    async with PostgresUnitOfWork(session_factory) as uow:
+        original_call = await uow.tool_calls.get(invocation_id)
+    original_digest = original_call.request_digest
+    original_resource_id = original_call.resource_id
+    original_schema_version = original_call.invocation_schema_version
+    original_metadata = dict(original_call.result_metadata or {})
+    original_artifacts = original_call.artifact_digests
+    original_intent_id = original_call.operation_intent_id
+
+    with pytest.raises(ToolInvocationError):
+        await service.invoke(context, changed_request)
+
+    assert writer.call_count == 1
+    assert (Path(worktree_path) / "secret.txt").read_text(encoding="utf-8") == (
+        "TOKEN=first-secret\n"
+    )
+    async with session_factory() as session:
+        calls = (
+            await session.execute(select(ToolCall).where(ToolCall.run_id == run_id))
+        ).scalars().all()
+        intents = (
+            await session.execute(
+                select(OperationIntentRecord).where(OperationIntentRecord.run_id == run_id)
+            )
+        ).scalars().all()
+        events = (
+            await session.execute(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "tool_call.completed",
+                )
+            )
+        ).scalars().all()
+        lineages = (
+            await session.execute(
+                select(ArtifactLineage).where(ArtifactLineage.run_id == run_id)
+            )
+        ).scalars().all()
+        assert len(calls) == len(intents) == len(events) == len(lineages) == 1
+        assert calls[0].id == invocation_id
+
+    async with PostgresUnitOfWork(session_factory) as uow:
+        persisted = await uow.tool_calls.get(invocation_id)
+    assert persisted.request_digest == original_digest
+    assert persisted.resource_id == original_resource_id == context.worktree_id
+    assert persisted.invocation_schema_version == original_schema_version == 1
+    assert persisted.result_metadata == original_metadata
+    assert persisted.artifact_digests == original_artifacts
+    assert persisted.operation_intent_id == original_intent_id
+
+
+async def test_terminal_replay_ignores_later_target_mutation_and_returns_original_evidence(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    (
+        project_id,
+        run_id,
+        step_id,
+        execution_id,
+        base_sha,
+        branch_name,
+        repo_path,
+        worktree_path,
+        _policy,
+    ) = await _seed_test_database(session_factory, tmp_path)
+    writer = _ControlledWriter(Path(worktree_path))
+    artifact_store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service, base_context, _ = _setup_service(
+        session_factory,
+        project_id,
+        run_id,
+        branch_name,
+        base_sha,
+        repo_path,
+        worktree_path,
+        writer,
+        artifact_store,
+    )
+    context = replace(base_context, step_id=step_id, agent_execution_id=execution_id)
+    request = ToolRequest(
+        name=ToolName.REPOSITORY_WRITE_FILE,
+        arguments={"path": "history.txt", "content": "original\n"},
+    )
+    first = await service.invoke(context, request)
+    target = Path(worktree_path) / "history.txt"
+    target.write_text("later legitimate mutation\n", encoding="utf-8")
+
+    replay = await service.invoke(context, request)
+
+    assert replay.status is ToolCallStatus.SUCCEEDED
+    assert replay.tool_call_id == first.tool_call_id
+    assert replay.operation_intent_id == first.operation_intent_id
+    assert replay.artifact_digests == first.artifact_digests
+    assert replay.metadata == first.metadata
+    assert writer.call_count == 1
+    assert target.read_text(encoding="utf-8") == "later legitimate mutation\n"
+
+    async with session_factory() as session:
+        assert await session.scalar(
+            select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
+        ) == 1
+        assert await session.scalar(
+            select(func.count())
+            .select_from(OperationIntentRecord)
+            .where(OperationIntentRecord.run_id == run_id)
+        ) == 1
+        assert await session.scalar(
+            select(func.count())
+            .select_from(RunEvent)
+            .where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "tool_call.completed",
+            )
+        ) == 1
+
+
+async def test_terminal_replay_rejects_corrupt_blob_even_when_store_verify_returns_true(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    (
+        project_id,
+        run_id,
+        step_id,
+        execution_id,
+        base_sha,
+        branch_name,
+        repo_path,
+        worktree_path,
+        _policy,
+    ) = await _seed_test_database(session_factory, tmp_path)
+    writer = _ControlledWriter(Path(worktree_path))
+    artifact_store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service, base_context, _ = _setup_service(
+        session_factory,
+        project_id,
+        run_id,
+        branch_name,
+        base_sha,
+        repo_path,
+        worktree_path,
+        writer,
+        artifact_store,
+    )
+    context = replace(base_context, step_id=step_id, agent_execution_id=execution_id)
+    request = ToolRequest(
+        name=ToolName.REPOSITORY_WRITE_FILE,
+        arguments={"path": "corrupt.txt", "content": "original\n"},
+    )
+    first = await service.invoke(context, request)
+    artifact_digest = first.artifact_digests[0]
+    artifact_store.stored[artifact_digest] = b'{"valid_json":"wrong bytes"}'
+
+    with pytest.raises(ToolInvocationError):
+        await service.invoke(context, request)
+
+    assert artifact_store.verify_returns is True
+    assert writer.call_count == 1
+    async with session_factory() as session:
+        assert await session.scalar(
+            select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
+        ) == 1
+        assert await session.scalar(
+            select(func.count())
+            .select_from(OperationIntentRecord)
+            .where(OperationIntentRecord.run_id == run_id)
+        ) == 1
+        assert await session.scalar(
+            select(func.count())
+            .select_from(RunEvent)
+            .where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "tool_call.completed",
+            )
+        ) == 1
+
+
+async def test_terminal_replay_rejects_missing_blob_without_new_effect_or_evidence(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    (
+        project_id,
+        run_id,
+        step_id,
+        execution_id,
+        base_sha,
+        branch_name,
+        repo_path,
+        worktree_path,
+        _policy,
+    ) = await _seed_test_database(session_factory, tmp_path)
+    writer = _ControlledWriter(Path(worktree_path))
+    artifact_store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service, base_context, _ = _setup_service(
+        session_factory,
+        project_id,
+        run_id,
+        branch_name,
+        base_sha,
+        repo_path,
+        worktree_path,
+        writer,
+        artifact_store,
+    )
+    context = replace(base_context, step_id=step_id, agent_execution_id=execution_id)
+    request = ToolRequest(
+        name=ToolName.REPOSITORY_WRITE_FILE,
+        arguments={"path": "missing.txt", "content": "original\n"},
+    )
+    first = await service.invoke(context, request)
+    del artifact_store.stored[first.artifact_digests[0]]
+
+    with pytest.raises(ToolInvocationError):
+        await service.invoke(context, request)
+
+    assert writer.call_count == 1
+    async with session_factory() as session:
+        assert await session.scalar(
+            select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
+        ) == 1
+        assert await session.scalar(
+            select(func.count())
+            .select_from(OperationIntentRecord)
+            .where(OperationIntentRecord.run_id == run_id)
+        ) == 1
+        assert await session.scalar(
+            select(func.count())
+            .select_from(RunEvent)
+            .where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "tool_call.completed",
+            )
+        ) == 1
+
+
+async def test_write_without_invocation_id_is_denied_without_intent_or_effect(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    (
+        project_id,
+        run_id,
+        step_id,
+        execution_id,
+        base_sha,
+        branch_name,
+        repo_path,
+        worktree_path,
+        _policy,
+    ) = await _seed_test_database(session_factory, tmp_path)
+    writer = _ControlledWriter(Path(worktree_path))
+    artifact_store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service, base_context, _ = _setup_service(
+        session_factory,
+        project_id,
+        run_id,
+        branch_name,
+        base_sha,
+        repo_path,
+        worktree_path,
+        writer,
+        artifact_store,
+    )
+    context = replace(
+        base_context,
+        step_id=step_id,
+        agent_execution_id=execution_id,
+        invocation_id=None,
+    )
+    request = ToolRequest(
+        name=ToolName.REPOSITORY_WRITE_FILE,
+        arguments={"path": "no-id.txt", "content": "must not write\n"},
+    )
+
+    result = await service.invoke(context, request)
+
+    assert result.status is ToolCallStatus.DENIED
+    assert result.error is not None
+    assert result.error.code is ToolErrorCode.INVALID_REQUEST
+    assert writer.call_count == 0
+    assert not (Path(worktree_path) / "no-id.txt").exists()
+    async with session_factory() as session:
+        assert await session.scalar(
+            select(func.count())
+            .select_from(OperationIntentRecord)
+            .where(OperationIntentRecord.run_id == run_id)
+        ) == 0
+
+
+async def test_reused_invocation_id_from_other_current_execution_preserves_prior_evidence(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    (
+        project_id,
+        run_id,
+        step_id,
+        execution_id,
+        base_sha,
+        branch_name,
+        repo_path,
+        worktree_path,
+        _policy,
+    ) = await _seed_test_database(session_factory, tmp_path)
+    writer = _ControlledWriter(Path(worktree_path))
+    artifact_store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service, base_context, _ = _setup_service(
+        session_factory,
+        project_id,
+        run_id,
+        branch_name,
+        base_sha,
+        repo_path,
+        worktree_path,
+        writer,
+        artifact_store,
+    )
+    invocation_id = UUID("44444444-4444-4444-8444-444444444444")
+    context = replace(
+        base_context,
+        step_id=step_id,
+        agent_execution_id=execution_id,
+        invocation_id=invocation_id,
+    )
+    request = ToolRequest(
+        name=ToolName.REPOSITORY_WRITE_FILE,
+        arguments={"path": "authority.txt", "content": "bound\n"},
+    )
+    first = await service.invoke(context, request)
+    async with PostgresUnitOfWork(session_factory) as uow:
+        original = await uow.tool_calls.get(invocation_id)
+
+    other_execution_id = uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(
+            AgentExecution(
+                id=other_execution_id,
+                run_id=run_id,
+                step_id=step_id,
+                role=AgentRole.DEVELOPER.value,
+                instruction_version="1",
+                provider="google",
+                model="gemini-3.5-flash",
+                status="RUNNING",
+            )
+        )
+
+    with pytest.raises(ToolInvocationError):
+        await service.invoke(
+            replace(context, agent_execution_id=other_execution_id),
+            request,
+        )
+
+    assert writer.call_count == 1
+    async with PostgresUnitOfWork(session_factory) as uow:
+        persisted = await uow.tool_calls.get(invocation_id)
+    assert persisted.agent_execution_id == execution_id
+    assert persisted.request_digest == original.request_digest
+    assert persisted.resource_id == original.resource_id == context.worktree_id
+    assert persisted.invocation_schema_version == original.invocation_schema_version == 1
+    assert persisted.operation_intent_id == original.operation_intent_id == first.operation_intent_id
+    assert persisted.artifact_digests == original.artifact_digests == first.artifact_digests
+    assert persisted.result_metadata == original.result_metadata
+
+    async with session_factory() as session:
+        assert await session.scalar(
+            select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run_id)
+        ) == 1
+        assert await session.scalar(
+            select(func.count())
+            .select_from(OperationIntentRecord)
+            .where(OperationIntentRecord.run_id == run_id)
+        ) == 1
+        assert await session.scalar(
+            select(func.count())
+            .select_from(RunEvent)
+            .where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "tool_call.completed",
+            )
+        ) == 1

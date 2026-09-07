@@ -77,6 +77,42 @@ class OperationExecutor:
         owner_id = f"forge-operation-{uuid4().hex}"
         return await self._observe_or_reconcile(intent, adapter, owner_id)
 
+    async def invoke_admitted(
+        self, intent: OperationIntent, adapter: OperationAdapter
+    ) -> OperationOutcome:
+        """Invoke one definitely-new caller-admitted intent without settling it.
+
+        This deliberately does not observe, claim, reconcile, complete, or fail
+        an intent.  The caller owns its transaction and durable phase transition.
+        """
+
+        if not isinstance(intent, OperationIntent):
+            raise TypeError("admitted operation must be an OperationIntent")
+        if not (
+            intent.is_new
+            and intent.status is OperationStatus.PENDING
+            and intent.execution_owner is not None
+            and intent.execution_lease_expires_at is not None
+            and intent.execution_lease_expires_at > _utc_now()
+        ):
+            raise RecoveryError("admitted operation is not a live newly-owned intent")
+        owner_id = intent.execution_owner
+        try:
+            refreshed_intent = await self._operations.renew_execution(
+                intent.id,
+                owner_id=owner_id,
+                lease_seconds=self._execution_lease_seconds,
+            )
+        except Exception as error:
+            raise RecoveryError("admitted operation lease renewal failed") from error
+        if (
+            refreshed_intent.execution_owner != owner_id
+            or refreshed_intent.execution_lease_expires_at is None
+            or refreshed_intent.execution_lease_expires_at <= _utc_now()
+        ):
+            raise RecoveryError("admitted operation lease renewal failed")
+        return await self._invoke_owned_unsettled(refreshed_intent, adapter, owner_id)
+
     async def _invoke_owned(
         self, intent: OperationIntent, adapter: OperationAdapter, owner_id: str
     ) -> OperationOutcome:
@@ -101,6 +137,17 @@ class OperationExecutor:
             with suppress(asyncio.CancelledError):
                 await renewal
         return await self._store_outcome(intent.id, outcome, owner_id)
+
+    async def _invoke_owned_unsettled(
+        self, intent: OperationIntent, adapter: OperationAdapter, owner_id: str
+    ) -> OperationOutcome:
+        renewal = asyncio.create_task(self._renew_until_done(intent.id, owner_id))
+        try:
+            return await adapter.invoke(intent)
+        finally:
+            renewal.cancel()
+            with suppress(asyncio.CancelledError):
+                await renewal
 
     async def _observe_or_reconcile(
         self, intent: OperationIntent, adapter: OperationAdapter, owner_id: str

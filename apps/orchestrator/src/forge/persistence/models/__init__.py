@@ -5,10 +5,12 @@ from forge.persistence.models.auth import ApprovalChallenge, OperatorSession
 from forge.persistence.models.base import Base
 from forge.persistence.models.execution import (
     AgentExecution,
+    AgentExecutionEvidenceInput,
     Approval,
     Artifact,
     ArtifactLineage,
     ArtifactLineageParent,
+    EvidenceSet,
     ModelUsage,
     OperationIntent,
     Review,
@@ -24,6 +26,7 @@ from forge.persistence.models.run import Run
 
 __all__ = [
     "AgentExecution",
+    "AgentExecutionEvidenceInput",
     "ApiMutation",
     "Approval",
     "ApprovalChallenge",
@@ -31,6 +34,7 @@ __all__ = [
     "ArtifactLineage",
     "ArtifactLineageParent",
     "Base",
+    "EvidenceSet",
     "ModelUsage",
     "OperationIntent",
     "OperatorAuditEvent",

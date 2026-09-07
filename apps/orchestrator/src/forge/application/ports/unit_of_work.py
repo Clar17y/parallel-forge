@@ -7,6 +7,7 @@ from typing import Protocol, Self
 from uuid import UUID
 
 from forge.application.ports.artifacts import ArtifactRepository
+from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.operations import OperationRepository
 from forge.application.ports.projects import ProjectRepository
@@ -34,6 +35,7 @@ class UnitOfWork(Protocol):
     operations: OperationRepository
     artifacts: ArtifactRepository
     executions: ExecutionRepository
+    evidence: EvidenceRepository
     tasks: TaskRepository
 
     async def __aenter__(self) -> Self: ...

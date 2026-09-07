@@ -17,6 +17,12 @@ class OperationAdapter(Protocol):
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome: ...
 
 
+class GitCommitReceiptReader(Protocol):
+    """Read-only lookup used to bind publication to a prepared receipt."""
+
+    async def get(self, intent_id: UUID) -> OperationIntent: ...
+
+
 class OperationRepository(Protocol):
     """Persistence boundary for intent-before-effect orchestration."""
 
@@ -61,4 +67,4 @@ class OperationRepository(Protocol):
     async def list_unresolved(self) -> Sequence[OperationIntent]: ...
 
 
-__all__ = ["OperationAdapter", "OperationRepository"]
+__all__ = ["GitCommitReceiptReader", "OperationAdapter", "OperationRepository"]

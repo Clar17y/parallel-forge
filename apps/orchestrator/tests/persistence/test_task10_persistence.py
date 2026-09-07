@@ -41,12 +41,17 @@ def test_run_snapshot_carries_policy_and_base_binding() -> None:
     assert snapshot.base_sha == "a" * 40
 
 
-def test_task10_forward_migration_is_the_single_head(
+def test_task10_forward_migration_is_in_the_single_head_ancestry(
     alembic_config_factory: object,
 ) -> None:
     assert callable(alembic_config_factory)
     config = alembic_config_factory("postgresql+asyncpg://unused:unused@127.0.0.1/unused")
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260822_0002"]
+    script = ScriptDirectory.from_config(config)
+    heads = script.get_heads()
+    assert len(heads) == 1
+    assert "20260822_0002" in {
+        revision.revision for revision in script.iterate_revisions(heads[0], "base")
+    }
 
 
 @pytest.mark.integration

@@ -116,6 +116,12 @@ class _ToolCalls:
                 return item
         raise KeyError(f"tool call {tool_call_id} not found")
 
+    async def find(self, tool_call_id: UUID) -> ToolCallRecord | None:
+        try:
+            return await self.get(tool_call_id)
+        except KeyError:
+            return None
+
     async def list_for_run(self, run_id: UUID) -> Sequence[ToolCallRecord]:
         return [record for record in self.records if record.run_id == run_id]
 
@@ -156,7 +162,28 @@ class _Artifacts:
                 "metadata": metadata,
             }
         )
-        return descriptor
+        return replace(
+            descriptor,
+            producer_type=producer_type,
+            producer_id=producer_id,
+            run_id=run_id,
+            parent_digests=tuple(parent_digests),
+            metadata=dict(metadata or {}),
+        )
+
+    async def get_by_digest(self, digest: str, *, run_id: UUID) -> ArtifactDescriptor:
+        for item in self.records:
+            descriptor = item["descriptor"]
+            if descriptor.digest == digest and item["run_id"] == run_id:
+                return replace(
+                    descriptor,
+                    producer_type=item["producer_type"],
+                    producer_id=item["producer_id"],
+                    run_id=run_id,
+                    parent_digests=tuple(item["parent_digests"]),
+                    metadata=dict(item["metadata"] or {}),
+                )
+        raise KeyError(digest)
 
 
 class _UnitOfWork:
@@ -275,6 +302,7 @@ def _context(**overrides: object) -> ToolAuthorizationContext:
         "policy_version": 1,
         "agent_execution_id": EXECUTION_ID,
         "step_id": STEP_ID,
+        "invocation_id": UUID("66666666-6666-4666-8666-666666666666"),
     }
     values.update(overrides)
     return ToolAuthorizationContext(**values)  # type: ignore[arg-type]
@@ -838,6 +866,9 @@ class _MemoryArtifactStore:
 
     async def verify(self, digest: str) -> bool:
         return digest in self.stored
+
+    async def open_bytes(self, digest: str) -> bytes:
+        return self.stored[digest]
 
 
 async def test_write_terminal_replay_avoids_extra_adapter_call_and_extra_budget(

@@ -19,7 +19,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.persistence.models.base import Base, TimestampMixin
@@ -112,6 +112,7 @@ class Step(Base, TimestampMixin):
     __tablename__ = "steps"
     __table_args__ = (
         UniqueConstraint("run_id", "kind", "attempt", name="uq_steps_run_kind_attempt"),
+        UniqueConstraint("id", "run_id", name="uq_steps_id_run"),
         CheckConstraint(
             "status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED')", name="status"
         ),
@@ -173,6 +174,7 @@ class AgentExecution(Base, TimestampMixin):
     __tablename__ = "agent_executions"
     __table_args__ = (
         UniqueConstraint("id", "run_id", name="uq_agent_executions_id_run"),
+        UniqueConstraint("id", "run_id", "step_id", "role", name="uq_agent_executions_id_run_step_role"),
         CheckConstraint("role IN ('planner','developer','reviewer')", name="role"),
         CheckConstraint(
             "status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED')", name="status"
@@ -425,6 +427,69 @@ class ValidationResult(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class EvidenceSet(Base):
+    """Immutable canonical evidence manifest and its bounded lineage."""
+
+    __tablename__ = "evidence_sets"
+    __table_args__ = (
+        UniqueConstraint("id", "run_id", name="uq_evidence_sets_id_run"),
+        UniqueConstraint("id", "run_id", "policy_version", "kind", name="uq_evidence_sets_parent"),
+        UniqueConstraint("id", "run_id", "policy_version", "kind", "head_sha", name="uq_evidence_sets_head_parent"),
+        UniqueConstraint("run_id", "manifest_artifact_id", name="uq_evidence_sets_run_manifest"),
+        ForeignKeyConstraint(["step_id", "run_id"], ["steps.id", "steps.run_id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["producer_execution_id", "run_id", "producer_step_id", "producer_role"], ["agent_executions.id", "agent_executions.run_id", "agent_executions.step_id", "agent_executions.role"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["validation_evidence_set_id", "run_id", "validation_parent_policy_version", "validation_parent_kind", "validation_parent_head_sha"], ["evidence_sets.id", "evidence_sets.run_id", "evidence_sets.policy_version", "evidence_sets.kind", "evidence_sets.head_sha"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["prior_review_evidence_set_id", "run_id", "prior_review_parent_policy_version", "prior_review_parent_kind"], ["evidence_sets.id", "evidence_sets.run_id", "evidence_sets.policy_version", "evidence_sets.kind"], ondelete="RESTRICT"),
+        CheckConstraint("kind IN ('validation','review')", name="kind"),
+        CheckConstraint("policy_version >= 1", name="policy"),
+        CheckConstraint("head_sha ~ '^[0-9a-f]{40}$'", name="head"),
+        CheckConstraint("(validation_evidence_set_id IS NULL OR id <> validation_evidence_set_id) AND (prior_review_evidence_set_id IS NULL OR id <> prior_review_evidence_set_id)", name="not_self_parent"),
+        CheckConstraint("(kind = 'validation' AND producer_execution_id IS NULL AND producer_step_id IS NULL AND producer_role IS NULL AND validation_evidence_set_id IS NULL AND validation_parent_policy_version IS NULL AND validation_parent_kind IS NULL AND validation_parent_head_sha IS NULL AND ((prior_review_evidence_set_id IS NULL AND prior_review_parent_policy_version IS NULL AND prior_review_parent_kind IS NULL) OR (prior_review_evidence_set_id IS NOT NULL AND prior_review_parent_policy_version IS NOT NULL AND prior_review_parent_kind = 'review')) AND review_finding_ids IS NULL) OR (kind = 'review' AND producer_execution_id IS NOT NULL AND producer_step_id IS NOT NULL AND producer_role = 'reviewer' AND validation_evidence_set_id IS NOT NULL AND validation_parent_policy_version IS NOT NULL AND validation_parent_kind = 'validation' AND validation_parent_head_sha IS NOT NULL AND prior_review_evidence_set_id IS NULL AND prior_review_parent_policy_version IS NULL AND prior_review_parent_kind IS NULL AND review_finding_ids IS NOT NULL)", name="shape"),
+        Index("ix_evidence_sets_scope", "run_id", "step_id", "kind", "head_sha"),
+        Index("ix_evidence_sets_producer", "producer_execution_id"),
+        Index("ix_evidence_sets_validation_parent", "validation_evidence_set_id"),
+        Index("ix_evidence_sets_prior_review_parent", "prior_review_evidence_set_id"),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("runs.id", ondelete="RESTRICT"), nullable=False)
+    step_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    head_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    producer_execution_id: Mapped[UUID | None] = mapped_column(Uuid)
+    producer_step_id: Mapped[UUID | None] = mapped_column(Uuid)
+    producer_role: Mapped[str | None] = mapped_column(String(24))
+    manifest_artifact_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False)
+    validation_evidence_set_id: Mapped[UUID | None] = mapped_column(Uuid)
+    validation_parent_policy_version: Mapped[int | None] = mapped_column(Integer)
+    validation_parent_kind: Mapped[str | None] = mapped_column(String(16))
+    validation_parent_head_sha: Mapped[str | None] = mapped_column(String(40))
+    prior_review_evidence_set_id: Mapped[UUID | None] = mapped_column(Uuid)
+    prior_review_parent_policy_version: Mapped[int | None] = mapped_column(Integer)
+    prior_review_parent_kind: Mapped[str | None] = mapped_column(String(16))
+    review_finding_ids: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class AgentExecutionEvidenceInput(Base):
+    """Immutable exact evidence association consumed by one reviewer execution."""
+
+    __tablename__ = "agent_execution_evidence_inputs"
+    __table_args__ = (
+        ForeignKeyConstraint(["run_id"], ["runs.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["consumer_execution_id", "run_id"], ["agent_executions.id", "agent_executions.run_id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["evidence_set_id", "run_id"], ["evidence_sets.id", "evidence_sets.run_id"], ondelete="RESTRICT"),
+        CheckConstraint("(purpose = 'validation_results' AND evidence_kind = 'validation') OR (purpose = 'prior_review' AND evidence_kind = 'review')", name="purpose_kind"),
+        Index("ix_agent_execution_evidence_inputs_set", "evidence_set_id", "run_id"),
+    )
+    consumer_execution_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    evidence_set_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    evidence_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class Review(Base, TimestampMixin):
