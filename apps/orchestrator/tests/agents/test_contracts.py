@@ -736,6 +736,22 @@ class TestUntrustedContentAndPolicySummary:
 class TestRoleInputContracts:
     """Tests for role input contracts, extra-field rejection, and reviewer isolation."""
 
+    def test_developer_receives_bounded_untrusted_check_evidence(self) -> None:
+        data = build_developer_input().model_dump()
+        evidence = build_untrusted_content("A controller check failed")
+        data["check_evidence"] = [evidence]
+        context = DeveloperInput.model_validate(data)
+        assert context.check_evidence == (evidence,)
+        data["check_evidence"] = [evidence] * 101
+        with pytest.raises(ValidationError):
+            DeveloperInput.model_validate(data)
+
+    def test_developer_check_evidence_counts_toward_total_context_bound(self) -> None:
+        data = build_developer_input().model_dump()
+        data["check_evidence"] = [build_untrusted_content("x" * 1_048_576)] * 4
+        with pytest.raises(ValidationError, match="context"):
+            DeveloperInput.model_validate(data)
+
     def test_planner_input_forbids_extra_fields(self) -> None:
         data = build_planner_input().model_dump()
         data["extra_notes"] = "forbidden"

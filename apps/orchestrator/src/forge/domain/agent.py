@@ -319,6 +319,9 @@ class DeveloperInput(BaseModel):
     remediation_findings: tuple[ReviewFinding, ...] = Field(
         default=(), max_length=_MAX_COLLECTION_SIZE
     )
+    check_evidence: tuple[UntrustedContent, ...] = Field(
+        default=(), max_length=_MAX_COLLECTION_SIZE
+    )
     relevant_instructions: tuple[UntrustedContent, ...] = Field(
         default=(), max_length=_MAX_COLLECTION_SIZE
     )
@@ -353,7 +356,9 @@ class DeveloperInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_context_size(self) -> Self:
-        _validate_context_size((self.original_task, *self.relevant_instructions))
+        _validate_context_size(
+            (self.original_task, *self.check_evidence, *self.relevant_instructions)
+        )
         return self
 
 

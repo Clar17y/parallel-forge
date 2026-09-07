@@ -392,6 +392,14 @@ class ValidationService:
             results=results,
             prior_review_evidence_set_id=prior_review_id,
         )
+        await _fence_command(command, work)
+        current = await self._approved_plans.load(work, run.id)
+        if (
+            current.run != run
+            or current.approval_id != approved.approval_id
+            or git.head_sha(worktree) != head_sha
+        ):
+            raise CommandRecoveryRequired("validation authority changed during publication")
         await work.commit()
         return evidence
 

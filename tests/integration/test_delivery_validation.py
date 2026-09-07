@@ -266,6 +266,34 @@ async def test_completed_validation_replays_verified_receipts_without_runner(
     assert runner.calls == ["unit", "lint"]
 
 
+async def test_candidate_changed_during_manifest_storage_is_not_published(
+    tmp_path, workflow_session_factory
+):
+    from forge.application.ports.commands import CommandRecoveryRequired
+    from forge.persistence.models import EvidenceSet
+
+    case, command, service, runner = await _case(tmp_path, workflow_session_factory)
+    git = service._git_factory(None)
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        original = work.artifacts.record
+
+        async def change_candidate(*args, **kwargs):
+            artifact = await original(*args, **kwargs)
+            if kwargs.get("producer_type") == "evidence_set":
+                git.head = "c" * 40
+            return artifact
+
+        work.artifacts.record = change_candidate
+        with pytest.raises(CommandRecoveryRequired):
+            await service.execute(command, work)
+    assert runner.calls == ["unit", "lint"]
+    async with workflow_session_factory() as session:
+        assert (
+            await session.scalar(select(EvidenceSet).where(EvidenceSet.run_id == case.run_id))
+            is None
+        )
+
+
 async def test_pause_after_atomic_check_retains_receipt_and_prevents_next_check(
     tmp_path, workflow_session_factory
 ):
