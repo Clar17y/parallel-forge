@@ -14,7 +14,11 @@ from forge.application.ports.evidence import EvidenceKind, EvidenceSetDescriptor
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
-from forge.application.services.validation import ValidationService, _fence_command
+from forge.application.services.validation import (
+    ValidationService,
+    _fence_command,
+    validation_command_binding,
+)
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.evidence import (
     EvidenceStatus,
@@ -52,16 +56,7 @@ class DeliveryService:
     async def validate(self, command: CommandEnvelope, work: UnitOfWork) -> DeliveryDecision:
         """Run checks, then atomically choose review, remediation, or intervention."""
         await _fence_command(command, work)
-        attempt = command.payload.get("semantic_attempt")
-        if (
-            command.command_type != "validate"
-            or command.payload_schema_version != 1
-            or type(attempt) is not int
-            or attempt < 1
-            or command.payload != {"semantic_attempt": attempt}
-            or command.idempotency_key != f"{command.run_id}:validate:{attempt}"
-        ):
-            raise CommandRecoveryRequired("validation decision command is invalid")
+        _attempt, prior_review_id = validation_command_binding(command)
         approved = await self._approved_plans.load(work, command.run_id)
         if command.actor_id != approved.approval_actor_id:
             raise CommandRecoveryRequired("validation decision actor differs")
@@ -74,7 +69,9 @@ class DeliveryService:
         step_id = uuid5(NAMESPACE_URL, f"forge:validate:{command.id}")
         evidence_id = uuid5(step_id, "validation-evidence")
         if prior:
-            descriptor, manifest = await self._evidence(work, approved, evidence_id, step_id)
+            descriptor, manifest = await self._evidence(
+                work, approved, evidence_id, step_id, prior_review_id
+            )
             event = prior[0]
             run = approved.run
             if (
@@ -140,7 +137,9 @@ class DeliveryService:
         refreshed = await self._approved_plans.load(work, command.run_id)
         if refreshed.run != approved.run or refreshed.approval_id != approved.approval_id:
             raise CommandRecoveryRequired("validation decision authority changed")
-        descriptor, manifest = await self._evidence(work, refreshed, evidence_id, step_id)
+        descriptor, manifest = await self._evidence(
+            work, refreshed, evidence_id, step_id, prior_review_id
+        )
         if produced != descriptor:
             raise CommandRecoveryRequired("validation returned different evidence")
         passed = all(member.status is EvidenceStatus.PASSED for member in manifest.members)
@@ -233,7 +232,12 @@ class DeliveryService:
         return payload
 
     async def _evidence(
-        self, work: UnitOfWork, approved: ApprovedPlan, evidence_id: UUID, step_id: UUID
+        self,
+        work: UnitOfWork,
+        approved: ApprovedPlan,
+        evidence_id: UUID,
+        step_id: UUID,
+        prior_review_id: UUID | None = None,
     ) -> tuple[EvidenceSetDescriptor, ValidationEvidenceManifest]:
         descriptor = await work.evidence.get_by_id(evidence_id, run_id=approved.run.id)
         wire = await self._store.open_bytes(descriptor.manifest_digest)
@@ -243,6 +247,7 @@ class DeliveryService:
             or descriptor.kind is not EvidenceKind.VALIDATION
             or descriptor.step_id != step_id
             or descriptor.producer_execution_id is not None
+            or descriptor.prior_review_evidence_set_id != prior_review_id
             or descriptor.policy_version != approved.policy.version
             or descriptor.manifest_byte_count != len(wire)
             or descriptor.manifest_digest != hashlib.sha256(wire).hexdigest()
@@ -251,6 +256,7 @@ class DeliveryService:
             or manifest.step_id != step_id
             or manifest.policy_version != descriptor.policy_version
             or manifest.head_sha != descriptor.head_sha
+            or manifest.prior_review_evidence_set_id != prior_review_id
             or {member.command_name: member.command_digest for member in manifest.members}
             != {spec.name: command_spec_digest(spec) for spec in approved.policy.required_checks}
             or len(manifest.members) != len(approved.policy.required_checks)

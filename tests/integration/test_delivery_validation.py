@@ -62,6 +62,7 @@ class _CheckingRunner:
                 select(OperationIntent).where(
                     OperationIntent.run_id == self.run_id,
                     OperationIntent.operation_kind == "controller_named_check",
+                    OperationIntent.status == "PENDING",
                     OperationIntent.request_payload["command_name"].astext == request.command_name,
                 )
             )
@@ -189,6 +190,68 @@ async def test_required_checks_have_committed_intents_and_publish_in_policy_orde
     )
     assert {member.command_name for member in manifest.members} == {"unit", "lint"}
     assert manifest.head_sha == "b" * 40
+
+
+async def test_validation_rejects_a_durably_queued_unapproved_actor(
+    tmp_path, workflow_session_factory
+):
+    from forge.application.ports.commands import CommandRecoveryRequired
+    from forge.persistence.models import RunCommand
+
+    case, command, service, runner = await _case(tmp_path, workflow_session_factory)
+    async with workflow_session_factory() as session, session.begin():
+        row = await session.get(RunCommand, command.id)
+        row.actor_id = None
+    delivered = replace(command, actor_id=None)
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        with pytest.raises(CommandRecoveryRequired, match="actor"):
+            await service.execute(delivered, work)
+    assert runner.calls == []
+    async with workflow_session_factory() as session:
+        assert (
+            await session.scalar(
+                select(OperationIntent).where(OperationIntent.run_id == case.run_id)
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("prior", [None, "", "00000000-0000-0000-0000-000000000000", 1])
+async def test_invalid_prior_review_binding_never_dispatches_checks(
+    tmp_path, workflow_session_factory, prior
+):
+    from forge.application.ports.commands import CommandRecoveryRequired
+    from forge.persistence.models import RunCommand
+
+    _case_data, command, service, runner = await _case(tmp_path, workflow_session_factory)
+    payload = {"semantic_attempt": 1, "prior_review_evidence_set_id": prior}
+    async with workflow_session_factory() as session, session.begin():
+        row = await session.get(RunCommand, command.id)
+        row.payload = payload
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        with pytest.raises(CommandRecoveryRequired, match="prior review"):
+            await service.execute(replace(command, payload=payload), work)
+    assert runner.calls == []
+
+
+async def test_validation_evidence_cannot_impersonate_prior_review(
+    tmp_path, workflow_session_factory
+):
+    from forge.application.ports.commands import CommandRecoveryRequired
+    from forge.persistence.models import RunCommand
+
+    _case_data, command, service, runner = await _case(tmp_path, workflow_session_factory)
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        first = await service.execute(command, work)
+    payload = {"semantic_attempt": 1, "prior_review_evidence_set_id": str(first.evidence_set_id)}
+    async with workflow_session_factory() as session, session.begin():
+        row = await session.get(RunCommand, command.id)
+        row.payload = payload
+    runner.calls.clear()
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        with pytest.raises(CommandRecoveryRequired, match="prior review"):
+            await service.execute(replace(command, payload=payload), work)
+    assert runner.calls == []
 
 
 async def test_completed_validation_replays_verified_receipts_without_runner(

@@ -37,8 +37,10 @@ from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.evidence import (
     EvidenceStatus,
+    ReviewEvidenceManifest,
     ValidationEvidenceManifest,
     ValidationEvidenceMember,
+    decode_evidence_manifest,
     encode_evidence_manifest,
 )
 from forge.domain.operation import OperationIntent, OperationOutcome, OperationStatus
@@ -63,6 +65,30 @@ async def _fence_command(command: CommandEnvelope, work: UnitOfWork) -> None:
         or fenced.actor_id != command.actor_id
     ):
         raise CommandRecoveryRequired("validation delivery does not match its lease")
+
+
+def validation_command_binding(command: CommandEnvelope) -> tuple[int, UUID | None]:
+    """Decode the closed validation payload shared by execution and decisions."""
+    attempt = command.payload.get("semantic_attempt")
+    prior = command.payload.get("prior_review_evidence_set_id")
+    if (
+        command.command_type != "validate"
+        or command.payload_schema_version != 1
+        or type(attempt) is not int
+        or attempt < 1
+        or command.idempotency_key != f"{command.run_id}:validate:{attempt}"
+        or set(command.payload) - {"semantic_attempt", "prior_review_evidence_set_id"}
+    ):
+        raise CommandRecoveryRequired("validation command authority is invalid")
+    prior_id = None
+    if "prior_review_evidence_set_id" in command.payload:
+        try:
+            prior_id = UUID(prior) if isinstance(prior, str) else None
+        except ValueError:
+            raise CommandRecoveryRequired("validation prior review identifier is invalid") from None
+        if prior_id is None or not prior_id.int or str(prior_id) != prior:
+            raise CommandRecoveryRequired("validation prior review identifier is invalid")
+    return attempt, prior_id
 
 
 class ValidationService:
@@ -100,18 +126,29 @@ class ValidationService:
         ):
             raise ValidationError("validation execution is not configured")
         await _fence_command(command, work)
-        attempt = command.payload.get("semantic_attempt")
-        if (
-            command.command_type != "validate"
-            or command.payload_schema_version != 1
-            or type(attempt) is not int
-            or attempt < 1
-            or command.payload != {"semantic_attempt": attempt}
-            or command.idempotency_key != f"{command.run_id}:validate:{attempt}"
-        ):
-            raise CommandRecoveryRequired("validation command authority is invalid")
+        attempt, prior_review_id = validation_command_binding(command)
         approved = await self._approved_plans.load(work, command.run_id)
+        if command.actor_id != approved.approval_actor_id:
+            raise CommandRecoveryRequired("validation command actor is not approved")
         run = approved.run
+        if prior_review_id is not None:
+            prior_review = await work.evidence.get_by_id(prior_review_id, run_id=run.id)
+            wire = await self._store.open_bytes(prior_review.manifest_digest)
+            manifest = decode_evidence_manifest(wire)
+            if (
+                prior_review.kind is not EvidenceKind.REVIEW
+                or prior_review.policy_version != approved.policy.version
+                or prior_review.manifest_digest != hashlib.sha256(wire).hexdigest()
+                or prior_review.manifest_byte_count != len(wire)
+                or not isinstance(manifest, ReviewEvidenceManifest)
+                or manifest.evidence_set_id != prior_review_id
+                or manifest.run_id != run.id
+                or manifest.policy_version != prior_review.policy_version
+                or manifest.head_sha != prior_review.head_sha
+                or manifest.producer_execution_id != prior_review.producer_execution_id
+                or manifest.validation_evidence_set_id != prior_review.validation_evidence_set_id
+            ):
+                raise CommandRecoveryRequired("validation prior review evidence differs")
         if run.state is not RunState.VALIDATING or command.expected_run_version != run.version:
             raise CommandRecoveryRequired("validation run is not current")
         if run.worktree_path is None or run.branch_name is None or run.base_sha is None:
@@ -144,6 +181,8 @@ class ValidationService:
             "evidence_set_id": str(evidence_id),
             "checks": tuple(command_spec_digest(spec) for spec in approved.policy.required_checks),
         }
+        if prior_review_id is not None:
+            binding["prior_review_evidence_set_id"] = str(prior_review_id)
         if step.is_new:
             await work.events.append(
                 RunEvent(
@@ -351,6 +390,7 @@ class ValidationService:
             policy=approved.policy,
             head_sha=head_sha,
             results=results,
+            prior_review_evidence_set_id=prior_review_id,
         )
         await work.commit()
         return evidence

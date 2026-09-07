@@ -6,6 +6,7 @@ import pytest
 from forge.application.services.delivery import DeliveryService
 from forge.application.services.recovery import OperationExecutor
 from forge.application.services.review import ReviewService
+from forge.application.services.review_decision import ReviewDecisionService
 from forge.application.services.validation import ValidationService
 from forge.domain.run import RunState
 from forge.persistence.repositories.commands import PostgresCommandRepository
@@ -89,3 +90,10 @@ async def test_approved_implementation_flows_through_controller_checks(
         assert evidence.validation_evidence_set_id == decision.validation_evidence_set_id
         assert reviewer.requests[0].execution_id != gateway.requests[0].execution_id
         assert reviewer.requests[0].parent_execution_id is None
+        async with PostgresUnitOfWork(workflow_session_factory) as work:
+            final = await ReviewDecisionService(
+                case.artifact_store, git_factory=development._git_factory
+            ).decide(next_command, work)
+        assert final.state is RunState.AWAITING_PR_APPROVAL
+        await commands.complete(next_command.id, worker_id="next-stage")
+        assert await commands.claim_next(worker_id="next-stage", lease_seconds=60) is None
