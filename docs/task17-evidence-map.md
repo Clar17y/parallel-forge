@@ -1,7 +1,7 @@
 # Task17 planning evidence map
 
 Status: implemented and tested at checkpoint `451e39b121b7dcf8fb81a9243767ceff12034abd`;
-acceptance remains pending the separate Sol-high correctness disposition. This
+acceptance remains pending repairs and rechecks for Sol findings A17-G01/G02. This
 map supports Task17 only, not Tasks18-29 or final cross-platform acceptance.
 
 The approved requirement source is Task17 in
@@ -40,6 +40,9 @@ candidate-to-commit mapping, not a claim of execution on a later documentation H
 
 One integrated independent review found A17-C01 and A17-C02; both were repaired
 and closed by one finding-specific recheck. Review output is not test evidence.
-The separate Sol-high gate is pending. Preparation command execution and the
+The separate Sol-high gate found stale-approval post-commit crash replay and
+lost-command-lease settlement defects (A17-G01/G02). The checkpoint's tests do
+not cover those defects; repair evidence belongs to a subsequent candidate.
+Preparation command execution and the
 complete local delivery/review/remediation workflow belong to Task18. Live
 provider checks and final cross-platform/whole-product acceptance remain open.
