@@ -1,7 +1,7 @@
 # Task17 planning evidence map
 
-Status: implemented and tested at checkpoint `451e39b121b7dcf8fb81a9243767ceff12034abd`;
-acceptance remains pending repairs and rechecks for Sol findings A17-G01/G02. This
+Status: **accepted** through checkpoint `dca5408`; A17-C01/C02 and A17-G01/G02
+are closed by independent review and finding-specific rechecks. This
 map supports Task17 only, not Tasks18-29 or final cross-platform acceptance.
 
 The approved requirement source is Task17 in
@@ -22,7 +22,30 @@ relative to `apps/orchestrator/src/forge`; test paths are repository-relative.
 | Plan evidence identifies the result actually produced by its successful execution | `plan_evidence.py`; `persistence/repositories/executions.py::get_outcome` | `tests/integration/test_plan_evidence_provenance.py` separately tests an alternate plan with genuine evidence producer, corrupt producer identity, and corrupt parent lineage. Genuine output FK is retained in the metadata cases; immutable database triggers remain enabled. |
 | Production worker actually composes the Planner, approval and revision handlers | `worker/composition.py`, `worker/main.py`, explicit pricing settings | `apps/orchestrator/tests/application/test_worker_composition.py` covers real construction, invalid configuration, exact request/tool bindings and narrow test seams; `test_worker_entrypoint.py` covers default composition/recovery behavior. The HTTP/PostgreSQL workflow exercises that composition with only the external agent gateway replaced. |
 
-## Verification identity and limits
+## Current repair verification and acceptance
+
+Core repair checkpoint `ac6085010a47ca8f1ae1b12ba7cdaf7979ed7df1` matches the
+scoped input hash of a 1629-pass affected run (2 host-link skips, 6 dependency
+warnings), with full Ruff/format and strict mypy passing. Evidence and mapping:
+`.llm-output/runs/task17-integration/gate-repairs/`. G01's exact stale-approval
+crash replay and queue/approval/actor tampering are covered in the HTTP/PostgreSQL
+workflow. G02's real lease tests cover two workers, same-worker-ID reuse, late
+success/invalid output with retained measured usage, and reclaim before dispatch.
+
+Lifetime follow-ups `9d848d7` and `dca5408` add production shutdown draining and
+retain worker capacity until a cancelled handler's UoW closes. The current 21-case
+entrypoint/worker/PostgreSQL lease selection passes, with scoped Ruff/format/mypy.
+It proves stop/cancel/error cleanup ordering, no new claim while draining and
+resumed polling afterward. Logs: `task17-review/shutdown-*.log` and
+`draining-capacity-*.log`. This supplements the unaffected core evidence; it is
+not a claim that the entire 1629-test selection reran on the final commit.
+
+The same Sol gate closed G01, then closed the remaining G02 lifetime question
+after inspecting the final scoped diff (disk SHA256
+`8d449211c09eba06d514454172dca3292867e3fe1ee2a2c98ea250e977846620`).
+No material finding remains open. Review output is not test evidence.
+
+## Historical verification identity and limits
 
 The final combined command selected API, approval model, settings, agents,
 application, security and persistence suites plus the four planning PostgreSQL
