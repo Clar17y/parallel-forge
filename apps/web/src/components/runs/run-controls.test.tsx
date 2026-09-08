@@ -235,6 +235,39 @@ test.each(['resource changed', '409', 'retry'])('teardown handles %s without cha
   expect(calls[1][2]?.idempotencyKey).toBe(calls[0][2]?.idempotencyKey);
 });
 
+test('branch removal requires its exact name and retries the same confirmed choice', async () => {
+  const value = projection({ available_commands: [{ name: 'teardown_run_resources', expected_run_version: 7, requires_feedback: false }] });
+  value.resource.teardown_confirmation = `teardown:${value.run.id}:${'a'.repeat(64)}`;
+  value.resource.branch_name = 'forge/exact-run';
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Remove run resources' }));
+  await userEvent.click(await screen.findByLabelText('Resource identity confirmation'));
+  await userEvent.paste(value.resource.teardown_confirmation);
+  const choice = screen.getByRole('checkbox', { name: 'Also delete the branch' });
+  expect(choice).not.toBeChecked();
+  await userEvent.click(choice);
+  const review = screen.getByRole('button', { name: 'Review resource removal' });
+  expect(review).toBeDisabled();
+  await userEvent.type(screen.getByLabelText('Branch name confirmation'), 'forge/wrong');
+  expect(review).toBeDisabled();
+  await userEvent.clear(screen.getByLabelText('Branch name confirmation'));
+  await userEvent.type(screen.getByLabelText('Branch name confirmation'), value.resource.branch_name);
+  await userEvent.click(review);
+  expect(screen.getByRole('dialog')).toHaveTextContent('Delete branch forge/exact-run');
+  expect(mutate).not.toHaveBeenCalled();
+  vi.mocked(mutate).mockRejectedValueOnce(new Error('connection lost'));
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm remove resources' }));
+  await screen.findByRole('alert');
+  vi.mocked(mutate).mockResolvedValueOnce({ id: 'removed' });
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm remove resources' }));
+  await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
+  const calls = vi.mocked(mutate).mock.calls;
+  expect(calls[0][1]).toEqual({ command_type: 'teardown_run_resources', delete_branch: true,
+    confirm_branch_name: 'forge/exact-run', confirm_resource_identity: value.resource.teardown_confirmation });
+  expect(calls[1][1]).toEqual(calls[0][1]);
+  expect(calls[1][2]?.idempotencyKey).toBe(calls[0][2]?.idempotencyKey);
+});
+
 test('terminal state does not invent a teardown control', () => {
   const value = projection({ available_commands: [] }); value.run.state = 'COMPLETED';
   render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);

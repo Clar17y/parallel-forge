@@ -91,14 +91,13 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
         const prefix = `teardown:${fresh.run.id}:`;
         if (!fresh.resource.teardown_confirmation.startsWith(prefix) || !/^[a-f0-9]{64}$/.test(fresh.resource.teardown_confirmation.slice(prefix.length))) throw new ApiError(409, 'invalid-resource-confirmation');
         next.resource = { ...fresh.resource };
-        next.payload = { command_type: name, delete_branch: false, confirm_resource_identity: fresh.resource.teardown_confirmation };
       }
       if (!signal.aborted) setBinding(next);
     } catch (error) { await report(error, signal); }
     finally { busy.current = false; if (!signal.aborted) setPending(false); }
   }
 
-  async function confirm() {
+  async function confirm(deleteBranch = false) {
     if (!binding || busy.current || stale || disabled || !lifecycle.current) return;
     if (binding.command.requires_feedback && !feedback.trim() && !binding.payload) return;
     const signal = lifecycle.current.signal;
@@ -112,8 +111,12 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
         });
         if (!result?.approval_id) throw new Error('Approval response unavailable');
       } else {
-        const payload = binding.payload ?? { command_type: binding.command.name,
-          ...(binding.command.requires_feedback ? { feedback } : {}) };
+        const payload = binding.payload ?? (binding.resource ? {
+          command_type: binding.command.name, delete_branch: deleteBranch,
+          confirm_resource_identity: binding.resource.teardown_confirmation,
+          ...(deleteBranch ? { confirm_branch_name: binding.resource.branch_name } : {}),
+        } : { command_type: binding.command.name,
+          ...(binding.command.requires_feedback ? { feedback } : {}) });
         setBinding({ ...binding, payload }); // Unknown responses retry the identical command body/key.
         const result = await mutate<components['schemas']['RunCommandResponse']>(`/runs/${projection.run.id}/commands`, payload,
           { idempotencyKey: binding.key, expectedVersion: binding.command.expected_run_version, signal });
@@ -142,7 +145,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
       {binding.command.requires_feedback && <label>Revision feedback<textarea required maxLength={8000} rows={5}
         value={feedback} readOnly={!!binding.payload} onChange={event => setFeedback(event.target.value)} /></label>}
       {binding.resource ? <ResourceTeardown key={binding.resource.teardown_confirmation} resource={binding.resource}
-        disabled={pending || disabled} onConfirm={() => void confirm()} /> : <button disabled={pending || disabled || (binding.command.requires_feedback && !feedback.trim())}
+        disabled={pending || disabled} onConfirm={deleteBranch => void confirm(deleteBranch)} /> : <button disabled={pending || disabled || (binding.command.requires_feedback && !feedback.trim())}
         onClick={() => void confirm()}>Confirm {labels[binding.command.name].toLowerCase()}</button>}
     </ConfirmationDialog>}
   </section>;
