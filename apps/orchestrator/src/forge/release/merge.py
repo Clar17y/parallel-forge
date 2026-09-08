@@ -78,6 +78,8 @@ class MergeController:
         return pull
 
     async def merge(self, approved: MergeApprovalEvidence) -> GitHubPullRequest:
+        if await self.queue_required(approved):
+            raise StaleMergeEvidence()
         # GitHub enforces this SHA atomically. Never retry a stale/uncertain PUT.
         return await self._writes.merge_pull_request(
             approved.repository,
@@ -85,6 +87,19 @@ class MergeController:
             approved.head_sha,
             approved.merge_method,
         )
+
+    async def queue_required(self, approved: MergeApprovalEvidence) -> bool:
+        protection = await self._github.get_merge_protection(
+            approved.repository, approved.base_ref.removeprefix("refs/heads/")
+        )
+        if (
+            not protection.safe_for_managed_merge
+            or canonical_digest(asdict(protection)) != approved.protection_digest
+            or (protection.merge_queue_enabled
+                and protection.merge_queue_method != approved.merge_method)
+        ):
+            raise StaleMergeEvidence()
+        return protection.merge_queue_enabled
 
     async def reconcile(
         self, record: ReleaseRecord, approved: MergeApprovalEvidence
@@ -166,6 +181,8 @@ class MergeOperation:
             return OperationOutcome(status=OperationStatus.FAILED, error="merge_preflight_rejected")
         try:
             pull = await self._controller.merge(self._approved)
+        except StaleMergeEvidence:
+            return OperationOutcome(status=OperationStatus.FAILED, error="merge_preflight_rejected")
         except GitHubWriteError as error:
             if error.category not in {"stale", "rejected"}:
                 raise
