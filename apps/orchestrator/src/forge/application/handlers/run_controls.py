@@ -20,6 +20,7 @@ from forge.application.services.resume_reconciliation import ResumeReconciler
 from forge.application.services.resume_source import continuation_binding, resume_command_ids
 from forge.application.services.state_engine import StateEngine
 from forge.domain.command import CommandEnvelope, CommandStatus
+from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.commands import CommandNotFound
 
@@ -125,6 +126,7 @@ class ResumeRunHandler:
             raise CommandRecoveryRequired("paused active phase requires recovery")
 
         pause_command = await _validate_pause_authority(work, run)
+        await _settle_redundant_resumes(work, command, pause_command)
         payload = _resume_payload(command, target, pause_command.id, run=run)
         if target is RunState.PREPARING_WORKTREE:
             sources = await work.commands.list_outstanding_normal(
@@ -154,6 +156,58 @@ class ResumeRunHandler:
             actor_id=command.actor_id,
         )
         await work.commit()
+
+
+async def _settle_redundant_resumes(
+    work: UnitOfWork, resume: CommandEnvelope, pause: CommandEnvelope
+) -> None:
+    """Coalesce unstarted identical intentions inside the resume transaction.
+
+    The caller holds the exact paused run and resume lease. Other stage work
+    remains visible to reconciliation and quiescence; failed restoration rolls
+    back these settlements together with the run transition.
+    """
+    outstanding = await work.commands.list_outstanding_normal(
+        run_id=resume.run_id, exclude_command_id=resume.id
+    )
+    for other in outstanding:
+        if other.command_type != "resume":
+            continue
+        if (
+            other.run_id != resume.run_id
+            or other.expected_run_version != resume.expected_run_version
+            or other.status is not CommandStatus.PENDING
+            or other.attempt != 0
+            or other.payload_schema_version != 1
+            or other.payload != {}
+            or other.actor_id is None
+            or other.lease_owner is not None
+            or other.lease_expires_at is not None
+            or other.completed_at is not None
+        ):
+            raise CommandRecoveryRequired("competing resume is not an unstarted identical intent")
+        if await work.commands.cancel_pending_unstarted(other) is None:
+            raise CommandRecoveryRequired("competing resume changed before supersession")
+        await work.events.append(
+            RunEvent(
+                run_id=resume.run_id,
+                run_version=resume.expected_run_version,
+                event_type="resume.superseded",
+                actor_class="worker",
+                payload={
+                    "command_id": str(other.id),
+                    "command_type": other.command_type,
+                    "idempotency_key": other.idempotency_key,
+                    "command_payload": {},
+                    "payload_schema_version": other.payload_schema_version,
+                    "expected_run_version": other.expected_run_version,
+                    "delivery_attempt": other.attempt,
+                    "actor_id": str(other.actor_id),
+                    "resume_command_id": str(resume.id),
+                    "pause_command_id": str(pause.id),
+                },
+            )
+        )
 
 
 async def _execute(command: CommandEnvelope, work: UnitOfWork, *, target: RunState) -> None:

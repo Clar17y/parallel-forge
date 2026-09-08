@@ -121,6 +121,14 @@ async def test_prepare_resumes_once_without_losing_approval_or_rebinding_branch(
             expected_run_version=paused.version,
             actor_id=uuid4(),
         )
+        duplicate = await commands.enqueue(
+            run_id=case.run_id,
+            command_type="resume",
+            idempotency_key=f"duplicate-prep-resume-{index}",
+            payload={},
+            expected_run_version=paused.version,
+            actor_id=uuid4(),
+        )
         resume = await commands.claim_next(worker_id="resume", lease_seconds=60)
         assert resume is not None and resume.command_type == "resume"
         if bound in {"missing_resource", "forged_branch", "approval_drift", "renewed_lease"} or (
@@ -174,6 +182,7 @@ async def test_prepare_resumes_once_without_losing_approval_or_rebinding_branch(
                         artifact_store=case.artifact_store, preparation_inspector=provisioner
                     )(resume, work)
             assert (await commands.get(source.id)).status is before_status
+            assert (await commands.get(duplicate.id)).status is CommandStatus.PENDING
             async with PostgresUnitOfWork(factory) as work:
                 assert await work.runs.get(case.run_id) == paused
             assert git.create_calls == 1
@@ -189,6 +198,7 @@ async def test_prepare_resumes_once_without_losing_approval_or_rebinding_branch(
             event = next(event for event in events if event.event_type == "run.resumed")
         assert git.create_calls == 1 if git else provisioner.calls == 0
         assert (await commands.get(source.id)).status is CommandStatus.CANCELLED
+        assert (await commands.get(duplicate.id)).status is CommandStatus.CANCELLED
         source = await commands.get(event.payload["continuation"]["command_id"])
         assert source.status is CommandStatus.PENDING
         await commands.complete(resume.id, worker_id="resume")

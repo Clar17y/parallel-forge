@@ -8,6 +8,7 @@ from forge.application.handlers.planning import PlanningHandler
 from forge.application.handlers.run_controls import PauseRunHandler, ResumeRunHandler
 from forge.application.ports.commands import CommandLane, CommandSuspended
 from forge.application.services.worker import Worker
+from forge.domain.command import CommandStatus
 from forge.domain.run import RunState
 from forge.persistence.models import AgentExecution
 from forge.persistence.repositories.commands import PostgresCommandRepository
@@ -87,7 +88,16 @@ async def test_worker_resumes_planning_with_fresh_execution(
             expected_run_version=paused.version,
             actor_id=uuid4(),
         )
+        duplicate = await commands.enqueue(
+            run_id=case.run_id,
+            command_type="resume",
+            idempotency_key=f"duplicate-resume-{index}",
+            payload={},
+            expected_run_version=paused.version,
+            actor_id=uuid4(),
+        )
         assert await worker.tick() is True
+        assert (await commands.get(duplicate.id)).status is CommandStatus.CANCELLED
         assert await worker.tick() is True
     async with PostgresUnitOfWork(workflow_session_factory) as work:
         run = await work.runs.get(case.run_id)
