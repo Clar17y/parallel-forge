@@ -164,12 +164,109 @@ async def test_branch_removal_persists_original_head_and_never_repeats_effect(
     stored = await operation_repository.get_by_idempotency_key(request.idempotency_key)
     assert stored.request_payload["expected_head"] == "b" * 40
     assert stored.outcome["request_digest"] == request.request_digest
+    # A successful durable receipt is authoritative even if Git later becomes
+    # unavailable or an external checkout appears. Never inspect/restore again.
+    from unittest.mock import AsyncMock, Mock
+
+    from forge.application.services.recovery import RecoveryService
+
+    inaccessible = BranchRemovalAdapter(
+        request,
+        Mock(side_effect=AssertionError("Git must not be consulted")),
+        AsyncMock(side_effect=AssertionError("source must not be revalidated")),
+    )
+    assert await executor.execute(request, inaccessible) == result
+    assert await executor.execute_admitted(stored, inaccessible) == result
+    recovered = await RecoveryService(operation_repository).reconcile(stored.id, inaccessible)
+    assert recovered.status is OperationStatus.SUCCEEDED
     drift = branch_removal_request(
         handle, policy_version=1, source_command_id=command_id, expected_head="c" * 40
     )
     with pytest.raises(IdempotencyConflict):
         await executor.execute(drift, BranchRemovalAdapter(drift, git, validate))
     assert [call for call in git.calls if call[0] == "delete"] == [("delete", "b" * 40)]
+
+
+@pytest.mark.integration
+async def test_uncertain_branch_is_quarantined_until_observation_settles_it(
+    session_factory,
+    operation_repository,
+    command_repository,
+    persisted_run,
+    tmp_path,
+):
+    import asyncio
+
+    from forge.application.services.recovery import RecoveryService
+    from forge.domain.run import RunState
+    from forge.persistence.repositories.recovery import PostgresRecoveryBarrier
+    from forge.persistence.unit_of_work import PostgresUnitOfWork
+    from forge.tools.git import ControlledGitError
+    from forge.worker.startup import run_startup_recovery
+    from forge.worker.startup_intervention import StartupInterventionRecovery
+
+    async with PostgresUnitOfWork(session_factory) as work:
+        run = await work.runs.transition(
+            persisted_run.id, 0, RunState.PLANNING, "test.planning", {}
+        )
+        run = await work.runs.transition(run.id, run.version, RunState.CANCELLED, "test.cancel", {})
+        await work.commit()
+    identity = WorktreeIdentity.for_run(run.project_id, run.id, "forge/uncertain", False)
+    handle = ManagedWorktree(
+        identity=identity, path=tmp_path / identity.worktree_name, base_sha="a" * 40
+    )
+    command = await command_repository.enqueue(
+        run_id=run.id,
+        command_type="teardown_run_resources",
+        idempotency_key="teardown-source",
+        expected_run_version=run.version,
+        payload={},
+        actor_id=uuid4(),
+    )
+    request = branch_removal_request(
+        handle, policy_version=1, source_command_id=command.id, expected_head="b" * 40
+    )
+    git = Git(handle)
+    inspection_available = False
+    original_inspect = git.inspect_retained_branch_deletion
+
+    def inspect(handle, head):
+        if not inspection_available:
+            raise ControlledGitError()
+        return original_inspect(handle, head)
+
+    git.inspect_retained_branch_deletion = inspect
+
+    async def validate(intent):
+        return handle
+
+    adapter = BranchRemovalAdapter(request, git, validate)
+    with pytest.raises(BranchRemovalError):
+        await OperationExecutor(operation_repository).execute(request, adapter)
+    assert git.calls == [("delete", "b" * 40)]
+    recovery = StartupInterventionRecovery(session_factory)
+
+    async def reconcile():
+        await recovery.wait_for_owners()
+        await RecoveryService(operation_repository).reconcile_all(
+            {request.kind: adapter}, allow_unresolved=True
+        )
+        await recovery.quarantine()
+
+    barrier = PostgresRecoveryBarrier(session_factory)
+    assert await run_startup_recovery(barrier, reconcile, asyncio.Event())
+    assert await command_repository.claim_next(worker_id="blocked", lease_seconds=30) is None
+    assert len(await operation_repository.list_unresolved()) == 1
+    async with PostgresUnitOfWork(session_factory) as work:
+        assert await work.runs.get(run.id) == run
+        events = await work.events.list_after(run.id, 0)
+        assert sum(e.event_type == "run.recovery_intervention" for e in events) == 1
+    inspection_available = True
+    assert await run_startup_recovery(barrier, reconcile, asyncio.Event())
+    assert await operation_repository.list_unresolved() == []
+    claimed = await command_repository.claim_next(worker_id="settled", lease_seconds=30)
+    assert claimed is not None and claimed.id == command.id
+    assert git.calls == [("delete", "b" * 40), ("inspect", "b" * 40)]
 
 
 @pytest.mark.integration
