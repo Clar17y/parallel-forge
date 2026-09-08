@@ -2049,14 +2049,19 @@ class CanonicalRoot:
                 access._release(os.close)
 
     @contextlib.contextmanager
-    def _inspect_absent_worktree_removal(self, target_leaf: str) -> Iterator[_QuarantineAccess]:
+    def _inspect_absent_worktree_removal(
+        self, target_leaf: str, *, restore_metadata_parent: bool = False
+    ) -> Iterator[_QuarantineAccess]:
         """Inspect one exact absent target under the retained mutation lock."""
 
         target_name = _validate_quarantine_component(target_leaf)
         self._revalidate_root()
         if os.name == "nt":
             with self._open_windows_worktree_removal(
-                target_name, None, mode=_REMOVAL_ABSENT
+                target_name,
+                None,
+                mode=_REMOVAL_ABSENT,
+                restore_metadata_parent=restore_metadata_parent,
             ) as access:
                 try:
                     yield access
@@ -2064,7 +2069,9 @@ class CanonicalRoot:
                 finally:
                     access._release(self._windows.close if self._windows else os.close)
             return
-        with self._open_posix_worktree_removal(target_name, None, mode=_REMOVAL_ABSENT) as access:
+        with self._open_posix_worktree_removal(
+            target_name, None, mode=_REMOVAL_ABSENT, restore_metadata_parent=restore_metadata_parent
+        ) as access:
             try:
                 yield access
                 self._verify_worktree_removal_state(access)
@@ -3232,6 +3239,7 @@ class CanonicalRoot:
         *,
         mode: str,
         prepared: bool = False,
+        restore_metadata_parent: bool = False,
     ) -> Iterator[_QuarantineAccess]:
         if not _O_DIRECTORY or not _O_NOFOLLOW:
             raise RepositoryAccessDenied("safe POSIX path capabilities are unavailable")
@@ -3239,6 +3247,8 @@ class CanonicalRoot:
             raise RepositoryAccessDenied("repository removal mode is invalid")
         if mode != _REMOVAL_ABSENT and registration_name is None:
             raise RepositoryAccessDenied("registration source is unavailable")
+        if restore_metadata_parent and mode != _REMOVAL_ABSENT:
+            raise RepositoryAccessDenied("metadata restoration requires absent resource inspection")
         resources: list[int] = []
         access: _QuarantineAccess | None = None
         try:
@@ -3265,6 +3275,11 @@ class CanonicalRoot:
                 resources.append(target_descriptor)
             else:
                 self._assert_posix_name_absent(worktree_parent_descriptor, target_name)
+            if restore_metadata_parent:
+                try:
+                    os.mkdir("worktrees", mode=0o700, dir_fd=git_descriptor)
+                except FileExistsError:
+                    pass
             metadata_parent_descriptor = _open_posix_directory_at(git_descriptor, "worktrees")
             resources.append(metadata_parent_descriptor)
             registration_path: Path | None = None
@@ -3688,6 +3703,7 @@ class CanonicalRoot:
         *,
         mode: str,
         prepared: bool = False,
+        restore_metadata_parent: bool = False,
     ) -> Iterator[_QuarantineAccess]:
         api = self._windows
         if api is None:
@@ -3698,6 +3714,8 @@ class CanonicalRoot:
             raise RepositoryAccessDenied("repository prepared mode is invalid")
         if mode != _REMOVAL_ABSENT and registration_name is None:
             raise RepositoryAccessDenied("registration source is unavailable")
+        if restore_metadata_parent and mode != _REMOVAL_ABSENT:
+            raise RepositoryAccessDenied("metadata restoration requires absent resource inspection")
         resources: list[int] = []
         access: _QuarantineAccess | None = None
         try:
@@ -3727,6 +3745,11 @@ class CanonicalRoot:
             else:
                 api.assert_child_absent(worktree_parent_handle, target_name)
             metadata_parent_path = git_path / "worktrees"
+            if restore_metadata_parent:
+                try:
+                    metadata_parent_path.mkdir()
+                except FileExistsError:
+                    pass
             metadata_parent_handle = api.open_directory(metadata_parent_path)
             resources.append(metadata_parent_handle)
             registration_path: Path | None = None

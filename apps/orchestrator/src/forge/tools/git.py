@@ -1161,6 +1161,107 @@ class ControlledGit:
         )
         return _return_code(result) == 0
 
+    def retained_branch_head(self, worktree: ManagedWorktree) -> str | None:
+        """Read the exact retained branch only after its managed worktree is absent."""
+        with self._retained_branch_access(worktree) as ref:
+            return self._direct_branch_head(ref)
+
+    def delete_retained_branch(self, worktree: ManagedWorktree, expected_head: str) -> None:
+        """Delete one direct branch ref with Git's immutable old-object comparison.
+
+        This is an operator lifecycle primitive, not an agent tool. The durable
+        caller must retain the expected head and reconcile interrupted outcomes.
+        """
+        _validate_sha(expected_head)
+        with self._retained_branch_access(worktree, require_unchecked_out=False) as ref:
+            self._reject_checkout_and_restore_missing_ref(ref, expected_head)
+            current = self._direct_branch_head(ref)
+            if current is None:
+                return
+            if current != expected_head:
+                raise ControlledGitError()
+            try:
+                result = self._run(
+                    self._repository.path, ("update-ref", "--no-deref", "-d", ref, expected_head)
+                )
+                _require_complete_result(result)
+            finally:
+                # An external checkout may race the preflight. Preserve its
+                # branch; never overwrite a concurrently recreated ref.
+                self._reject_checkout_and_restore_missing_ref(ref, expected_head)
+            if self._direct_branch_head(ref) is not None:
+                raise ControlledGitError()
+
+    def inspect_retained_branch_deletion(
+        self, worktree: ManagedWorktree, expected_head: str
+    ) -> bool:
+        """Reconcile absence, repairing a checked-out missing ref without retrying deletion."""
+        _validate_sha(expected_head)
+        with self._retained_branch_access(worktree, require_unchecked_out=False) as ref:
+            self._reject_checkout_and_restore_missing_ref(ref, expected_head)
+            current = self._direct_branch_head(ref)
+            if current is not None and current != expected_head:
+                raise ControlledGitError()
+            return current is None
+
+    def _reject_checkout_and_restore_missing_ref(self, ref: str, expected_head: str) -> None:
+        if not self._branch_is_checked_out(ref):
+            return
+        if self._direct_branch_head(ref) is None:
+            restored = self._run(
+                self._repository.path, ("update-ref", "--no-deref", ref, expected_head, "0" * 40)
+            )
+            _require_complete_result(restored)
+        raise ControlledGitError()
+
+    def _branch_is_checked_out(self, ref: str) -> bool:
+        registrations = self._run(self._repository.path, ("worktree", "list", "--porcelain", "-z"))
+        _require_complete_result(registrations)
+        if not registrations.stdout.endswith("\x00"):
+            raise ControlledGitError()
+        return f"branch {ref}" in registrations.stdout.split("\x00")
+
+    @contextlib.contextmanager
+    def _retained_branch_access(
+        self, worktree: ManagedWorktree, *, require_unchecked_out: bool = True
+    ) -> Iterator[str]:
+        identity, expected_path = self._validate_handle_shape(worktree)
+        _validate_identity(identity)
+        try:
+            with self._repository._inspect_absent_worktree_removal(
+                identity.worktree_name, restore_metadata_parent=True
+            ):
+                self._verify_removal_absent(identity, expected_path, None)
+                self._scan_local_config(self._repository.path)
+                self._verify_branch_format(identity.branch)
+                ref = f"refs/heads/{identity.branch}"
+                if require_unchecked_out and self._branch_is_checked_out(ref):
+                    raise ControlledGitError()
+                yield ref
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def _direct_branch_head(self, ref: str) -> str | None:
+        symbolic = self._run(
+            self._repository.path, ("symbolic-ref", "--quiet", ref), allow_return_codes=(0, 1)
+        )
+        _require_complete_result(symbolic)
+        if _return_code(symbolic) != 1:
+            raise ControlledGitError()
+        exists = self._run(
+            self._repository.path,
+            ("show-ref", "--verify", "--quiet", ref),
+            allow_return_codes=(0, 1),
+        )
+        _require_complete_result(exists)
+        if _return_code(exists) == 1:
+            return None
+        return _parse_sha(
+            self._run(self._repository.path, ("rev-parse", "--verify", f"{ref}^{{commit}}"))
+        )
+
     def current_branch(self, worktree: ManagedWorktree) -> str:
         """Return the handle's recorded branch after exact-path validation."""
 

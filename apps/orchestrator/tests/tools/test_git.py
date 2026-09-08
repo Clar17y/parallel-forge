@@ -2588,3 +2588,183 @@ def test_developer_worktree_capability_rejects_forged_standalone_identity(
         pass
 
     assert revalidate_entered == [forged_worktree_enabled_db, forged_worktree_enabled_db]
+
+
+def test_retained_branch_deletion_is_bound_to_exact_head_and_absent_worktree(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    with pytest.raises(ControlledGitError):
+        controlled.delete_retained_branch(handle, handle.base_sha)
+    controlled.remove_worktree(handle)
+    controlled.prune()
+    assert controlled.retained_branch_head(handle) == handle.base_sha
+    controlled.delete_retained_branch(handle, handle.base_sha)
+    assert controlled.retained_branch_head(handle) is None
+    controlled.delete_retained_branch(handle, handle.base_sha)
+    assert controlled.resolve_default_base_sha() == handle.base_sha
+
+
+@pytest.mark.parametrize("replacement", ["before_read", "before_delete"])
+def test_retained_branch_deletion_preserves_moved_ref(
+    tmp_path: Path, monkeypatch, replacement: str
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    _git(repository, "commit", "--allow-empty", "-m", "new branch tip")
+    moved = controlled.resolve_default_base_sha()
+    assert moved != handle.base_sha
+    if replacement == "before_read":
+        _git(repository, "update-ref", f"refs/heads/{identity.branch}", moved)
+    else:
+        original = controlled._run
+
+        def race(path, arguments, **kwargs):
+            if arguments[0] == "update-ref":
+                _git(repository, "update-ref", f"refs/heads/{identity.branch}", moved)
+            return original(path, arguments, **kwargs)
+
+        monkeypatch.setattr(controlled, "_run", race)
+    with pytest.raises(ControlledGitError):
+        controlled.delete_retained_branch(handle, handle.base_sha)
+    assert controlled.retained_branch_head(handle) == moved
+
+
+@pytest.mark.parametrize("checkout", ["canonical", "another_worktree"])
+def test_retained_branch_deletion_rejects_existing_checkout(tmp_path: Path, checkout: str) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    if checkout == "canonical":
+        _git(repository, "switch", identity.branch)
+    else:
+        _git(repository, "worktree", "add", str(tmp_path / "other-worktree"), identity.branch)
+    with pytest.raises(ControlledGitError):
+        controlled.delete_retained_branch(handle, handle.base_sha)
+    _git(repository, "show-ref", "--verify", f"refs/heads/{identity.branch}")
+
+
+@pytest.mark.parametrize("forgery", ["default", "path", "identity", "symbolic"])
+def test_retained_branch_deletion_rejects_forged_or_symbolic_target(
+    tmp_path: Path, forgery: str
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    forged = handle
+    if forgery == "default":
+        forged = replace(handle, identity=replace(identity, branch="main"))
+    elif forgery == "path":
+        forged = replace(handle, path=tmp_path / "outside")
+    elif forgery == "identity":
+        forged = replace(handle, identity=replace(identity, project_id=uuid4()))
+    else:
+        _git(repository, "symbolic-ref", f"refs/heads/{identity.branch}", "refs/heads/main")
+    with pytest.raises(ControlledGitError):
+        controlled.delete_retained_branch(forged, handle.base_sha)
+    assert controlled.resolve_default_base_sha() == handle.base_sha
+    _git(repository, "show-ref", "--verify", f"refs/heads/{identity.branch}")
+
+
+@pytest.mark.parametrize("checkout", ["canonical", "new_worktree"])
+def test_retained_branch_deletion_restores_ref_when_checkout_races_mutation(
+    tmp_path: Path, monkeypatch, checkout: str
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    original = controlled._run
+
+    def race(path, arguments, **kwargs):
+        if arguments[0] == "update-ref" and "-d" in arguments:
+            if checkout == "canonical":
+                _git(repository, "switch", identity.branch)
+            else:
+                _git(
+                    repository,
+                    "worktree",
+                    "add",
+                    str(tmp_path / "concurrent-worktree"),
+                    identity.branch,
+                )
+        return original(path, arguments, **kwargs)
+
+    monkeypatch.setattr(controlled, "_run", race)
+    with pytest.raises(ControlledGitError):
+        controlled.delete_retained_branch(handle, handle.base_sha)
+    _git(repository, "show-ref", "--verify", f"refs/heads/{identity.branch}")
+    _git(
+        repository, "merge-base", "--is-ancestor", handle.base_sha, f"refs/heads/{identity.branch}"
+    )
+
+
+def test_retained_branch_deletion_recovery_restores_interrupted_checked_out_ref(
+    tmp_path: Path,
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    # Reconstruct a crash after deletion but before checking concurrent checkout.
+    _git(repository, "switch", identity.branch)
+    _git(
+        repository,
+        "update-ref",
+        "--no-deref",
+        "-d",
+        f"refs/heads/{identity.branch}",
+        handle.base_sha,
+    )
+    with pytest.raises(ControlledGitError):
+        controlled.inspect_retained_branch_deletion(handle, handle.base_sha)
+    _git(repository, "show-ref", "--verify", f"refs/heads/{identity.branch}")
+
+
+def test_retained_branch_restoration_never_overwrites_concurrent_ref(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    _git(repository, "commit", "--allow-empty", "-m", "concurrent tip")
+    moved = controlled.resolve_default_base_sha()
+    original = controlled._run
+
+    def race(path, arguments, **kwargs):
+        if arguments[0] == "update-ref":
+            if "-d" in arguments:
+                _git(repository, "switch", identity.branch)
+            elif arguments[-1] == "0" * 40:
+                _git(repository, "update-ref", f"refs/heads/{identity.branch}", moved)
+        return original(path, arguments, **kwargs)
+
+    monkeypatch.setattr(controlled, "_run", race)
+    with pytest.raises(ControlledGitError):
+        controlled.delete_retained_branch(handle, handle.base_sha)
+    assert controlled._parse_base_sha(identity.branch) == moved
+
+
+def test_retained_branch_deletion_inspection_never_retries_effect(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repository, identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    original = controlled._run
+
+    def reject_mutation(path, arguments, **kwargs):
+        assert arguments[0] != "update-ref"
+        return original(path, arguments, **kwargs)
+
+    monkeypatch.setattr(controlled, "_run", reject_mutation)
+    assert controlled.inspect_retained_branch_deletion(handle, handle.base_sha) is False
+    _git(
+        repository,
+        "update-ref",
+        "--no-deref",
+        "-d",
+        f"refs/heads/{identity.branch}",
+        handle.base_sha,
+    )
+    assert controlled.inspect_retained_branch_deletion(handle, handle.base_sha) is True
