@@ -251,9 +251,14 @@ class GitHubClient:
                     _list(allowances.get(kind)) for kind in ("users", "teams", "apps")
                 ):
                     return _unverified()
-                rule_strict, queue, verified, bypass, rule_names = await self._rulesets(
-                    repository, branch, None
-                )
+                (
+                    rule_strict,
+                    queue,
+                    verified,
+                    bypass,
+                    rule_names,
+                    queue_method,
+                ) = await self._rulesets(repository, branch, None)
                 required_names.update(rule_names)
                 return MergeProtection(
                     strict or rule_strict,
@@ -262,6 +267,7 @@ class GitHubClient:
                     "branch_protection_rulesets_no_bypass",
                     verified=verified,
                     required_check_names=tuple(sorted(required_names)),
+                    merge_queue_method=queue_method,
                 )
             actor_id = _positive_int(actor.get("id"))
             login = _text(actor.get("login")).casefold()
@@ -280,9 +286,14 @@ class GitHubClient:
                 _text(_mapping(x).get("login")).casefold() == login
                 for x in _list(allowances.get("users"))
             ) or (protection is not None and admin and not enforced)
-            rule_strict, queue, verified, rule_bypass, rule_names = await self._rulesets(
-                repository, branch, actor_id
-            )
+            (
+                rule_strict,
+                queue,
+                verified,
+                rule_bypass,
+                rule_names,
+                queue_method,
+            ) = await self._rulesets(repository, branch, actor_id)
             required_names.update(rule_names)
             return MergeProtection(
                 strict or rule_strict,
@@ -291,14 +302,16 @@ class GitHubClient:
                 "branch_protection_rulesets_and_actor",
                 verified=verified,
                 required_check_names=tuple(sorted(required_names)),
+                merge_queue_method=queue_method,
             )
         except GitHubClientError:
             return _unverified()
 
     async def _rulesets(
         self, repository: str, branch: str, actor_id: int | None
-    ) -> tuple[bool, bool, bool, bool, tuple[str, ...]]:
+    ) -> tuple[bool, bool, bool, bool, tuple[str, ...], str | None]:
         queue = False
+        queue_method: str | None = None
         strict = False
         names: set[str] = set()
         effective = await self._pages(self._path(repository, "rules", "branches", _ref(branch)))
@@ -307,7 +320,14 @@ class GitHubClient:
             rulesets.setdefault(_positive_int(item.get("ruleset_id")), set()).add(
                 _text(item.get("type"))
             )
-            queue = queue or item["type"] == "merge_queue"
+            if item["type"] == "merge_queue":
+                method = _text(_mapping(item.get("parameters")).get("merge_method"))
+                if method not in {"MERGE", "SQUASH", "REBASE"}:
+                    raise GitHubClientError("malformed_response")
+                if queue_method is not None and queue_method != method.lower():
+                    raise GitHubClientError("malformed_response")
+                queue_method = method.lower()
+                queue = True
             if item["type"] == "required_status_checks":
                 parameters = _mapping(item.get("parameters"))
                 strict = strict or (
@@ -334,20 +354,20 @@ class GitHubClient:
                     {_text(_mapping(x).get("type")) for x in _list(rule.get("rules"))}
                 )
             ):
-                return False, False, False, False, ()
+                return False, False, False, False, (), None
             for entry in _list(rule.get("bypass_actors")):
                 if actor_id is None:
-                    return False, False, False, False, ()
+                    return False, False, False, False, (), None
                 item = _mapping(entry)
                 kind = _text(item.get("actor_type"))
                 mode = _text(item.get("bypass_mode"))
                 if mode not in {"always", "pull_request", "exempt"}:
-                    return False, False, False, False, ()
+                    return False, False, False, False, (), None
                 if kind == "User" and _positive_int(item.get("actor_id")) == actor_id:
-                    return strict, queue, True, True, tuple(sorted(names))
+                    return strict, queue, True, True, tuple(sorted(names)), queue_method
                 if kind != "User":
-                    return False, False, False, False, ()
-        return strict, queue, True, False, tuple(sorted(names))
+                    return False, False, False, False, (), None
+        return strict, queue, True, False, tuple(sorted(names)), queue_method
 
     async def _review_threads(self, repository: str, pull_number: int) -> list[dict[str, Any]]:
         owner, name = _repository(repository)

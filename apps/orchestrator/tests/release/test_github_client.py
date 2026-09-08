@@ -194,7 +194,16 @@ async def test_installation_token_requires_repository_access_and_no_possible_byp
                 },
             )
         if "/rules/branches/" in path:
-            return httpx.Response(200, json=[{"ruleset_id": 9, "type": "merge_queue"}])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "ruleset_id": 9,
+                        "type": "merge_queue",
+                        "parameters": {"merge_method": "SQUASH"},
+                    }
+                ],
+            )
         if path.endswith("/rulesets/9"):
             return httpx.Response(
                 200,
@@ -202,7 +211,7 @@ async def test_installation_token_requires_repository_access_and_no_possible_byp
                     "id": 9,
                     "target": "branch",
                     "enforcement": "active",
-                    "rules": [{"type": "merge_queue"}],
+                    "rules": [{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}],
                     "bypass_actors": [
                         {"actor_type": "User", "actor_id": 7, "bypass_mode": "always"}
                     ]
@@ -218,6 +227,45 @@ async def test_installation_token_requires_repository_access_and_no_possible_byp
         assert protection.verified and not protection.actor_can_bypass
         assert protection.required_check_names == ("ci",)
         assert protection.evidence_source == "branch_protection_rulesets_no_bypass"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "methods", [("MERGE",), ("SQUASH",), ("REBASE",), ("MERGE", "SQUASH"), ("invalid",)]
+)
+async def test_effective_merge_queue_method_is_verified(methods):
+    async def handler(request):
+        path = request.url.path
+        if path.endswith("/protection"):
+            return httpx.Response(404)
+        if path == "/user":
+            return httpx.Response(200, json={"id": 1, "login": "operator"})
+        if path.endswith("/permission"):
+            return httpx.Response(200, json={"permission": "write"})
+        rules = [
+            {"ruleset_id": i + 1, "type": "merge_queue", "parameters": {"merge_method": method}}
+            for i, method in enumerate(methods)
+        ]
+        if "/rules/branches/" in path:
+            return httpx.Response(200, json=rules)
+        index = int(path.rsplit("/", 1)[1])
+        return httpx.Response(
+            200,
+            json={
+                "id": index,
+                "target": "branch",
+                "enforcement": "active",
+                "bypass_actors": [],
+                "rules": [{"type": "merge_queue", "parameters": rules[index - 1]["parameters"]}],
+            },
+        )
+
+    protection = await _client(handler).get_merge_protection("owner/repo", "main")
+    if len(methods) == 1 and methods[0] != "invalid":
+        assert protection.verified
+        assert protection.merge_queue_method == methods[0].lower()
+    else:
+        assert not protection.safe_for_managed_merge
 
 
 @pytest.mark.asyncio

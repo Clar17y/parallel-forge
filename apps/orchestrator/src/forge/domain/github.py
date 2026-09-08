@@ -63,6 +63,7 @@ class MergeProtection:
     evidence_source: str
     verified: bool = True
     required_check_names: tuple[str, ...] = ()
+    merge_queue_method: str | None = None
 
     @property
     def safe_for_managed_merge(self) -> bool:

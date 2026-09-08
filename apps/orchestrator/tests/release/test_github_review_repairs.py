@@ -78,7 +78,16 @@ async def test_protection_uses_github_effective_branch_rules_even_without_classi
             return httpx.Response(200, json={"permission": "write"})
         if "/rules/branches/" in path:
             return httpx.Response(
-                200, json=[{"type": "merge_queue", "ruleset_id": 42}] if applies else []
+                200,
+                json=[
+                    {
+                        "type": "merge_queue",
+                        "ruleset_id": 42,
+                        "parameters": {"merge_method": "SQUASH"},
+                    }
+                ]
+                if applies
+                else [],
             )
         if path.endswith("/rulesets/42"):
             return httpx.Response(
@@ -88,7 +97,7 @@ async def test_protection_uses_github_effective_branch_rules_even_without_classi
                     "target": "branch",
                     "enforcement": "active",
                     "bypass_actors": [],
-                    "rules": [{"type": "merge_queue"}],
+                    "rules": [{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}],
                     "conditions": {
                         "ref_name": {
                             "include": ["refs/heads/qa/*", "~DEFAULT_BRANCH", "~ALL"],
@@ -101,6 +110,7 @@ async def test_protection_uses_github_effective_branch_rules_even_without_classi
 
     result = await _client(handler).get_merge_protection("owner/repo", branch)
     assert result.safe_for_managed_merge is applies
+    assert result.merge_queue_method == ("squash" if applies else None)
     assert any("/rules/branches/" in path for path in paths)
 
 
