@@ -79,6 +79,13 @@ entry or reconciled the accepted operation. It is historical admission evidence,
 not a live guarantee that the PR remains in GitHub's queue. Eviction, protection
 drift and deadline expiry can subsequently require intervention.
 
+A well-formed GraphQL request-error result with no data entry proves the request
+failed before execution and is recorded as rejected. Responses with data (including
+null), execution error paths or malformed error details remain uncertain. This
+follows the [GraphQL response contract](https://spec.graphql.org/September2025/#sec-Errors);
+an errors array alone does not prove that a mutation had no effect. Neither case
+automatically retries queue insertion.
+
 Only a recorded merge commit indicates that Forge has persisted merge completion.
 While admission is uncertain, inspect the existing PR on GitHub and retain the
 operation and resources for startup reconciliation. Do not treat an absent queue

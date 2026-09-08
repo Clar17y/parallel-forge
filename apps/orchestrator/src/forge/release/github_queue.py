@@ -54,6 +54,11 @@ class GitHubMergeQueue:
                     "jump": False, "clientMutationId": correlation_id,
                 }},
             }))
+        except GitHubWriteError:
+            raise GitHubWriteError("uncertain") from None
+        if _request_error(response):
+            raise GitHubWriteError("rejected")
+        try:
             data = _data(response)
             result = _mapping(data.get("enqueuePullRequest"))
             if result.get("clientMutationId") != correlation_id:
@@ -100,6 +105,39 @@ def _expected(
         })
     except ValidationError:
         raise GitHubWriteError("invalid_request") from None
+
+
+def _request_error(response: dict[str, Any]) -> bool:
+    """GraphQL request errors precede execution; execution results contain data.
+
+    Accept only a well-formed request-error result. Error paths indicate execution
+    and cannot prove no effect, even if the server omitted its data field.
+    """
+    if set(response) - {"errors", "extensions"} or (
+        "extensions" in response and not isinstance(response["extensions"], dict)
+    ):
+        return False
+    errors = response.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return False
+    for error in errors:
+        if (
+            not isinstance(error, dict) or set(error) - {"message", "locations", "extensions"}
+            or not isinstance(error.get("message"), str) or not error["message"].strip()
+            or ("extensions" in error and not isinstance(error["extensions"], dict))
+        ):
+            return False
+        if "locations" in error:
+            locations = error["locations"]
+            if not isinstance(locations, list) or not locations:
+                return False
+            for location in locations:
+                if (
+                    not isinstance(location, dict) or set(location) != {"line", "column"}
+                    or any(type(location[key]) is not int or location[key] < 1 for key in ("line", "column"))
+                ):
+                    return False
+    return True
 
 
 def _data(response: dict[str, Any]) -> dict[str, Any]:

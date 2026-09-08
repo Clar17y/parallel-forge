@@ -185,3 +185,32 @@ async def test_head_drift_fails_before_mutation():
 
     with pytest.raises(GitHubWriteError, match="stale"):
         await _adapter(handler).enqueue("Owner/Repo", 7, "PR_node", "a" * 40, "squash", "id")
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body,category", [
+    ({"errors": [{"message": "secret validation failure"}]}, "rejected"),
+    ({"errors": [{"message": "secret", "locations": [{"line": 1, "column": 2}]}],
+      "extensions": {"requestId": "private"}}, "rejected"),
+    ({"data": None, "errors": [{"message": "secret"}]}, "uncertain"),
+    ({"errors": [{"message": "secret", "path": ["enqueuePullRequest"]}]}, "uncertain"),
+    ({"errors": []}, "uncertain"),
+    ({"errors": [{"message": ""}]}, "uncertain"),
+    ({"errors": [{"message": "secret", "locations": [{"line": True, "column": 1}]}]}, "uncertain"),
+    ({"errors": [{"message": "secret"}], "unexpected": True}, "uncertain"),
+])
+async def test_only_well_formed_preexecution_errors_prove_refusal(body, category):
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        return httpx.Response(200, json=_rest() if request.method == "GET" else body)
+
+    adapter = _adapter(handler)
+    try:
+        with pytest.raises(GitHubWriteError) as caught:
+            await adapter.enqueue("Owner/Repo", 7, "PR_node", "a" * 40, "squash", "id")
+        assert caught.value.category == category
+        assert "secret" not in str(caught.value) and "private" not in str(caught.value)
+        assert calls == ["GET", "POST"]
+    finally:
+        await adapter._write.aclose()

@@ -80,6 +80,7 @@ async def composed_queue_handlers(tmp_path):
     (True, None, "routing_history_unavailable"), (True, None, "routing_mode_unavailable"),
     (True, None, "merged_completion_unavailable"),
     (True, None, "merged_protection_unavailable"),
+    (True, None, "admission_rejected_graphql"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, composed_queue_handlers, queue, crash, ending
@@ -152,6 +153,17 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             assert admitted.request_payload["approval_id"] == str(approval_id)
             assert admitted.request_payload["head_sha"] == git.head
             enqueue_attempts.append(admitted.id)
+            if ending == "admission_rejected_graphql":
+                from forge.release.github_queue import GitHubMergeQueue
+
+                async def request_error(method, path, **kwargs):
+                    assert method == "POST" and path == "/graphql"
+                    return {"errors": [{"message": "request validation failed"}]}
+
+                adapter = GitHubMergeQueue(SimpleNamespace(
+                    get_pull_request=writes.get_pull_request, _json=request_error,
+                ))
+                return await adapter.enqueue(*args)
             if ending.startswith("admission_uncertain"):
                 from forge.release.github_write import GitHubWriteError
                 raise GitHubWriteError("uncertain")

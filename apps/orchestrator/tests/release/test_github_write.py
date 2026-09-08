@@ -252,3 +252,23 @@ async def test_transport_failure_is_uncertain_and_does_not_leak_token() -> None:
             "Owner/Repo", "Head/Repo", "forge/run", "main", "title", "body"
         )
     assert "github_pat_this" not in str(raised.value)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matching", [True, False])
+async def test_missing_head_repository_is_skipped_only_after_ref_excludes_the_pr(matching):
+    def handler(request):
+        assert request.method == "GET"
+        summary = _pr()
+        summary["head"] = {"repo": None, "ref": "forge/run" if matching else "unrelated", "sha": "a" * 40}
+        return httpx.Response(200, json=[summary])
+
+    adapter = _adapter(handler)
+    try:
+        if matching:
+            # An ambiguous matching PR cannot establish that publication is absent.
+            with pytest.raises(GitHubWriteError, match="malformed_response"):
+                await adapter.find_pull_requests("Owner/Repo", "Head/Repo", "forge/run", "main")
+        else:
+            assert await adapter.find_pull_requests("Owner/Repo", "Head/Repo", "forge/run", "main") == ()
+    finally:
+        await adapter.aclose()
