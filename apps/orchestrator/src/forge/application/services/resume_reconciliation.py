@@ -12,6 +12,7 @@ from forge.application.ports.controller_steps import ControllerStepUnsettledErro
 from forge.application.ports.executions import ExecutionStatus, ExecutionUnsettledError
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.deferred_delivery import settle_deferred_delivery
+from forge.application.services.published_resume import published_stage
 from forge.application.services.retained_outcome import load_retained_outcome
 from forge.application.services.retained_validation import cancel_retained_validation
 from forge.application.services.state_engine import StateEngine
@@ -115,10 +116,10 @@ class ResumeReconciler:
                 )
                 if source_receipt is None:
                     raise CommandRecoveryRequired("retained outcome has no suspended receipt")
-                await _validate_receipt(work, run, pause, source_receipt, source)
+                await _validate_receipt(work, run, pause, source_receipt, source, self._store)
                 settled.append(recovered_source)
                 continue
-            await _validate_receipt(work, run, pause, source_receipt, source)
+            await _validate_receipt(work, run, pause, source_receipt, source, self._store)
             # The conditional update uses PostgreSQL time and the entire
             # observed lease identity, so a renewal/reclaim races safely fail.
             cancelled = await work.commands.cancel_expired_observed_lease(
@@ -140,11 +141,11 @@ class ResumeReconciler:
                     "suspended delivery source command is missing"
                 ) from None
             if source.status is CommandStatus.COMPLETED:
-                await _validate_receipt(work, run, pause, receipt, source)
+                await _validate_receipt(work, run, pause, receipt, source, self._store)
                 settled.append(source)
             elif source.status is CommandStatus.CANCELLED:
                 # A prior reconciliation has already settled this receipt.
-                await _validate_receipt(work, run, pause, receipt, source)
+                await _validate_receipt(work, run, pause, receipt, source, self._store)
                 settled.append(source)
             else:
                 raise CommandRecoveryRequired("suspended delivery source has unsupported status")
@@ -176,6 +177,24 @@ class ResumeReconciler:
         )
         if cancelled is None:
             raise CommandRecoveryRequired("retained outcome lease changed before settlement")
+        if self._store is not None:
+            published = await published_stage(work, self._store, run, cancelled)
+            if published is not None:
+                step_id, execution_id, output_id = published
+                await _record_retained_receipt(
+                    work,
+                    run,
+                    pause,
+                    source,
+                    admitted,
+                    step_id,
+                    kind,
+                    attempt,
+                    execution_id,
+                    output_id,
+                    published=True,
+                )
+                return cancelled
         if kind == "validate":
             step_id = await cancel_retained_validation(work, run, cancelled)
             await _record_retained_receipt(
@@ -274,6 +293,8 @@ async def _record_retained_receipt(
     attempt: int,
     execution_id: UUID | None,
     output_artifact_id: UUID | None,
+    *,
+    published: bool = False,
 ) -> None:
     payload = {
         "command_id": str(source.id),
@@ -291,6 +312,8 @@ async def _record_retained_receipt(
         "execution_id": str(execution_id) if execution_id else None,
         "output_artifact_id": str(output_artifact_id) if output_artifact_id else None,
     }
+    if published:
+        payload["published"] = True
     await work.events.append(
         RunEvent(
             run_id=run.id,
@@ -386,6 +409,7 @@ async def _validate_receipt(
     pause: CommandEnvelope,
     receipt: RunEvent,
     source: CommandEnvelope,
+    store: ArtifactStore | None,
 ) -> None:
     source_id = _receipt_command_id(receipt)
     payload: Mapping[str, object] = receipt.payload
@@ -466,6 +490,19 @@ async def _validate_receipt(
         raise CommandRecoveryRequired(
             "suspended delivery receipt step identifier is invalid"
         ) from None
+    if payload.get("published") is True:
+        if store is None:
+            raise CommandRecoveryRequired("published receipt requires artifact storage")
+        durable_source = await work.commands.get(source.id)
+        published = await published_stage(work, store, run, durable_source)
+        if published is None or (
+            published[0] != step_id
+            or (str(published[1]) if published[1] is not None else None)
+            != payload.get("execution_id")
+            or str(published[2]) != payload.get("output_artifact_id")
+        ):
+            raise CommandRecoveryRequired("published receipt lineage differs")
+        return
     if kind == "validate":
         step = await work.controller_steps.get(run.id, step_id)
         if (
