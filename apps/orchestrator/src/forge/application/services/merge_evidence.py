@@ -1,6 +1,7 @@
 """Recompute the complete local/remote evidence at a pending merge gate."""
 
 import hashlib
+import json
 from collections.abc import Mapping
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from forge.application.services.pr_evidence import PrEvidenceValidationError, Pr
 from forge.application.services.release_resume import resumed_release_origin
 from forge.artifacts._errors import ArtifactIntegrityError, ArtifactStoreError
 from forge.domain.approval import ApprovalGate, MergeApprovalEvidence, canonical_digest
+from forge.domain.operation import canonical_digest as payload_digest
 from forge.domain.run import RunState
 from forge.persistence.models import Approval
 from forge.persistence.repositories.artifacts import ArtifactNotFound
@@ -24,6 +26,63 @@ class MergeEvidenceValidator:
         self, store: ArtifactStore, publication: PrEvidenceValidator, controller: MergeController
     ) -> None:
         self._store, self._publication, self._controller = store, publication, controller
+
+    async def queue_required(
+        self, work: UnitOfWork, run_id: UUID, approval_id: UUID, approved: MergeApprovalEvidence
+    ) -> bool:
+        """Choose the effect from the frozen observation, never from mutable remote state."""
+        approval = await work.auth.get_approval(approval_id=approval_id, for_update=True)
+        record = await work.releases.get_for_run(run_id)
+        if (
+            not isinstance(approval, Approval) or record is None
+            or approval.run_id != run_id or approval.gate != "merge"
+            or approval.evidence_digest != canonical_digest(approved)
+        ):
+            raise StaleMergeEvidence()
+        try:
+            version = await approval_gate_origin(
+                work, run_id, approval.run_version, "merge", approval.evidence_digest
+            )
+            events = [
+                event for event in await work.events.list_for_version(run_id, version)
+                if event.event_type == "run.merge_ready" and event.actor_class == "worker"
+                and event.payload.get("merge_evidence_digest") == approval.evidence_digest
+                and event.payload.get("pull_request_id") == str(record.id)
+            ]
+            if len(events) != 1:
+                raise StaleMergeEvidence()
+            digest = str(events[0].payload.get("observation_digest"))
+            descriptor = await work.artifacts.get_by_digest(digest, run_id=run_id)
+            wire = await self._store.open_bytes(digest, max_bytes=1_000_000)
+            if (
+                hashlib.sha256(wire).hexdigest() != digest or descriptor.digest != digest
+                or descriptor.producer_type != "remote_pr_observation"
+                or descriptor.producer_id != record.id or descriptor.truncated
+                or descriptor.media_type != "application/json" or descriptor.byte_count != len(wire)
+            ):
+                raise StaleMergeEvidence()
+            raw = json.loads(wire)
+            protection = raw.get("protection") if isinstance(raw, dict) else None
+            if (
+                not isinstance(protection, dict)
+                or payload_digest(protection) != approved.protection_digest
+                or type(protection.get("merge_queue_enabled")) is not bool
+                or protection.get("verified") is not True
+                or protection.get("actor_can_bypass") is not False
+            ):
+                raise StaleMergeEvidence()
+            queue = protection["merge_queue_enabled"]
+            if (
+                (queue and protection.get("merge_queue_method") != approved.merge_method)
+                or (not queue and protection.get("strict_required_checks") is not True)
+            ):
+                raise StaleMergeEvidence()
+            return bool(queue)
+        except (
+            ValueError, OSError, ArtifactNotFound, ArtifactIntegrityError,
+            ArtifactStoreError, CommandRecoveryRequired,
+        ):
+            raise StaleMergeEvidence() from None
 
     async def validate(self, work: UnitOfWork, run_id: UUID) -> MergeApprovalEvidence:
         run = await work.runs.get_for_update(run_id)
