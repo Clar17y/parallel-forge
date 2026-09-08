@@ -130,6 +130,12 @@ class DashboardQuery:
                 .order_by(PullRequest.updated_at.desc(), PullRequest.id)
                 .limit(1)
             )
+            queue_status = await session.scalar(
+                select(OperationIntent.status)
+                .where(OperationIntent.run_id == run_id, OperationIntent.operation_kind == "enqueue_pr")
+                .order_by(OperationIntent.created_at.desc(), OperationIntent.id)
+                .limit(1)
+            ) if pr else None
             events = list(
                 await session.scalars(
                     select(RunEvent)
@@ -208,6 +214,11 @@ class DashboardQuery:
                     "base_sha": pr.base_sha,
                     "state": pr.state,
                     "merge_state": pr.merge_state,
+                    "merge_sha": pr.merge_sha,
+                    "queue_admission": {
+                        "PENDING": "pending", "SUCCEEDED": "accepted",
+                        "FAILED": "rejected", "NEEDS_RECONCILIATION": "uncertain",
+                    }.get(queue_status) if queue_status is not None else None,
                 }
                 if pr
                 else None,

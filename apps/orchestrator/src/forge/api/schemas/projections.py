@@ -69,6 +69,8 @@ class PullRequestSection(ProjectionModel):
     base_sha: str
     state: str
     merge_state: str | None
+    merge_sha: str | None = None
+    queue_admission: Literal["pending", "accepted", "rejected", "uncertain"] | None = None
 
 
 class CheckItem(ProjectionModel):

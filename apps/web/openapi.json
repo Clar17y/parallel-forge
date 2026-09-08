@@ -2985,6 +2985,17 @@
             "title": "Head Sha",
             "type": "string"
           },
+          "merge_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merge Sha"
+          },
           "merge_state": {
             "anyOf": [
               {
@@ -2999,6 +3010,23 @@
           "number": {
             "title": "Number",
             "type": "integer"
+          },
+          "queue_admission": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "accepted",
+                  "rejected",
+                  "uncertain"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Admission"
           },
           "repository": {
             "title": "Repository",

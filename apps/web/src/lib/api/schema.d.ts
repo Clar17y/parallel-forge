@@ -1742,10 +1742,14 @@ export interface components {
             branch: string;
             /** Head Sha */
             head_sha: string;
+            /** Merge Sha */
+            merge_sha?: string | null;
             /** Merge State */
             merge_state: string | null;
             /** Number */
             number: number;
+            /** Queue Admission */
+            queue_admission?: ("pending" | "accepted" | "rejected" | "uncertain") | null;
             /** Repository */
             repository: string;
             /** State */

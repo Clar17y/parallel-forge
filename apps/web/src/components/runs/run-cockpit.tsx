@@ -68,6 +68,16 @@ export function RunCockpit({ initial }: { initial: Projection }) {
       <dt>Next gate</dt><dd>{value.next_gate ?? 'None'}</dd>
       {value.pull_request && <><dt>Pull request</dt><dd><a href={`https://github.com/${value.pull_request.repository}/pull/${value.pull_request.number}`} target="_blank" rel="noreferrer">#{value.pull_request.number}</a></dd></>}
     </dl>
+    {value.pull_request && <section aria-label="PR / Merge"><h2>PR / Merge</h2>
+      {value.pull_request.merge_sha ? <><h3>Recorded merge commit</h3><code>{value.pull_request.merge_sha}</code></> : <>
+        {value.pull_request.queue_admission === 'accepted' && <p>Queue admission recorded. Forge has not recorded a completed merge. Admission does not confirm that the PR is still in the queue.</p>}
+        {value.pull_request.queue_admission === 'pending' && <p>Queue admission pending.</p>}
+        {value.pull_request.queue_admission === 'rejected' && <p>Queue admission was rejected. Review the activity and current GitHub protections before taking further action.</p>}
+        {value.pull_request.queue_admission === 'uncertain' && <p>Queue admission outcome is uncertain. Check the PR on GitHub and preserve the existing operation for reconciliation before attempting another merge.</p>}
+        {!value.pull_request.queue_admission && <p>No completed merge recorded.</p>}
+        {value.run.state === 'AWAITING_HUMAN_INTERVENTION' && <p>Manual attention required. Review the recorded reason and the PR on GitHub. This page does not authorize another merge or removal from the queue.</p>}
+      </>}
+    </section>}
     <RunControls projection={value} onRefresh={refresh} disabled={failed || reading || connection !== 'connected'} />
     <nav aria-label="Run sections"><button aria-pressed={section === 'overview'} onClick={() => setSection('overview')}>Overview</button>
       <button aria-pressed={section === 'plan'} onClick={() => setSection('plan')}>Plan</button>

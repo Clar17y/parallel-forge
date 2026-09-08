@@ -71,5 +71,21 @@ the existing stopped-delivery/resume chain. Admission events retain their own
 - One integrated release repair recheck against original R25-03 and remaining
   R24/R25 findings; scoped correctness question covers queue authority and crashes.
 
-The full v0.1 acceptance gate remains required. This contract is preparation,
-not implementation or test evidence.
+## Operator interpretation
+
+The cockpit's PR / Merge section reports the latest persisted queue admission:
+pending, accepted, rejected, or uncertain. Accepted means Forge recorded a queue
+entry or reconciled the accepted operation. It is historical admission evidence,
+not a live guarantee that the PR remains in GitHub's queue. Eviction, protection
+drift and deadline expiry can subsequently require intervention.
+
+Only a recorded merge commit indicates that Forge has persisted merge completion.
+While admission is uncertain, inspect the existing PR on GitHub and retain the
+operation and resources for startup reconciliation. Do not treat an absent queue
+entry as proof that the enqueue had no effect: the PR may already have merged.
+Review the run's activity and current GitHub protections when intervention is
+requested. Manual GitHub action is a separate operator decision; the cockpit does
+not grant authority to retry a merge or remove a queued entry.
+
+The full v0.1 acceptance gate remains required. Current implementation and test
+evidence, including outstanding review gates, are recorded in the progress ledger.

@@ -267,6 +267,13 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         assert len(enqueue_attempts) == queue_port.writes == 1
         return
     if ending.startswith("admission_"):
+        from forge.persistence.queries.dashboard import DashboardQuery
+
+        projected = await DashboardQuery(factory).run_projection(case.run_id)
+        assert projected["pull_request"]["queue_admission"] == (
+            "uncertain" if ending.startswith("admission_uncertain") else "rejected"
+        )
+        assert projected["pull_request"]["merge_sha"] is None
         async with PostgresUnitOfWork(factory) as work:
             current_run = await work.runs.get(case.run_id)
             assert current_run.state is RunState.AWAITING_HUMAN_INTERVENTION
@@ -330,6 +337,13 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         assert observer.command_type == "observe_merge_queue"
         assert observer.payload["receipt_digest"] == event.payload["receipt_digest"]
         assert observer.payload["deadline"] == (await work.runs.duration_deadline(run.id)).isoformat()
+    from forge.api.schemas.projections import PullRequestSection
+    from forge.persistence.queries.dashboard import DashboardQuery
+
+    projected = await DashboardQuery(factory).run_projection(case.run_id)
+    projected_pr = PullRequestSection.model_validate(projected["pull_request"])
+    assert projected_pr.queue_admission == "accepted"
+    assert projected_pr.merge_sha is None
     assert queue_port.writes == 1
 
     continued_observer = None
@@ -445,3 +459,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             assert record.merge_intent_id is None
             assert (await work.auth.get_approval(approval_id=approval_id)).invalidated_at is not None
     assert queue_port.writes == 1
+    projected = await DashboardQuery(factory).run_projection(case.run_id)
+    assert projected["pull_request"]["merge_sha"] == (
+        "d" * 40 if ending.startswith("merged") else None
+    )

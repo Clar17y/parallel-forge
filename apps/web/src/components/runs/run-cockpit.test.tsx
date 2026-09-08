@@ -48,3 +48,20 @@ test('cockpit exposes checks and review without inferring release authority', as
   expect(screen.getByRole('region', { name: 'Run activity' })).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /approve merge/i })).not.toBeInTheDocument();
 });
+
+test.each([['accepted', null], ['uncertain', null], ['accepted', 'd'.repeat(40)]] as const)(
+  'shows queue admission %s separately from recorded merge %s', (status, mergeSha) => {
+    const initial = projection();
+    initial.pull_request = { repository: 'owner/repo', number: 12, branch: 'feature',
+      base_ref: 'main', head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40),
+      state: mergeSha ? 'closed' : 'open', merge_state: null,
+      queue_admission: status, merge_sha: mergeSha };
+    render(<RunCockpit initial={initial} />);
+    expect(screen.getByRole('region', { name: 'PR / Merge' })).toBeInTheDocument();
+    if (mergeSha) expect(screen.getByText(mergeSha)).toBeInTheDocument();
+    else {
+      expect(screen.queryByText('Recorded merge commit')).not.toBeInTheDocument();
+      expect(screen.getByText(status === 'accepted' ? /Queue admission recorded/ : /Queue admission outcome is uncertain/)).toBeInTheDocument();
+    }
+  },
+);
