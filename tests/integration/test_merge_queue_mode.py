@@ -7,7 +7,6 @@ from uuid import UUID, uuid4
 import pytest
 from forge.application.handlers.merge import ApproveMergeHandler
 from forge.application.services.merge_evidence import MergeEvidenceValidator
-from forge.application.services.queue_admission import QueueAdmissionService
 from forge.application.services.recovery import OperationExecutor
 from forge.application.services.release_monitor import ReleaseMonitor
 from forge.domain.github import CheckSnapshot, MergeProtection
@@ -93,6 +92,20 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         approved = await validator.consumed(work, case.run_id, approval_id, recheck=False)
         assert await validator.queue_required(work, case.run_id, approval_id, approved) is queue
     if not queue:
+        from forge.application.services.merge import MergeService
+
+        read.merge_protections[key, "main"] = original_protection
+        await commands.complete(command.id, worker_id=command.lease_owner)
+        source = await commands.claim_next(worker_id="direct-merge", lease_seconds=120)
+        unused_queue = Queue()
+        async with PostgresUnitOfWork(factory) as work:
+            await MergeService(
+                validator, MergeController(read, writes),
+                OperationExecutor(PostgresOperationRepository(factory)), queue=unused_queue,
+            ).execute(source, work)
+        async with PostgresUnitOfWork(factory) as work:
+            assert (await work.runs.get(case.run_id)).state is RunState.COMPLETED
+        assert unused_queue.writes == 0
         return
     read.merge_protections[key, "main"] = original_protection
     await commands.complete(command.id, worker_id=command.lease_owner)
@@ -122,9 +135,11 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
 
     queue_port = InspectCommittedQueue()
     queue_port.crash = crash == "after_acceptance"
-    service = QueueAdmissionService(
-        validator, MergeController(read, writes), queue_port,
-        OperationExecutor(PostgresOperationRepository(factory)),
+    from forge.application.services.merge import MergeService
+
+    service = MergeService(
+        validator, MergeController(read, writes),
+        OperationExecutor(PostgresOperationRepository(factory)), queue=queue_port,
     )
     if ending == "admission_preflight_unavailable":
         from forge.release.github_write import GitHubWriteError

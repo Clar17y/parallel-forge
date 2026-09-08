@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from forge.application.ports.clock import Clock, SystemClock
 from forge.application.ports.commands import CommandRecoveryRequired
+from forge.application.ports.github_write import GitHubMergeQueuePort
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.control_settlement import pending_current_control_stop
 from forge.application.services.merge_authority import verify_merge_delivery
@@ -38,9 +39,11 @@ class MergeService:
         executor: OperationExecutor,
         *,
         clock: Clock | None = None,
+        queue: GitHubMergeQueuePort | None = None,
     ) -> None:
         self._evidence, self._controller, self._executor = evidence, controller, executor
         self._clock = clock or SystemClock()
+        self._queue = queue
 
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         if (
@@ -90,6 +93,25 @@ class MergeService:
                 raise CommandRecoveryRequired("merge evidence rejection replay differs")
             await work.commit()
             return
+        if self._queue is not None:
+            # Historical evidence selects the route even after an uncertain
+            # admission invalidated its gate. The selected service independently
+            # checks current authority before permitting any new external effect.
+            try:
+                historical = await self._evidence.for_recovery(work, run.id, approval_id)
+            except StaleMergeEvidence:
+                raise CommandRecoveryRequired("merge routing evidence is unavailable") from None
+            queued_mode = await self._evidence.queue_required(
+                work, run.id, approval_id, historical
+            )
+            if queued_mode:
+                from forge.application.services.queue_admission import QueueAdmissionService
+
+                await QueueAdmissionService(
+                    self._evidence, self._controller, self._queue, self._executor,
+                    clock=self._clock,
+                ).execute(command, work)
+                return
         interventions = [
             e
             for e in events

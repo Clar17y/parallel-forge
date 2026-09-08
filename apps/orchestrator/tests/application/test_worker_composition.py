@@ -285,6 +285,7 @@ async def test_compose_worker_handlers_production_construction(tmp_path: Path) -
         "approve_merge",
         "merge_pr",
         "update_base",
+        "observe_merge_queue",
     }
     assert isinstance(handlers["start_planning"], PlanningHandler)
     assert "git.branch_delete" in handlers.recovery_adapters
@@ -325,6 +326,13 @@ async def test_compose_worker_handlers_production_construction(tmp_path: Path) -
     writes = release._github
     assert isinstance(read, GitHubClient)
     assert isinstance(writes, GitHubWrite)
+    from forge.release.github_queue import GitHubMergeQueue
+
+    queue = handlers["merge_pr"].__self__._queue
+    assert isinstance(queue, GitHubMergeQueue)
+    assert queue._write is writes
+    assert handlers["observe_merge_queue"].__self__._queue is queue
+    assert "enqueue_pr" in handlers.recovery_adapters
     assert handlers["remediate_remote"].__self__ is handlers["implement"].__self__
     assert not read._client.is_closed and not writes._client.is_closed
     await handlers.aclose()
@@ -380,6 +388,7 @@ async def test_release_without_configuration_fails_before_using_command_or_datab
         "push_reviewed_pr",
         "approve_merge",
         "merge_pr",
+        "observe_merge_queue",
     ):
         with pytest.raises(WorkerCompositionError, match="GitHub credential reference"):
             await handlers[command_type](None, None)
@@ -389,6 +398,28 @@ async def test_release_without_configuration_fails_before_using_command_or_datab
 # =========================================================================
 # BoundPlanningGateway tests
 # =========================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", [False, True])
+async def test_injected_queue_controls_observation_and_recovery(tmp_path, configured):
+    from forge.worker.composition import ReleaseDependencies
+
+    queue = object() if configured else None
+    dependencies = ReleaseDependencies(object(), object(), lambda _: object(), queue=queue)
+    handlers = compose_worker_handlers(
+        Settings(data_root=tmp_path, prompt_root=_make_prompt_root(tmp_path)),
+        object(), agent_gateway=object(), release_dependencies=dependencies,
+    )
+    assert handlers["merge_pr"].__self__._queue is queue
+    assert ("enqueue_pr" in handlers.recovery_adapters) is configured
+    if configured:
+        assert handlers["observe_merge_queue"].__self__._queue is queue
+        assert handlers.recovery_adapters["enqueue_pr"]._queue is queue
+    else:
+        with pytest.raises(WorkerCompositionError, match="merge queue runtime"):
+            await handlers["observe_merge_queue"](None, None)
+    await handlers.aclose()
 
 
 class _FakeExecutionsRepo:

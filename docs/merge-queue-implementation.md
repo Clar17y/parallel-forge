@@ -2,8 +2,8 @@
 
 Status: HTTP adapter, immutable receipt, enqueue operation, frozen mode selection
 transactional admission, durable observation and merge completion are implemented
-as components. Worker composition, complete crash/control handling and integrated
-review remain pending.
+with production worker composition. Complete crash/control handling, uncertain
+outcome continuation and integrated review remain pending.
 This closes the actual queue path of R25-03; it does not replace the Task 25 direct
 expected-head merge path. See `docs/v0.1-progress.md` for exact checkpoint evidence.
 

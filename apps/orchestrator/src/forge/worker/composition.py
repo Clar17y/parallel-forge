@@ -38,7 +38,7 @@ from forge.application.ports.clock import Clock
 from forge.application.ports.executions import ExecutionAdmission, ExecutionStatus
 from forge.application.ports.git_push import ManagedPushPort
 from forge.application.ports.github import GitHubPort
-from forge.application.ports.github_write import GitHubWritePort
+from forge.application.ports.github_write import GitHubMergeQueuePort, GitHubWritePort
 from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.provider_credentials import (
     ProviderCredentialError,
@@ -59,6 +59,7 @@ from forge.application.services.plan_evidence import (
 )
 from forge.application.services.planning import PlanningService
 from forge.application.services.pr_evidence import PrEvidenceValidator
+from forge.application.services.queue_observation import QueueObservationService
 from forge.application.services.release import ReleaseService
 from forge.application.services.release_monitor import ReleaseMonitor
 from forge.application.services.review import ReviewService
@@ -131,6 +132,7 @@ class ReleaseDependencies:
     writes: GitHubWritePort
     push: Callable[[ProjectPolicy], ManagedPushPort]
     adoption: Callable[[ProjectPolicy], BaseAdoptionPort] | None = None
+    queue: GitHubMergeQueuePort | None = None
 
 
 async def _release_unconfigured(command: CommandEnvelope, work: UnitOfWork) -> None:
@@ -139,6 +141,10 @@ async def _release_unconfigured(command: CommandEnvelope, work: UnitOfWork) -> N
 
 async def _adoption_unconfigured(command: CommandEnvelope, work: UnitOfWork) -> None:
     raise WorkerCompositionError("base adoption runtime is not configured")
+
+
+async def _queue_unconfigured(command: CommandEnvelope, work: UnitOfWork) -> None:
+    raise WorkerCompositionError("merge queue runtime is not configured")
 
 
 def load_pricing_catalog(path: Path | str) -> PricingCatalog:
@@ -519,6 +525,7 @@ def compose_worker_handlers(
         "push_reviewed_pr",
         "approve_merge",
         "merge_pr",
+        "observe_merge_queue",
     )
     handlers.tool_recovery = ToolRecoveryService(
         uow_factory, artifact_store, redactor=shared_redactor
@@ -545,6 +552,8 @@ def compose_worker_handlers(
         credentials = LocalGitHubCredentialResolver(LocalSecretStore(settings.data_root))
         read = GitHubClient(credentials, settings.github_token_reference)
         writes = GitHubWrite(credentials, settings.github_token_reference)
+        from forge.release.github_queue import GitHubMergeQueue
+
         handlers.resources.push_async_callback(read.aclose)
         handlers.resources.push_async_callback(writes.aclose)
         release_dependencies = ReleaseDependencies(
@@ -556,6 +565,7 @@ def compose_worker_handlers(
             lambda policy: ManagedBaseAdoption(
                 delivery_dependencies.git(policy), credentials, settings.github_token_reference
             ),
+            queue=GitHubMergeQueue(writes),
         )
     pr_evidence = PrEvidenceValidator(
         artifact_store, approved_plans, delivery_dependencies.git, release_dependencies.read
@@ -584,10 +594,13 @@ def compose_worker_handlers(
         )
     merge_evidence = MergeEvidenceValidator(artifact_store, pr_evidence, merge_controller)
     handlers.recovery_adapters.update(
-        merge_recovery_adapters(session_factory, merge_evidence, merge_controller)
+        merge_recovery_adapters(
+            session_factory, merge_evidence, merge_controller, release_dependencies.queue
+        )
     )
     merge = MergeService(
-        merge_evidence, merge_controller, delivery_dependencies.operation_executor, clock=clock
+        merge_evidence, merge_controller, delivery_dependencies.operation_executor, clock=clock,
+        queue=release_dependencies.queue,
     )
     handlers.update(
         {
@@ -614,6 +627,10 @@ def compose_worker_handlers(
             "push_reviewed_pr": release.push_reviewed,
             "approve_merge": ApproveMergeHandler(merge_evidence, clock=clock),
             "merge_pr": merge.execute,
+            "observe_merge_queue": QueueObservationService(
+                merge_evidence, merge_controller, release_dependencies.queue,
+                delivery_dependencies.operation_executor, clock=clock,
+            ).execute if release_dependencies.queue is not None else _queue_unconfigured,
         }
     )
     return handlers
