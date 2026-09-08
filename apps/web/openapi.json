@@ -2926,6 +2926,18 @@
             "title": "Merge Queue Enabled",
             "type": "boolean"
           },
+          "merge_queue_method": {
+            "anyOf": [
+              {
+                "pattern": "^(merge|squash|rebase)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merge Queue Method"
+          },
           "required_check_names": {
             "items": {
               "type": "string"

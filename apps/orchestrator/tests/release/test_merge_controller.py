@@ -58,6 +58,25 @@ async def test_preflight_rejects_new_required_context_absent_from_observation():
         await MergeController(read, write).preflight(record, evidence, evidence)
 
 
+@pytest.mark.parametrize("queue_method", [None, "unknown", "rebase"])
+async def test_preflight_rejects_queue_method_different_from_approval(queue_method):
+    read, write, evidence, record = ready()
+    protection = replace(
+        read.merge_protections[evidence.repository.casefold(), "main"],
+        merge_queue_enabled=True,
+        merge_queue_method=queue_method,
+    )
+    read.merge_protections[evidence.repository.casefold(), "main"] = protection
+    evidence = evidence.model_copy(
+        update={
+            "merge_method": "squash",
+            "protection_digest": canonical_digest(asdict(protection)),
+        }
+    )
+    with pytest.raises(StaleMergeEvidence):
+        await MergeController(read, write).preflight(record, evidence, evidence)
+
+
 async def test_optional_check_does_not_replace_or_block_required_checks():
     read, write, evidence, record = ready()
     key = evidence.repository.casefold(), evidence.head_sha

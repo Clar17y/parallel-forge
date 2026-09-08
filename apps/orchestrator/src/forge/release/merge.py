@@ -66,7 +66,11 @@ class MergeController:
             raise StaleMergeEvidence()
         protection = await self._github.get_merge_protection(repository, base)
         if (
-            assess_checks(approved.head_sha, checks, reviews, protection).disposition != "ready"
+            (
+                protection.merge_queue_enabled
+                and protection.merge_queue_method != approved.merge_method
+            )
+            or assess_checks(approved.head_sha, checks, reviews, protection).disposition != "ready"
             or required_check_results(checks, protection) != dict(approved.required_checks)
             or canonical_digest(asdict(protection)) != approved.protection_digest
         ):

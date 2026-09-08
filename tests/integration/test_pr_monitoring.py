@@ -69,6 +69,9 @@ async def published(tmp_path, factory):
     "observation",
     [
         "ready",
+        "queue_ready",
+        "queue_wrong_method",
+        "queue_unknown_method",
         "pending",
         "head_drift",
         "failure",
@@ -88,6 +91,19 @@ async def test_monitor_persists_observation_and_replays_without_duplicate_delive
     read.merge_protections[repository.casefold(), "main"] = MergeProtection(
         True, False, False, "classic", required_check_names=("ci",)
     )
+    if observation.startswith("queue_"):
+        read.merge_protections[repository.casefold(), "main"] = MergeProtection(
+            False,
+            True,
+            False,
+            "queue",
+            required_check_names=("ci",),
+            merge_queue_method={
+                "queue_ready": "squash",
+                "queue_wrong_method": "rebase",
+                "queue_unknown_method": None,
+            }[observation],
+        )
     if observation != "pending":
         read.checks[repository.casefold(), git.head] = (
             CheckSnapshot(
@@ -150,6 +166,9 @@ async def test_monitor_persists_observation_and_replays_without_duplicate_delive
             run.state
             is {
                 "ready": RunState.AWAITING_MERGE_APPROVAL,
+                "queue_ready": RunState.AWAITING_MERGE_APPROVAL,
+                "queue_wrong_method": RunState.AWAITING_HUMAN_INTERVENTION,
+                "queue_unknown_method": RunState.AWAITING_HUMAN_INTERVENTION,
                 "pending": RunState.MONITORING_PR,
                 "head_drift": RunState.AWAITING_HUMAN_INTERVENTION,
                 "failure": RunState.REMEDIATING,
@@ -174,6 +193,9 @@ async def test_monitor_persists_observation_and_replays_without_duplicate_delive
         from sqlalchemy import select
 
         wire = json.loads(await case.artifact_store.open_bytes(descriptor.digest))
+        if observation == "queue_ready":
+            approved = json.loads(await case.artifact_store.open_bytes(run.pending_evidence_digest))
+            assert approved["merge_method"] == wire["protection"]["merge_queue_method"] == "squash"
         projected = await work.session.scalar(
             select(PullRequest).where(PullRequest.run_id == run.id)
         )

@@ -1723,6 +1723,8 @@ export interface components {
             evidence_source: string;
             /** Merge Queue Enabled */
             merge_queue_enabled: boolean;
+            /** Merge Queue Method */
+            merge_queue_method?: string | null;
             /** Required Check Names */
             required_check_names: string[];
             /** Strict Required Checks */

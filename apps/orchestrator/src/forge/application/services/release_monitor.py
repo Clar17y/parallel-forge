@@ -214,6 +214,14 @@ class ReleaseMonitor:
                     "pending" if category in {"unavailable", "rate_limited"} else "intervene",
                     f"remote_read_{category}",
                 )
+        if (
+            assessment.disposition == "ready"
+            and protection is not None
+            and protection.merge_queue_enabled
+            and verified is not None
+            and protection.merge_queue_method not in verified.approved.policy.allowed_merge_methods
+        ):
+            assessment = CheckAssessment("intervene", "queue_merge_method_not_allowed")
         await _fence_command(command, work)
         current = await work.runs.get_for_update(run.id)
         if current != run or await pending_current_control_stop(work, current):
@@ -252,6 +260,12 @@ class ReleaseMonitor:
         elif assessment.disposition == "ready":
             assert verified is not None and protection is not None
             local = verified.evidence
+            method = (
+                protection.merge_queue_method
+                if protection.merge_queue_enabled
+                else verified.approved.policy.allowed_merge_methods[0]
+            )
+            assert method is not None
             merge = MergeApprovalEvidence(
                 repository=local.repository,
                 pull_request_number=record.pull_request.number,
@@ -265,7 +279,7 @@ class ReleaseMonitor:
                 runner_mode=local.runner_mode,
                 runner_evidence_digest=local.runner_evidence_digest,
                 protection_digest=payload_digest(asdict(protection)),
-                merge_method=verified.approved.policy.allowed_merge_methods[0],
+                merge_method=method,
                 policy_version=verified.approved.policy.version,
             )
             merge_digest = await self._artifact(

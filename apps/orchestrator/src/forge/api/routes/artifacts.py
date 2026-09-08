@@ -39,7 +39,11 @@ from forge.persistence.repositories.artifacts import ArtifactNotFound
 def router_for() -> APIRouter:
     router = APIRouter()
 
-    @router.get("/artifacts/{digest}/merge-protection", response_model=MergeProtectionResponse)
+    @router.get(
+        "/artifacts/{digest}/merge-protection",
+        response_model=MergeProtectionResponse,
+        response_model_exclude_unset=True,
+    )
     async def merge_protection(
         digest: str,
         request: Request,

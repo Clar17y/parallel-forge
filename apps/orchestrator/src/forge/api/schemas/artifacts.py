@@ -70,6 +70,7 @@ class ProtectionSnapshotResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     strict_required_checks: bool
     merge_queue_enabled: bool
+    merge_queue_method: str | None = Field(default=None, pattern=r"^(merge|squash|rebase)$")
     actor_can_bypass: bool
     evidence_source: str = Field(min_length=1, max_length=4096)
     verified: bool
