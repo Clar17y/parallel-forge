@@ -235,3 +235,85 @@ async def test_read_namespace_swap_never_returns_replaced_bytes(tmp_path: Path) 
         assert result is None
     else:
         assert result == b"trusted"
+
+
+@pytest.mark.asyncio
+async def test_bounded_read_rejects_oversized_blob_before_reading(tmp_path, monkeypatch):
+    store = FilesystemArtifactStore(tmp_path)
+    artifact = await store.put_bytes(b"ok", media_type="text/plain")
+    artifact.storage_path.write_bytes(b"corrupt oversized data")
+
+    def forbidden_read(*args):
+        pytest.fail("oversized file must be rejected before reading")
+
+    if os.name == "nt":
+        from forge.artifacts import _win32
+
+        monkeypatch.setattr(_win32, "_READ_FILE", forbidden_read)
+    else:
+        monkeypatch.setattr(os, "read", forbidden_read)
+    with pytest.raises(ArtifactIntegrityError, match="bound"):
+        await store.open_bytes(artifact.digest, max_bytes=2)
+
+
+@pytest.mark.asyncio
+async def test_bounded_read_accepts_exact_and_empty_and_rejects_invalid_limits(tmp_path):
+    store = FilesystemArtifactStore(tmp_path)
+    for data in (b"", b"exact"):
+        artifact = await store.put_bytes(data, media_type="text/plain")
+        assert await store.open_bytes(artifact.digest, max_bytes=len(data)) == data
+        for limit in (-1, True, 1.5):
+            with pytest.raises(ValueError):
+                await store.open_bytes(artifact.digest, max_bytes=limit)
+
+
+def test_posix_reader_limits_growth_after_initial_size_check(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from forge.artifacts import filesystem
+
+    path = tmp_path / "growing"
+    path.write_bytes(b"oversized data")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    sizes = []
+    original_read = os.read
+
+    def bounded_read(fd, size):
+        sizes.append(size)
+        return original_read(fd, size)
+
+    monkeypatch.setattr(os, "fstat", lambda fd: SimpleNamespace(st_size=0))
+    monkeypatch.setattr(os, "read", bounded_read)
+    try:
+        with pytest.raises(ArtifactIntegrityError, match="bound"):
+            filesystem._read_verified_fd(descriptor, "a" * 64, max_bytes=4)
+    finally:
+        os.close(descriptor)
+    assert sizes and max(sizes) <= 5
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle reader")
+@pytest.mark.asyncio
+async def test_windows_reader_limits_growth_after_initial_size_check(tmp_path, monkeypatch):
+    from forge.artifacts import _win32
+
+    store = FilesystemArtifactStore(tmp_path)
+    artifact = await store.put_bytes(b"oversized data", media_type="text/plain")
+    original_information = _win32._information
+    original_read = _win32._READ_FILE
+    sizes = []
+
+    def stale_size(handle):
+        info = original_information(handle)
+        info.size_high = info.size_low = 0
+        return info
+
+    def bounded_read(handle, buffer, size, count, overlapped):
+        sizes.append(size)
+        return original_read(handle, buffer, size, count, overlapped)
+
+    monkeypatch.setattr(_win32, "_information", stale_size)
+    monkeypatch.setattr(_win32, "_READ_FILE", bounded_read)
+    with pytest.raises(ArtifactIntegrityError, match="bound"):
+        await store.open_bytes(artifact.digest, max_bytes=4)
+    assert sizes and max(sizes) <= 5

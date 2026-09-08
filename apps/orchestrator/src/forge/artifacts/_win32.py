@@ -172,22 +172,31 @@ else:
         if not _SET_POINTER(wintypes.HANDLE(handle), 0, None, _FILE_BEGIN):
             raise _win_error()
 
-    def _read_all(handle: int) -> bytes:
+    def _read_all(handle: int, *, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None:
+            info = _information(handle)
+            if (int(info.size_high) << 32) + int(info.size_low) > max_bytes:
+                raise ArtifactIntegrityError("artifact blob exceeds read bound")
         _seek_start(handle)
         chunks: list[bytes] = []
+        total = 0
         while True:
-            buffer = ctypes.create_string_buffer(_READ_CHUNK)
+            size = _READ_CHUNK if max_bytes is None else min(_READ_CHUNK, max_bytes - total + 1)
+            buffer = ctypes.create_string_buffer(size)
             count = wintypes.DWORD()
             if not _READ_FILE(
                 wintypes.HANDLE(handle),
                 buffer,
-                _READ_CHUNK,
+                size,
                 ctypes.byref(count),
                 None,
             ):
                 raise _win_error()
             if count.value == 0:
                 break
+            total += int(count.value)
+            if max_bytes is not None and total > max_bytes:
+                raise ArtifactIntegrityError("artifact blob exceeds read bound")
             chunks.append(buffer.raw[: count.value])
         return b"".join(chunks)
 
@@ -213,8 +222,8 @@ else:
         if not _FLUSH_FILE(wintypes.HANDLE(handle)):
             raise _win_error()
 
-    def _verify(handle: int, digest: str) -> bytes:
-        data = _read_all(handle)
+    def _verify(handle: int, digest: str, *, max_bytes: int | None = None) -> bytes:
+        data = _read_all(handle, max_bytes=max_bytes)
         if hashlib.sha256(data).hexdigest() != digest:
             raise ArtifactIntegrityError("artifact blob failed digest verification")
         return data
@@ -369,6 +378,7 @@ else:
             digest: str,
             *,
             before_open: Callable[[Path], None],
+            max_bytes: int | None = None,
         ) -> bytes:
             with self._layout(digest=digest, create=False) as layout:
                 before_open(layout.target)
@@ -376,7 +386,7 @@ else:
                 if handle is None:
                     raise ArtifactIntegrityError("artifact blob is unavailable")
                 try:
-                    return _verify(handle, digest)
+                    return _verify(handle, digest, max_bytes=max_bytes)
                 finally:
                     _close(handle)
 

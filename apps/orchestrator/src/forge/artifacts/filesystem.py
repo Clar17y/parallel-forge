@@ -86,9 +86,11 @@ class FilesystemArtifactStore:
             policy,
         )
 
-    async def open_bytes(self, digest: str) -> bytes:
+    async def open_bytes(self, digest: str, *, max_bytes: int | None = None) -> bytes:
         validate_artifact_digest(digest)
-        return await asyncio.to_thread(self._read_verified_sync, digest)
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+            raise ValueError("artifact read bound must be a nonnegative integer")
+        return await asyncio.to_thread(self._read_verified_sync, digest, max_bytes=max_bytes)
 
     async def verify(self, digest: str) -> bool:
         validate_artifact_digest(digest)
@@ -125,12 +127,13 @@ class FilesystemArtifactStore:
             truncation_policy=policy,
         )
 
-    def _read_verified_sync(self, digest: str) -> bytes:
+    def _read_verified_sync(self, digest: str, *, max_bytes: int | None = None) -> bytes:
         target = self._target_path(digest)
         if self._windows is not None:
             return self._windows.read(
                 digest,
                 before_open=self._before_read_open,
+                max_bytes=max_bytes,
             )
         if os.name != "posix":
             raise ArtifactStoreError("artifact storage is unsupported on this platform")
@@ -140,7 +143,7 @@ class FilesystemArtifactStore:
             if descriptor is None:
                 raise ArtifactIntegrityError("artifact blob is unavailable")
             try:
-                data = _read_verified_fd(descriptor, digest)
+                data = _read_verified_fd(descriptor, digest, max_bytes=max_bytes)
             finally:
                 os.close(descriptor)
             self._verify_posix_layout(layout)
@@ -364,11 +367,21 @@ def _write_fd(descriptor: int, data: bytes) -> None:
     os.ftruncate(descriptor, len(data))
 
 
-def _read_verified_fd(descriptor: int, digest: str) -> bytes:
+def _read_verified_fd(descriptor: int, digest: str, *, max_bytes: int | None = None) -> bytes:
+    if max_bytes is not None and os.fstat(descriptor).st_size > max_bytes:
+        raise ArtifactIntegrityError("artifact blob exceeds read bound")
     os.lseek(descriptor, 0, os.SEEK_SET)
     chunks: list[bytes] = []
     computed = hashlib.sha256()
-    while chunk := os.read(descriptor, _HASH_CHUNK):
+    total = 0
+    while True:
+        size = _HASH_CHUNK if max_bytes is None else min(_HASH_CHUNK, max_bytes - total + 1)
+        chunk = os.read(descriptor, size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if max_bytes is not None and total > max_bytes:
+            raise ArtifactIntegrityError("artifact blob exceeds read bound")
         chunks.append(chunk)
         computed.update(chunk)
     if computed.hexdigest() != digest:
