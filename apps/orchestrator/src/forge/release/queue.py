@@ -64,6 +64,10 @@ class EnqueueOperation:
         return self._outcome(receipt)
 
     def _outcome(self, receipt: MergeQueueReceipt) -> OperationOutcome:
+        self.validate_receipt(receipt)
+        return OperationOutcome(remote_resource_id=receipt.entry_id, payload=receipt.model_dump())
+
+    def validate_receipt(self, receipt: MergeQueueReceipt) -> None:
         approved = self._approved
         if (
             receipt.repository != approved.repository
@@ -73,4 +77,3 @@ class EnqueueOperation:
             or receipt.merge_method != approved.merge_method
         ):
             raise ReleaseReconciliationRequired()
-        return OperationOutcome(remote_resource_id=receipt.entry_id, payload=receipt.model_dump())
