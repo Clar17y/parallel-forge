@@ -685,6 +685,26 @@ class WorktreeProvisioner:
         except Exception:  # noqa: BLE001 - recovery failures become a stable public category
             raise WorktreeReconciliationRequired() from None
 
+    async def inspect_prepared(self, run_id: UUID, policy: ProjectPolicy) -> ManagedWorktree:
+        """Inspect settled resources for paused preparation without invoking effects."""
+        _validate_public_inputs(run_id, policy)
+        context = await self._load_context(
+            run_id, policy, require_succeeded=True, paused_inspection=True
+        )
+        if context.run.state is not RunState.PAUSED or context.completed is None:
+            raise WorktreeReconciliationRequired()
+        inspected = await self._inspect_present(context.expected)
+        if context.run.database_state is ResourceState.ACTIVE:
+            await self._verify_active_context(context)
+        elif policy.database.enabled or context.run.database_state is not ResourceState.DISABLED:
+            raise WorktreeReconciliationRequired()
+        latest = await self._load_context(
+            run_id, policy, require_succeeded=True, paused_inspection=True
+        )
+        if latest != context or not _same_handle(inspected, context.expected):
+            raise WorktreeReconciliationRequired()
+        return inspected
+
     async def _load_context(
         self,
         run_id: UUID,
@@ -692,6 +712,7 @@ class WorktreeProvisioner:
         *,
         require_succeeded: bool = False,
         expected_intent: OperationIntent | None = None,
+        paused_inspection: bool = False,
     ) -> _Context:
         try:
             async with self._unit_of_work_factory() as work:
@@ -706,7 +727,9 @@ class WorktreeProvisioner:
         if failure is not None:
             raise failure
 
-        _validate_run_and_policy(run, policy, self._git.repository_path)
+        _validate_run_and_policy(
+            run, policy, self._git.repository_path, paused_inspection=paused_inspection
+        )
         identity = _identity_for_run(run, policy)
         try:
             expected = self._git.expected_worktree(identity, _require_sha(run.base_sha))
@@ -1908,11 +1931,17 @@ def _validate_run_and_policy(
     run: RunSnapshot,
     policy: ProjectPolicy,
     repository_path: Path,
+    *,
+    paused_inspection: bool = False,
 ) -> None:
     try:
         if not isinstance(run, RunSnapshot):
             raise WorktreeIntegrityError()
-        if run.state is not RunState.PREPARING_WORKTREE:
+        if run.state is not RunState.PREPARING_WORKTREE and not (
+            paused_inspection
+            and run.state is RunState.PAUSED
+            and run.suspended_state is RunState.PREPARING_WORKTREE
+        ):
             raise WorktreeIntegrityError()
         if run.project_id != policy.id or run.policy_version != policy.version:
             raise WorktreeIntegrityError()

@@ -495,6 +495,12 @@ class DatabaseProvisionerPort(Protocol):
     ) -> DatabaseBinding: ...
 
 
+class PreparedWorktreeInspector(Protocol):
+    """Read-only proof of settled resources belonging to a paused preparation."""
+
+    async def inspect_prepared(self, run_id: UUID, policy: ProjectPolicy) -> ManagedWorktree: ...
+
+
 class WorktreeProvisionerPort(Protocol):
     """Durable persisted-run worktree preparation and inspection recovery."""
 
@@ -562,6 +568,7 @@ __all__ = [
     "ManagedWorktree",
     "ManagedWorktreePort",
     "PreparedGitCommit",
+    "PreparedWorktreeInspector",
     "PublishedGitCommit",
     "SecretStorePort",
     "WorktreeProvisionerPort",

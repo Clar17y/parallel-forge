@@ -807,6 +807,24 @@ def _provisioner(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_paused_prepared_inspection_verifies_resources_without_new_effects(
+    enabled: bool,
+) -> None:
+    from forge.application.services.state_engine import StateEngine
+
+    provisioner, uow, _operations, git, log = _provisioner(_run(), enabled=enabled)
+    policy = _policy(enabled=enabled, repository_path=str(git.repository_path))
+    prepared = await provisioner.prepare(RUN_ID, policy)
+    uow.runs.current = StateEngine().pause(uow.runs.current)
+    paused = uow.runs.current
+    creates = log.count("git.create")
+    assert await provisioner.inspect_prepared(RUN_ID, policy) == prepared
+    assert uow.runs.current == paused
+    assert log.count("git.create") == creates
+
+
+@pytest.mark.asyncio
 async def test_teardown_request_identity_ignores_mutable_database_state() -> None:
     run = _run(enabled=True, branch="feature/teardown-stable-request")
     policy = _policy(enabled=True)

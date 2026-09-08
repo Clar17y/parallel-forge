@@ -219,6 +219,10 @@ class DeliveryRuntime:
         provisioner = self._provisioner(policy, git)
         return await provisioner.prepare(run_id, policy)
 
+    async def inspect_prepared(self, run_id: UUID, policy: ProjectPolicy) -> ManagedWorktree:
+        git = self.git(policy)
+        return await self._provisioner(policy, git).inspect_prepared(run_id, policy)
+
     async def teardown(self, run_id: UUID, policy: ProjectPolicy) -> RunSnapshot:
         git = self.git(policy)
         return await self._provisioner(policy, git).teardown(run_id, policy)

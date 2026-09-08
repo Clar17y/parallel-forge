@@ -11,6 +11,9 @@ from uuid import UUID
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.ports.worktrees import PreparedWorktreeInspector
+from forge.application.services.approved_plan import ApprovedPlanLoader
+from forge.application.services.preparation_resume import PreparationResumeService
 from forge.application.services.resume_continuation import enqueue_resumed_stage
 from forge.application.services.resume_reconciliation import ResumeReconciler
 from forge.application.services.resume_source import continuation_binding, resume_command_ids
@@ -22,6 +25,7 @@ from forge.persistence.repositories.commands import CommandNotFound
 _ACTIVE_RESUME_STATES = frozenset(
     {
         RunState.CREATED,
+        RunState.PREPARING_WORKTREE,
         RunState.PLANNING,
         RunState.IMPLEMENTING,
         RunState.REMEDIATING,
@@ -52,8 +56,18 @@ class CancelRunHandler:
 class ResumeRunHandler:
     """Restore a reconciled run and atomically queue its local continuation."""
 
-    def __init__(self, *, artifact_store: ArtifactStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        artifact_store: ArtifactStore | None = None,
+        preparation_inspector: PreparedWorktreeInspector | None = None,
+    ) -> None:
         self._reconciler = ResumeReconciler(artifact_store)
+        self._preparation = (
+            PreparationResumeService(ApprovedPlanLoader(artifact_store), preparation_inspector)
+            if artifact_store is not None
+            else None
+        )
 
     async def __call__(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         _validate_resume_command(command)
@@ -111,7 +125,15 @@ class ResumeRunHandler:
 
         pause_command = await _validate_pause_authority(work, run)
         payload = _resume_payload(command, target, pause_command.id, run=run)
-        if target in _ACTIVE_RESUME_STATES:
+        if target is RunState.PREPARING_WORKTREE:
+            sources = await work.commands.list_outstanding_normal(
+                run_id=run.id, exclude_command_id=command.id
+            )
+            if self._preparation is None or len(sources) != 1:
+                raise CommandRecoveryRequired("preparation resume has no unique source")
+            prepared = await self._preparation.settle_and_enqueue(work, command, sources[0])
+            payload["continuation"] = continuation_binding(prepared.queued, prepared.source.id)
+        elif target in _ACTIVE_RESUME_STATES:
             sources = await self._reconciler.reconcile(work, command)
             queued = await enqueue_resumed_stage(work, command, run, sources)
             payload["continuation"] = continuation_binding(queued, sources[0].id)

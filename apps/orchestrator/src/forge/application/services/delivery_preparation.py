@@ -10,6 +10,12 @@ from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import WorktreeProvisionerPort
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.control_settlement import pending_current_control_stop
+from forge.application.services.preparation_resume import (
+    preparation_branch_source,
+    preparation_history,
+)
+from forge.application.services.resume_source import resume_command_ids
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState, WorktreeIdentity, database_secret_id
@@ -35,14 +41,17 @@ class DeliveryPreparationService:
         ):
             raise CommandRecoveryRequired("preparation delivery does not match its lease")
         approved = await self._approved_plans.load(work, command.run_id)
+        resumed = resume_command_ids(command.payload) is not None
+        history = await preparation_history(work, command, approved) if resumed else (command,)
+        origin = history[-1]
         expected = approved.approval_version + 1
         if (
             fenced.command_type != "prepare_worktree"
-            or fenced.idempotency_key != f"{command.run_id}:prepare-worktree:{expected}"
-            or fenced.payload != {}
-            or fenced.payload_schema_version != 1
-            or fenced.expected_run_version != expected
-            or fenced.actor_id != approved.approval_actor_id
+            or origin.idempotency_key != f"{command.run_id}:prepare-worktree:{expected}"
+            or origin.payload != {}
+            or origin.payload_schema_version != 1
+            or origin.expected_run_version != expected
+            or origin.actor_id != approved.approval_actor_id
         ):
             raise CommandRecoveryRequired("preparation command authority is invalid")
         if approved.run.state is RunState.IMPLEMENTING:
@@ -64,6 +73,8 @@ class DeliveryPreparationService:
             return
         if approved.run.state is not RunState.PREPARING_WORKTREE:
             raise CommandRecoveryRequired("preparation command authority is invalid")
+        if await pending_current_control_stop(work, approved.run):
+            raise CommandRecoveryRequired("preparation is fenced by operator control")
         branch_events = [
             event
             for event in await work.events.list_after(command.run_id, 0)
@@ -97,9 +108,13 @@ class DeliveryPreparationService:
                 or approved.run.branch_name != branch_name
             ):
                 raise CommandRecoveryRequired("preparation branch binding requires recovery")
+        elif resumed:
+            await preparation_branch_source(work, history, approved)
         elif branch_events or approved.run.branch_name == f"forge/run/{command.run_id.hex}":
             if not _valid_branch_binding(command, approved, branch_events):
                 raise CommandRecoveryRequired("preparation branch binding requires recovery")
+        if await pending_current_control_stop(work, approved.run):
+            raise CommandRecoveryRequired("preparation dispatch is fenced by operator control")
         await work.commit()
         try:
             worktree = await self._provisioner.prepare(command.run_id, approved.policy)
@@ -120,6 +135,8 @@ class DeliveryPreparationService:
             raise CommandRecoveryRequired("preparation outcome requires recovery")
         if refreshed.run.branch_name is None:
             raise CommandRecoveryRequired("prepared run has no branch identity")
+        if await pending_current_control_stop(work, refreshed.run):
+            raise CommandRecoveryRequired("preparation publication is fenced by operator control")
         expected_identity = WorktreeIdentity.for_run(
             refreshed.run.project_id,
             refreshed.run.id,

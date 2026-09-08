@@ -433,7 +433,9 @@ def compose_worker_handlers(
         "validate": delivery.validate,
         "review": ReviewHandler(review, review_decision),
         "pause": PauseRunHandler(),
-        "resume": ResumeRunHandler(artifact_store=artifact_store),
+        "resume": ResumeRunHandler(
+            artifact_store=artifact_store, preparation_inspector=delivery_dependencies
+        ),
         "cancel": CancelRunHandler(),
         "request_candidate_changes": candidate_revision.execute,
     }
