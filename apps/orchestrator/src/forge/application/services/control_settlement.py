@@ -39,6 +39,19 @@ async def controlled_stop(
     return cancel is not None and current == expected
 
 
+async def pending_current_control_stop(work: UnitOfWork, run: RunSnapshot) -> bool:
+    """Fence finalization while an exact current-version control is actionable.
+
+    The caller obtains ``run`` with ``get_for_update`` and keeps that lock until
+    commit or rollback.  An accepted control cannot become stale by a competing
+    stage publication in that interval.
+    """
+
+    return await work.commands.has_pending_current_control_stop(
+        run_id=run.id, expected_run_version=run.version
+    )
+
+
 async def _control_event(
     work: UnitOfWork,
     events: Sequence[RunEvent],
@@ -74,6 +87,7 @@ async def _control_event(
         or control.actor_id is None
         or control.expected_run_version != expected.version - 1
         or event.payload != payload
+        or event.payload_schema_version != 1
         or event.actor_class != "operator"
         or event.actor_id != control.actor_id
     ):
@@ -97,4 +111,4 @@ def _same_normal_delivery(command: CommandEnvelope, fenced: CommandEnvelope) -> 
     )
 
 
-__all__ = ["controlled_stop"]
+__all__ = ["controlled_stop", "pending_current_control_stop"]

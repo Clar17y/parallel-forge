@@ -61,6 +61,16 @@ class CommandRepository(Protocol):
     async def assert_current_lease(self, command: CommandEnvelope) -> CommandEnvelope:
         """Fence a delivery before it makes durable effects in its UoW."""
 
+    async def has_pending_current_control_stop(
+        self, *, run_id: UUID, expected_run_version: int
+    ) -> bool:
+        """Check for an admitted, still-actionable pause or cancellation.
+
+        Callers hold the run row lock for ``expected_run_version``.  That lock
+        serializes this check with control admission, preventing a finalizer
+        from advancing a run after a stop was accepted for its current version.
+        """
+
     async def complete(
         self, command_id: UUID, *, worker_id: str, result: Mapping[str, object] | None = None
     ) -> CommandEnvelope: ...

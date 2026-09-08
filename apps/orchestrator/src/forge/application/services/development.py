@@ -45,8 +45,12 @@ from forge.application.services.approved_plan import (
     ApprovedPlanError,
     ApprovedPlanLoader,
 )
-from forge.application.services.control_settlement import controlled_stop
+from forge.application.services.control_settlement import (
+    controlled_stop,
+    pending_current_control_stop,
+)
 from forge.application.services.developer_result import verify_developer_output
+from forge.application.services.suspended_delivery import record_suspended_delivery
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
     AgentBudget,
@@ -69,7 +73,7 @@ from forge.domain.evidence import (
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.review import ReviewFinding
-from forge.domain.run import RunState
+from forge.domain.run import RunSnapshot, RunState
 from forge.domain.tool import ToolName
 from forge.domain.validation import command_spec_digest
 from forge.observability.usage import UsageRecord
@@ -721,6 +725,10 @@ class DevelopmentService:
             current = await self._load_current(command, work)
             if current.approval_id != approved.approval_id or current.run != approved.run:
                 raise DevelopmentRecoveryRequired("implementation approval changed")
+            if await pending_current_control_stop(work, current.run):
+                raise DevelopmentRecoveryRequired(
+                    "implementation finalization is fenced by operator control"
+                )
             for usage_attempt in attempts:
                 d = await self._put(usage_attempts_bytes((usage_attempt,)))
                 await work.artifacts.record(
@@ -824,7 +832,14 @@ class DevelopmentService:
             await work.rollback()
             if await controlled_stop(work, command, approved.run):
                 await self._late_usage(
-                    work, command, request, usage, attempts, output, cancelled=True
+                    work,
+                    command,
+                    request,
+                    usage,
+                    attempts,
+                    output,
+                    cancelled=True,
+                    admitted_run=approved.run,
                 )
                 raise CommandSuspended("developer stopped by operator control") from None
             # A reclaimed lease may not advance the run, but measured provider
@@ -845,6 +860,7 @@ class DevelopmentService:
         output: ArtifactDescriptor | None,
         *,
         cancelled: bool = False,
+        admitted_run: RunSnapshot | None = None,
     ) -> None:
         try:
             await work.runs.get_for_update(command.run_id)
@@ -898,6 +914,18 @@ class DevelopmentService:
                     kind="implement",
                     attempt=admission.attempt,
                     role=AgentRole.DEVELOPER,
+                )
+                if admitted_run is None:
+                    raise DevelopmentRecoveryRequired(
+                        "suspended implementation admission is absent"
+                    )
+                await record_suspended_delivery(
+                    work,
+                    command,
+                    admitted_run,
+                    admission.step_id,
+                    "implement",
+                    admission.attempt,
                 )
             await work.commit()
         except Exception:  # noqa: BLE001 - stale receipt failures cannot authorize settlement

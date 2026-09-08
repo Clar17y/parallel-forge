@@ -49,7 +49,11 @@ from forge.application.services.approved_plan import (
     ApprovedPlanError,
     ApprovedPlanLoader,
 )
-from forge.application.services.control_settlement import controlled_stop
+from forge.application.services.control_settlement import (
+    controlled_stop,
+    pending_current_control_stop,
+)
+from forge.application.services.suspended_delivery import record_suspended_delivery
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
     AgentBudget,
@@ -71,7 +75,7 @@ from forge.domain.evidence import (
 )
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
-from forge.domain.run import RunState
+from forge.domain.run import RunSnapshot, RunState
 from forge.domain.tool import ToolName
 from forge.domain.validation import command_spec_digest
 from forge.observability.usage import UsageRecord
@@ -458,6 +462,8 @@ class ReviewService:
             current = await self._load_current(command, work)
             if current.approval_id != approved.approval_id or current.run != approved.run:
                 raise ReviewRecoveryRequired("review approval changed")
+            if await pending_current_control_stop(work, current.run):
+                raise ReviewRecoveryRequired("review finalization is fenced by operator control")
             self._fence_candidate(current, request, head)
             for item in attempts:
                 await work.artifacts.record(
@@ -539,6 +545,7 @@ class ReviewService:
                         attempts,
                         output,
                         cancelled=True,
+                        admitted_run=approved.run,
                     )
                     raise CommandSuspended
                 await self._late_result(
@@ -558,6 +565,7 @@ class ReviewService:
         output: ReviewOutput | None,
         *,
         cancelled: bool = False,
+        admitted_run: RunSnapshot | None = None,
     ) -> None:
         """Retain a known outcome without certifying a stale candidate."""
         try:
@@ -604,6 +612,16 @@ class ReviewService:
                     kind="review",
                     attempt=admission.attempt,
                     role=AgentRole.REVIEWER,
+                )
+                if admitted_run is None:
+                    raise ReviewRecoveryRequired("suspended review admission is absent")
+                await record_suspended_delivery(
+                    work,
+                    command,
+                    admitted_run,
+                    admission.step_id,
+                    "review",
+                    admission.attempt,
                 )
             await work.commit()
         except Exception:  # noqa: BLE001 - late evidence cannot authorize candidate publication

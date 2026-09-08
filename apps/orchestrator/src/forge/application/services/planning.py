@@ -50,8 +50,12 @@ from forge.application.services.agent_results import (
     usage_bound,
     validate_agent_result,
 )
-from forge.application.services.control_settlement import controlled_stop
+from forge.application.services.control_settlement import (
+    controlled_stop,
+    pending_current_control_stop,
+)
 from forge.application.services.plan_restart import restart_source
+from forge.application.services.suspended_delivery import record_suspended_delivery
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
     AgentBudget,
@@ -734,6 +738,10 @@ class PlanningService:
                 1 if command.payload == {} else 0
             ):
                 raise PlanningRecoveryRequired
+            if await pending_current_control_stop(work, run):
+                raise PlanningRecoveryRequired(
+                    "planning finalization is fenced by operator control"
+                )
             await self._record_usage_attempts(work, run.id, execution_id, usage_attempts)
             persisted_plan = await self._record_shared_content(
                 work,
@@ -817,8 +825,17 @@ class PlanningService:
                     usage_attempts,
                     cancelled=True,
                     output=plan_descriptor,
+                    admitted_run=admitted_run,
                 )
                 raise CommandSuspended
+            await self._record_late_usage(
+                work,
+                command,
+                request,
+                usage,
+                usage_attempts,
+                output=plan_descriptor,
+            )
             raise
         except Exception:  # noqa: BLE001 - persistence boundary is fail-closed
             await _rollback(work)
@@ -843,6 +860,7 @@ class PlanningService:
         failure_bytes = _canonical_json_bytes(
             {"finish_status": finish_status.value, "reason": reason}
         )
+        failure_descriptor: ArtifactDescriptor | None = None
         try:
             failure_descriptor = await self._store_json(failure_bytes)
             await work.commands.assert_current_lease(command)
@@ -860,6 +878,10 @@ class PlanningService:
                 1 if command.payload == {} else 0
             ):
                 raise PlanningRecoveryRequired
+            if await pending_current_control_stop(work, run):
+                raise PlanningRecoveryRequired(
+                    "planning finalization is fenced by operator control"
+                )
             await self._record_usage_attempts(work, run.id, execution_id, safe_attempts)
             persisted_failure = await work.artifacts.record(
                 failure_descriptor,
@@ -921,6 +943,31 @@ class PlanningService:
             raise
         except PlanningRecoveryRequired:
             await _rollback(work)
+            admitted_run = (
+                binding.run.with_state(RunState.PLANNING)
+                if binding.run.state is RunState.CREATED
+                else binding.run
+            )
+            if await controlled_stop(work, command, admitted_run):
+                await self._record_late_usage(
+                    work,
+                    command,
+                    request,
+                    safe_usage,
+                    safe_attempts,
+                    cancelled=True,
+                    output=failure_descriptor,
+                    admitted_run=admitted_run,
+                )
+                raise CommandSuspended
+            await self._record_late_usage(
+                work,
+                command,
+                request,
+                safe_usage,
+                safe_attempts,
+                output=failure_descriptor,
+            )
             raise
         except Exception:  # noqa: BLE001 - persistence boundary is fail-closed
             await _rollback(work)
@@ -936,6 +983,7 @@ class PlanningService:
         *,
         cancelled: bool = False,
         output: ArtifactDescriptor | None = None,
+        admitted_run: RunSnapshot | None = None,
     ) -> None:
         """Retain measured evidence without settling an execution we no longer own."""
         try:
@@ -981,16 +1029,16 @@ class PlanningService:
                     actor_class="worker",
                 )
             )
+            output_id = None
+            if output is not None:
+                retained = await work.artifacts.record(
+                    output,
+                    run_id=run.id,
+                    producer_type="planning_late_result",
+                    producer_id=request.execution_id,
+                )
+                output_id = retained.artifact_id
             if cancelled:
-                output_id = None
-                if output is not None:
-                    retained = await work.artifacts.record(
-                        output,
-                        run_id=run.id,
-                        producer_type="planning_late_result",
-                        producer_id=request.execution_id,
-                    )
-                    output_id = retained.artifact_id
                 await work.executions.finalize(
                     run.id,
                     uuid5(_STEP_NAMESPACE, str(command.id)),
@@ -1005,6 +1053,16 @@ class PlanningService:
                     kind="plan",
                     attempt=_semantic_attempt(command),
                     role=AgentRole.PLANNER,
+                )
+                if admitted_run is None:
+                    raise PlanningRecoveryRequired("suspended planning admission is absent")
+                await record_suspended_delivery(
+                    work,
+                    command,
+                    admitted_run,
+                    uuid5(_STEP_NAMESPACE, str(command.id)),
+                    "plan",
+                    _semantic_attempt(command),
                 )
             await work.commit()
         except asyncio.CancelledError:

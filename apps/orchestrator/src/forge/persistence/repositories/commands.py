@@ -317,6 +317,34 @@ class PostgresCommandRepository:
             raise CommandLeaseError("command lease delivery was reclaimed")
         return _command_from_record(record)
 
+    async def has_pending_current_control_stop(
+        self, *, run_id: UUID, expected_run_version: int
+    ) -> bool:
+        """Return whether a valid current-version stop is awaiting settlement.
+
+        This query is intentionally session-bound.  Its caller must already
+        hold the corresponding run row lock, which also serializes API control
+        admission.  Stale or malformed controls grant no finalization fence;
+        their worker delivery remains responsible for strict rejection.
+        """
+
+        if self._session is None:
+            raise CommandError("control-stop fence requires an active unit of work")
+        pending = await self._session.scalar(
+            select(RunCommand.id)
+            .where(
+                RunCommand.run_id == run_id,
+                RunCommand.expected_run_version == expected_run_version,
+                RunCommand.command_type.in_(_CONTROL_COMMAND_TYPES),
+                RunCommand.status.in_(("PENDING", "LEASED")),
+                RunCommand.payload_schema_version == 1,
+                RunCommand.payload == {},
+                RunCommand.actor_id.is_not(None),
+            )
+            .limit(1)
+        )
+        return pending is not None
+
     async def complete(
         self,
         command_id: UUID,
