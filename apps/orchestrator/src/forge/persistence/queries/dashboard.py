@@ -11,9 +11,12 @@ from forge.application.services.public_data import public_payload
 from forge.domain.actor import AgentRole
 from forge.domain.agent import _ALLOWED_ROLE_TOOLS
 from forge.domain.branch_removal import branch_removal_recorded
+from forge.domain.operation import OperationStatus, canonical_digest
 from forge.domain.policy import ProjectPolicy
+from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.teardown import has_removable_resources, teardown_confirmation
+from forge.domain.worktree_operation import worktree_creation_request
 from forge.observability.redaction import redact_value
 from forge.persistence.models import (
     AgentExecution,
@@ -34,7 +37,10 @@ from forge.persistence.models import (
 )
 from forge.persistence.queries.recovery import startup_intervention_hold
 from forge.persistence.repositories.events import _event_from_record
-from forge.persistence.repositories.operations import _intent_from_record
+from forge.persistence.repositories.operations import (
+    PostgresOperationRepository,
+    _intent_from_record,
+)
 from forge.persistence.repositories.runs import (
     PersistenceDataError,
     PostgresRunRepository,
@@ -133,6 +139,10 @@ class DashboardQuery:
                 )
             )
             snapshot = _snapshot_from_record(run)
+            branch_removed = await _branch_removed(session, snapshot)
+            branch_retained = not branch_removed and await _owned_retained_branch(
+                session, snapshot, policy
+            )
             run_fields = (
                 "id",
                 "project_id",
@@ -170,7 +180,7 @@ class DashboardQuery:
                     "policy_digest": policy_row.policy_digest,
                 },
                 "resource": {
-                    "branch_removed": await _branch_removed(session, snapshot),
+                    "branch_removed": branch_removed,
                     "teardown_confirmation": teardown_confirmation(_snapshot_from_record(run)),
                     "database_role": run.database_role,
                     "worktree_path": run.worktree_path,
@@ -277,12 +287,49 @@ class DashboardQuery:
                 ),
                 "teardown_eligible": (
                     snapshot.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
-                    and has_removable_resources(snapshot)
+                    and (has_removable_resources(snapshot) or branch_retained)
                     and (await PostgresRunRepository(session).prove_quiescent(run_id)).is_quiescent
                 ),
                 "available_commands": [],
                 "next_gate": run.pending_gate,
             }
+
+
+async def _owned_retained_branch(
+    session: AsyncSession, run: RunSnapshot, policy: ProjectPolicy
+) -> bool:
+    if (
+        run.branch_name is None
+        or run.base_sha is None
+        or run.base_ref is None
+        or run.branch_name
+        in {
+            policy.default_branch.removeprefix("refs/heads/"),
+            run.base_ref.removeprefix("refs/heads/"),
+        }
+    ):
+        return False
+    identity = WorktreeIdentity.for_run(
+        run.project_id, run.id, run.branch_name, policy.database.enabled
+    )
+    request = worktree_creation_request(run, identity, policy)
+    intent = await PostgresOperationRepository(session=session).get_by_idempotency_key(
+        request.idempotency_key
+    )
+    return (
+        intent is not None
+        and intent.run_id == run.id
+        and intent.kind == request.kind
+        and intent.request_schema_version == 1
+        and intent.request_digest == request.request_digest
+        and canonical_digest(intent.request_payload) == canonical_digest(request.request_payload)
+        and intent.status is OperationStatus.SUCCEEDED
+        and intent.outcome_schema_version == 1
+        and intent.remote_resource_id == identity.worktree_name
+        and intent.outcome is not None
+        and canonical_digest(intent.outcome)
+        == canonical_digest({"worktree_name": identity.worktree_name, "base_sha": run.base_sha})
+    )
 
 
 async def _branch_removed(session: AsyncSession, run: RunSnapshot) -> bool:

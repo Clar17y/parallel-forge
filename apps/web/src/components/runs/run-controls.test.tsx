@@ -245,6 +245,8 @@ test('branch removal requires its exact name and retries the same confirmed choi
   await userEvent.paste(value.resource.teardown_confirmation);
   const choice = screen.getByRole('checkbox', { name: 'Also delete the branch' });
   expect(choice).not.toBeChecked();
+  expect(screen.getByRole('button', { name: 'Review resource removal' })).toBeDisabled();
+  expect(screen.getByRole('dialog')).toHaveTextContent('Only the retained branch remains');
   await userEvent.click(choice);
   const review = screen.getByRole('button', { name: 'Review resource removal' });
   expect(review).toBeDisabled();

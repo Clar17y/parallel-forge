@@ -43,11 +43,12 @@ from forge.domain.operation import (
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.domain.resource import ResourceState, WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
+from forge.domain.worktree_operation import WORKTREE_PROTOCOL_VERSION, worktree_creation_request
 from forge.tools.runner import await_deferred_cancellation, command_spec_digest
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-_PROTOCOL_VERSION = 1
+_PROTOCOL_VERSION = WORKTREE_PROTOCOL_VERSION
 _WORKTREE_KIND = "worktree.create"
 _WORKTREE_TEARDOWN_KIND = "worktree.teardown"
 _WORKTREE_REMOVED_EVENT = "resource.worktree_removed"
@@ -1070,7 +1071,8 @@ class WorktreeProvisioner:
         if failure is not None:
             raise failure
         return await self._load_context(
-            context.run.id, context.policy,
+            context.run.id,
+            context.policy,
             paused_inspection=context.run.state is RunState.PAUSED,
         )
 
@@ -1258,8 +1260,12 @@ class _SetupInspection:
                 raise WorktreeIntegrityError()
             command = commands[ordinal]
             request = _setup_command_request(
-                context, command, ordinal=ordinal,
-                environment_keys=tuple(key for key in command.environment_keys if key in binding.environment),
+                context,
+                command,
+                ordinal=ordinal,
+                environment_keys=tuple(
+                    key for key in command.environment_keys if key in binding.environment
+                ),
             )
             adapter = _SetupCommandAdapter(
                 self._owner, self._policy, tree, None, None, request, paused_inspection=True
@@ -2149,31 +2155,10 @@ def _validate_current_resource(
 
 
 def _request(
-    run: RunSnapshot,
-    identity: WorktreeIdentity,
-    policy: ProjectPolicy,
+    run: RunSnapshot, identity: WorktreeIdentity, policy: ProjectPolicy
 ) -> OperationRequest:
-    payload: dict[str, object] = {
-        "project_id": str(run.project_id),
-        "run_id": str(run.id),
-        "policy_version": policy.version,
-        "branch_digest": hashlib.sha256(identity.branch.encode("utf-8")).hexdigest(),
-        "worktree_name": identity.worktree_name,
-        "base_sha": _require_sha(run.base_sha),
-        "database_state": (
-            ResourceState.ACTIVE.value if policy.database.enabled else ResourceState.DISABLED.value
-        ),
-    }
-    return OperationRequest(
-        run_id=run.id,
-        kind=_WORKTREE_KIND,
-        idempotency_key=(
-            f"forge-worktree-v{_PROTOCOL_VERSION}:{_WORKTREE_KIND}:"
-            f"{run.project_id.hex}:{run.id.hex}:{policy.version}"
-        ),
-        request_digest=canonical_digest(payload),
-        request_payload=payload,
-    )
+    _require_sha(run.base_sha)
+    return worktree_creation_request(run, identity, policy)
 
 
 def _checkpoint_payload(

@@ -18,6 +18,59 @@ from apps.orchestrator.tests.tools.test_branch_removal import Git
 
 
 @pytest.mark.integration
+async def test_branch_only_projection_requires_successful_exact_creation(
+    session_factory,
+    operation_repository,
+    persisted_run,
+    tmp_path,
+):
+    from dataclasses import replace
+
+    from forge.domain.operation import OperationOutcome
+    from forge.domain.policy import ProjectPolicy
+    from forge.domain.worktree_operation import worktree_creation_request
+    from forge.persistence.queries.dashboard import _owned_retained_branch
+
+    run = replace(persisted_run, branch_name="forge/owned", base_ref="main", base_sha="a" * 40)
+    policy = ProjectPolicy(
+        id=run.project_id,
+        version=1,
+        repository_path=str(tmp_path),
+        github_repository="owner/repo",
+        default_branch="main",
+    )
+    identity = WorktreeIdentity.for_run(run.project_id, run.id, run.branch_name, False)
+    request = worktree_creation_request(run, identity, policy)
+    async with session_factory() as session:
+        assert not await _owned_retained_branch(session, run, policy)
+    intent = await operation_repository.begin(
+        run_id=run.id,
+        operation_type=request.kind,
+        idempotency_key=request.idempotency_key,
+        request_digest=request.request_digest,
+        request_payload=request.request_payload,
+        execution_owner="test",
+        execution_lease_seconds=60,
+    )
+    async with session_factory() as session:
+        assert not await _owned_retained_branch(session, run, policy)
+    await operation_repository.complete(
+        intent.id,
+        OperationOutcome(
+            remote_resource_id=identity.worktree_name,
+            payload={"worktree_name": identity.worktree_name, "base_sha": run.base_sha},
+        ),
+        owner_id="test",
+    )
+    async with session_factory() as session:
+        assert await _owned_retained_branch(session, run, policy)
+        assert not await _owned_retained_branch(session, replace(run, base_sha="c" * 40), policy)
+        assert not await _owned_retained_branch(
+            session, replace(run, base_ref="refs/heads/forge/owned"), policy
+        )
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("interrupt_after_effect", [False, True])
 async def test_branch_removal_persists_original_head_and_never_repeats_effect(
     operation_repository,

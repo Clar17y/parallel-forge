@@ -653,4 +653,40 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     await command_repository.complete(command.id, worker_id="teardown-worker")
     settled = await projections.run_projection(run.id, actor)
     assert settled["resource"]["branch_removed"] is delete_branch
-    assert settled["available_commands"] == []
+    assert [item["name"] for item in settled["available_commands"]] == (
+        [] if delete_branch else ["teardown_run_resources"]
+    )
+    if not delete_branch:
+        branch_command = await RunCommandService(
+            lambda: PostgresUnitOfWork(session_factory)
+        ).enqueue(
+            actor=actor,
+            run_id=run.id,
+            idempotency_key="confirmed-retained-branch",
+            request=RunCommandRequest(
+                command_type="teardown_run_resources",
+                expected_run_version=final.version,
+                delete_branch=True,
+                confirm_branch_name=final.branch_name,
+                confirm_resource_identity=teardown_confirmation(final),
+            ),
+        )
+        claimed = await command_repository.claim_next(worker_id="teardown-worker", lease_seconds=60)
+        assert claimed is not None and claimed.id == branch_command.id
+        branch_handler = TeardownRunResourcesHandler(
+            provisioner.teardown,
+            branches=BranchRemovalRuntime(
+                lambda: PostgresUnitOfWork(session_factory),
+                lambda _: git,
+                OperationExecutor(operation_repository),
+            ),
+        )
+        async with PostgresUnitOfWork(session_factory) as work:
+            await branch_handler(claimed, work)
+        async with PostgresUnitOfWork(session_factory) as work:
+            await branch_handler(claimed, work)
+        await command_repository.complete(claimed.id, worker_id="teardown-worker")
+        removed = await projections.run_projection(run.id, actor)
+        assert removed["resource"]["branch_removed"] is True
+        assert removed["available_commands"] == []
+        assert git.remove_calls == 1 and git.branch_delete_calls == 1
