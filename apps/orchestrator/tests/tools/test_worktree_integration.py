@@ -438,6 +438,26 @@ class _TeardownGitEffect(_GitEffect):
     def __init__(self) -> None:
         super().__init__()
         self.remove_calls = 0
+        self.branch_head: str | None = "b" * 40
+        self.branch_delete_calls = 0
+
+    def head_sha(self, worktree):
+        assert self.handle == worktree
+        return self.branch_head
+
+    def retained_branch_head(self, worktree):
+        self.verify_worktree_absent(worktree)
+        return self.branch_head
+
+    def delete_retained_branch(self, worktree, expected_head):
+        self.verify_worktree_absent(worktree)
+        assert expected_head == self.branch_head
+        self.branch_delete_calls += 1
+        self.branch_head = None
+
+    def inspect_retained_branch_deletion(self, worktree, expected_head):
+        self.verify_worktree_absent(worktree)
+        return self.branch_head is None
 
     def prune(self) -> None:
         assert self.handle is None
@@ -454,12 +474,14 @@ class _TeardownGitEffect(_GitEffect):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("interrupt_after_removal", [False, True])
+@pytest.mark.parametrize("delete_branch", [False, True])
 async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipts(
     session_factory,
     operation_repository,
     persisted_run,
     command_repository,
     interrupt_after_removal,
+    delete_branch,
 ) -> None:
     from dataclasses import replace
     from uuid import uuid4
@@ -469,18 +491,38 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     from forge.application.services.auth import AuthenticatedActor
     from forge.application.services.runs import RunCommandRequest, RunCommandService
     from forge.domain.teardown import teardown_confirmation
+    from forge.persistence.models import Task
+    from forge.worker.branch_runtime import BranchRemovalRuntime
 
-    persisted_run = replace(persisted_run, id=uuid4(), policy_version=2)
+    persisted_run = replace(
+        persisted_run, id=uuid4(), project_id=uuid4(), task_id=uuid4(), policy_version=1
+    )
     git = _TeardownGitEffect()
     policy = _policy(persisted_run, git, enabled=False)
+    policy = policy.model_copy(update={"github_repository": policy.github_repository.lower()})
     document = policy.model_dump(mode="json")
     async with PostgresUnitOfWork(session_factory) as work:
-        await work.projects.append_policy(
-            project_id=persisted_run.project_id,
-            expected_policy_version=1,
+        await work.projects.create(
+            project_id=policy.id,
+            name="Branch teardown test",
+            canonical_path=policy.repository_path,
+            canonical_path_key=policy.repository_path.casefold(),
+            github_repository=policy.github_repository,
+            default_branch=policy.default_branch,
             policy_document=document,
             policy_digest=canonical_digest(document),
         )
+        await work.commit()
+    async with session_factory() as session, session.begin():
+        session.add(
+            Task(
+                id=persisted_run.task_id,
+                project_id=policy.id,
+                normalized_text="teardown test",
+                task_digest="b" * 64,
+            )
+        )
+    async with PostgresUnitOfWork(session_factory) as work:
         await work.runs.create(persisted_run)
         await work.commit()
     await _seed_preparing_run(session_factory, persisted_run, branch="forge/teardown-integration")
@@ -500,6 +542,14 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     from forge.application.services.projections import ProjectionService
     from forge.persistence.queries.dashboard import DashboardQuery
 
+    async with PostgresUnitOfWork(session_factory) as debug_work:
+        project = await debug_work.projects.get(policy.id)
+        assert project.canonical_path == policy.repository_path, (
+            project.canonical_path,
+            policy.repository_path,
+        )
+        assert project.github_repository == policy.github_repository
+        assert project.default_branch == policy.default_branch
     actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
     projections = ProjectionService(DashboardQuery(session_factory))
     ready = await projections.run_projection(run.id, actor)
@@ -512,6 +562,8 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
             command_type="teardown_run_resources",
             expected_run_version=run.version,
             confirm_resource_identity=teardown_confirmation(run),
+            delete_branch=delete_branch,
+            confirm_branch_name=run.branch_name if delete_branch else None,
         ),
     )
     queued = await projections.run_projection(run.id, actor)
@@ -525,7 +577,16 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
             raise RuntimeError("simulated interruption after resource checkpoint")
         return result
 
-    handler = TeardownRunResourcesHandler(remove)
+    branches = (
+        BranchRemovalRuntime(
+            lambda: PostgresUnitOfWork(session_factory),
+            lambda _: git,
+            OperationExecutor(operation_repository),
+        )
+        if delete_branch
+        else None
+    )
+    handler = TeardownRunResourcesHandler(remove, branches=branches)
     async with PostgresUnitOfWork(session_factory) as work:
         if interrupt_after_removal:
             with pytest.raises(CommandRecoveryRequired, match="requires recovery"):
@@ -533,7 +594,7 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
         else:
             await handler(command, work)
     # Resume through the same frozen source even though the resource checkpoint advanced the version.
-    handler = TeardownRunResourcesHandler(provisioner.teardown)
+    handler = TeardownRunResourcesHandler(provisioner.teardown, branches=branches)
     async with PostgresUnitOfWork(session_factory) as work:
         await handler(command, work)
     async with PostgresUnitOfWork(session_factory) as work:
@@ -544,6 +605,10 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     assert final.branch_name == run.branch_name
     assert final.database_state is ResourceState.DISABLED
     assert git.remove_calls == 1
+    assert git.branch_delete_calls == int(delete_branch)
+    assert sum(event.event_type == "resource.branch_removed" for event in events) == int(
+        delete_branch
+    )
     assert sum(event.event_type == "resource.teardown_admitted" for event in events) == 1
     assert sum(event.event_type == "resource.teardown_completed" for event in events) == 1
     assert sum(event.event_type == "resource.worktree_removed" for event in events) == 1

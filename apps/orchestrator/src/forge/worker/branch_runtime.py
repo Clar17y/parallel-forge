@@ -2,23 +2,39 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import asyncio
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 
 from forge.application.handlers.teardown import (
     TeardownCommandRejected,
     _binding,
+    _fence,
+    _policy,
     _validate_progress,
 )
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
+from forge.application.services.recovery import OperationExecutor
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
-from forge.domain.operation import canonical_digest
+from forge.domain.operation import (
+    OperationIntent,
+    OperationRequest,
+    OperationStatus,
+    canonical_digest,
+)
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.teardown import teardown_identity
-from forge.tools.branch_removal import BranchRemovalBinding
+from forge.tools.branch_removal import (
+    BranchRemovalAdapter,
+    BranchRemovalBinding,
+    branch_removal_request,
+)
+from forge.tools.runner import await_deferred_cancellation
 from forge.tools.worktree import (
     WorktreeProvisionerError,
     _parse_teardown_checkpoint,
@@ -28,6 +44,206 @@ from forge.tools.worktree import (
     _validate_succeeded_intent,
     _validate_teardown_checkpoint_shape,
 )
+
+
+class BranchRemovalRuntime:
+    """Compose frozen command authority, controlled Git and durable receipts."""
+
+    def __init__(
+        self,
+        factory: Callable[[], AbstractAsyncContextManager[UnitOfWork]],
+        git: Callable[[ProjectPolicy], ControlledGitPort],
+        executor: OperationExecutor,
+    ) -> None:
+        self._factory, self._git, self._executor = factory, git, executor
+
+    def _handle(self, run: RunSnapshot, policy: ProjectPolicy) -> ManagedWorktree:
+        if run.branch_name is None or run.base_sha is None:
+            raise TeardownCommandRejected("branch identity is absent")
+        identity = WorktreeIdentity.for_run(
+            run.project_id, run.id, run.branch_name, policy.database.enabled
+        )
+        return self._git(policy).expected_worktree(identity, run.base_sha)
+
+    async def observe_head(self, run: RunSnapshot, policy: ProjectPolicy) -> str | None:
+        handle = self._handle(run, policy)
+        if run.branch_name in {
+            policy.default_branch.removeprefix("refs/heads/"),
+            (run.base_ref or "").removeprefix("refs/heads/"),
+        }:
+            raise TeardownCommandRejected("protected branch cannot be removed")
+        if run.worktree_path is not None and run.worktree_path != str(handle.path):
+            raise TeardownCommandRejected("branch worktree identity differs")
+        git = self._git(policy)
+        operation = git.head_sha if run.worktree_path is not None else git.retained_branch_head
+        head, cancelled = await await_deferred_cancellation(asyncio.to_thread(operation, handle))
+        if cancelled:
+            raise asyncio.CancelledError()
+        return head
+
+    def _request(
+        self,
+        run: RunSnapshot,
+        policy: ProjectPolicy,
+        command: CommandEnvelope,
+        expected_head: str | None,
+    ) -> OperationRequest:
+        return branch_removal_request(
+            self._handle(run, policy),
+            policy_version=policy.version,
+            source_command_id=command.id,
+            expected_head=expected_head,
+        )
+
+    async def _source(self, intent: OperationIntent, policy: ProjectPolicy) -> ManagedWorktree:
+        binding = BranchRemovalBinding.model_validate(dict(intent.request_payload))
+        async with self._factory() as work:
+            stored = await work.operations.get(intent.id)
+            if (
+                stored.run_id != intent.run_id
+                or stored.kind != intent.kind
+                or stored.idempotency_key != intent.idempotency_key
+                or stored.request_digest != intent.request_digest
+                or stored.request_schema_version != intent.request_schema_version
+                or canonical_digest(stored.request_payload)
+                != canonical_digest(intent.request_payload)
+            ):
+                raise TeardownCommandRejected("branch stored operation differs")
+            run = await work.runs.get_for_update(intent.run_id)
+            frozen = await _policy(run, work)
+            project = await work.projects.get(run.project_id, for_update=True)
+            if (
+                canonical_digest(frozen.model_dump(mode="json"))
+                != canonical_digest(policy.model_dump(mode="json"))
+                or project.canonical_path != policy.repository_path
+                or project.github_repository != policy.github_repository
+                or project.default_branch != policy.default_branch
+            ):
+                raise TeardownCommandRejected("branch frozen project policy differs")
+            events = await work.events.list_after(run.id, 0)
+            command = await require_branch_admission(
+                run,
+                policy,
+                binding,
+                events,
+                work,
+                own_unresolved_operation=stored.status
+                in {OperationStatus.PENDING, OperationStatus.NEEDS_RECONCILIATION},
+            )
+            if intent.is_new:
+                await _fence(command, work)
+            identity = await require_owned_removed_worktree(run, policy, events, work)
+            if identity != binding.identity():
+                raise TeardownCommandRejected("branch owned identity differs")
+            handle = self._handle(run, policy)
+            await work.commit()
+            return handle
+
+    def adapter(self, request: OperationRequest, policy: ProjectPolicy) -> BranchRemovalAdapter:
+        async def source(intent: OperationIntent) -> ManagedWorktree:
+            return await self._source(intent, policy)
+
+        return BranchRemovalAdapter(request, self._git(policy), source)
+
+    async def remove(
+        self, command: CommandEnvelope, policy: ProjectPolicy, expected_head: str | None
+    ) -> RunSnapshot:
+        async with self._factory() as work:
+            run = await work.runs.get_for_update(command.run_id)
+            await _fence(command, work)
+            request = self._request(run, policy, command, expected_head)
+            prior = await work.operations.get_by_idempotency_key(request.idempotency_key)
+            if prior is not None and prior.status is OperationStatus.FAILED:
+                raise TeardownCommandRejected("branch remains; fresh confirmation required")
+            await work.commit()
+        outcome = await self._executor.execute(request, self.adapter(request, policy))
+        if outcome.status is not OperationStatus.SUCCEEDED:
+            raise TeardownCommandRejected("branch remains; fresh confirmation required")
+        return await self._checkpoint(command, policy, expected_head, create=True)
+
+    async def validate_completed(
+        self, command: CommandEnvelope, policy: ProjectPolicy, expected_head: str | None
+    ) -> None:
+        await self._checkpoint(command, policy, expected_head, create=False)
+
+    async def _checkpoint(
+        self,
+        command: CommandEnvelope,
+        policy: ProjectPolicy,
+        expected_head: str | None,
+        *,
+        create: bool,
+    ) -> RunSnapshot:
+        # Validate source outside the checkpoint transaction: its own run lock must
+        # be released before this transaction acquires the same lock.
+        async with self._factory() as work:
+            run = await work.runs.get_for_update(command.run_id)
+            request = self._request(run, policy, command, expected_head)
+            intent = await work.operations.get_by_idempotency_key(request.idempotency_key)
+            if intent is None:
+                raise TeardownCommandRejected("branch receipt is absent")
+            expected = {
+                "source_command_id": str(command.id),
+                "request_digest": request.request_digest,
+                "branch": run.branch_name,
+                "expected_head": expected_head,
+                "removed": True,
+            }
+            if (
+                intent.status is not OperationStatus.SUCCEEDED
+                or intent.run_id != request.run_id
+                or intent.kind != request.kind
+                or intent.idempotency_key != request.idempotency_key
+                or intent.request_schema_version != request.request_schema_version
+                or intent.request_digest != request.request_digest
+                or canonical_digest(intent.request_payload)
+                != canonical_digest(request.request_payload)
+                or intent.outcome_schema_version != 1
+                or intent.remote_resource_id is not None
+                or intent.outcome is None
+                or canonical_digest(intent.outcome) != canonical_digest(expected)
+            ):
+                raise TeardownCommandRejected("branch receipt differs")
+            await work.commit()
+        await self._source(intent, policy)
+        async with self._factory() as work:
+            current = await work.runs.get_for_update(command.run_id)
+            if current != run:
+                raise CommandRecoveryRequired("branch resource changed before checkpoint")
+            await _fence(command, work)
+            payload = {
+                "operation_intent_id": str(intent.id),
+                "request_digest": request.request_digest,
+                "source_command_id": str(command.id),
+                "branch": run.branch_name,
+                "expected_head": expected_head,
+            }
+            events = await work.events.list_after(run.id, 0)
+            matches = [event for event in events if event.event_type == "resource.branch_removed"]
+            if matches:
+                if (
+                    len(matches) != 1
+                    or matches[0].actor_class != "worker"
+                    or matches[0].actor_id is not None
+                    or matches[0].payload_schema_version != 1
+                    or matches[0].run_version > run.version
+                    or canonical_digest(matches[0].payload) != canonical_digest(payload)
+                ):
+                    raise TeardownCommandRejected("branch checkpoint differs")
+            elif not create:
+                raise TeardownCommandRejected("branch checkpoint is absent")
+            else:
+                current = await work.runs.update_resource(
+                    run.id,
+                    run.version,
+                    worktree_path=None,
+                    database_state=run.database_state,
+                    event_type="resource.branch_removed",
+                    event_payload=payload,
+                    actor_class="worker",
+                )
+            await work.commit()
+            return current
 
 
 async def require_branch_admission(

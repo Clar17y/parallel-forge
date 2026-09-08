@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -216,3 +217,32 @@ async def test_branch_source_requires_exact_operator_admission(tmp_path, corrupt
             await require_branch_admission(
                 run, policy, binding, events, work, own_unresolved_operation=True
             )
+
+
+@pytest.mark.asyncio
+async def test_completed_branch_replay_cannot_create_missing_operation(tmp_path):
+    from contextlib import asynccontextmanager
+
+    from forge.application.handlers.teardown import TeardownCommandRejected
+    from forge.application.ports.worktrees import ManagedWorktree
+    from forge.worker.branch_runtime import BranchRemovalRuntime
+
+    run, policy, identity, _receipts, _events, work = ownership_fixture(tmp_path)
+    work.runs = SimpleNamespace(get_for_update=AsyncMock(return_value=run))
+    work.operations.get_by_idempotency_key = AsyncMock(return_value=None)
+    command = SimpleNamespace(run_id=run.id, id=uuid4())
+    executor = SimpleNamespace(execute=AsyncMock())
+    git = SimpleNamespace(
+        expected_worktree=lambda *_: ManagedWorktree(
+            identity=identity, path=Path(tmp_path / identity.worktree_name), base_sha=run.base_sha
+        )
+    )
+
+    @asynccontextmanager
+    async def factory():
+        yield work
+
+    runtime = BranchRemovalRuntime(factory, lambda _: git, executor)
+    with pytest.raises(TeardownCommandRejected, match="receipt"):
+        await runtime.validate_completed(command, policy, "b" * 40)
+    executor.execute.assert_not_awaited()
