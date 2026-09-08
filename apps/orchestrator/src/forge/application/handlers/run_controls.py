@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import asdict
 from uuid import UUID
 
+from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.resume_continuation import enqueue_resumed_stage
@@ -50,6 +51,9 @@ class CancelRunHandler:
 
 class ResumeRunHandler:
     """Restore a reconciled run and atomically queue its local continuation."""
+
+    def __init__(self, *, artifact_store: ArtifactStore | None = None) -> None:
+        self._reconciler = ResumeReconciler(artifact_store)
 
     async def __call__(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         _validate_resume_command(command)
@@ -108,7 +112,7 @@ class ResumeRunHandler:
         pause_command = await _validate_pause_authority(work, run)
         payload = _resume_payload(command, target, pause_command.id, run=run)
         if target in _ACTIVE_RESUME_STATES:
-            sources = await ResumeReconciler().reconcile(work, command)
+            sources = await self._reconciler.reconcile(work, command)
             queued = await enqueue_resumed_stage(work, command, run, sources)
             payload["continuation"] = continuation_binding(queued, sources[0].id)
         else:

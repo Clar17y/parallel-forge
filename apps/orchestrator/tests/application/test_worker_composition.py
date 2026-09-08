@@ -272,6 +272,7 @@ def test_compose_worker_handlers_production_construction(tmp_path: Path) -> None
         "review",
         "pause",
         "cancel",
+        "resume",
         "request_candidate_changes",
     }
     assert isinstance(handlers["start_planning"], PlanningHandler)

@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from uuid import UUID
+from dataclasses import replace
+from uuid import UUID, uuid5
 
+from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
 from forge.application.ports.controller_steps import ControllerStepUnsettledError
 from forge.application.ports.executions import ExecutionStatus, ExecutionUnsettledError
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.deferred_delivery import settle_deferred_delivery
+from forge.application.services.retained_outcome import load_retained_outcome
+from forge.application.services.retained_validation import cancel_retained_validation
+from forge.application.services.state_engine import StateEngine
+from forge.domain.actor import AgentRole
+from forge.domain.agent import AgentFinishStatus
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
@@ -28,15 +35,23 @@ _ADMITTED_STATES = {
     "review": {RunState.REVIEWING},
     "validate": {RunState.VALIDATING},
 }
+_EXECUTION_NAMESPACE = {
+    "plan": UUID("e516bb38-63f8-4c28-b4e4-6cc9b3a9e9c5"),
+    "implement": UUID("6649eb62-7e4a-421f-9861-8be14cefa22b"),
+    "review": UUID("29a779ce-d141-498d-b6bc-a18bececf766"),
+}
 
 
 class ResumeReconciler:
-    """Prove and settle only receipts written by ``record_suspended_delivery``.
+    """Settle stopped deliveries using retained outcomes or verified stop receipts.
 
     The caller owns the exact resume lease and holds the paused run lock.  This
     service deliberately does not resume a run, invoke a provider, or enqueue
     successor work; its returned sources are for the caller's later phase flow.
     """
+
+    def __init__(self, artifact_store: ArtifactStore | None = None) -> None:
+        self._store = artifact_store
 
     async def reconcile(
         self, work: UnitOfWork, resume_command: CommandEnvelope
@@ -87,9 +102,22 @@ class ResumeReconciler:
                 raise CommandRecoveryRequired("unsupported paused-run command state")
             source_receipt = receipt_by_command.get(source.id)
             if source_receipt is None:
-                raise CommandRecoveryRequired(
-                    "leased paused-run command has no stopped-delivery receipt"
+                recovered_source = await self._settle_retained(work, run, pause, source)
+                events = await work.events.list_after(run.id, 0)
+                source_receipt = next(
+                    (
+                        event
+                        for event in events
+                        if event.event_type == "delivery.suspended"
+                        and event.payload.get("command_id") == str(source.id)
+                    ),
+                    None,
                 )
+                if source_receipt is None:
+                    raise CommandRecoveryRequired("retained outcome has no suspended receipt")
+                await _validate_receipt(work, run, pause, source_receipt, source)
+                settled.append(recovered_source)
+                continue
             await _validate_receipt(work, run, pause, source_receipt, source)
             # The conditional update uses PostgreSQL time and the entire
             # observed lease identity, so a renewal/reclaim races safely fail.
@@ -125,6 +153,153 @@ class ResumeReconciler:
         if not proof.is_quiescent:
             raise CommandRecoveryRequired("paused run has unresolved durable effects")
         return tuple(settled)
+
+    async def _settle_retained(
+        self,
+        work: UnitOfWork,
+        run: RunSnapshot,
+        pause: CommandEnvelope,
+        source: CommandEnvelope,
+    ) -> CommandEnvelope:
+        kind = _KIND_BY_COMMAND.get(source.command_type)
+        if (
+            kind not in {"plan", "implement", "review", "validate"}
+            or source.payload_schema_version != 1
+        ):
+            raise CommandRecoveryRequired("retained outcome source is invalid")
+        attempt = source.payload.get("semantic_attempt", 1)
+        if type(attempt) is not int or attempt < 1 or source.expected_run_version > run.version - 1:
+            raise CommandRecoveryRequired("retained outcome source is invalid")
+        admitted = _admitted_run(run, source, kind)
+        cancelled = await work.commands.cancel_expired_observed_lease(
+            source, reason="retained stopped delivery settled during resume reconciliation"
+        )
+        if cancelled is None:
+            raise CommandRecoveryRequired("retained outcome lease changed before settlement")
+        if kind == "validate":
+            step_id = await cancel_retained_validation(work, run, cancelled)
+            await _record_retained_receipt(
+                work, run, pause, source, admitted, step_id, kind, attempt, None, None
+            )
+            return cancelled
+        if self._store is None:
+            raise CommandRecoveryRequired("retained outcome recovery requires artifact storage")
+        execution_id = uuid5(_EXECUTION_NAMESPACE[kind], str(source.id))
+        admission = await work.executions.get_admission(run.id, execution_id)
+        if (
+            admission is None
+            or admission.kind != kind
+            or admission.attempt != attempt
+            or admission.step_id != uuid5(_step_namespace(kind), str(source.id))
+            or admission.role is not _role(kind)
+            or admission.status is not ExecutionStatus.RUNNING
+        ):
+            raise CommandRecoveryRequired("retained outcome admission is invalid")
+        retained = await load_retained_outcome(
+            work,
+            self._store,
+            command_id=source.id,
+            delivery_attempt=source.attempt,
+            admission=admission,
+        )
+        await work.executions.finalize(
+            run.id,
+            admission.step_id,
+            execution_id,
+            AgentFinishStatus.CANCELLED,
+            retained.usage,
+            output_artifact_id=retained.output_artifact_id,
+            provider=admission.provider,
+            model=admission.model,
+            instruction_version=admission.instruction_version,
+            kind=kind,
+            attempt=attempt,
+            role=admission.role,
+        )
+        await _record_retained_receipt(
+            work,
+            run,
+            pause,
+            source,
+            admitted,
+            admission.step_id,
+            kind,
+            attempt,
+            execution_id,
+            retained.output_artifact_id,
+        )
+        return cancelled
+
+
+def _step_namespace(kind: str) -> UUID:
+    return {
+        "plan": UUID("3b7b0e4a-5e6a-4b8d-9db0-3c3c12f1f411"),
+        "implement": UUID("5f7bc719-a867-443c-b6a8-936c6663a983"),
+        "review": UUID("11c37116-b982-454c-b101-0f7e4bc4e3ed"),
+    }[kind]
+
+
+def _role(kind: str) -> AgentRole:
+    return (
+        AgentRole.PLANNER
+        if kind == "plan"
+        else AgentRole.DEVELOPER
+        if kind == "implement"
+        else AgentRole.REVIEWER
+    )
+
+
+def _admitted_run(run: RunSnapshot, source: CommandEnvelope, kind: str) -> RunSnapshot:
+    restored = StateEngine().resume(run)
+    state = restored.state
+    version = run.version - 1
+    if (
+        state not in _ADMITTED_STATES[kind]
+        or version < source.expected_run_version
+        or version > source.expected_run_version + (1 if kind == "plan" else 0)
+        or StateEngine().pause(replace(restored, version=version)) != run
+    ):
+        raise CommandRecoveryRequired("retained outcome admitted state is invalid")
+    return replace(restored, version=version)
+
+
+async def _record_retained_receipt(
+    work: UnitOfWork,
+    run: RunSnapshot,
+    pause: CommandEnvelope,
+    source: CommandEnvelope,
+    admitted: RunSnapshot,
+    step_id: UUID,
+    kind: str,
+    attempt: int,
+    execution_id: UUID | None,
+    output_artifact_id: UUID | None,
+) -> None:
+    payload = {
+        "command_id": str(source.id),
+        "command_type": source.command_type,
+        "command_payload": dict(source.payload),
+        "idempotency_key": source.idempotency_key,
+        "delivery_attempt": source.attempt,
+        "expected_run_version": source.expected_run_version,
+        "admitted_run_version": admitted.version,
+        "admitted_state": admitted.state.value,
+        "control_command_id": str(pause.id),
+        "step_id": str(step_id),
+        "kind": kind,
+        "semantic_attempt": attempt,
+        "execution_id": str(execution_id) if execution_id else None,
+        "output_artifact_id": str(output_artifact_id) if output_artifact_id else None,
+    }
+    await work.events.append(
+        RunEvent(
+            run_id=run.id,
+            run_version=run.version,
+            event_type="delivery.suspended",
+            payload=payload,
+            actor_class="worker",
+        )
+    )
 
 
 def _validate_resume(command: CommandEnvelope) -> None:
