@@ -1,6 +1,6 @@
 """Durable enqueue adapter: success records admission, never completed merge."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from uuid import UUID
 
@@ -9,6 +9,7 @@ from forge.application.ports.release import ReleaseRecord
 from forge.domain.approval import MergeApprovalEvidence
 from forge.domain.merge_queue import MergeQueueReceipt
 from forge.domain.operation import OperationIntent, OperationOutcome, OperationStatus
+from forge.domain.release import GitHubPullRequest
 from forge.release.controller import ReleaseReconciliationRequired, _validate_intent
 from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
@@ -59,10 +60,32 @@ class EnqueueOperation:
             self._record.pull_request.node_id, approved.head_sha,
         )
         if receipt is None:
-            # Absence cannot distinguish never accepted, evicted, or already merged.
-            # A separate authoritative merge observation must settle completion.
-            raise ReleaseReconciliationRequired()
+            # Absence alone proves nothing. A fully bound merged PR can resolve
+            # the operation without inventing a queue-entry receipt.
+            merged = await self._controller.reconcile(self._record, approved)
+            return OperationOutcome(
+                remote_resource_id=merged.remote_resource_id,
+                payload={"merged_pull_request": dict(merged.payload)},
+            )
         return self._outcome(receipt)
+
+    def merged_pull(self, outcome: OperationOutcome) -> GitHubPullRequest | None:
+        if set(outcome.payload) != {"merged_pull_request"}:
+            return None
+        value = outcome.payload["merged_pull_request"]
+        if not isinstance(value, Mapping):
+            raise ReleaseReconciliationRequired()
+        try:
+            pull = GitHubPullRequest(**dict(value))
+        except TypeError:
+            raise ReleaseReconciliationRequired() from None
+        canonical = self._controller.outcome(self._record, self._approved, pull)
+        if (
+            outcome.status is not OperationStatus.SUCCEEDED
+            or canonical.payload != value or canonical.remote_resource_id != outcome.remote_resource_id
+        ):
+            raise ReleaseReconciliationRequired()
+        return pull
 
     def _outcome(self, receipt: MergeQueueReceipt) -> OperationOutcome:
         self.validate_receipt(receipt)

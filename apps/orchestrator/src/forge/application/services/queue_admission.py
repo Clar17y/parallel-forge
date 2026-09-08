@@ -22,7 +22,7 @@ from forge.persistence.models import Approval
 from forge.release.controller import _validate_intent
 from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
-from forge.release.merge import MergeController, StaleMergeEvidence
+from forge.release.merge import MergeController, ObservedMergeOperation, StaleMergeEvidence
 from forge.release.queue import EnqueueOperation
 
 
@@ -55,19 +55,23 @@ class QueueAdmissionService:
         ):
             raise CommandRecoveryRequired("queue admission authority differs")
         await verify_merge_delivery(command, work, approval)
+        events = await work.events.list_after(run.id, 0)
         rejections = [
-            event for event in await work.events.list_after(run.id, 0)
+            event for event in events
             if event.event_type == "run.merge_queue_admission_rejected"
             and event.payload.get("source_command_id") == str(command.id)
         ]
-        if not rejections and (
+        completions = [event for event in events if event.event_type == "run.merge_completed"
+                       and event.payload.get("source_command_id") == str(command.id)]
+        if not (rejections or completions) and (
             run.state is not RunState.MERGING or run.version != command.expected_run_version
             or await pending_current_control_stop(work, run)
         ):
             raise CommandRecoveryRequired("queue admission awaits control settlement")
         approved = (
             await self._evidence.for_recovery(work, run.id, approval_id)
-            if rejections else await self._evidence.consumed(work, run.id, approval_id, recheck=False)
+            if rejections or completions
+            else await self._evidence.consumed(work, run.id, approval_id, recheck=False)
         )
         if not await self._evidence.queue_required(work, run.id, approval_id, approved):
             raise CommandRecoveryRequired("approval does not authorize queue admission")
@@ -92,6 +96,26 @@ class QueueAdmissionService:
         adapter = EnqueueOperation(self._controller, self._queue, record, approval_id, approved, current)
         request = adapter.request
         existing = await work.operations.get_by_idempotency_key(request.idempotency_key)
+        if completions:
+            if existing is None:
+                raise CommandRecoveryRequired("resolved enqueue intent is absent")
+            _validate_intent(existing, request)
+            if (
+                len(completions) != 1 or rejections or existing.status is not OperationStatus.SUCCEEDED
+                or adapter.merged_pull(existing.to_outcome()) != record.pull_request
+                or run.state is not RunState.COMPLETED or run.version != command.expected_run_version + 1
+                or record.merge_intent_id is None or completions[0].run_version != run.version
+                or completions[0].actor_class != "worker" or completions[0].actor_id != command.actor_id
+                or completions[0].payload != {
+                    "source_command_id": str(command.id), "approval_id": str(approval_id),
+                    "pull_request_id": str(record.id), "merge_intent_id": str(record.merge_intent_id),
+                    "merge_sha": record.pull_request.merge_sha,
+                }
+            ):
+                raise CommandRecoveryRequired("resolved queue completion replay differs")
+            await work.releases.record_merge(run.id, record.pull_request, record.merge_intent_id)
+            await work.commit()
+            return
         if rejections:
             if existing is None:
                 raise CommandRecoveryRequired("queue rejection receipt is absent")
@@ -147,6 +171,40 @@ class QueueAdmissionService:
             return
         if outcome.status is not OperationStatus.SUCCEEDED:
             raise CommandRecoveryRequired("queue admission requires settlement")
+        merged = adapter.merged_pull(outcome)
+        if merged is not None:
+            await _fence_command(command, work)
+            latest = await work.runs.get_for_update(run.id)
+            if latest != run or await pending_current_control_stop(work, latest):
+                raise CommandRecoveryRequired("resolved queue merge awaits control settlement")
+            completion = ObservedMergeOperation(self._controller, record, approval_id, approved, current)
+            final_request = completion.request
+            final_intent = await work.operations.begin(
+                run_id=run.id, operation_type=final_request.kind,
+                idempotency_key=final_request.idempotency_key, request_digest=final_request.request_digest,
+                request_payload=final_request.request_payload,
+                execution_owner=f"forge-resolved-queue-{uuid4().hex}", execution_lease_seconds=30,
+            )
+            # The merged observation is already durable in the enqueue resolution.
+            # This step is database-only and commits the canonical final receipt
+            # together with the PR and run transition, without another remote read.
+            if final_intent.is_new:
+                await work.operations.complete(
+                    final_intent.id, self._controller.outcome(record, approved, merged),
+                    owner_id=final_intent.execution_owner,
+                )
+            elif final_intent.status is not OperationStatus.SUCCEEDED:
+                raise CommandRecoveryRequired("existing merge completion requires recovery")
+            await work.releases.record_merge(run.id, merged, final_intent.id)
+            await work.runs.transition(
+                run.id, run.version, RunState.COMPLETED, "run.merge_completed",
+                {"source_command_id": str(command.id), "approval_id": str(approval_id),
+                 "pull_request_id": str(record.id), "merge_intent_id": str(final_intent.id),
+                 "merge_sha": merged.merge_sha},
+                actor_class="worker", actor_id=command.actor_id, occurred_at=self._clock.now(),
+            )
+            await work.commit()
+            return
         receipt = MergeQueueReceipt.model_validate(dict(outcome.payload))
         adapter.validate_receipt(receipt)
         if outcome.remote_resource_id != receipt.entry_id:

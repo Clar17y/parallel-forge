@@ -17,8 +17,6 @@ from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.merge_queue import MergeQueueReceipt
 from forge.domain.operation import (
-    OperationIntent,
-    OperationOutcome,
     OperationStatus,
     canonical_digest,
 )
@@ -28,16 +26,10 @@ from forge.persistence.models import Approval
 from forge.release.controller import _validate_intent
 from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
-from forge.release.merge import MergeController, MergeOperation, StaleMergeEvidence
+from forge.release.merge import MergeController, ObservedMergeOperation, StaleMergeEvidence
 from forge.release.queue import EnqueueOperation
 
 _FIELDS = {"source_command_id", "approval_id", "enqueue_intent_id", "receipt_digest", "deadline", "poll"}
-
-
-class _ObserveCompletedMerge(MergeOperation):
-    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
-        # The operation records a merge observed after queue admission. No merge mutation.
-        return await self.reconcile(intent)
 
 
 class QueueObservationService:
@@ -137,7 +129,7 @@ class QueueObservationService:
             or approval.invalidated_at is not None or await pending_current_control_stop(work, run)
         ):
             raise CommandRecoveryRequired("queue observation awaits control settlement")
-        completion = _ObserveCompletedMerge(self._controller, record, approval_id, approved, no_new_authority)
+        completion = ObservedMergeOperation(self._controller, record, approval_id, approved, no_new_authority)
         request = completion.request
         completed_intent = await work.operations.get_by_idempotency_key(request.idempotency_key)
         completed_pull = None

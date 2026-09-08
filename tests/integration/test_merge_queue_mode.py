@@ -40,6 +40,8 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, None, "admission_preflight_unavailable"),
     (True, None, "admission_preflight_drift"), (True, None, "admission_expired"),
     (True, "before_scheduling", "merged_admission_race"),
+    (True, "after_acceptance", "merged_before_entry_receipt"),
+    (True, "after_acceptance", "merged_before_entry_receipt_commit_crash"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -135,7 +137,25 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             work.runs.intervene = fail_rejection
             with pytest.raises(RuntimeError, match="rejection settlement crash"):
                 await service.execute(source, work)
+    if ending.startswith("merged_before_entry_receipt"):
+        writes.pull_requests[policy.github_repository, 1] = replace(
+            writes.pull_requests[policy.github_repository, 1], state="closed", merged=True,
+            merge_sha="d" * 40,
+        )
+        queue_port.receipt = None
     saved_pull_read = writes.get_pull_request
+    if ending == "merged_before_entry_receipt_commit_crash":
+        async with PostgresUnitOfWork(factory) as work:
+            async def fail_resolved_completion(*args, **kwargs):
+                raise RuntimeError("resolved completion crash")
+            work.runs.transition = fail_resolved_completion
+            with pytest.raises(RuntimeError, match="resolved completion crash"):
+                await service.execute(source, work)
+
+        async def no_more_remote_reads(*args, **kwargs):
+            raise AssertionError("durable merge resolution must survive remote unavailability")
+        writes.get_pull_request = no_more_remote_reads
+        queue_port.observe = no_more_remote_reads
     if ending == "merged_admission_race":
         from forge.release.github_write import GitHubWriteError
 
@@ -158,6 +178,22 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             await service.execute(source, work)
     if ending == "merged_admission_race":
         writes.get_pull_request = saved_pull_read
+    if ending.startswith("merged_before_entry_receipt"):
+        async with PostgresUnitOfWork(factory) as work:
+            assert (await work.runs.get(case.run_id)).state is RunState.COMPLETED
+            record = await work.releases.get_for_run(case.run_id)
+            admitted = await work.operations.get(enqueue_attempts[0])
+            assert admitted.status is OperationStatus.SUCCEEDED
+            assert set(admitted.outcome) == {"merged_pull_request"}
+            assert admitted.outcome["merged_pull_request"]["merge_sha"] == "d" * 40
+            completed = await work.operations.get(record.merge_intent_id)
+            assert completed.kind == "merge_pr" and completed.id != admitted.id
+            assert completed.status is OperationStatus.SUCCEEDED
+            assert await work.commands.get_by_idempotency_key(
+                f"{case.run_id}:observe-merge-queue:{admitted.id}:1"
+            ) is None
+        assert len(enqueue_attempts) == queue_port.writes == 1
+        return
     if ending.startswith("admission_"):
         async with PostgresUnitOfWork(factory) as work:
             current_run = await work.runs.get(case.run_id)

@@ -199,3 +199,10 @@ class MergeOperation:
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
         _validate_intent(intent, self.request)
         return await self._controller.reconcile(self._record, self._approved)
+
+
+class ObservedMergeOperation(MergeOperation):
+    """Persist authoritative merge completion using reads only, including on first invoke."""
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        return await self.reconcile(intent)
