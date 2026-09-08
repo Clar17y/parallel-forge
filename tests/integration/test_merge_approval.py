@@ -150,12 +150,15 @@ async def test_merge_approval_consumes_exact_gate_or_invalidates_without_merge(
             raise AssertionError("merge execution must not push")
 
         settings = Settings(data_root=tmp_path, prompt_root=tmp_path / "prompts")
+        from apps.orchestrator.tests.release.test_queue_operation import Queue
+
+        queue_port = Queue() if drift in {"consumed_artifact", "consumed_missing"} else None
         handlers = compose_worker_handlers(
             settings,
             factory,
             agent_gateway=case.gateway,
             delivery_runtime=Runtime(settings, factory, case.artifact_store),
-            release_dependencies=ReleaseDependencies(read, writes, unused_push),
+            release_dependencies=ReleaseDependencies(read, writes, unused_push, queue=queue_port),
         )
         if drift in {"consumed_artifact", "consumed_missing"}:
             from forge.artifacts._errors import ArtifactIntegrityError
@@ -191,6 +194,7 @@ async def test_merge_approval_consumes_exact_gate_or_invalidates_without_merge(
                 assert (await work.releases.get_for_run(run.id)).merge_intent_id is None
                 assert await work.commands.get_by_idempotency_key(f"{run.id}:monitor-pr:2") is None
             assert not writes.pull_requests[policy.github_repository, 1].merged
+            assert queue_port.writes == 0
             await handlers.aclose()
             return
         if drift == "preflight_unavailable":

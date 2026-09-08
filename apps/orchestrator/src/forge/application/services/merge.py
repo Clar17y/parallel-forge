@@ -99,11 +99,12 @@ class MergeService:
             # checks current authority before permitting any new external effect.
             try:
                 historical = await self._evidence.for_recovery(work, run.id, approval_id)
+                queued_mode = await self._evidence.queue_required(
+                    work, run.id, approval_id, historical
+                )
             except StaleMergeEvidence:
-                raise CommandRecoveryRequired("merge routing evidence is unavailable") from None
-            queued_mode = await self._evidence.queue_required(
-                work, run.id, approval_id, historical
-            )
+                await self._reject_evidence(command, work, run, approval, record.id)
+                return
             if queued_mode:
                 from forge.application.services.queue_admission import QueueAdmissionService
 
@@ -217,28 +218,7 @@ class MergeService:
         try:
             approved = await self._evidence.consumed(work, run.id, approval_id, recheck=False)
         except StaleMergeEvidence:
-            await _fence_command(command, work)
-            current_run = await work.runs.get_for_update(run.id)
-            if current_run != run or await pending_current_control_stop(work, current_run):
-                raise CommandRecoveryRequired(
-                    "merge evidence rejection awaits control reconciliation"
-                ) from None
-            await verify_merge_delivery(command, work, approval)
-            await work.auth.invalidate_merge_gate(
-                run_id=run.id, run_version=approval.run_version, at=self._clock.now()
-            )
-            # Without the frozen gate we cannot reconstruct the operation request
-            # or safely assume that a previous delivery had no external effect.
-            await work.runs.intervene(
-                run.id,
-                run.version,
-                "run.merge_evidence_rejected",
-                _evidence_rejection_payload(command, approval, record.id),
-                actor_class="worker",
-                actor_id=command.actor_id,
-                occurred_at=self._clock.now(),
-            )
-            await work.commit()
+            await self._reject_evidence(command, work, run, approval, record.id)
             return
 
         async def current() -> MergeApprovalEvidence:
@@ -350,6 +330,38 @@ class MergeService:
             run.version,
             "run.merge_intervention",
             _unresolved_payload(command, approval, record_id, intent),
+            actor_class="worker",
+            actor_id=command.actor_id,
+            occurred_at=self._clock.now(),
+        )
+        await work.commit()
+
+    async def _reject_evidence(
+        self, command: CommandEnvelope, work: UnitOfWork, run: RunSnapshot,
+        approval: Approval, record_id: UUID,
+    ) -> None:
+        await _fence_command(command, work)
+        current_run = await work.runs.get_for_update(run.id)
+        if (
+            current_run != run
+            or run.state is not RunState.MERGING
+            or run.version != command.expected_run_version
+            or await pending_current_control_stop(work, current_run)
+        ):
+            raise CommandRecoveryRequired(
+                "merge evidence rejection awaits control reconciliation"
+            ) from None
+        await verify_merge_delivery(command, work, approval)
+        await work.auth.invalidate_merge_gate(
+            run_id=run.id, run_version=approval.run_version, at=self._clock.now()
+        )
+        # Without the frozen gate we cannot reconstruct the operation request
+        # or safely assume that a previous delivery had no external effect.
+        await work.runs.intervene(
+            run.id,
+            run.version,
+            "run.merge_evidence_rejected",
+            _evidence_rejection_payload(command, approval, record_id),
             actor_class="worker",
             actor_id=command.actor_id,
             occurred_at=self._clock.now(),

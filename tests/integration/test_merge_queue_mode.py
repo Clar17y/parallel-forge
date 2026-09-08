@@ -49,6 +49,7 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, None, "merged_poll_resume"), (True, None, "merged_poll_resume_twice"),
     (True, None, "merged_admission_ack"),
     (True, None, "merged_admission_ack_renewed"),
+    (True, None, "routing_history_unavailable"), (True, None, "routing_mode_unavailable"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -141,6 +142,22 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         validator, MergeController(read, writes),
         OperationExecutor(PostgresOperationRepository(factory)), queue=queue_port,
     )
+    if ending.startswith("routing_"):
+        from forge.release.merge import StaleMergeEvidence
+
+        method = "for_recovery" if ending == "routing_history_unavailable" else "queue_required"
+        with patch.object(validator, method, side_effect=StaleMergeEvidence()):
+            for _ in range(2):
+                async with PostgresUnitOfWork(factory) as work:
+                    await service.execute(source, work)
+        async with PostgresUnitOfWork(factory) as work:
+            assert (await work.runs.get(case.run_id)).state is RunState.AWAITING_HUMAN_INTERVENTION
+            events = await work.events.list_after(case.run_id, 0)
+            assert len([e for e in events if e.event_type == "run.merge_evidence_rejected"]) == 1
+            assert (await work.auth.get_approval(approval_id=approval_id)).invalidated_at is not None
+            assert not (await work.releases.get_for_run(case.run_id)).pull_request.merged
+        assert not enqueue_attempts and queue_port.writes == 0
+        return
     if ending == "admission_preflight_unavailable":
         from forge.release.github_write import GitHubWriteError
 
