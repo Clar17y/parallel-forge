@@ -53,6 +53,9 @@ async def test_restart_returns_refreshed_bindings_and_rolls_back_event_failure(
     case = await _build_case(tmp_path, factory, fail_invalid=False)
     async with PostgresUnitOfWork(factory) as work:
         await case.service.execute(case.command, work)
+        row = await work.session.get(Run, case.run_id)
+        row.token_budget, row.cost_budget_minor, row.duration_budget_seconds = 100, 10, 60
+        await work.commit()
     async with PostgresUnitOfWork(factory) as work:
         before = await work.runs.get(case.run_id)
         if fail_event:
@@ -83,6 +86,9 @@ async def test_restart_returns_refreshed_bindings_and_rolls_back_event_failure(
         assert run.state == ("AWAITING_PLAN_APPROVAL" if fail_event else "PLANNING")
         assert run.version == before.version + (0 if fail_event else 1)
         assert run.base_sha == (before.base_sha if fail_event else "b" * 40)
+        assert (run.token_budget, run.cost_budget_minor, run.duration_budget_seconds) == (
+            (100, 10, 60) if fail_event else (0, 0, 0)
+        )
 
 
 async def test_concurrent_restarts_commit_only_one_new_version(tmp_path, workflow_session_factory):

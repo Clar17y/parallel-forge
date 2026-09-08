@@ -477,6 +477,46 @@ def _provisioner(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("teardown", [False, True])
+async def test_recovery_adapter_only_inspects_exact_admitted_database(tmp_path, teardown):
+    from forge.application.services.recovery import OperationExecutor, RecoveryService
+
+    events = []
+    identity, policy = _identity(), _enabled_policy()
+    repository = _MemoryOperationRepository()
+    provisioner, _resolver, source, connection, _executor = _provisioner(
+        tmp_path, identity=identity, policy=policy, events=events,
+        executor=cast(Any, OperationExecutor(repository)), operation_repository=repository,
+    )
+    binding = await provisioner.provision(identity, policy, policy_version=7)
+    if teardown:
+        await provisioner.teardown(identity, policy, binding, policy_version=7)
+    intent = list(repository.by_key.values())[-1]
+    pending = replace(
+        intent, status=OperationStatus.PENDING, outcome=None, outcome_schema_version=None,
+        remote_resource_id=None, completed_at=None,
+    )
+    repository.by_id[intent.id] = pending
+    repository.by_key[intent.idempotency_key] = pending
+    statements = tuple(connection.statements)
+    passwords = tuple(source.calls)
+    adapter = provisioner.recovery_adapter(identity, policy, policy_version=7, kind=intent.kind)
+    with pytest.raises(DatabaseIntegrityError):
+        await adapter.invoke(pending)
+    corrupted = replace(pending, request_payload=dict(pending.request_payload) | {"extra": True})
+    with pytest.raises(DatabaseIntegrityError):
+        await adapter.reconcile(corrupted)
+    assert tuple(connection.statements) == statements
+    settled = await RecoveryService(repository).reconcile_all({intent.kind: adapter})
+    assert len(settled) == 1 and settled[0].status is OperationStatus.SUCCEEDED
+    assert tuple(source.calls) == passwords
+    assert not any(
+        statement.startswith(("CREATE ", "DROP ", "ALTER "))
+        for statement, _args in connection.statements[len(statements):]
+    )
+
+
+@pytest.mark.asyncio
 async def test_verify_active_requires_exact_succeeded_intent_and_only_inspects(
     tmp_path: Path,
 ) -> None:

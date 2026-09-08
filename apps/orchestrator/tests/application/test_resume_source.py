@@ -8,7 +8,11 @@ from uuid import uuid4
 
 import pytest
 from forge.application.ports.commands import CommandRecoveryRequired
-from forge.application.services.resume_source import resume_origin, resume_source
+from forge.application.services.resume_source import (
+    historical_resume_source,
+    resume_origin,
+    resume_source,
+)
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 
@@ -230,11 +234,18 @@ def _two_link_case():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("historical", [False, True])
 @pytest.mark.parametrize(
     "tamper", [None, "payload", "actor", "source", "event_actor", "receipt", "resume_status"]
 )
-async def test_resume_source_requires_exact_operator_and_stopped_delivery_binding(tamper):
+async def test_resume_source_requires_exact_operator_and_stopped_delivery_binding(tamper, historical):
     work, queued, source, resume, event, stopped = _case()
+    if historical:
+        queued = replace(
+            queued, status=CommandStatus.COMPLETED, completed_at=datetime.now(UTC),
+            lease_owner=None, lease_expires_at=None,
+        )
+    verify = historical_resume_source if historical else resume_source
     if tamper == "payload":
         queued = replace(
             queued, payload={**queued.payload, "validation_evidence_set_id": str(uuid4())}
@@ -256,10 +267,10 @@ async def test_resume_source_requires_exact_operator_and_stopped_delivery_bindin
 
         work.commands.get = get
     if tamper is None:
-        assert await resume_source(work, queued) == source
+        assert await verify(work, queued) == source
     else:
         with pytest.raises(CommandRecoveryRequired):
-            await resume_source(work, queued)
+            await verify(work, queued)
 
 
 @pytest.mark.asyncio

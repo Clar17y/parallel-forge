@@ -48,6 +48,9 @@ class CommandRepository(Protocol):
 
     async def get(self, command_id: UUID) -> CommandEnvelope: ...
 
+    async def list_expired_terminal_commands(self) -> Sequence[CommandEnvelope]:
+        """Discover expired deliveries that normal terminal-state dispatch excludes."""
+
     async def get_by_idempotency_key(self, idempotency_key: str) -> CommandEnvelope | None: ...
 
     async def claim_next(
@@ -97,6 +100,11 @@ class CommandRepository(Protocol):
         command envelope and ``attempt == 0``. ``None`` means the command was
         claimed, renewed, tampered with, or otherwise changed before settlement.
         """
+
+    async def complete_expired_observed_lease(
+        self, command: CommandEnvelope
+    ) -> CommandEnvelope | None:
+        """Acknowledge an exact expired delivery after its outcome is verified in this UoW."""
 
     async def complete(
         self, command_id: UUID, *, worker_id: str, result: Mapping[str, object] | None = None

@@ -300,7 +300,7 @@ class RecoveryService:
                 return
 
     async def reconcile_all(
-        self, adapters: Mapping[str, OperationAdapter]
+        self, adapters: Mapping[str, OperationAdapter], *, allow_unresolved: bool = False
     ) -> tuple[OperationIntent, ...]:
         """Reconcile all unresolved intents through explicitly registered adapters."""
 
@@ -309,8 +309,13 @@ class RecoveryService:
         for intent in intents:
             adapter = adapters.get(intent.kind)
             if adapter is None:
+                if allow_unresolved:
+                    results.append(intent)
+                    continue
                 raise RecoveryError(f"no adapter registered for {intent.kind!r}")
             results.append(await self.reconcile(intent.id, adapter))
+        if not allow_unresolved and await self._operations.list_unresolved():
+            raise RecoveryError("startup recovery still has unresolved operations")
         return tuple(results)
 
 

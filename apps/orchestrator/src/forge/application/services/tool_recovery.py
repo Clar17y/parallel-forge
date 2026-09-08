@@ -27,6 +27,7 @@ from forge.application.ports.repository import MAX_REPOSITORY_WRITE_BYTES, FileW
 from forge.application.ports.tools import ToolCallRecord
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ManagedWorktree, PublishedGitCommit
+from forge.application.services.recovery import RecoveryError
 from forge.application.services.tools import (
     _git_prepare_payload,
     _git_result_artifact_bytes,
@@ -363,6 +364,21 @@ class ToolRecoveryService:
         )
         return await self._settle(work, call, run, result, data)
 
+    async def recover_all(self, *, allow_unresolved: bool = False) -> int:
+        """Finalize known receipts before startup opens command admission."""
+        settled = 0
+        cursor = None
+        while page := await self.recover_page(cursor, 100):
+            if not allow_unresolved and any(
+                result.disposition
+                not in {ToolRecoveryDisposition.SETTLED, ToolRecoveryDisposition.TERMINAL}
+                for result in page
+            ):
+                raise RecoveryError("startup tool recovery has unresolved evidence")
+            settled += sum(result.disposition is ToolRecoveryDisposition.SETTLED for result in page)
+            cursor = page[-1].call_id
+        return settled
+
     async def recover_page(
         self, after_id: UUID | None, limit: int
     ) -> tuple[ToolRecoveryResult, ...]:
@@ -376,11 +392,10 @@ class ToolRecoveryService:
         return tuple([await self.recover_one(candidate.id) for candidate in candidates])
 
     @staticmethod
-    def _valid_write(
+    def valid_write_request(
         call: ToolCallRecord,
         operation: OperationIntent,
         run: RunSnapshot,
-        payload: Mapping[str, object],
     ) -> bool:
         request = operation.request_payload
         if (
@@ -397,7 +412,6 @@ class ToolRecoveryService:
             or operation.kind != ToolName.REPOSITORY_WRITE_FILE.value
             or operation.run_id != call.run_id
             or operation.request_schema_version != 1
-            or operation.outcome_schema_version != 1
             or operation.idempotency_key != f"tool:{call.id}"
             or operation.request_digest != canonical_digest(request)
             or type(request.get("policy_version")) is not int
@@ -415,7 +429,32 @@ class ToolRecoveryService:
         }
         if set(call.normalized_arguments) != {"path", "content_digest", "content_byte_count"}:
             return False
-        if request != expected or type(payload.get("reconciled")) is not bool:
+        if (
+            not isinstance(request.get("path"), str)
+            or type(request.get("content_byte_count")) is not int
+            or not 0 <= cast(int, request["content_byte_count"]) <= MAX_REPOSITORY_WRITE_BYTES
+        ):
+            return False
+        try:
+            validate_artifact_digest(cast(str, request.get("content_digest")))
+        except TypeError, ValueError:
+            return False
+        return request == expected
+
+    @staticmethod
+    def _valid_write(
+        call: ToolCallRecord,
+        operation: OperationIntent,
+        run: RunSnapshot,
+        payload: Mapping[str, object],
+    ) -> bool:
+        request = operation.request_payload
+        if (
+            not ToolRecoveryService.valid_write_request(call, operation, run)
+            or operation.outcome_schema_version != 1
+        ):
+            return False
+        if type(payload.get("reconciled")) is not bool:
             return False
         expected_keys = {"path", "output_digest", "byte_count", "reconciled"}
         if not payload["reconciled"]:

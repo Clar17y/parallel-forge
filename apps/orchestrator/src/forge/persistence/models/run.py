@@ -36,6 +36,7 @@ INTERVENTION_SOURCE_STATES = ",".join(
         RunState.VALIDATING,
         RunState.REVIEWING,
         RunState.REMEDIATING,
+        RunState.AWAITING_PR_APPROVAL,
         RunState.PUBLISHING_PR,
         RunState.MONITORING_PR,
         RunState.AWAITING_MERGE_APPROVAL,

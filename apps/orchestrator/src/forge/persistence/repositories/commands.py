@@ -14,7 +14,9 @@ from forge.application.ports.commands import CommandLane, CommandLeaseLost
 from forge.domain.command import CommandEnvelope, CommandStatus, thaw_payload
 from forge.domain.lease import validate_lease_seconds
 from forge.domain.payload import redact_durable_text
-from forge.persistence.models import Run, RunCommand
+from forge.persistence.models import RecoveryBarrier, Run, RunCommand
+from forge.persistence.models.recovery import RECOVERY_BARRIER_ID
+from forge.persistence.queries.recovery import startup_intervention_hold
 from forge.persistence.repositories.runs import PersistenceDataError
 
 
@@ -152,11 +154,26 @@ class PostgresCommandRepository:
             if record is None:
                 raise CommandNotFound(f"command {command_id} was not found")
             return _command_from_record(record)
+
         async with self._factory()() as session:
             record = await session.get(RunCommand, command_id)
             if record is None:
                 raise CommandNotFound(f"command {command_id} was not found")
             return _command_from_record(record)
+
+    async def list_expired_terminal_commands(self) -> tuple[CommandEnvelope, ...]:
+        async with self._factory()() as session:
+            rows = await session.scalars(
+                select(RunCommand)
+                .join(Run, Run.id == RunCommand.run_id)
+                .where(
+                    Run.state.in_(("COMPLETED", "CANCELLED", "FAILED")),
+                    RunCommand.status == "LEASED",
+                    RunCommand.lease_expires_at <= func.clock_timestamp(),
+                )
+                .order_by(RunCommand.created_at, RunCommand.id)
+            )
+            return tuple(_command_from_record(row) for row in rows)
 
     async def get_by_idempotency_key(self, idempotency_key: str) -> CommandEnvelope | None:
         """Load an existing command from the active transaction by its key."""
@@ -189,6 +206,13 @@ class PostgresCommandRepository:
         now = _utc_now()
         expiry = now + timedelta(seconds=lease_seconds)
         async with self._factory()() as session, session.begin():
+            barrier = await session.scalar(
+                select(RecoveryBarrier).where(RecoveryBarrier.id == RECOVERY_BARRIER_ID).with_for_update(read=True)
+            )
+            if barrier is None:
+                raise PersistenceDataError("recovery singleton is missing")
+            if barrier.required:
+                return None
             skipped: set[UUID] = set()
             while True:
                 eligibility = [
@@ -227,6 +251,11 @@ class PostgresCommandRepository:
                 )
                 if run_state is None:
                     raise PersistenceDataError(f"command {record.id} references a missing run")
+                if lane is CommandLane.NORMAL and await session.scalar(
+                    select(startup_intervention_hold(record.run_id))
+                ):
+                    skipped.add(record.id)
+                    continue
                 if lane is CommandLane.NORMAL and (
                     (run_state == "PAUSED" and record.command_type != "resume")
                     or (
@@ -399,6 +428,17 @@ class PostgresCommandRepository:
         self, command: CommandEnvelope, *, reason: str
     ) -> CommandEnvelope | None:
         """Settle exactly one expired observed normal lease without reclaiming it."""
+        return await self._settle_expired_observed_lease(command, status="CANCELLED", reason=reason)
+
+    async def complete_expired_observed_lease(
+        self, command: CommandEnvelope
+    ) -> CommandEnvelope | None:
+        """Caller has verified the durable outcome; preserve the delivery's lineage."""
+        return await self._settle_expired_observed_lease(command, status="COMPLETED", reason=None)
+
+    async def _settle_expired_observed_lease(
+        self, command: CommandEnvelope, *, status: str, reason: str | None
+    ) -> CommandEnvelope | None:
 
         if self._session is None:
             raise CommandError("recovery settlement requires an active unit of work")
@@ -414,6 +454,12 @@ class PostgresCommandRepository:
                 RunCommand.id == command.id,
                 RunCommand.run_id == command.run_id,
                 RunCommand.status == "LEASED",
+                RunCommand.command_type == command.command_type,
+                RunCommand.idempotency_key == command.idempotency_key,
+                RunCommand.expected_run_version == command.expected_run_version,
+                RunCommand.actor_id == command.actor_id,
+                RunCommand.payload_schema_version == command.payload_schema_version,
+                RunCommand.payload == thaw_payload(command.payload),
                 RunCommand.lease_owner == command.lease_owner,
                 RunCommand.attempt_count == command.attempt,
                 RunCommand.lease_expires_at == command.lease_expires_at,
@@ -421,11 +467,11 @@ class PostgresCommandRepository:
                 RunCommand.command_type.not_in(_CONTROL_COMMAND_TYPES),
             )
             .values(
-                status="CANCELLED",
+                status=status,
                 lease_owner=None,
                 lease_expires_at=None,
                 completed_at=func.now(),
-                error_summary=_bounded_error(reason),
+                error_summary=_bounded_error(reason) if reason is not None else None,
             )
             .returning(RunCommand)
         )

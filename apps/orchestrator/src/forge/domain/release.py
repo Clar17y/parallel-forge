@@ -1,9 +1,26 @@
-"""Release-domain boundary marker.
+"""Immutable remote release identities used for deterministic reconciliation."""
 
-Remote publication and merge effects are deliberately implemented by the
-future deterministic Release Controller.  This module exists as the stable
-domain seam for those operations; Task 3 keeps the contracts side-effect free
-and does not persist or execute release actions.
-"""
+from __future__ import annotations
 
-__all__: list[str] = []
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubPullRequest:
+    """The complete GitHub identity required to reconcile a release effect."""
+
+    number: int
+    node_id: str
+    url: str
+    head_repository: str
+    head_ref: str
+    head_sha: str
+    base_repository: str
+    base_ref: str
+    base_sha: str
+    state: str
+    merged: bool
+    merge_sha: str | None
+
+
+__all__ = ["GitHubPullRequest"]

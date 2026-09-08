@@ -60,7 +60,7 @@ class ApprovePlanHandler:
         ):
             raise ApprovalCommandValidationError("approval evidence is stale")
         try:
-            await self._evidence_validator.validate(work, run.id)
+            evidence = await self._evidence_validator.validate(work, run.id)
         except PlanEvidenceValidationError:
             # This is an owned, otherwise-valid approval whose authoritative
             # source drifted after API authorization.  Settle the stale gate
@@ -100,10 +100,10 @@ class ApprovePlanHandler:
             )
             await work.commit()
             return
-        transitioned = await work.runs.transition(
+        transitioned = await work.runs.approve_plan(
             run.id,
             run.version,
-            RunState.PREPARING_WORKTREE,
+            evidence,
             "run.plan_approved",
             {"approval_id": str(approval.id)},
             actor_class="operator",

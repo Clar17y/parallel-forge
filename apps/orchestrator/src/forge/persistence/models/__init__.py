@@ -22,6 +22,7 @@ from forge.persistence.models.execution import (
     ValidationResult,
 )
 from forge.persistence.models.project import Project, ProjectPolicyVersion, Task
+from forge.persistence.models.recovery import RecoveryBarrier
 from forge.persistence.models.release import PullRequest
 from forge.persistence.models.run import Run
 
@@ -45,6 +46,7 @@ __all__ = [
     "Project",
     "ProjectPolicyVersion",
     "PullRequest",
+    "RecoveryBarrier",
     "Review",
     "Run",
     "RunCommand",

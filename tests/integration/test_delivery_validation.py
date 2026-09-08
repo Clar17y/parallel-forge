@@ -428,8 +428,9 @@ async def test_unknown_check_outcome_is_not_blindly_reexecuted(tmp_path, workflo
     assert runner.calls == ["unit"]
 
 
+@pytest.mark.parametrize("startup", [False, True])
 async def test_receipt_committed_before_settlement_recovers_without_reexecution(
-    tmp_path, workflow_session_factory
+    tmp_path, workflow_session_factory, startup
 ):
     case, command, service, runner = await _case(tmp_path, workflow_session_factory)
     async with PostgresUnitOfWork(workflow_session_factory) as work:
@@ -442,6 +443,24 @@ async def test_receipt_committed_before_settlement_recovers_without_reexecution(
             await service.execute(command, work)
     assert runner.calls == ["unit"]
     await _expire_operation(workflow_session_factory, case.run_id)
+    if startup:
+        from dataclasses import replace
+
+        from forge.application.services.recovery import RecoveryError, RecoveryService
+        from forge.worker.recovery_adapters import local_recovery_adapters
+
+        operations = PostgresOperationRepository(workflow_session_factory)
+        adapters = local_recovery_adapters(
+            workflow_session_factory, case.artifact_store, service._git_factory
+        )
+        pending = (await operations.list_unresolved())[0]
+        with pytest.raises(RecoveryError, match="cannot invoke"):
+            await adapters[pending.kind].invoke(pending)
+        with pytest.raises(RecoveryError, match="identity differs"):
+            await adapters[pending.kind].reconcile(replace(pending, request_digest="f" * 64))
+        recovered = await RecoveryService(operations).reconcile_all(adapters)
+        assert len(recovered) == 1
+        assert runner.calls == ["unit"]
     async with PostgresUnitOfWork(workflow_session_factory) as work:
         evidence = await service.execute(command, work)
     assert runner.calls == ["unit", "lint"]

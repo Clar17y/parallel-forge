@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from forge.domain.approval import ApprovalGate
+from forge.domain.approval import ApprovalGate, PlanApprovalEvidence
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState
 
@@ -42,6 +42,24 @@ class RunRepository(Protocol):
     async def get(self, run_id: UUID) -> RunSnapshot: ...
 
     async def get_for_update(self, run_id: UUID) -> RunSnapshot: ...
+
+    async def duration_deadline(self, run_id: UUID) -> datetime:
+        """Return creation time plus the persisted run duration budget."""
+        ...
+
+    async def approve_plan(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        evidence: PlanApprovalEvidence,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
 
     async def prove_quiescent(self, run_id: UUID, *, exclude_command_id: UUID) -> RunQuiescence: ...
 
@@ -125,6 +143,20 @@ class RunRepository(Protocol):
         expected_version: int,
         *,
         automatic: bool,
+        limit: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
+    async def begin_remote_remediation(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
         limit: int,
         event_type: str,
         event_payload: Mapping[str, object],

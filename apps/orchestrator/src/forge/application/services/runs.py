@@ -35,6 +35,7 @@ _BASE_SHA = re.compile(r"^[0-9a-f]{40}$")
 _MAX_IDEMPOTENCY_KEY_BYTES = 255
 _MAX_FEEDBACK_BYTES = 4096
 _TERMINAL_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED})
+_MERGE_SETTLEMENT_REFUSAL = "cancellation is unavailable while merge settlement is in progress"
 
 
 class RunServiceError(RuntimeError):
@@ -317,6 +318,10 @@ class RunCommandService:
                 return existing
             if request.expected_run_version != run.version:
                 raise ConcurrencyConflict(run_id, request.expected_run_version, run.version)
+            if request.command_type == RunCommandType.CANCEL:
+                reason = cancellation_rejection_reason(run)
+                if reason is not None:
+                    raise RunCommandValidationError(reason)
             _validate_state(run.state, request.command_type)
             payload = _command_payload(request, run)
             command = await work.commands.enqueue(
@@ -379,6 +384,17 @@ def _validate_state(state: RunState, command_type: str) -> None:
     }
     if state not in allowed[RunCommandType(command_type)]:
         raise RunCommandValidationError("command is not valid for the current run state")
+
+
+def cancellation_rejection_reason(run: RunSnapshot) -> str | None:
+    """Explain why cancellation cannot preempt merge settlement authority."""
+
+    if run.state is RunState.MERGING or (
+        run.state in {RunState.PAUSED, RunState.AWAITING_HUMAN_INTERVENTION}
+        and run.suspended_state is RunState.MERGING
+    ):
+        return _MERGE_SETTLEMENT_REFUSAL
+    return None
 
 
 def _command_payload(request: RunCommandRequest, run: RunSnapshot) -> dict[str, object]:
@@ -477,5 +493,6 @@ __all__ = [
     "RunCreationService",
     "RunService",
     "RunServiceError",
+    "cancellation_rejection_reason",
     "hash_run_command_idempotency_key",
 ]

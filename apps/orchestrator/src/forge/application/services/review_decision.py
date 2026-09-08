@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid5
 
@@ -20,7 +21,9 @@ from forge.application.services.approved_plan import (
     ApprovedPlanError,
     ApprovedPlanLoader,
 )
+from forge.application.services.base_review import base_review
 from forge.application.services.control_settlement import pending_current_control_stop
+from forge.application.services.remote_remediation import reviewed_push_payload
 from forge.application.services.resume_source import resume_origin
 from forge.application.services.review import _EXECUTION_NAMESPACE, _STEP_NAMESPACE, ReviewService
 from forge.domain.actor import AgentRole
@@ -62,6 +65,28 @@ class ReviewDecisionService:
     ) -> None:
         self._store, self._git_factory = artifact_store, git_factory
         self._approved = approved_plans or ApprovedPlanLoader(artifact_store)
+
+    async def verify_frozen_publication(
+        self,
+        work: UnitOfWork,
+        approved: ApprovedPlan,
+        *,
+        review_id: UUID,
+        validation_id: UUID,
+        head_sha: str,
+        diff_digest: str,
+    ) -> str:
+        """Read-only reconstruction through the original frozen-evidence checks."""
+        review = await work.evidence.get_by_id(review_id, run_id=approved.run.id)
+        validation = await work.evidence.get_by_id(validation_id, run_id=approved.run.id)
+        return await self._freeze(
+            work,
+            approved,
+            review_id,
+            validation_id,
+            (review, validation, head_sha, diff_digest),
+            replay=True,
+        )
 
     async def decide(self, command: CommandEnvelope, work: UnitOfWork) -> ReviewDecision:
         attempt, validation_id, prior_id = self._command(
@@ -176,6 +201,75 @@ class ReviewDecisionService:
             return ReviewDecision(run.id, run.state, run.version, review_id)
         evidence_digest = await self._freeze(work, approved, review_id, validation_id, candidate)
         await self._refence(command, work, approved, candidate)
+        adopted = await base_review(work, approved, current_attempt=True)
+        if (
+            adopted is not None
+            and adopted.remote_attempt == approved.run.remote_remediation_count
+            and adopted.head_sha == candidate[2]
+        ):
+            run = approved.run
+            record = await work.releases.get_for_run(run.id)
+            assert record is not None
+            if adopted.review_command_id != command.id or adopted.validation_id != validation_id:
+                raise ReviewDecisionRecoveryRequired("base review command differs")
+            queued_payload = {"pull_request_id": str(record.id), "poll": adopted.poll + 1}
+            queued = await work.commands.enqueue(
+                run_id=run.id,
+                command_type="monitor_pr",
+                idempotency_key=f"{run.id}:monitor-pr:{adopted.poll + 1}",
+                payload=queued_payload,
+                expected_run_version=run.version + 1,
+                actor_id=approved.approval_actor_id,
+                available_at=datetime.now(UTC) + timedelta(seconds=15),
+            )
+            run = await work.runs.transition(
+                run.id,
+                run.version,
+                RunState.MONITORING_PR,
+                "run.review_decided",
+                payload
+                | adopted.binding
+                | {
+                    "target": RunState.MONITORING_PR.value,
+                    "pr_evidence_digest": evidence_digest,
+                    "pull_request_id": queued_payload["pull_request_id"],
+                    "poll": adopted.poll,
+                    "monitor_command_id": str(queued.id),
+                    "queued_key": queued.idempotency_key,
+                    "queued_command_id": str(queued.id),
+                    "queued_payload": queued_payload,
+                },
+                actor_class="worker",
+            )
+            await work.commit()
+            return ReviewDecision(run.id, run.state, run.version, review_id)
+        remote_payload = await reviewed_push_payload(work, approved, self._store, evidence_digest)
+        if remote_payload is not None:
+            queued = await work.commands.enqueue(
+                run_id=approved.run.id,
+                command_type="push_reviewed_pr",
+                idempotency_key=f"{approved.run.id}:push-reviewed:{approved.run.version + 1}",
+                payload=remote_payload,
+                expected_run_version=approved.run.version + 1,
+                actor_id=approved.approval_actor_id,
+            )
+            run = await work.runs.transition(
+                approved.run.id,
+                approved.run.version,
+                RunState.MONITORING_PR,
+                "run.review_decided",
+                payload
+                | {
+                    "target": RunState.MONITORING_PR.value,
+                    "pr_evidence_digest": evidence_digest,
+                    "queued_key": queued.idempotency_key,
+                    "queued_command_id": str(queued.id),
+                    "queued_payload": remote_payload,
+                },
+                actor_class="worker",
+            )
+            await work.commit()
+            return ReviewDecision(run.id, run.state, run.version, review_id)
         run = await work.runs.await_approval(
             command.run_id,
             approved.run.version,
@@ -513,6 +607,52 @@ class ReviewDecisionService:
                 candidate,
                 replay=True,
             )
+            if run.state is RunState.MONITORING_PR:
+                if event.payload.get("base_update_intent_id") is not None:
+                    adopted = await base_review(work, approved)
+                    queued = await work.commands.get_by_idempotency_key(
+                        str(event.payload.get("queued_key"))
+                    )
+                    if (
+                        adopted is None
+                        or adopted.review_command_id != command.id
+                        or adopted.validation_id != validation.evidence_set_id
+                        or any(event.payload.get(k) != v for k, v in adopted.binding.items())
+                        or queued is None
+                        or queued.command_type != "monitor_pr"
+                        or queued.payload != event.payload.get("queued_payload")
+                        or queued.payload.get("poll") != adopted.poll + 1
+                        or queued.payload.get("pull_request_id")
+                        != event.payload.get("pull_request_id")
+                        or queued.expected_run_version != run.version
+                        or queued.actor_id != approved.approval_actor_id
+                        or event.payload.get("monitor_command_id") != str(queued.id)
+                        or event.payload.get("queued_command_id") != str(queued.id)
+                        or event.payload.get("pr_evidence_digest") != digest
+                    ):
+                        raise ReviewDecisionRecoveryRequired("base review replay differs")
+                    await self._refence(command, work, approved, candidate)
+                    await work.commit()
+                    return ReviewDecision(run.id, run.state, run.version, review.evidence_set_id)
+                expected = await reviewed_push_payload(work, approved, self._store, digest)
+                key = f"{run.id}:push-reviewed:{run.version}"
+                queued = await work.commands.get_by_idempotency_key(key)
+                if (
+                    expected is None
+                    or queued is None
+                    or queued.command_type != "push_reviewed_pr"
+                    or queued.payload != expected
+                    or queued.expected_run_version != run.version
+                    or queued.actor_id != approved.approval_actor_id
+                    or event.payload.get("queued_key") != key
+                    or event.payload.get("queued_command_id") != str(queued.id)
+                    or event.payload.get("queued_payload") != expected
+                    or event.payload.get("pr_evidence_digest") != digest
+                ):
+                    raise ReviewDecisionRecoveryRequired("reviewed PR push replay differs")
+                await self._refence(command, work, approved, candidate)
+                await work.commit()
+                return ReviewDecision(run.id, run.state, run.version, review.evidence_set_id)
             if (
                 run.state is not RunState.AWAITING_PR_APPROVAL
                 or run.pending_gate is not ApprovalGate.PR

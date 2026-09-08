@@ -49,6 +49,14 @@ class PostgresAuthRepository:
 
     async def invalidate_pr_gate(self, *, run_id: UUID, run_version: int, at: datetime) -> None:
         """Invalidate the current PR approval and its unused challenges."""
+        await self._invalidate_release_gate("pr", run_id=run_id, run_version=run_version, at=at)
+
+    async def invalidate_merge_gate(self, *, run_id: UUID, run_version: int, at: datetime) -> None:
+        await self._invalidate_release_gate("merge", run_id=run_id, run_version=run_version, at=at)
+
+    async def _invalidate_release_gate(
+        self, gate: str, *, run_id: UUID, run_version: int, at: datetime
+    ) -> None:
         if at.utcoffset() is None or run_version < 0:
             raise ValueError("gate invalidation requires an aware timestamp and version")
         await self._session.execute(
@@ -56,7 +64,7 @@ class PostgresAuthRepository:
             .where(
                 Approval.run_id == run_id,
                 Approval.run_version == run_version,
-                Approval.gate == "pr",
+                Approval.gate == gate,
                 Approval.invalidated_at.is_(None),
             )
             .values(invalidated_at=at)
@@ -66,7 +74,7 @@ class PostgresAuthRepository:
             .where(
                 ApprovalChallenge.run_id == run_id,
                 ApprovalChallenge.run_version == run_version,
-                ApprovalChallenge.gate == "pr",
+                ApprovalChallenge.gate == gate,
                 ApprovalChallenge.consumed_at.is_(None),
                 ApprovalChallenge.expires_at > at,
             )

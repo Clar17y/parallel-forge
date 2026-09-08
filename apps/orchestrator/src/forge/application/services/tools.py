@@ -269,7 +269,7 @@ _GIT_RESULT_FIELDS = frozenset(
 @dataclass(frozen=True, slots=True)
 class _PreparedWrite:
     path: str
-    content: str
+    content: str | None
     content_digest: str
     byte_count: int
 
@@ -2476,7 +2476,15 @@ class _RepositoryWriteOperationAdapter:
     writer: RepositoryWriter
     prepared: _PreparedWrite
 
+    @classmethod
+    def for_recovery(
+        cls, writer: RepositoryWriter, *, path: str, content_digest: str, byte_count: int
+    ) -> _RepositoryWriteOperationAdapter:
+        return cls(writer, _PreparedWrite(path, None, content_digest, byte_count))
+
     async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        if self.prepared.content is None:
+            raise _RepositoryWriteOperationError()
         self._validate_intent(intent)
         result = await asyncio.to_thread(
             self.writer.write_file,

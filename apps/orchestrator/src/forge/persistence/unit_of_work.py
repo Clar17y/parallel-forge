@@ -24,6 +24,7 @@ from forge.persistence.repositories.executions import PostgresExecutionRepositor
 from forge.persistence.repositories.mutations import PostgresMutationRepository
 from forge.persistence.repositories.operations import PostgresOperationRepository
 from forge.persistence.repositories.projects import PostgresProjectRepository
+from forge.persistence.repositories.release import PostgresReleaseRepository
 from forge.persistence.repositories.runs import PostgresRunRepository
 from forge.persistence.repositories.tasks import PostgresTaskRepository
 from forge.persistence.repositories.tool_calls import PostgresToolCallRepository
@@ -60,6 +61,7 @@ class PostgresUnitOfWork:
         self.executions: ExecutionRepository
         self.controller_steps: ControllerStepRepository
         self.evidence: EvidenceRepository
+        self.releases: PostgresReleaseRepository
 
     @property
     def session(self) -> AsyncSession:
@@ -78,6 +80,7 @@ class PostgresUnitOfWork:
         self.commands = PostgresCommandRepository(session=self._session)
         self.projects = PostgresProjectRepository(self._session)
         self.tasks = PostgresTaskRepository(self._session)
+        self.releases = PostgresReleaseRepository(self._session)
         self.mutations = PostgresMutationRepository(self._session)
         self.audit = PostgresAuditRepository(self._session, redactor=self._redactor)
         self.audits = self.audit

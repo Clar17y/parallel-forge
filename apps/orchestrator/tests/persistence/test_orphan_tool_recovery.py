@@ -86,6 +86,115 @@ async def test_completed_write_recovers_canonical_receipt_once(session_factory, 
     assert await recovery.recover_page(None, 10) == ()
 
 
+async def test_startup_finalizes_orphan_tool_receipts_before_dispatch(session_factory, tmp_path):
+    case = await _orphan_case(session_factory, tmp_path)
+    assert await case.recovery.recover_all() == 1
+    assert await case.recovery.recover_all() == 0
+    async with PostgresUnitOfWork(session_factory) as work:
+        call = await work.tool_calls.get(case.context.invocation_id)
+        assert call.status is ToolCallStatus.SUCCEEDED
+        assert len(call.artifact_digests) == 1
+    assert case.writer.call_count == 1
+
+
+async def test_startup_tool_recovery_refuses_invalid_evidence(session_factory, tmp_path):
+    from forge.application.services.recovery import RecoveryError
+
+    case = await _orphan_case(session_factory, tmp_path)
+    async with PostgresUnitOfWork(session_factory) as work:
+        call = await work.tool_calls.get(case.context.invocation_id)
+    async with session_factory() as session, session.begin():
+        intent = await session.get(OperationRow, call.operation_intent_id)
+        intent.outcome_payload = {}
+    with pytest.raises(RecoveryError, match="unresolved evidence"):
+        await case.recovery.recover_all()
+    async with PostgresUnitOfWork(session_factory) as work:
+        assert (await work.tool_calls.get(call.id)).status is ToolCallStatus.RUNNING
+    assert case.writer.call_count == 1
+
+
+async def test_write_recovery_adapter_needs_only_digest_and_cannot_write(session_factory, tmp_path):
+    from forge.application.services.tools import (
+        _RepositoryWriteOperationAdapter,
+        _RepositoryWriteOperationError,
+    )
+
+    case = await _orphan_case(session_factory, tmp_path)
+    async with PostgresUnitOfWork(session_factory) as work:
+        call = await work.tool_calls.get(case.context.invocation_id)
+        intent = await work.operations.get(call.operation_intent_id)
+        run = await work.runs.get(case.run)
+        assert ToolRecoveryService.valid_write_request(call, intent, run)
+    adapter = _RepositoryWriteOperationAdapter.for_recovery(
+        case.writer,
+        path=intent.request_payload["path"],
+        content_digest=intent.request_payload["content_digest"],
+        byte_count=intent.request_payload["content_byte_count"],
+    )
+    with pytest.raises(_RepositoryWriteOperationError):
+        await adapter.invoke(intent)
+    result = await adapter.reconcile(intent)
+    assert result.payload["output_digest"] == intent.request_payload["content_digest"]
+    assert case.writer.call_count == 1
+
+
+async def test_startup_write_registry_binds_tool_authority_before_inspection(
+    session_factory, tmp_path, monkeypatch
+):
+    from forge.application.ports.worktrees import ManagedWorktree
+    from forge.application.services.recovery import RecoveryError
+    from forge.domain.policy import ProjectPolicy
+    from forge.domain.resource import WorktreeIdentity
+    from forge.worker import recovery_adapters
+
+    case = await _orphan_case(session_factory, tmp_path)
+    async with PostgresUnitOfWork(session_factory) as work:
+        run = await work.runs.get(case.run)
+        policy = ProjectPolicy.model_validate(
+            (await work.projects.get_policy(run.project_id, run.policy_version)).document
+        )
+        call = await work.tool_calls.get(case.context.invocation_id)
+        intent = await work.operations.get(call.operation_intent_id)
+    tree = ManagedWorktree(
+        identity=WorktreeIdentity.for_run(
+            run.project_id, run.id, run.branch_name, policy.database.enabled
+        ),
+        path=Path(run.worktree_path),
+        base_sha=run.base_sha,
+    )
+
+    # This fixture predates plan approvals. The separate real-plan startup
+    # integration covers that loader; here exercise the persisted tool binding.
+    async def approved(*_args):
+        return SimpleNamespace(run=run, policy=policy)
+
+    monkeypatch.setattr(recovery_adapters.ApprovedPlanLoader, "load", approved)
+    inspected = []
+
+    class Git:
+        def inspect_worktree(self, identity, base_sha):
+            assert identity == tree.identity and base_sha == tree.base_sha
+            inspected.append("git")
+            return tree
+
+    def writer(*_args):
+        inspected.append("writer")
+        return case.writer
+
+    adapter = recovery_adapters.local_recovery_adapters(
+        session_factory, case.store, lambda _: Git(), writer
+    )[ToolName.REPOSITORY_WRITE_FILE.value]
+    changed = dict(intent.request_payload) | {"policy_version": policy.version + 1}
+    with pytest.raises(RecoveryError, match="write authority"):
+        await adapter.reconcile(
+            replace(intent, request_payload=changed, request_digest=canonical_digest(changed))
+        )
+    assert inspected == []
+    result = await adapter.reconcile(intent)
+    assert result.payload["output_digest"] == intent.request_payload["content_digest"]
+    assert inspected == ["git", "writer"] and case.writer.call_count == 1
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -356,4 +465,83 @@ async def test_recovery_uses_registered_redactor_for_same_live_receipt_bytes(
         assert data == expected
         assert b"recovery" not in data
         assert final.result_metadata["path"] == "[REDACTED].txt"
+    assert case.writer.call_count == 1
+
+
+async def test_startup_tool_scan_advances_past_unresolved_page(
+    session_factory, tmp_path, monkeypatch
+):
+    case = await _orphan_case(session_factory, tmp_path)
+    second_context = replace(case.context, invocation_id=uuid4())
+    case.store.verify_returns = False
+    with pytest.raises(ToolInvocationError):
+        await case.service.invoke(
+            second_context,
+            ToolRequest(
+                name=ToolName.REPOSITORY_WRITE_FILE,
+                arguments={"path": "later.txt", "content": "second durable effect\n"},
+            ),
+        )
+    case.store.verify_returns = True
+    first_id, second_id = sorted([case.context.invocation_id, second_context.invocation_id])
+    async with PostgresUnitOfWork(session_factory) as work:
+        call = await work.tool_calls.get(first_id)
+    async with session_factory() as session, session.begin():
+        intent = await session.get(OperationRow, call.operation_intent_id)
+        intent.outcome_payload = {}
+
+    # Force a real database page boundary: the first orphan must remain running
+    # while the later orphan is finalized exactly once.
+    recovery = case.recovery
+    original_page = recovery.recover_page
+    cursors = []
+
+    async def small_page(after_id, limit):
+        cursors.append(after_id)
+        assert len(cursors) <= 3, "unresolved orphan caused a repeated startup scan"
+        return await original_page(after_id, 1)
+
+    monkeypatch.setattr(recovery, "recover_page", small_page)
+    assert await recovery.recover_all(allow_unresolved=True) == 1
+    assert cursors == [None, first_id, second_id]
+    async with PostgresUnitOfWork(session_factory) as work:
+        assert (await work.tool_calls.get(first_id)).status is ToolCallStatus.RUNNING
+        assert (await work.tool_calls.get(second_id)).status is ToolCallStatus.SUCCEEDED
+    assert case.writer.call_count == 2
+
+
+async def test_orphan_receipt_can_settle_after_startup_intervention(session_factory, tmp_path):
+    from forge.domain.run import RunState
+    from forge.persistence.repositories.recovery import PostgresRecoveryBarrier
+    from forge.worker.startup import run_startup_recovery
+    from forge.worker.startup_intervention import StartupInterventionRecovery
+
+    case = await _orphan_case(session_factory, tmp_path)
+    recovery = StartupInterventionRecovery(session_factory)
+
+    async def reconcile():
+        await recovery.wait_for_owners()
+        await recovery.quarantine()
+
+    assert await run_startup_recovery(
+        PostgresRecoveryBarrier(session_factory), reconcile, asyncio.Event()
+    )
+    async with PostgresUnitOfWork(session_factory) as work:
+        run = await work.runs.get(case.run)
+        assert run.state is RunState.AWAITING_HUMAN_INTERVENTION
+        event = next(
+            e
+            for e in await work.events.list_after(case.run, 0)
+            if e.event_type == "run.recovery_intervention"
+        )
+        assert event.payload["execution_ids"] == (str(case.context.agent_execution_id),)
+        assert event.payload["step_ids"] == (str(case.context.step_id),)
+        assert event.payload["tool_call_ids"] == (str(case.context.invocation_id),)
+    assert await case.recovery.recover_all(allow_unresolved=True) == 1
+    assert await case.recovery.recover_all(allow_unresolved=True) == 0
+    async with PostgresUnitOfWork(session_factory) as work:
+        assert (await work.runs.get(case.run)).state is RunState.AWAITING_HUMAN_INTERVENTION
+        assert (
+            await work.tool_calls.get(case.context.invocation_id)
+        ).status is ToolCallStatus.SUCCEEDED
     assert case.writer.call_count == 1

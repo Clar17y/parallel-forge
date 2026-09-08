@@ -27,6 +27,7 @@ from forge.persistence.models import (
     Task,
     ValidationResult,
 )
+from forge.persistence.queries.recovery import startup_intervention_hold
 from forge.persistence.repositories.runs import PersistenceDataError, _snapshot_from_record
 
 
@@ -251,6 +252,7 @@ class DashboardQuery:
                     }
                     for event in reversed(events)
                 ],
+                "recovery_hold": bool(await session.scalar(select(startup_intervention_hold(run_id)))),
                 "available_commands": [],
                 "next_gate": run.pending_gate,
             }

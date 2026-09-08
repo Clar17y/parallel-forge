@@ -13,6 +13,7 @@ from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.operations import OperationRepository
 from forge.application.ports.projects import ProjectRepository
+from forge.application.ports.release import ReleaseRepository
 from forge.application.ports.runs import RunRepository
 from forge.application.ports.tasks import TaskRepository
 from forge.application.ports.tools import ToolCallRepository
@@ -45,6 +46,7 @@ class UnitOfWork(Protocol):
     tasks: TaskRepository
     commands: CommandRepository
     auth: AuthRepository
+    releases: ReleaseRepository
 
     async def __aenter__(self) -> Self: ...
 

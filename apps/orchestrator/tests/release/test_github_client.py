@@ -116,14 +116,15 @@ async def test_rejects_redirect_malformed_and_untrusted_link() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pagination_and_retries_are_bounded() -> None:
+@pytest.mark.parametrize("status", [500, 503])
+async def test_pagination_and_retries_are_bounded(status) -> None:
     attempts = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            return httpx.Response(503)
+            return httpx.Response(status)
         if request.url.path.endswith("/statuses"):
             return httpx.Response(200, json=[])
         return httpx.Response(
@@ -151,6 +152,72 @@ async def test_merge_protection_fails_closed_when_protection_cannot_be_read() ->
         "owner/repo", "main"
     )
     assert not protection.safe_for_managed_merge
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "blocker", [None, "admin", "users", "teams", "apps", "ruleset", "repository", "installation"]
+)
+async def test_installation_token_requires_repository_access_and_no_possible_bypass(blocker):
+    async def handler(request):
+        path = request.url.path
+        if path == "/user":
+            return httpx.Response(403)
+        if path == "/installation/repositories":
+            return (
+                httpx.Response(403)
+                if blocker == "installation"
+                else httpx.Response(
+                    200,
+                    json={
+                        "repositories": [
+                            {
+                                "id": 1,
+                                "full_name": "other/repo"
+                                if blocker == "repository"
+                                else "owner/repo",
+                            }
+                        ]
+                    },
+                )
+            )
+        if path.endswith("/protection"):
+            allowances = {"users": [], "teams": [], "apps": []}
+            if blocker in allowances:
+                allowances[blocker] = [{"id": 7}]
+            return httpx.Response(
+                200,
+                json={
+                    "required_status_checks": {"strict": True, "contexts": ["ci"]},
+                    "enforce_admins": {"enabled": blocker != "admin"},
+                    "required_pull_request_reviews": {"bypass_pull_request_allowances": allowances},
+                },
+            )
+        if "/rules/branches/" in path:
+            return httpx.Response(200, json=[{"ruleset_id": 9, "type": "merge_queue"}])
+        if path.endswith("/rulesets/9"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": 9,
+                    "target": "branch",
+                    "enforcement": "active",
+                    "rules": [{"type": "merge_queue"}],
+                    "bypass_actors": [
+                        {"actor_type": "User", "actor_id": 7, "bypass_mode": "always"}
+                    ]
+                    if blocker == "ruleset"
+                    else [],
+                },
+            )
+        raise AssertionError(f"unexpected endpoint {path}")
+
+    protection = await _client(handler).get_merge_protection("owner/repo", "main")
+    assert protection.safe_for_managed_merge == (blocker is None)
+    if blocker is None:
+        assert protection.verified and not protection.actor_can_bypass
+        assert protection.required_check_names == ("ci",)
+        assert protection.evidence_source == "branch_protection_rulesets_no_bypass"
 
 
 @pytest.mark.asyncio
@@ -293,3 +360,124 @@ async def test_checks_include_latest_commit_status_contexts() -> None:
     assert [(check.name, check.conclusion, check.head_sha) for check in checks] == [
         ("status:ci", "success", "a" * 40)
     ]
+
+
+@pytest.mark.asyncio
+async def test_check_and_review_text_are_projected_without_fetching_urls() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("check-runs"):
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {
+                            "name": "ci",
+                            "head_sha": "a" * 40,
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "details_url": "https://ci.test/1",
+                            "output": {"summary": "failed", "text": "trace"},
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("statuses"):
+            return httpx.Response(
+                200, json=[{"context": "legacy", "state": "failure", "description": "broken"}]
+            )
+        if request.url.path.endswith("reviews"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "user": {"login": "r"},
+                        "state": "changes_requested",
+                        "submitted_at": None,
+                        "body": "fix it",
+                    }
+                ],
+            )
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [
+                                    {
+                                        "isResolved": False,
+                                        "comments": {
+                                            "totalCount": 1,
+                                            "nodes": [{"body": "thread feedback"}],
+                                        },
+                                    },
+                                    {
+                                        "isResolved": True,
+                                        "comments": {
+                                            "totalCount": 1,
+                                            "nodes": [{"body": "hidden"}],
+                                        },
+                                    },
+                                ],
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            },
+        )
+
+    client = _client(handler)
+    checks = await client.get_checks("owner/repo", "a" * 40)
+    assert (checks[0].summary, checks[0].text, checks[1].summary) == ("failed", "trace", "broken")
+    reviews = await client.get_reviews("owner/repo", 1)
+    assert reviews[0].body == "fix it" and reviews[-1].feedback == ("thread feedback",)
+
+
+@pytest.mark.asyncio
+async def test_merge_protection_unions_classic_and_effective_ruleset_check_names() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/protection"):
+            return httpx.Response(
+                200,
+                json={
+                    "required_status_checks": {"strict": True, "contexts": ["z", "classic"]},
+                    "enforce_admins": {"enabled": True},
+                    "required_pull_request_reviews": {
+                        "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []}
+                    },
+                },
+            )
+        if "/rules/branches/" in path:
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "ruleset_id": 9,
+                        "type": "required_status_checks",
+                        "parameters": {
+                            "strict_required_status_checks_policy": True,
+                            "required_status_checks": [{"context": "a"}, {"context": "z"}],
+                        },
+                    }
+                ],
+            )
+        if path.endswith("/rulesets/9"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": 9,
+                    "target": "branch",
+                    "enforcement": "active",
+                    "rules": [{"type": "required_status_checks"}],
+                    "bypass_actors": [],
+                },
+            )
+        if path.endswith("/permission"):
+            return httpx.Response(200, json={"permission": "write"})
+        return httpx.Response(200, json={"login": "forge", "id": 1})
+
+    protection = await _client(handler).get_merge_protection("owner/repo", "main")
+    assert protection.required_check_names == ("a", "classic", "z")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.ports.runs import RunQuiescence
 from forge.application.services.state_engine import LEGAL, StateEngine
-from forge.domain.approval import ApprovalGate
+from forge.domain.approval import ApprovalGate, PlanApprovalEvidence, canonical_digest
 from forge.domain.errors import InvalidTransition
 from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState
@@ -100,6 +100,55 @@ class PostgresRunRepository:
         if record is None:
             raise RunNotFound(run_id)
         return _snapshot_from_record(record)
+
+    async def duration_deadline(self, run_id: UUID) -> datetime:
+        record = await self._session.get(Run, run_id)
+        if record is None:
+            raise RunNotFound(run_id)
+        return record.created_at + timedelta(seconds=record.duration_budget_seconds)
+
+    async def approve_plan(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        evidence: PlanApprovalEvidence,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        def change(current: RunSnapshot) -> RunSnapshot:
+            if (
+                current.state is not RunState.AWAITING_PLAN_APPROVAL
+                or current.pending_gate is not ApprovalGate.PLAN
+                or current.pending_evidence_digest != canonical_digest(evidence)
+                or current.policy_version != evidence.policy_version
+                or current.base_ref != evidence.base_ref
+                or current.base_sha != evidence.base_sha
+            ):
+                raise PersistenceError("approved run budget evidence differs from the pending gate")
+            return self._state_engine.transition(current, RunState.PREPARING_WORKTREE)
+
+        def set_budget(record: Run) -> None:
+            record.token_budget = evidence.token_budget
+            record.cost_budget_minor = evidence.cost_budget_minor
+            record.duration_budget_seconds = evidence.duration_budget_seconds
+
+        return await self._change_state(
+            run_id,
+            expected_version,
+            change,
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+            record_update=set_budget,
+        )
 
     async def get_for_update(self, run_id: UUID) -> RunSnapshot:
         """Load one run while holding its row lock for a same-transaction command."""
@@ -431,6 +480,47 @@ class PostgresRunRepository:
             )
         return self._state_engine.transition(current, RunState.REMEDIATING)
 
+    async def begin_remote_remediation(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        limit: int,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        if type(limit) is not int or limit < 0:
+            raise PersistenceError("remote remediation limit must be a nonnegative integer")
+        return await self._change_state(
+            run_id,
+            expected_version,
+            lambda current: self._begin_remote_remediation(current, limit),
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+        )
+
+    def _begin_remote_remediation(self, current: RunSnapshot, limit: int) -> RunSnapshot:
+        if current.state is not RunState.MONITORING_PR:
+            raise InvalidTransition(
+                current.state,
+                RunState.REMEDIATING,
+                reason="remote remediation requires PR monitoring",
+            )
+        if current.remote_remediation_count >= limit:
+            return self._state_engine.intervene(current)
+        return self._state_engine.transition(
+            replace(current, remote_remediation_count=current.remote_remediation_count + 1),
+            RunState.REMEDIATING,
+        )
+
     async def restart_planning(
         self,
         run_id: UUID,
@@ -469,6 +559,9 @@ class PostgresRunRepository:
             record.policy_version = policy_version
             record.base_ref = base_ref
             record.base_sha = base_sha
+            record.token_budget = 0
+            record.cost_budget_minor = 0
+            record.duration_budget_seconds = 0
             if self._events is None:
                 raise PersistenceError("run repository is not bound to an event repository")
             await self._events.append(
@@ -502,6 +595,7 @@ class PostgresRunRepository:
         actor_id: UUID | None,
         occurred_at: datetime | None,
         payload_schema_version: int,
+        record_update: Callable[[Run], None] | None = None,
     ) -> RunSnapshot:
         """Apply one locked state operation and its causal event."""
 
@@ -529,6 +623,8 @@ class PostgresRunRepository:
                 occurred_at=occurred_at or _utc_now(),
             )
             _apply_snapshot(record, changed)
+            if record_update is not None:
+                record_update(record)
             await self._events.append(event)
             await self._session.flush()
         except BaseException:

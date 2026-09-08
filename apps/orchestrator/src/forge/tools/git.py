@@ -823,6 +823,74 @@ class ControlledGit:
         ):
             raise ControlledGitError() from None
 
+    def adopt_head(
+        self, worktree: ManagedWorktree, previous_sha: str, new_sha: str, base_sha: str
+    ) -> None:
+        """Fast-forward an exact fetched update after proving both required ancestors.
+
+        The release controller owns durable admission and the remote receipt.
+        This method does not fetch objects or alter the original worktree base.
+        """
+        try:
+            if (
+                any(
+                    not isinstance(sha, str) or _SHA.fullmatch(sha) is None
+                    for sha in (previous_sha, new_sha, base_sha)
+                )
+                or previous_sha == new_sha
+                or worktree.identity.run_id is None
+            ):
+                raise ControlledGitError()
+            self._validate_handle(worktree)
+            registration = self._registration_metadata(worktree.identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                worktree.identity.worktree_name, registration.name
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                self._scan_local_config(worktree.path)
+                self._reject_incomplete_history_overlays()
+                self._validate_handle(worktree)
+                current = self._head_sha(worktree)
+                if current not in {previous_sha, new_sha}:
+                    raise ControlledGitError()
+                status = self._run(
+                    worktree.path, ("status", "--porcelain=v1", "--untracked-files=all", "-z", "--")
+                )
+                _require_complete_result(status)
+                if status.stdout:
+                    raise ControlledGitError()
+                for ancestor in (previous_sha, base_sha):
+                    result = self._run(
+                        worktree.path, ("merge-base", "--is-ancestor", ancestor, new_sha)
+                    )
+                    _require_complete_result(result)
+                if current != new_sha:
+                    if self._head_sha(worktree) != previous_sha:
+                        raise ControlledGitError()
+                    result = self._run(
+                        worktree.path,
+                        (
+                            "merge",
+                            "--ff-only",
+                            "--no-edit",
+                            "--no-stat",
+                            "--no-overwrite-ignore",
+                            new_sha,
+                        ),
+                    )
+                    _require_complete_result(result)
+                self._repository._verify_directory_access(access.normalized, access)
+                self._validate_handle(worktree)
+                if self._head_sha(worktree) != new_sha:
+                    raise ControlledGitError()
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
     def inspect_prepared_commit(
         self, worktree: ManagedWorktree, prepared: PreparedGitCommit
     ) -> PublishedGitCommit | None:
@@ -1203,6 +1271,7 @@ class ControlledGit:
         allow_return_codes: tuple[int, ...] = (0,),
         omit_cwd_prefix: bool = False,
         git_directory: str | None = None,
+        configuration: tuple[tuple[str, str], ...] = (),
     ) -> ProcessResult:
         self._assert_trusted_state()
         normalized: str | None = None
@@ -1235,6 +1304,11 @@ class ControlledGit:
                         normalized, active_access
                     ),
                 )
+        if configuration:
+            environment["GIT_CONFIG_COUNT"] = str(len(configuration))
+            for index, (key, value) in enumerate(configuration):
+                environment[f"GIT_CONFIG_KEY_{index}"] = key
+                environment[f"GIT_CONFIG_VALUE_{index}"] = value
         argv = [
             *self._prefix(launch_worktree, include_cwd=not omit_cwd_prefix),
             *arguments,

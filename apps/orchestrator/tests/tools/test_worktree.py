@@ -1204,7 +1204,8 @@ async def test_database_teardown_failure_preserves_exact_state_for_retry() -> No
     assert log.count("git.remove") == 1
 
 
-async def test_teardown_cancellation_reconciles_original_intent_on_retry() -> None:
+@pytest.mark.parametrize("adapter_only", [False, True])
+async def test_teardown_cancellation_reconciles_original_intent_on_retry(adapter_only) -> None:
     run = _run(branch="feature/teardown-cancel")
     log: list[str] = []
     uow_factory = _UowFactory(run, log)
@@ -1243,7 +1244,16 @@ async def test_teardown_cancellation_reconciles_original_intent_on_retry() -> No
     assert operations.intent is not None
     assert operations.intent.status is OperationStatus.PENDING
 
-    reconciled = await provisioner.reconcile(operations.intent.id, policy)
+    if adapter_only:
+        from forge.application.services.recovery import RecoveryService
+        from forge.tools.worktree import WorktreeIntegrityError
+
+        adapter = provisioner.recovery_adapter(policy, kind=operations.intent.kind)
+        with pytest.raises(WorktreeIntegrityError):
+            await adapter.invoke(operations.intent)
+        reconciled = await RecoveryService(operations).reconcile(operations.intent.id, adapter)
+    else:
+        reconciled = await provisioner.reconcile(operations.intent.id, policy)
     assert reconciled.status is OperationStatus.SUCCEEDED
     assert log.count("git.remove") == 1
     assert log.count("git.verify_absent") == 2
@@ -1376,9 +1386,10 @@ async def test_partial_event_failure_rolls_back_before_git_with_all_resource_fie
 
 
 @pytest.mark.asyncio
-async def test_reconcile_adopts_present_worktree_without_git_creation_or_duplicate_checkpoint() -> (
-    None
-):
+@pytest.mark.parametrize("adapter_only", [False, True, "paused"])
+async def test_reconcile_adopts_present_worktree_without_git_creation_or_duplicate_checkpoint(
+    adapter_only,
+) -> None:
     run = _run()
     provisioner, uow_factory, operations, git, log = _provisioner(run)
     policy = _policy(repository_path=str(git.repository_path))
@@ -1412,7 +1423,22 @@ async def test_reconcile_adopts_present_worktree_without_git_creation_or_duplica
         ),
     )
 
-    result = await provisioner.reconcile(intent.id, policy)
+    if adapter_only == "paused":
+        uow_factory.runs.current = replace(
+            uow_factory.runs.current, state=RunState.PAUSED,
+            suspended_state=RunState.PREPARING_WORKTREE,
+            version=uow_factory.runs.current.version + 1,
+        )
+    if adapter_only:
+        from forge.application.services.recovery import RecoveryService
+        from forge.tools.worktree import WorktreeIntegrityError
+
+        adapter = provisioner.recovery_adapter(policy, kind=intent.kind)
+        with pytest.raises(WorktreeIntegrityError):
+            await adapter.invoke(intent)
+        result = await RecoveryService(operations).reconcile(intent.id, adapter)
+    else:
+        result = await provisioner.reconcile(intent.id, policy)
 
     assert result.status is OperationStatus.SUCCEEDED
     assert "git.create" not in log

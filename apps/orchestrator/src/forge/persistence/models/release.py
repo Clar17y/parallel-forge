@@ -32,6 +32,16 @@ class PullRequest(Base, TimestampMixin):
         CheckConstraint("pull_request_number >= 1", name="number_positive"),
         CheckConstraint("state IN ('OPEN','CLOSED','MERGED')", name="state"),
         CheckConstraint(
+            "(base_update_intent_id IS NULL) = (base_adoption_intent_id IS NULL)",
+            name="base_update_receipt_pair",
+        ),
+        CheckConstraint(
+            "(reviewed_push_intent_id IS NULL AND candidate_evidence_digest IS NULL) OR "
+            "(reviewed_push_intent_id IS NOT NULL AND candidate_evidence_digest IS NOT NULL "
+            "AND candidate_evidence_digest ~ '^[0-9a-f]{64}$')",
+            name="reviewed_candidate_binding",
+        ),
+        CheckConstraint(
             "merge_method IS NULL OR merge_method IN ('squash','merge','rebase')",
             name="merge_method",
         ),
@@ -59,3 +69,26 @@ class PullRequest(Base, TimestampMixin):
     merge_state: Mapped[str | None] = mapped_column(String(48))
     merge_method: Mapped[str | None] = mapped_column(String(24))
     merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    node_id: Mapped[str | None] = mapped_column(String(255))
+    url: Mapped[str | None] = mapped_column(String(1024))
+    head_repository: Mapped[str | None] = mapped_column(String(512))
+    merge_sha: Mapped[str | None] = mapped_column(String(40))
+    candidate_evidence_digest: Mapped[str | None] = mapped_column(String(64))
+    base_update_intent_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("operation_intents.id", ondelete="RESTRICT")
+    )
+    base_adoption_intent_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("operation_intents.id", ondelete="RESTRICT")
+    )
+    reviewed_push_intent_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("operation_intents.id", ondelete="RESTRICT")
+    )
+    push_intent_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("operation_intents.id", ondelete="RESTRICT")
+    )
+    publication_intent_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("operation_intents.id", ondelete="RESTRICT")
+    )
+    merge_intent_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("operation_intents.id", ondelete="RESTRICT")
+    )

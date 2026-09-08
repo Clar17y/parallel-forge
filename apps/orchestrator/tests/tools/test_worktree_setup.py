@@ -751,6 +751,51 @@ async def test_forged_terminal_result_is_rejected_before_checkpoint_or_later_ste
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["worktree.setup.command", "worktree.environment.stage"])
+@pytest.mark.parametrize("phase", [
+    "ordinary", "paused", "missing_checkpoint", "paused_missing_checkpoint", "tampered",
+])
+async def test_startup_setup_inspection_does_not_repeat_effects(kind, phase):
+    from forge.tools.worktree import WorktreeIntegrityError, WorktreeReconciliationRequired
+
+    log, uow, operations, policy, provisioner = _case()
+    await provisioner.prepare(RUN_ID, policy)
+    intent = next(value for value in operations.intents.values() if value.kind == kind)
+    pending = replace(
+        intent, status=OperationStatus.PENDING, remote_resource_id=None,
+        outcome=None, outcome_schema_version=None, completed_at=None, is_new=False,
+    )
+    operations.intents[intent.idempotency_key] = pending
+    uow.events.values = [
+        event for event in uow.events.values
+        if event.event_type != "resource.worktree_prepared"
+        and not (phase.endswith("missing_checkpoint") and event.payload.get("operation_intent_id") == str(intent.id))
+    ]
+    if phase.startswith("paused"):
+        uow.runs.current = replace(
+            uow.runs.current, state=RunState.PAUSED,
+            suspended_state=RunState.PREPARING_WORKTREE,
+            version=uow.runs.current.version + 1,
+        )
+    if phase == "tampered":
+        pending = replace(pending, request_payload=dict(pending.request_payload) | {"extra": True})
+    provisioner._runner_factory = None
+    before_runs = [entry for entry in log if entry.startswith("run:")]
+    adapter = provisioner.recovery_adapter(policy, kind=kind)
+    with pytest.raises(WorktreeIntegrityError):
+        await adapter.invoke(pending)
+    if phase == "tampered" or (phase.endswith("missing_checkpoint") and kind == "worktree.setup.command"):
+        with pytest.raises((WorktreeIntegrityError, WorktreeReconciliationRequired)):
+            await adapter.reconcile(pending)
+    else:
+        outcome = await adapter.reconcile(pending)
+        assert outcome.status is OperationStatus.SUCCEEDED
+        assert outcome.payload == intent.outcome
+    assert [entry for entry in log if entry.startswith("run:")] == before_runs
+    assert log.count("stage.publish") == 1
+
+
+@pytest.mark.asyncio
 async def test_unresolved_command_adopts_one_exact_checkpoint_without_rerun() -> None:
     log, uow, operations, policy, provisioner = _case()
 

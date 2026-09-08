@@ -7,7 +7,10 @@ from uuid import UUID
 
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.application.services.failed_resume import validate_failed_receipt
+from forge.application.services.failed_resume import (
+    validate_failed_receipt,
+    validate_settled_failed_receipt,
+)
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.run import RunState
 
@@ -54,6 +57,13 @@ async def resume_source(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnv
     checks. A continuation preserves every phase input except semantic attempt.
     """
     return await _resume_source(work, queued, historical=False)
+
+
+async def historical_resume_source(
+    work: UnitOfWork, queued: CommandEnvelope
+) -> CommandEnvelope | None:
+    """Verify one completed/stopped continuation without granting live dispatch."""
+    return await _resume_source(work, queued, historical=True)
 
 
 async def resume_history(work: UnitOfWork, queued: CommandEnvelope) -> tuple[CommandEnvelope, ...]:
@@ -140,7 +150,12 @@ async def _resume_source(
         for event in events
         if event.run_version == resume.expected_run_version
         and event.event_type
-        in {"delivery.suspended", "delivery.deferred", "delivery.failed_before_admission"}
+        in {
+            "delivery.suspended",
+            "delivery.deferred",
+            "delivery.failed_before_admission",
+            "delivery.failed_after_settlement",
+        }
         and event.payload.get("command_id") == str(source.id)
     ]
     if len(resumed) != 1 or len(stopped) != 1:
@@ -149,7 +164,8 @@ async def _resume_source(
     payload = event.payload
     deferred = receipt.event_type == "delivery.deferred"
     failed_unadmitted = receipt.event_type == "delivery.failed_before_admission"
-    if (source.status is CommandStatus.FAILED) != failed_unadmitted:
+    failed_settled = receipt.event_type == "delivery.failed_after_settlement"
+    if (source.status is CommandStatus.FAILED) != (failed_unadmitted or failed_settled):
         raise CommandRecoveryRequired("failed continuation receipt type differs")
     if failed_unadmitted:
         try:
@@ -163,9 +179,18 @@ async def _resume_source(
         await validate_failed_receipt(
             work, source, paused_version=resume.expected_run_version, pause_id=pause_id, state=state
         )
+    if failed_settled:
+        try:
+            pause_id = UUID(str(payload.get("pause_command_id")))
+            state = RunState(str(payload.get("restored_state")))
+        except ValueError:
+            raise CommandRecoveryRequired("settled continuation control differs") from None
+        await validate_settled_failed_receipt(
+            work, source, paused_version=resume.expected_run_version, pause_id=pause_id, state=state
+        )
     if deferred and (
         source.status is not CommandStatus.CANCELLED
-        or source.attempt != 0
+        or source.attempt < 0
         or source.expected_run_version != resume.expected_run_version - 1
         or receipt.payload.get("actor_id")
         != (str(source.actor_id) if source.actor_id is not None else None)
@@ -187,11 +212,15 @@ async def _resume_source(
         or receipt.actor_id is not None
         or receipt.payload_schema_version != 1
         or receipt.payload.get(
-            "pause_command_id" if deferred or failed_unadmitted else "control_command_id"
+            "pause_command_id"
+            if deferred or failed_unadmitted or failed_settled
+            else "control_command_id"
         )
         != payload.get("pause_command_id")
         or receipt.payload.get(
-            "deferred_state" if deferred or failed_unadmitted else "admitted_state"
+            "deferred_state"
+            if deferred or failed_unadmitted or failed_settled
+            else "admitted_state"
         )
         != payload.get("restored_state")
         or receipt.payload.get("command_type") != source.command_type
@@ -208,6 +237,7 @@ async def _resume_source(
 __all__ = [
     "RESUME_FIELDS",
     "continuation_binding",
+    "historical_resume_source",
     "resume_command_ids",
     "resume_history",
     "resume_origin",

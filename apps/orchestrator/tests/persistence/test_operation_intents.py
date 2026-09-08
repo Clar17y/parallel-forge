@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from forge.application.services.recovery import RecoveryService
+from forge.application.services.recovery import RecoveryError, RecoveryService
 from forge.domain.operation import OperationOutcome, OperationStatus
 from forge.domain.run import RunState
 from forge.persistence.models import OperationIntent as OperationIntentRecord
@@ -451,6 +451,23 @@ async def test_recovery_reconciles_existing_intent_without_invoking(
     assert recovered.remote_resource_id == "pr:42"
     assert adapter.reconcile_calls == 1
     assert adapter.invoke_calls == 0
+
+
+@pytest.mark.integration
+async def test_startup_recovery_does_not_finish_with_an_active_unresolved_intent(
+    operation_repository, persisted_run
+) -> None:
+    intent = await operation_repository.begin(
+        **_request(persisted_run.id),
+        execution_owner="active-worker",
+        execution_lease_seconds=120,
+    )
+    adapter = RecordingAdapter()
+    with pytest.raises(RecoveryError, match="unresolved"):
+        await RecoveryService(operation_repository).reconcile_all({intent.kind: adapter})
+    assert adapter.invoke_calls == 0
+    assert adapter.reconcile_calls == 0
+    assert (await operation_repository.get(intent.id)).execution_owner == "active-worker"
 
 
 @pytest.mark.integration

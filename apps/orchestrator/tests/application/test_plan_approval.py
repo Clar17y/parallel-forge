@@ -94,6 +94,19 @@ class _FakeRuns:
         assert run_id == self.run.id
         return self.run
 
+    async def approve_plan(
+        self, run_id, expected_version, evidence, event_type, event_payload, **kwargs
+    ):
+        assert evidence is not None
+        return await self.transition(
+            run_id,
+            expected_version,
+            RunState.PREPARING_WORKTREE,
+            event_type,
+            event_payload,
+            **kwargs,
+        )
+
     async def transition(
         self,
         run_id: UUID,
@@ -273,7 +286,7 @@ class _FakeValidator:
         del work, run_id
         if self.drift:
             raise PlanEvidenceValidationError("source repository drifted")
-        return None
+        return object()
 
     async def current_source(self, work: Any, run_id: UUID) -> CurrentPlanSource:
         del work, run_id

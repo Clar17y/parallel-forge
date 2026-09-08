@@ -16,8 +16,9 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+@pytest.mark.parametrize("recovery_hold", [False, True])
 async def test_disabled_database_projection_is_complete_and_has_server_commands(
-    session_factory, tmp_path
+    session_factory, tmp_path, recovery_hold
 ):
     persisted_run = RunSnapshot(id=uuid4(), project_id=uuid4(), task_id=uuid4(), policy_version=1)
     policy = ProjectPolicy(
@@ -57,6 +58,20 @@ async def test_disabled_database_projection_is_complete_and_has_server_commands(
         project.current_policy_version = 1
     async with PostgresUnitOfWork(session_factory) as work:
         await work.runs.create(persisted_run)
+        if recovery_hold:
+            from forge.domain.event import RunEvent
+            from forge.domain.operation import canonical_digest
+
+            await work.runs.pause(persisted_run.id, 0, "test.paused", {})
+            await work.operations.begin(
+                run_id=persisted_run.id, operation_type="unknown_effect",
+                idempotency_key="unknown", request_payload={}, request_digest=canonical_digest({}),
+            )
+            await work.events.append(RunEvent(
+                run_id=persisted_run.id, run_version=1,
+                event_type="run.recovery_intervention", actor_class="worker",
+                payload={"reason": "startup_outcome_unresolved"},
+            ))
         await work.commit()
     app = create_app(Settings(data_root=tmp_path / "data"), session_factory=session_factory)
     async with AsyncClient(
@@ -92,12 +107,15 @@ async def test_disabled_database_projection_is_complete_and_has_server_commands(
         "latest_events",
         "available_commands",
         "next_gate",
+        "recovery_hold",
     }
     assert projection["agents"]["reviewer"]["independent"] is None
     assert projection["resource"]["database_state"] == "DISABLED"
     assert projection["resource"]["database_name"] is None
     assert "secret_id" not in response.text and "secret_reference" not in response.text
-    assert {item["name"] for item in projection["available_commands"]} == {"pause", "cancel"}
+    assert projection["recovery_hold"] is recovery_hold
+    expected = {"cancel"} if recovery_hold else {"pause", "cancel"}
+    assert {item["name"] for item in projection["available_commands"]} == expected
 
 
 @pytest.mark.parametrize("path", ["/api/dashboard/summary", f"/api/runs/{uuid4()}/projection"])

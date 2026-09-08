@@ -27,6 +27,7 @@ from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Uuid
 
 EXPECTED_TABLES = {
+    "recovery_barrier",
     "api_mutations",
     "projects",
     "project_policy_versions",
@@ -268,7 +269,7 @@ def test_task10_downgrade_refuses_cross_project_external_identity_duplicates(
         assert isinstance(value, str)
         return value
 
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0004"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0006"
 
     def duplicate_count(connection: Any) -> int:
         value = connection.execute(
@@ -325,6 +326,7 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
 
     assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260821_0001"
     assert _table_names(test_database_url) == EXPECTED_TABLES - {
+        "recovery_barrier",
         "api_mutations",
         "operator_audit_events",
         "evidence_sets",
@@ -342,7 +344,7 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
 
     command.upgrade(config, "head")
     assert _table_names(test_database_url) == EXPECTED_TABLES
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0004"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0006"
 
     def reupgraded_task(connection: Any) -> tuple[str, str, bool, str, str]:
         row = connection.execute(
@@ -565,6 +567,7 @@ def test_every_execution_and_evidence_table_is_linked_to_a_run(
     migrated_database_url: str,
 ) -> None:
     run_owned = EXPECTED_TABLES - {
+        "recovery_barrier",
         "projects",
         "project_policy_versions",
         "tasks",
@@ -622,7 +625,7 @@ def test_migration_has_one_exact_reviewable_head(
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
     config = alembic_config_factory("postgresql+asyncpg://unused:unused@127.0.0.1/unused")
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260908_0004"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260908_0006"]
 
 
 def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
@@ -1067,6 +1070,9 @@ def test_suspended_state_matches_exact_state_engine_source_sets(
                         insert_statement,
                         parameters(state_engine.intervene(active)),
                     )
+                # These rows prove the insertion contract; retaining a new PR
+                # intervention would intentionally prevent downgrade to 0004.
+                await connection.rollback()
         finally:
             await engine.dispose()
 

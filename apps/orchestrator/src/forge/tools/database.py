@@ -423,6 +423,29 @@ class _TeardownAdapter:
         return self.normalized_admin_url
 
 
+class _DatabaseInspection:
+    """Validate each admitted request before exposing inspection-only reconciliation."""
+
+    def __init__(self, request: OperationRequest, adapter: OperationAdapter) -> None:
+        self._request, self._adapter = request, adapter
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        request = self._request
+        if (
+            intent.run_id != request.run_id
+            or intent.kind != request.kind
+            or intent.idempotency_key != request.idempotency_key
+            or intent.request_schema_version != request.request_schema_version
+            or intent.request_digest != request.request_digest
+            or canonical_digest(intent.request_payload) != request.request_digest
+        ):
+            raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+        return await self._adapter.reconcile(intent)
+
+
 class DatabaseProvisioner(DatabaseProvisionerPort):
     """Provision one exact run-scoped PostgreSQL role and database."""
 
@@ -442,6 +465,30 @@ class DatabaseProvisioner(DatabaseProvisionerPort):
         self._secret_store = secret_store
         self._password_source = password_source
         self._connection_factory = connection_factory
+
+    def recovery_adapter(
+        self,
+        identity: WorktreeIdentity,
+        policy: DatabaseProvisioningPolicy,
+        *,
+        policy_version: int,
+        kind: str,
+    ) -> OperationAdapter:
+        """Return exact inspection capability without acquiring another operation claim."""
+        _validate_policy_version(policy_version)
+        _validate_policy(policy)
+        expected = _validate_identity(identity, enabled=policy.enabled)
+        if not policy.enabled or kind not in {_PROVISION_KIND, _TEARDOWN_KIND}:
+            raise DatabaseIntegrityError(_INTEGRITY_ERROR)
+        _validate_secret_reference(_require_reference(policy))
+        adapter: OperationAdapter
+        if kind == _PROVISION_KIND:
+            adapter = _ProvisionAdapter(self, expected, policy, _secret_id(expected))
+            target = ResourceState.ACTIVE
+        else:
+            adapter = _TeardownAdapter(self, expected, policy, _secret_id(expected))
+            target = ResourceState.REMOVED
+        return _DatabaseInspection(_request(expected, policy_version, kind, target), adapter)
 
     def validate_binding(
         self, identity: WorktreeIdentity, binding: DatabaseBinding

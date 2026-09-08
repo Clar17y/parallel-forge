@@ -102,3 +102,22 @@ async def test_protection_uses_github_effective_branch_rules_even_without_classi
     result = await _client(handler).get_merge_protection("owner/repo", branch)
     assert result.safe_for_managed_merge is applies
     assert any("/rules/branches/" in path for path in paths)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "checks",
+    [{"strict": True}, {"strict": False, "contexts": "ci"}, {"strict": False, "contexts": None}],
+)
+async def test_missing_strict_or_malformed_context_evidence_stays_unverified(checks):
+    result = await _client(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "required_status_checks": checks,
+                "enforce_admins": {"enabled": True},
+                "required_pull_request_reviews": None,
+            },
+        )
+    ).get_merge_protection("owner/repo", "main")
+    assert not result.verified and not result.safe_for_managed_merge

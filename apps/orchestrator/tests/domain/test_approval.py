@@ -29,6 +29,7 @@ def merge_evidence(**overrides: object) -> MergeApprovalEvidence:
         "review_digest": "d" * 64,
         "runner_mode": RunnerMode.DOCKER,
         "runner_evidence_digest": "e" * 64,
+        "protection_digest": "f" * 64,
         "merge_method": "squash",
         "policy_version": 3,
     }
@@ -70,6 +71,9 @@ def test_merge_digest_changes_for_head_base_or_runner() -> None:
     )
     assert canonical_digest(evidence) != canonical_digest(
         evidence.model_copy(update={"runner_evidence_digest": "f" * 64})
+    )
+    assert canonical_digest(evidence) != canonical_digest(
+        evidence.model_copy(update={"protection_digest": "a" * 64})
     )
 
 

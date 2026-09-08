@@ -8,19 +8,11 @@ from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRe
 from forge.application.ports.controller_steps import ControllerStepUnsettledError
 from forge.application.ports.executions import ExecutionUnsettledError
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.resume_stage import resume_stage
 from forge.domain.command import CommandEnvelope, CommandStatus, thaw_payload
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.commands import CommandNotFound
-
-_STAGES = {
-    RunState.CREATED: ("start_planning", "plan"),
-    RunState.PLANNING: ("start_planning", "plan"),
-    RunState.IMPLEMENTING: ("implement", "implement"),
-    RunState.REMEDIATING: ("remediate", "implement"),
-    RunState.VALIDATING: ("validate", "validate"),
-    RunState.REVIEWING: ("review", "review"),
-}
 
 
 async def settle_deferred_delivery(
@@ -51,7 +43,13 @@ async def settle_deferred_delivery(
     pause = await _pause_authority(work, run)
     kind, semantic_attempt = await _validate_source(work, run, source)
 
-    cancelled = await work.commands.cancel_pending_unstarted(source)
+    cancelled = (
+        await work.commands.cancel_pending_unstarted(source)
+        if source.status is CommandStatus.PENDING
+        else await work.commands.cancel_expired_observed_lease(
+            source, reason="unadmitted expired delivery settled during resume reconciliation"
+        )
+    )
     if cancelled is None:
         raise CommandRecoveryRequired("unstarted delivery changed before deferred settlement")
     proof = await work.runs.prove_quiescent(run.id, exclude_command_id=resume_command.id)
@@ -138,16 +136,19 @@ async def _pause_authority(work: UnitOfWork, run: RunSnapshot) -> CommandEnvelop
 async def _validate_source(
     work: UnitOfWork, run: RunSnapshot, source: CommandEnvelope
 ) -> tuple[str, int]:
-    stage = _STAGES.get(run.suspended_state) if run.suspended_state is not None else None
+    stage = resume_stage(run.suspended_state, source.command_type)
     semantic_attempt = source.payload.get("semantic_attempt", 1)
     if (
         stage is None
         or source.run_id != run.id
         or source.command_type != stage[0]
-        or source.status is not CommandStatus.PENDING
-        or source.attempt != 0
-        or source.lease_owner is not None
-        or source.lease_expires_at is not None
+        or source.status not in {CommandStatus.PENDING, CommandStatus.LEASED}
+        or source.attempt < 0
+        or (source.status is CommandStatus.PENDING and source.attempt != 0)
+        or (
+            source.status is CommandStatus.PENDING
+            and (source.lease_owner is not None or source.lease_expires_at is not None)
+        )
         or source.payload_schema_version != 1
         or source.expected_run_version != run.version - 1
         or type(semantic_attempt) is not int

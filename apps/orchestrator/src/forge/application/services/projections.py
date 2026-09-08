@@ -69,6 +69,8 @@ class ProjectionService:
                         "policy_version": run["policy_version"],
                     }
                 )
+        if result.get("recovery_hold") is True:
+            commands = [command for command in commands if command["name"] in {"pause", "cancel"}]
         result["available_commands"] = commands
         if result["next_gate"] is None:
             if state in {RunState.CREATED, RunState.PLANNING}:

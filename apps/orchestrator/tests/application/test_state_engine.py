@@ -70,7 +70,12 @@ EXPECTED_LEGAL_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
         }
     ),
     RunState.AWAITING_PR_APPROVAL: frozenset(
-        {RunState.REMEDIATING, RunState.PUBLISHING_PR, RunState.CANCELLED}
+        {
+            RunState.REMEDIATING,
+            RunState.PUBLISHING_PR,
+            RunState.AWAITING_HUMAN_INTERVENTION,
+            RunState.CANCELLED,
+        }
     ),
     RunState.PUBLISHING_PR: frozenset(
         {
@@ -136,6 +141,7 @@ INTERVENTION_SOURCES = (
     RunState.VALIDATING,
     RunState.REVIEWING,
     RunState.REMEDIATING,
+    RunState.AWAITING_PR_APPROVAL,
     RunState.PUBLISHING_PR,
     RunState.MONITORING_PR,
     RunState.AWAITING_MERGE_APPROVAL,
@@ -435,6 +441,8 @@ PERMITTED_RESOLVE_INTERVENTION_TARGETS: tuple[tuple[RunState, RunState], ...] = 
     if target not in APPROVAL_GATES
     and target is not RunState.AWAITING_HUMAN_INTERVENTION
     and not (source is RunState.AWAITING_MERGE_APPROVAL and target is RunState.MERGING)
+    and not (source is RunState.AWAITING_PR_APPROVAL and target is RunState.PUBLISHING_PR)
+    and not (source is RunState.MERGING and target is RunState.COMPLETED)
 )
 
 APPROVAL_TARGET_EDGES: tuple[tuple[RunState, RunState], ...] = tuple(
@@ -527,6 +535,13 @@ def test_resolve_intervention_rejects_suspended_merge_approval_targeting_merging
         StateEngine().resolve_intervention(intervened, RunState.MERGING)
 
 
+def test_resolve_intervention_cannot_complete_a_merge_without_its_receipt() -> None:
+    run = RunSnapshot(id=uuid4(), project_id=uuid4(), task_id=uuid4(), state=RunState.MERGING)
+    engine = StateEngine()
+    with pytest.raises(InvalidTransition, match="merge completion requires"):
+        engine.resolve_intervention(engine.intervene(run), RunState.COMPLETED)
+
+
 @pytest.mark.parametrize(
     ("source", "target"),
     tuple(
@@ -602,6 +617,21 @@ def test_resolve_rejects_missing_intervention_kind_for_a_fabricated_pr_approval(
 
     with pytest.raises(InvalidTransition):
         StateEngine().resolve_intervention(malformed, RunState.PUBLISHING_PR)
+
+
+def test_pr_intervention_cannot_bypass_fresh_publication_approval() -> None:
+    engine = StateEngine()
+    pending = RunSnapshot(
+        id=uuid4(),
+        project_id=uuid4(),
+        task_id=uuid4(),
+        state=RunState.AWAITING_PR_APPROVAL,
+        pending_gate=ApprovalGate.PR,
+        pending_evidence_digest=VALID_DIGEST,
+    )
+    stopped = engine.intervene(pending)
+    with pytest.raises(InvalidTransition, match="publication requires approval evidence"):
+        engine.resolve_intervention(stopped, RunState.PUBLISHING_PR)
 
 
 def test_exported_legal_policy_cannot_be_mutated() -> None:

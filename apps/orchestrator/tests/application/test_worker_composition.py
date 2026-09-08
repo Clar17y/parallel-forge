@@ -235,7 +235,8 @@ def test_load_pricing_catalog_rejects_negative_rates(tmp_path: Path) -> None:
         load_pricing_catalog(catalog_path)
 
 
-def test_compose_worker_handlers_production_construction(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_compose_worker_handlers_production_construction(tmp_path: Path) -> None:
     prompt_root = _make_prompt_root(tmp_path)
     catalog_path = _write_catalog(
         tmp_path / "pricing.json",
@@ -251,6 +252,7 @@ def test_compose_worker_handlers_production_construction(tmp_path: Path) -> None
     data_root.mkdir()
     settings = Settings(
         data_root=data_root,
+        github_token_reference="env://FORGE_TEST_GITHUB_TOKEN",
         provider_secret_reference="secret://forge/gemini-api-key",
         pricing_catalog_path=catalog_path,
         prompt_root=prompt_root,
@@ -274,6 +276,14 @@ def test_compose_worker_handlers_production_construction(tmp_path: Path) -> None
         "cancel",
         "resume",
         "request_candidate_changes",
+        "approve_pr",
+        "publish_pr",
+        "monitor_pr",
+        "remediate_remote",
+        "push_reviewed_pr",
+        "approve_merge",
+        "merge_pr",
+        "update_base",
     }
     assert isinstance(handlers["start_planning"], PlanningHandler)
     assert isinstance(handlers["approve_plan"], ApprovePlanHandler)
@@ -299,6 +309,23 @@ def test_compose_worker_handlers_production_construction(tmp_path: Path) -> None
     assert isinstance(revision_handler._service._evidence_validator, PlanEvidenceValidator)
     assert revision_handler._service._evidence_validator is validator
     assert revision_handler._service._artifact_store._root == (data_root / "artifacts").resolve()
+
+    from forge.application.handlers.merge import ApproveMergeHandler
+    from forge.application.handlers.release import ApprovePrHandler
+    from forge.release.github_client import GitHubClient
+    from forge.release.github_write import GitHubWrite
+
+    assert isinstance(handlers["approve_pr"], ApprovePrHandler)
+    assert isinstance(handlers["approve_merge"], ApproveMergeHandler)
+    release = handlers["publish_pr"].__self__
+    read = release._evidence._github
+    writes = release._github
+    assert isinstance(read, GitHubClient)
+    assert isinstance(writes, GitHubWrite)
+    assert handlers["remediate_remote"].__self__ is handlers["implement"].__self__
+    assert not read._client.is_closed and not writes._client.is_closed
+    await handlers.aclose()
+    assert read._client.is_closed and writes._client.is_closed
 
 
 def test_compose_worker_handlers_narrow_seams(tmp_path: Path) -> None:
@@ -334,6 +361,26 @@ def test_compose_worker_handlers_narrow_seams(tmp_path: Path) -> None:
     assert handlers["approve_plan"]._clock is fake_clock
     assert handlers["request_plan_revision"]._service._clock is fake_clock
     assert handlers["approve_plan"]._evidence_validator._repository_inspector is fake_inspector
+
+
+@pytest.mark.asyncio
+async def test_release_without_configuration_fails_before_using_command_or_database(tmp_path):
+    settings = Settings(
+        data_root=tmp_path, prompt_root=_make_prompt_root(tmp_path), github_token_reference=""
+    )
+    handlers = compose_worker_handlers(settings, object(), agent_gateway=object())
+    for command_type in (
+        "update_base",
+        "approve_pr",
+        "publish_pr",
+        "monitor_pr",
+        "push_reviewed_pr",
+        "approve_merge",
+        "merge_pr",
+    ):
+        with pytest.raises(WorkerCompositionError, match="GitHub credential reference"):
+            await handlers[command_type](None, None)
+    await handlers.aclose()
 
 
 # =========================================================================

@@ -666,16 +666,7 @@ class WorktreeProvisioner:
             intent = await self._operations.get(intent_id)
         except Exception:  # noqa: BLE001 - persistence diagnostics are redacted
             raise WorktreeIntegrityError() from None
-        if intent.kind == _WORKTREE_KIND:
-            adapter: OperationAdapter = _WorktreeAdapter(
-                self,
-                policy,
-                reconcile_only=True,
-            )
-        elif intent.kind == _WORKTREE_TEARDOWN_KIND:
-            adapter = _WorktreeTeardownAdapter(self, policy)
-        else:
-            raise WorktreeIntegrityError()
+        adapter = self.recovery_adapter(policy, kind=intent.kind)
         try:
             return await self._recovery.reconcile(intent_id, adapter)
         except asyncio.CancelledError:
@@ -684,6 +675,24 @@ class WorktreeProvisioner:
             raise
         except Exception:  # noqa: BLE001 - recovery failures become a stable public category
             raise WorktreeReconciliationRequired() from None
+
+    def recovery_adapter(self, policy: ProjectPolicy, *, kind: str) -> OperationAdapter:
+        """Expose inspection without nesting an operation recovery claim."""
+        if not isinstance(policy, ProjectPolicy):
+            raise WorktreeIntegrityError()
+        if kind == _WORKTREE_KIND:
+            adapter: OperationAdapter = _WorktreeAdapter(
+                self,
+                policy,
+                reconcile_only=True,
+            )
+        elif kind == _WORKTREE_TEARDOWN_KIND:
+            adapter = _WorktreeTeardownAdapter(self, policy)
+        elif kind in {_ENVIRONMENT_KIND, _SETUP_COMMAND_KIND}:
+            adapter = _SetupInspection(self, policy, kind)
+        else:
+            raise WorktreeIntegrityError()
+        return _WorktreeInspection(adapter)
 
     async def inspect_prepared(self, run_id: UUID, policy: ProjectPolicy) -> ManagedWorktree:
         """Inspect settled resources for paused preparation without invoking effects."""
@@ -1060,7 +1069,10 @@ class WorktreeProvisioner:
             failure = None
         if failure is not None:
             raise failure
-        return await self._load_context(context.run.id, context.policy)
+        return await self._load_context(
+            context.run.id, context.policy,
+            paused_inspection=context.run.state is RunState.PAUSED,
+        )
 
     async def _inspect_present(self, expected: ManagedWorktree) -> ManagedWorktree:
         try:
@@ -1124,6 +1136,17 @@ class WorktreeProvisioner:
             raise
         except BaseException as error:  # noqa: BLE001 - terminal thread failure is inspected safely
             return None, False, error
+
+
+class _WorktreeInspection:
+    def __init__(self, adapter: OperationAdapter) -> None:
+        self._adapter = adapter
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        raise WorktreeIntegrityError()
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        return await self._adapter.reconcile(intent)
 
 
 class _WorktreeTeardownAdapter:
@@ -1193,6 +1216,58 @@ class _WorktreeTeardownAdapter:
         return _worktree_outcome(context.request, context.identity)
 
 
+class _SetupInspection:
+    """Rebuild exact setup requests for observation without creating a runner."""
+
+    def __init__(self, owner: WorktreeProvisioner, policy: ProjectPolicy, kind: str) -> None:
+        self._owner, self._policy, self._kind = owner, policy, kind
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        raise WorktreeIntegrityError()
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        if intent.kind != self._kind:
+            raise WorktreeIntegrityError()
+        context = await self._owner._load_context(
+            intent.run_id, self._policy, require_succeeded=True, paused_inspection=True
+        )
+        tree = await self._owner._inspect_present(context.expected)
+        binding = await self._owner._setup_binding(context)
+        adapter: OperationAdapter
+        if self._kind == _ENVIRONMENT_KIND:
+            stager = self._owner._environment_stager
+            if stager is None:
+                raise WorktreeReconciliationRequired()
+            plan, cancelled = await _run_redacted_thread(
+                lambda: stager.build_plan(
+                    tree, self._policy, binding, policy_version=self._policy.version
+                )
+            )
+            if cancelled:
+                raise asyncio.CancelledError()
+            request = _environment_request(context, plan)
+            adapter = _EnvironmentStageAdapter(
+                self._owner, stager, self._policy, tree, plan, request, paused_inspection=True
+            )
+        else:
+            ordinal = intent.request_payload.get("ordinal")
+            commands = tuple(
+                command for kind in _SETUP_KINDS for command in self._policy.commands_for(kind)
+            )
+            if type(ordinal) is not int or not 0 <= ordinal < len(commands):
+                raise WorktreeIntegrityError()
+            command = commands[ordinal]
+            request = _setup_command_request(
+                context, command, ordinal=ordinal,
+                environment_keys=tuple(key for key in command.environment_keys if key in binding.environment),
+            )
+            adapter = _SetupCommandAdapter(
+                self._owner, self._policy, tree, None, None, request, paused_inspection=True
+            )
+        _validate_adapter_intent(intent, request)
+        return await adapter.reconcile(intent)
+
+
 class _EnvironmentStageAdapter:
     def __init__(
         self,
@@ -1202,12 +1277,15 @@ class _EnvironmentStageAdapter:
         worktree: ManagedWorktree,
         plan: EnvironmentStagingPlan,
         request: OperationRequest,
+        *,
+        paused_inspection: bool = False,
     ) -> None:
         self._owner = owner
         self._stager = stager
         self._policy = policy
         self._worktree = worktree
         self._plan = plan
+        self._paused_inspection = paused_inspection
         self._request = request
         self._caller_cancelled = False
 
@@ -1288,6 +1366,7 @@ class _EnvironmentStageAdapter:
             intent.run_id,
             self._policy,
             require_succeeded=True,
+            paused_inspection=self._paused_inspection,
         )
         inspected = await self._owner._inspect_present(context.expected)
         if not _same_handle(inspected, self._worktree):
@@ -1333,15 +1412,18 @@ class _SetupCommandAdapter:
         owner: WorktreeProvisioner,
         policy: ProjectPolicy,
         worktree: ManagedWorktree,
-        runner: WorktreeRunnerPort,
-        run_request: RunCommandRequest,
+        runner: WorktreeRunnerPort | None,
+        run_request: RunCommandRequest | None,
         request: OperationRequest,
+        *,
+        paused_inspection: bool = False,
     ) -> None:
         self._owner = owner
         self._policy = policy
         self._worktree = worktree
         self._runner = runner
         self._run_request = run_request
+        self._paused_inspection = paused_inspection
         self._request = request
         self._caller_cancelled = False
 
@@ -1350,6 +1432,8 @@ class _SetupCommandAdapter:
         return self._caller_cancelled
 
     async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        if self._runner is None or self._run_request is None:
+            raise WorktreeIntegrityError()
         _validate_adapter_intent(intent, self._request)
         context = await self._owner._load_context(
             intent.run_id,
@@ -1383,6 +1467,7 @@ class _SetupCommandAdapter:
             intent.run_id,
             self._policy,
             require_succeeded=True,
+            paused_inspection=self._paused_inspection,
         )
         inspected = await self._owner._inspect_present(context.expected)
         if not _same_handle(inspected, self._worktree):
@@ -1517,6 +1602,7 @@ class _WorktreeAdapter:
             intent.run_id,
             self._policy,
             expected_intent=intent,
+            paused_inspection=True,
         )
         _validate_adapter_intent(intent, context.request)
         if context.operation is None or context.operation.id != intent.id:

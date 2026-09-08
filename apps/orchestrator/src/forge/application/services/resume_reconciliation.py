@@ -27,6 +27,7 @@ _KIND_BY_COMMAND = {
     "start_planning": "plan",
     "implement": "implement",
     "remediate": "implement",
+    "remediate_remote": "implement",
     "review": "review",
     "validate": "validate",
 }
@@ -103,20 +104,43 @@ class ResumeReconciler:
                 raise CommandRecoveryRequired("unsupported paused-run command state")
             source_receipt = receipt_by_command.get(source.id)
             if source_receipt is None:
-                recovered_source = await self._settle_retained(work, run, pause, source)
+                # An expired lease can have been claimed but never admitted.  It is
+                # still the same semantic attempt, so settle it through the zero-
+                # admission path rather than requiring a retained provider result.
+                kind = _KIND_BY_COMMAND.get(source.command_type)
+                semantic_attempt = source.payload.get("semantic_attempt", 1)
+                if kind is not None and type(semantic_attempt) is int:
+                    try:
+                        next_attempt = (
+                            await work.controller_steps.next_attempt(run.id, kind)
+                            if kind == "validate"
+                            else await work.executions.next_attempt(run.id, kind)
+                        )
+                    except ControllerStepUnsettledError, ExecutionUnsettledError:
+                        next_attempt = -1
+                    if next_attempt == semantic_attempt:
+                        recovered_source = await settle_deferred_delivery(
+                            work, resume_command, source
+                        )
+                    else:
+                        recovered_source = await self._settle_retained(work, run, pause, source)
+                else:
+                    recovered_source = await self._settle_retained(work, run, pause, source)
                 events = await work.events.list_after(run.id, 0)
                 source_receipt = next(
                     (
                         event
                         for event in events
-                        if event.event_type == "delivery.suspended"
+                        if event.event_type in {"delivery.suspended", "delivery.deferred"}
                         and event.payload.get("command_id") == str(source.id)
                     ),
                     None,
                 )
                 if source_receipt is None:
                     raise CommandRecoveryRequired("retained outcome has no suspended receipt")
-                await _validate_receipt(work, run, pause, source_receipt, source, self._store)
+                await _validate_receipt(
+                    work, run, pause, source_receipt, recovered_source, self._store
+                )
                 settled.append(recovered_source)
                 continue
             await _validate_receipt(work, run, pause, source_receipt, source, self._store)
@@ -424,7 +448,7 @@ async def _validate_receipt(
             "expected_run_version": source.expected_run_version,
             "actor_id": str(source.actor_id) if source.actor_id is not None else None,
             "payload_schema_version": 1,
-            "delivery_attempt": 0,
+            "delivery_attempt": source.attempt,
             "kind": kind,
             "semantic_attempt": semantic_attempt,
             "pause_command_id": str(pause.id),
@@ -435,7 +459,7 @@ async def _validate_receipt(
         if (
             payload != expected
             or source.status is not CommandStatus.CANCELLED
-            or source.attempt != 0
+            or source.attempt < 0
             or source.payload_schema_version != 1
             or source.run_id != run.id
             or receipt.run_id != run.id

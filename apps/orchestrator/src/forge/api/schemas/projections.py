@@ -168,6 +168,7 @@ class AvailableCommand(ProjectionModel):
 
 
 class RunProjection(ProjectionModel):
+    recovery_hold: bool
     run: RunResponse
     task: TaskSection
     project: ProjectSection

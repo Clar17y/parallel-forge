@@ -318,6 +318,7 @@ class DeveloperInput(BaseModel):
     worktree_id: str = Field(min_length=1, max_length=128)
     base_commit: str = Field(min_length=40, max_length=40)
     operator_feedback: UntrustedContent | None = None
+    remote_evidence: UntrustedContent | None = None
     remediation_findings: tuple[ReviewFinding, ...] = Field(
         default=(), max_length=_MAX_COLLECTION_SIZE
     )
@@ -362,6 +363,7 @@ class DeveloperInput(BaseModel):
             (
                 self.original_task,
                 *((self.operator_feedback,) if self.operator_feedback is not None else ()),
+                *((self.remote_evidence,) if self.remote_evidence is not None else ()),
                 *self.check_evidence,
                 *self.relevant_instructions,
             )

@@ -35,6 +35,8 @@ class CheckSnapshot:
     conclusion: str | None
     details_url: str | None = None
     head_sha: str | None = None
+    summary: str | None = None
+    text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +47,8 @@ class ReviewSnapshot:
     requested_changes: bool = False
     unresolved_threads: int = 0
     comment_count: int = 0
+    body: str | None = None
+    feedback: tuple[str, ...] = ()
 
     @property
     def blocks_merge(self) -> bool:
@@ -58,6 +62,7 @@ class MergeProtection:
     actor_can_bypass: bool
     evidence_source: str
     verified: bool = True
+    required_check_names: tuple[str, ...] = ()
 
     @property
     def safe_for_managed_merge(self) -> bool:

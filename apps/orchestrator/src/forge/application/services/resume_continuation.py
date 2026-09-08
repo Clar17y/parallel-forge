@@ -10,18 +10,10 @@ from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.failed_resume import validate_failed_receipt
 from forge.application.services.resume_source import RESUME_FIELDS
+from forge.application.services.resume_stage import resume_stage
 from forge.application.services.state_engine import StateEngine
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.run import RunSnapshot, RunState
-
-_STAGE = {
-    RunState.CREATED: ("start_planning", "plan"),
-    RunState.PLANNING: ("start_planning", "plan"),
-    RunState.IMPLEMENTING: ("implement", "implement"),
-    RunState.REMEDIATING: ("remediate", "implement"),
-    RunState.VALIDATING: ("validate", "validate"),
-    RunState.REVIEWING: ("review", "review"),
-}
 
 
 async def enqueue_resumed_stage(
@@ -49,11 +41,13 @@ async def enqueue_resumed_stage(
     ):
         raise CommandRecoveryRequired("resume continuation authority changed")
     restored = StateEngine().resume(paused)
-    stage = _STAGE.get(restored.state)
-    if stage is None or len(sources) != 1:
+    if len(sources) != 1:
         raise CommandRecoveryRequired("resume has no unique reconciled local stage")
-    command_type, kind = stage
     source = sources[0]
+    stage = resume_stage(restored.state, source.command_type)
+    if stage is None:
+        raise CommandRecoveryRequired("resume has no supported local stage")
+    command_type, kind = stage
     if (
         source.run_id != paused.id
         or source.command_type != command_type
@@ -63,8 +57,8 @@ async def enqueue_resumed_stage(
         or await work.commands.get(source.id) != source
     ):
         raise CommandRecoveryRequired("resume stage source differs from durable evidence")
-    failed_unadmitted = source.status is CommandStatus.FAILED
-    if failed_unadmitted:
+    failed_unadmitted = False
+    if source.status is CommandStatus.FAILED:
         events = [
             event
             for event in await work.events.list_for_version(paused.id, paused.version)
@@ -76,17 +70,29 @@ async def enqueue_resumed_stage(
             pause_id = UUID(str(events[0].payload.get("command_id")))
         except ValueError:
             raise CommandRecoveryRequired("failed continuation pause is invalid") from None
-        await validate_failed_receipt(
-            work, source, paused_version=paused.version, pause_id=pause_id, state=restored.state
+        failed_unadmitted = any(
+            event.event_type == "delivery.failed_before_admission"
+            and event.payload.get("command_id") == str(source.id)
+            for event in await work.events.list_for_version(paused.id, paused.version)
         )
+        if failed_unadmitted:
+            await validate_failed_receipt(
+                work, source, paused_version=paused.version, pause_id=pause_id, state=restored.state
+            )
     attempt = (
         await work.controller_steps.next_attempt(paused.id, kind)
         if kind == "validate"
         else await work.executions.next_attempt(paused.id, kind)
     )
     previous = source.payload.get("semantic_attempt", 1)
+    receipts = [
+        event
+        for event in await work.events.list_for_version(paused.id, paused.version)
+        if event.payload.get("command_id") == str(source.id)
+    ]
+    deferred = any(event.event_type == "delivery.deferred" for event in receipts)
     if type(previous) is not int or attempt != previous + (
-        0 if source.attempt == 0 or failed_unadmitted else 1
+        0 if deferred or failed_unadmitted else 1
     ):
         raise CommandRecoveryRequired("resume stage attempt is not next")
     payload = {key: value for key, value in source.payload.items() if key not in RESUME_FIELDS}

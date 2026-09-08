@@ -55,6 +55,7 @@ from forge.application.services.control_settlement import (
     pending_current_control_stop,
 )
 from forge.application.services.developer_result import verify_developer_output
+from forge.application.services.remote_remediation import remote_evidence
 from forge.application.services.resume_source import (
     RESUME_FIELDS,
     resume_command_ids,
@@ -350,7 +351,7 @@ class DevelopmentService:
         event_type = (
             (
                 "run.remediation_completed"
-                if command.command_type == "remediate"
+                if command.command_type in {"remediate", "remediate_remote"}
                 else "run.implementation_completed"
             )
             if succeeded
@@ -433,7 +434,7 @@ class DevelopmentService:
             approved.run.state
             is not (
                 RunState.REMEDIATING
-                if command.command_type == "remediate"
+                if command.command_type in {"remediate", "remediate_remote"}
                 else RunState.IMPLEMENTING
             )
             or approved.run.version != command.expected_run_version
@@ -444,6 +445,8 @@ class DevelopmentService:
             and command.actor_id != approved.approval_actor_id
         ):
             raise DevelopmentRecoveryRequired("implementation actor is invalid")
+        if command.command_type == "remediate_remote":
+            await self._remote_evidence(work, approved, origin or command)
         if command.command_type == "remediate":
             authority = origin or command
             _attempt, validation_id, _prior_review_id = self._validate(command, origin)
@@ -635,6 +638,11 @@ class DevelopmentService:
             worktree_id=worktree.identity.worktree_name,
             base_commit=worktree.base_sha,
             operator_feedback=operator_feedback,
+            remote_evidence=(
+                await self._remote_evidence(work, approved, command)
+                if command is not None and command.command_type == "remediate_remote"
+                else None
+            ),
             remediation_findings=findings,
             check_evidence=check_evidence,
             relevant_instructions=instructions,
@@ -663,6 +671,14 @@ class DevelopmentService:
         if expected != attempt:
             raise DevelopmentRecoveryRequired("developer semantic attempt is not next")
         parent_digests: tuple[str, ...] = ()
+        if command.command_type == "remediate_remote":
+            remote = await self._remote_evidence(work, current, command)
+            if (
+                not isinstance(request.context, DeveloperInput)
+                or request.context.remote_evidence != remote
+            ):
+                raise DevelopmentRecoveryRequired("remote remediation input differs")
+            parent_digests = (remote.source_reference,)
         if validation_id is not None:
             # Re-read immediately before durable admission: the context may only
             # claim authority from the immutable manifests it names as parents.
@@ -832,7 +848,7 @@ class DevelopmentService:
                     run.version,
                     RunState.VALIDATING,
                     "run.remediation_completed"
-                    if command.command_type == "remediate"
+                    if command.command_type in {"remediate", "remediate_remote"}
                     else "run.implementation_completed",
                     {
                         "command_id": str(command.id),
@@ -1148,6 +1164,15 @@ class DevelopmentService:
         ):
             raise DevelopmentRecoveryRequired("implementation lease differs")
 
+    async def _remote_evidence(
+        self, work: UnitOfWork, approved: ApprovedPlan, command: CommandEnvelope
+    ) -> UntrustedContent:
+        command = await resume_origin(work, command) or command
+        try:
+            return await remote_evidence(work, approved, command, self._store)
+        except CommandRecoveryRequired:
+            raise DevelopmentRecoveryRequired("remote remediation authority differs") from None
+
     def _prompt(self) -> LoadedPrompt:
         loaded = self._prompts.load(AgentRole.DEVELOPER)
         if type(loaded) is not LoadedPrompt:
@@ -1201,13 +1226,32 @@ class DevelopmentService:
                 command,
                 payload=payload,
                 idempotency_key=(
-                    f"{command.run_id}:human-remediate:{payload['semantic_attempt']}"
+                    f"{command.run_id}:remote-remediation:{payload.get('remote_attempt')}"
+                    if command.command_type == "remediate_remote"
+                    else f"{command.run_id}:human-remediate:{payload['semantic_attempt']}"
                     if payload.get("automatic") is False
                     else f"{command.run_id}:{command.command_type}:{payload['semantic_attempt']}"
                 ),
             )
         elif resume_command_ids(command.payload) is not None:
             raise DevelopmentRecoveryRequired("resume implementation authority is invalid")
+        if command.command_type == "remediate_remote":
+            attempt = command.payload.get("semantic_attempt")
+            remote_attempt = command.payload.get("remote_attempt")
+            if (
+                command.status is not CommandStatus.LEASED
+                or command.payload_schema_version != 1
+                or set(command.payload)
+                != {"semantic_attempt", "remote_attempt", "pull_request_id", "observation_digest"}
+                or type(attempt) is not int
+                or attempt < 1
+                or type(remote_attempt) is not int
+                or remote_attempt < 1
+                or command.idempotency_key
+                != f"{command.run_id}:remote-remediation:{remote_attempt}"
+            ):
+                raise DevelopmentRecoveryRequired("remote remediation command is invalid")
+            return attempt, None, None
         attempt = command.payload.get("semantic_attempt")
         validation_value = command.payload.get("validation_evidence_set_id")
         prior_value = command.payload.get("prior_review_evidence_set_id")

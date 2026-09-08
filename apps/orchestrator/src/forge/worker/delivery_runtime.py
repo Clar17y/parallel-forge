@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.clock import Clock
-from forge.application.ports.operations import OperationRepository
+from forge.application.ports.operations import OperationAdapter, OperationRepository
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import DatabaseBinding, ManagedWorktree
 from forge.application.services.recovery import OperationExecutor
@@ -288,6 +288,26 @@ class DeliveryRuntime:
             environment_stager=EnvironmentStager(git),
             runner_factory=self,
         )
+
+    def resource_recovery_adapter(
+        self, run: RunSnapshot, policy: ProjectPolicy, *, kind: str
+    ) -> OperationAdapter:
+        """Construct only the inspection side of a resource lifecycle operation."""
+        self._validate_policy(policy)
+        if run.project_id != policy.id or run.policy_version != policy.version or not run.branch_name:
+            raise DeliveryRuntimeError()
+        if kind in {
+            "worktree.create", "worktree.teardown", "worktree.environment.stage", "worktree.setup.command"
+        }:
+            return self._provisioner(policy, self.git(policy)).recovery_adapter(policy, kind=kind)
+        if kind in {"database.provision", "database.teardown"}:
+            identity = WorktreeIdentity.for_run(
+                run.project_id, run.id, run.branch_name, policy.database.enabled
+            )
+            return self._database(policy).recovery_adapter(
+                identity, policy.database, policy_version=policy.version, kind=kind
+            )
+        raise DeliveryRuntimeError()
 
     @property
     def _uow_factory(self) -> Callable[[], UnitOfWork]:

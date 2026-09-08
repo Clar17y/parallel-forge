@@ -127,6 +127,10 @@ class AuthRepository(Protocol):
 
     async def invalidate_pr_gate(self, *, run_id: UUID, run_version: int, at: datetime) -> None: ...
 
+    async def invalidate_merge_gate(
+        self, *, run_id: UUID, run_version: int, at: datetime
+    ) -> None: ...
+
     async def create_approval(self, **values: object) -> object: ...
 
     async def get_approval(

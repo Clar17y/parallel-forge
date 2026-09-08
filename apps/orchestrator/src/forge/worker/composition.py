@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
+from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,7 +22,9 @@ from forge.application.handlers.approvals import (
     RequestPlanRevisionHandler,
 )
 from forge.application.handlers.delivery import ReviewHandler
+from forge.application.handlers.merge import ApproveMergeHandler
 from forge.application.handlers.planning import PlanningHandler
+from forge.application.handlers.release import ApprovePrHandler
 from forge.application.handlers.run_controls import (
     CancelRunHandler,
     PauseRunHandler,
@@ -28,8 +32,13 @@ from forge.application.handlers.run_controls import (
 )
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
+from forge.application.ports.base_adoption import BaseAdoptionPort
 from forge.application.ports.clock import Clock
 from forge.application.ports.executions import ExecutionAdmission, ExecutionStatus
+from forge.application.ports.git_push import ManagedPushPort
+from forge.application.ports.github import GitHubPort
+from forge.application.ports.github_write import GitHubWritePort
+from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.provider_credentials import (
     ProviderCredentialError,
     validate_provider_secret_reference,
@@ -37,22 +46,30 @@ from forge.application.ports.provider_credentials import (
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.base_update import BaseUpdateService
 from forge.application.services.candidate_revision import CandidateRevisionService
 from forge.application.services.delivery import DeliveryService
 from forge.application.services.delivery_preparation import DeliveryPreparationService
 from forge.application.services.development import DevelopmentService
+from forge.application.services.merge import MergeService
+from forge.application.services.merge_evidence import MergeEvidenceValidator
 from forge.application.services.plan_evidence import (
     PlanEvidenceValidator,
 )
 from forge.application.services.planning import PlanningService
+from forge.application.services.pr_evidence import PrEvidenceValidator
+from forge.application.services.release import ReleaseService
+from forge.application.services.release_monitor import ReleaseMonitor
 from forge.application.services.review import ReviewService
 from forge.application.services.review_decision import ReviewDecisionService
+from forge.application.services.tool_recovery import ToolRecoveryService
 from forge.application.services.tools import ControlledToolService
 from forge.application.services.validation import ValidationService
 from forge.application.services.worker import CommandHandler
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.actor import AgentRole
 from forge.domain.agent import AgentBudget, AgentRequest, AgentResult, PlannerInput, PolicySummary
+from forge.domain.command import CommandEnvelope
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunState
 from forge.domain.tool import (
@@ -63,13 +80,25 @@ from forge.domain.tool import (
 from forge.observability.redaction import Redactor
 from forge.observability.usage import PricingCatalog
 from forge.persistence.unit_of_work import PostgresUnitOfWork
+from forge.release.credentials import LocalGitHubCredentialResolver
+from forge.release.git_adoption import ManagedBaseAdoption
+from forge.release.git_push import ManagedPush
+from forge.release.github_client import GitHubClient
+from forge.release.github_write import GitHubWrite
+from forge.release.merge import MergeController
 from forge.settings import Settings
+from forge.tools.git import ControlledGit
 from forge.tools.provider_credentials import LocalProviderCredentialResolver
 from forge.tools.repository import RepositoryReader
 from forge.tools.secrets import LocalSecretStore, SecretStoreError
 from forge.worker.agent_tools import PerRequestToolProvider as _PerRequestToolProvider
+from forge.worker.base_recovery import base_recovery_adapters
 from forge.worker.bound_delivery import BoundDeliveryGateway
 from forge.worker.delivery_runtime import DeliveryRuntime
+from forge.worker.publication_recovery import publication_recovery_adapters
+from forge.worker.recovery_adapters import local_recovery_adapters
+from forge.worker.release_recovery import merge_recovery_adapters
+from forge.worker.resource_recovery import resource_recovery_adapters
 
 
 class WorkerCompositionError(RuntimeError):
@@ -77,6 +106,37 @@ class WorkerCompositionError(RuntimeError):
 
     def __init__(self, message: str = "worker configuration is invalid") -> None:
         super().__init__(message)
+
+
+class WorkerHandlers(dict[str, CommandHandler]):
+    """Command dispatch plus resources owned by production composition."""
+
+    def __init__(self, handlers: Mapping[str, CommandHandler]) -> None:
+        super().__init__(handlers)
+        self.resources = AsyncExitStack()
+        self.recovery_adapters: dict[str, OperationAdapter] = {}
+        self.tool_recovery: ToolRecoveryService | None = None
+
+    async def aclose(self) -> None:
+        await self.resources.aclose()
+
+
+@dataclass(frozen=True)
+class ReleaseDependencies:
+    """Caller-owned release ports for deterministic worker execution."""
+
+    read: GitHubPort
+    writes: GitHubWritePort
+    push: Callable[[ProjectPolicy], ManagedPushPort]
+    adoption: Callable[[ProjectPolicy], BaseAdoptionPort] | None = None
+
+
+async def _release_unconfigured(command: CommandEnvelope, work: UnitOfWork) -> None:
+    raise WorkerCompositionError("GitHub credential reference is not configured")
+
+
+async def _adoption_unconfigured(command: CommandEnvelope, work: UnitOfWork) -> None:
+    raise WorkerCompositionError("base adoption runtime is not configured")
 
 
 def load_pricing_catalog(path: Path | str) -> PricingCatalog:
@@ -252,7 +312,8 @@ def compose_worker_handlers(
     clock: Clock | None = None,
     repository_inspector: LocalGitRepositoryInspector | None = None,
     delivery_runtime: DeliveryRuntime | None = None,
-) -> Mapping[str, CommandHandler]:
+    release_dependencies: ReleaseDependencies | None = None,
+) -> WorkerHandlers:
     """Compose production worker command handlers with verified dependencies."""
     shared_redactor = redactor or Redactor()
     artifact_store = FilesystemArtifactStore(settings.artifact_root)
@@ -423,22 +484,122 @@ def compose_worker_handlers(
         artifact_store, approved_plans, delivery_dependencies.git, clock=clock
     )
 
-    return {
-        "start_planning": start_planning_handler,
-        "approve_plan": approve_plan_handler,
-        "request_plan_revision": request_plan_revision_handler,
-        "prepare_worktree": preparation.execute,
-        "implement": development.execute,
-        "remediate": development.execute,
-        "validate": delivery.validate,
-        "review": ReviewHandler(review, review_decision),
-        "pause": PauseRunHandler(),
-        "resume": ResumeRunHandler(
-            artifact_store=artifact_store, preparation_inspector=delivery_dependencies
-        ),
-        "cancel": CancelRunHandler(),
-        "request_candidate_changes": candidate_revision.execute,
-    }
+    handlers = WorkerHandlers(
+        {
+            "start_planning": start_planning_handler,
+            "approve_plan": approve_plan_handler,
+            "request_plan_revision": request_plan_revision_handler,
+            "prepare_worktree": preparation.execute,
+            "implement": development.execute,
+            "remediate": development.execute,
+            "remediate_remote": development.execute,
+            "validate": delivery.validate,
+            "review": ReviewHandler(review, review_decision),
+            "pause": PauseRunHandler(),
+            "resume": ResumeRunHandler(
+                artifact_store=artifact_store, preparation_inspector=delivery_dependencies
+            ),
+            "cancel": CancelRunHandler(),
+            "request_candidate_changes": candidate_revision.execute,
+        }
+    )
+    release_commands = (
+        "update_base",
+        "approve_pr",
+        "publish_pr",
+        "monitor_pr",
+        "push_reviewed_pr",
+        "approve_merge",
+        "merge_pr",
+    )
+    handlers.tool_recovery = ToolRecoveryService(
+        uow_factory, artifact_store, redactor=shared_redactor
+    )
+    handlers.recovery_adapters.update(resource_recovery_adapters(session_factory, delivery_dependencies))
+
+    handlers.recovery_adapters.update(
+        local_recovery_adapters(
+            session_factory,
+            artifact_store,
+            delivery_dependencies.git,
+            lambda policy, worktree, git: delivery_dependencies.writer(
+                policy, worktree, controlled_git=cast(ControlledGit, git)
+            ),
+        )
+    )
+    if release_dependencies is None:
+        if not settings.github_token_reference:
+            handlers.update({name: _release_unconfigured for name in release_commands})
+            return handlers
+        credentials = LocalGitHubCredentialResolver(LocalSecretStore(settings.data_root))
+        read = GitHubClient(credentials, settings.github_token_reference)
+        writes = GitHubWrite(credentials, settings.github_token_reference)
+        handlers.resources.push_async_callback(read.aclose)
+        handlers.resources.push_async_callback(writes.aclose)
+        release_dependencies = ReleaseDependencies(
+            read,
+            writes,
+            lambda policy: ManagedPush(
+                delivery_dependencies.git(policy), credentials, settings.github_token_reference
+            ),
+            lambda policy: ManagedBaseAdoption(
+                delivery_dependencies.git(policy), credentials, settings.github_token_reference
+            ),
+        )
+    pr_evidence = PrEvidenceValidator(
+        artifact_store, approved_plans, delivery_dependencies.git, release_dependencies.read
+    )
+    handlers.recovery_adapters.update(
+        publication_recovery_adapters(session_factory, pr_evidence, release_dependencies.writes)
+    )
+    release = ReleaseService(
+        pr_evidence,
+        release_dependencies.writes,
+        release_dependencies.push,
+        delivery_dependencies.operation_executor,
+        clock=clock,
+    )
+    merge_controller = MergeController(release_dependencies.read, release_dependencies.writes)
+    if release_dependencies.adoption is not None:
+        handlers.recovery_adapters.update(base_recovery_adapters(
+            session_factory, artifact_store, pr_evidence, release_dependencies.read,
+            release_dependencies.writes, release_dependencies.adoption,
+        ))
+    merge_evidence = MergeEvidenceValidator(artifact_store, pr_evidence, merge_controller)
+    handlers.recovery_adapters.update(
+        merge_recovery_adapters(session_factory, merge_evidence, merge_controller)
+    )
+    merge = MergeService(
+        merge_evidence, merge_controller, delivery_dependencies.operation_executor, clock=clock
+    )
+    handlers.update(
+        {
+            "update_base": BaseUpdateService(
+                artifact_store,
+                pr_evidence,
+                release_dependencies.read,
+                release_dependencies.writes,
+                release_dependencies.adoption,
+                delivery_dependencies.operation_executor,
+                clock=clock,
+            ).execute
+            if release_dependencies.adoption is not None
+            else _adoption_unconfigured,
+            "approve_pr": ApprovePrHandler(pr_evidence, approved_plans, clock=clock),
+            "publish_pr": release.publish,
+            "monitor_pr": ReleaseMonitor(
+                artifact_store,
+                pr_evidence,
+                release_dependencies.read,
+                release_dependencies.writes,
+                clock=clock,
+            ),
+            "push_reviewed_pr": release.push_reviewed,
+            "approve_merge": ApproveMergeHandler(merge_evidence, clock=clock),
+            "merge_pr": merge.execute,
+        }
+    )
+    return handlers
 
 
 __all__ = [

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from forge.domain.approval import PlanApprovalEvidence
 from forge.domain.run import RunState
 from forge.persistence.models import Approval, Project, ProjectPolicyVersion, Run
 from forge.persistence.unit_of_work import PostgresUnitOfWork
@@ -86,10 +87,13 @@ async def approved_case(tmp_path, factory, *, database_enabled=False, commands=N
         )
         work.session.add(approval)
         await work.session.flush()
-        await work.runs.transition(
+        evidence = PlanApprovalEvidence.model_validate_json(
+            await case.artifact_store.open_bytes(run.pending_evidence_digest)
+        )
+        await work.runs.approve_plan(
             run.id,
             run.version,
-            RunState.PREPARING_WORKTREE,
+            evidence,
             "run.plan_approved",
             {"approval_id": str(approval.id)},
             actor_class="operator",

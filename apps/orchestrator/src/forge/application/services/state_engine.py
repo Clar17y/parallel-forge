@@ -68,7 +68,12 @@ LEGAL: Mapping[RunState, frozenset[RunState]] = MappingProxyType(
             }
         ),
         RunState.AWAITING_PR_APPROVAL: frozenset(
-            {RunState.REMEDIATING, RunState.PUBLISHING_PR, RunState.CANCELLED}
+            {
+                RunState.REMEDIATING,
+                RunState.PUBLISHING_PR,
+                RunState.AWAITING_HUMAN_INTERVENTION,
+                RunState.CANCELLED,
+            }
         ),
         RunState.PUBLISHING_PR: frozenset(
             {
@@ -299,6 +304,19 @@ class StateEngine:
                 run.suspended_state,
                 target,
                 reason="merging requires approval evidence",
+            )
+        if run.suspended_state is RunState.MERGING and target is RunState.COMPLETED:
+            raise InvalidTransition(
+                run.suspended_state,
+                target,
+                reason="merge completion requires a settled merge receipt",
+            )
+        if (
+            run.suspended_state is RunState.AWAITING_PR_APPROVAL
+            and target is RunState.PUBLISHING_PR
+        ):
+            raise InvalidTransition(
+                run.suspended_state, target, reason="publication requires approval evidence"
             )
         if target not in LEGAL[run.suspended_state]:
             raise InvalidTransition(run.suspended_state, target)

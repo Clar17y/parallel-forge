@@ -2,25 +2,23 @@
 
 from __future__ import annotations
 
-from uuid import UUID
+from dataclasses import replace
+from uuid import UUID, uuid5
 
 from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
 from forge.application.ports.controller_steps import ControllerStepUnsettledError
-from forge.application.ports.executions import ExecutionUnsettledError
+from forge.application.ports.executions import (
+    ExecutionOutcome,
+    ExecutionStatus,
+    ExecutionUnsettledError,
+)
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.resume_stage import resume_stage
+from forge.domain.actor import AgentRole
 from forge.domain.command import CommandEnvelope, CommandStatus, thaw_payload
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.commands import CommandNotFound
-
-_STAGES = {
-    RunState.CREATED: ("start_planning", "plan"),
-    RunState.PLANNING: ("start_planning", "plan"),
-    RunState.IMPLEMENTING: ("implement", "implement"),
-    RunState.REMEDIATING: ("remediate", "implement"),
-    RunState.VALIDATING: ("validate", "validate"),
-    RunState.REVIEWING: ("review", "review"),
-}
 
 
 async def settle_failed_delivery(
@@ -50,22 +48,37 @@ async def settle_failed_delivery(
     candidates = [
         candidate
         for candidate in candidates
-        if candidate.command_type == (_STAGES.get(current.suspended_state) or (None, None))[0]
+        if resume_stage(current.suspended_state, candidate.command_type) is not None
         and candidate.expected_run_version == current.version - 1
     ]
     if len(candidates) != 1:
         raise CommandRecoveryRequired("failed delivery source is absent or ambiguous")
     source = candidates[0]
-    kind, attempt = await _validate_unadmitted(work, current, source)
+    try:
+        kind, attempt = await _validate_unadmitted(work, current, source)
+        event_type = "delivery.failed_before_admission"
+        receipt_payload = _receipt_payload(source, kind, attempt, pause.id, current.suspended_state)
+    except CommandRecoveryRequired:
+        kind, attempt, outcome = await _validate_settled(work, current, source)
+        event_type = "delivery.failed_after_settlement"
+        receipt_payload = {
+            **_receipt_payload(source, kind, attempt, pause.id, current.suspended_state),
+            "step_id": str(outcome.step_id),
+            "execution_id": str(outcome.agent_execution_id),
+            "finish_status": outcome.finish_status.value,
+            "output_artifact_id": (
+                str(outcome.output_artifact_id) if outcome.output_artifact_id is not None else None
+            ),
+        }
     proof = await work.runs.prove_quiescent(current.id, exclude_command_id=resume.id)
     if not proof.is_quiescent:
         raise CommandRecoveryRequired("paused run has unresolved durable effects")
     receipt = RunEvent(
         run_id=current.id,
         run_version=current.version,
-        event_type="delivery.failed_before_admission",
+        event_type=event_type,
         actor_class="worker",
-        payload=_receipt_payload(source, kind, attempt, pause.id, current.suspended_state),
+        payload=receipt_payload,
     )
     events = await work.events.list_after(current.id, 0)
     if any(
@@ -77,6 +90,96 @@ async def settle_failed_delivery(
         raise CommandRecoveryRequired("failed delivery receipt already exists")
     await work.events.append(receipt)
     return (source,)
+
+
+async def validate_settled_failed_receipt(
+    work: UnitOfWork,
+    source: CommandEnvelope,
+    *,
+    paused_version: int,
+    pause_id: UUID,
+    state: RunState,
+) -> None:
+    """Require the exact terminal execution and immutable settlement receipt."""
+    current = await work.runs.get_for_update(source.run_id)
+    if current.version < paused_version or source.expected_run_version != paused_version - 1:
+        raise CommandRecoveryRequired("settled continuation paused authority differs")
+    paused = replace(current, version=paused_version, suspended_state=state)
+    kind, attempt, outcome = await _validate_settled(work, paused, source)
+    expected = {
+        **_receipt_payload(source, kind, attempt, pause_id, state),
+        "step_id": str(outcome.step_id),
+        "execution_id": str(outcome.agent_execution_id),
+        "finish_status": outcome.finish_status.value,
+        "output_artifact_id": (
+            str(outcome.output_artifact_id) if outcome.output_artifact_id is not None else None
+        ),
+    }
+    receipts = [
+        event
+        for event in await work.events.list_for_version(source.run_id, paused_version)
+        if event.event_type == "delivery.failed_after_settlement"
+        and event.payload.get("command_id") == str(source.id)
+    ]
+    if (
+        len(receipts) != 1
+        or receipts[0].actor_class != "worker"
+        or receipts[0].actor_id is not None
+        or receipts[0].payload_schema_version != 1
+        or receipts[0].payload != expected
+    ):
+        raise CommandRecoveryRequired("settled continuation receipt differs")
+
+
+async def _validate_settled(
+    work: UnitOfWork, paused: RunSnapshot, source: CommandEnvelope
+) -> tuple[str, int, ExecutionOutcome]:
+    stage = resume_stage(paused.suspended_state, source.command_type)
+    attempt = source.payload.get("semantic_attempt", 1)
+    if (
+        stage is None
+        or source.status is not CommandStatus.FAILED
+        or source.run_id != paused.id
+        or source.command_type != stage[0]
+        or source.payload_schema_version != 1
+        or source.expected_run_version != paused.version - 1
+        or type(attempt) is not int
+        or attempt < 1
+    ):
+        raise CommandRecoveryRequired("settled failed delivery source authority is invalid")
+    kind = stage[1]
+    if kind == "validate":
+        raise CommandRecoveryRequired("settled controller delivery requires recovery")
+    namespaces = {
+        "plan": UUID("e516bb38-63f8-4c28-b4e4-6cc9b3a9e9c5"),
+        "implement": UUID("6649eb62-7e4a-421f-9861-8be14cefa22b"),
+        "review": UUID("29a779ce-d141-498d-b6bc-a18bececf766"),
+    }
+    steps = {
+        "plan": UUID("3b7b0e4a-5e6a-4b8d-9db0-3c3c12f1f411"),
+        "implement": UUID("5f7bc719-a867-443c-b6a8-936c6663a983"),
+        "review": UUID("11c37116-b982-454c-b101-0f7e4bc4e3ed"),
+    }
+    outcome = await work.executions.get_outcome(paused.id, kind, attempt)
+    role = (
+        AgentRole.PLANNER
+        if kind == "plan"
+        else AgentRole.DEVELOPER
+        if kind == "implement"
+        else AgentRole.REVIEWER
+    )
+    if (
+        outcome is None
+        or outcome.status
+        not in {ExecutionStatus.SUCCEEDED, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED}
+        or outcome.agent_execution_id != uuid5(namespaces[kind], str(source.id))
+        or outcome.step_id != uuid5(steps[kind], str(source.id))
+        or outcome.role is not role
+        or outcome.kind != kind
+        or outcome.attempt != attempt
+    ):
+        raise CommandRecoveryRequired("settled failed delivery proof differs")
+    return kind, attempt, outcome
 
 
 async def validate_failed_receipt(
@@ -93,7 +196,7 @@ async def validate_failed_receipt(
     checks the immutable receipt rather than treating that fresh admission as
     evidence against the original failed delivery.
     """
-    stage = _STAGES.get(state)
+    stage = resume_stage(state, source.command_type)
     attempt = source.payload.get("semantic_attempt", 1)
     if (
         stage is None
@@ -145,7 +248,7 @@ def _receipt_payload(
 async def _validate_unadmitted(
     work: UnitOfWork, paused: RunSnapshot, source: CommandEnvelope
 ) -> tuple[str, int]:
-    stage = _STAGES.get(paused.suspended_state) if paused.suspended_state is not None else None
+    stage = resume_stage(paused.suspended_state, source.command_type)
     attempt = source.payload.get("semantic_attempt", 1)
     if (
         stage is None
@@ -235,4 +338,4 @@ async def _pause_authority(work: UnitOfWork, run: RunSnapshot) -> CommandEnvelop
     return pause
 
 
-__all__ = ["settle_failed_delivery", "validate_failed_receipt"]
+__all__ = ["settle_failed_delivery", "validate_failed_receipt", "validate_settled_failed_receipt"]

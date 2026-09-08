@@ -122,6 +122,8 @@ class GitHubClient:
                     _optional_text(run.get("conclusion")),
                     _optional_https_url(run.get("details_url")),
                     sha,
+                    _bounded_text(_optional_mapping(run.get("output")).get("summary")),
+                    _bounded_text(_optional_mapping(run.get("output")).get("text")),
                 )
             )
         seen = set()
@@ -136,6 +138,7 @@ class GitHubClient:
                         _text(status.get("state")),
                         _optional_https_url(status.get("target_url")),
                         sha,
+                        _bounded_text(status.get("description")),
                     )
                 )
         return tuple(checks)
@@ -154,7 +157,11 @@ class GitHubClient:
             if state not in {"approved", "changes_requested", "commented", "dismissed", "pending"}:
                 raise GitHubClientError("malformed_response")
             candidate = ReviewSnapshot(
-                reviewer, state, _timestamp(item.get("submitted_at")), state == "changes_requested"
+                reviewer,
+                state,
+                _timestamp(item.get("submitted_at")),
+                state == "changes_requested",
+                body=_bounded_text(item.get("body")),
             )
             prior = latest.get(reviewer.casefold())
             decisive = state in {"approved", "changes_requested"}
@@ -169,6 +176,13 @@ class GitHubClient:
             ):
                 latest[reviewer.casefold()] = candidate
         result = list(latest.values())
+        feedback = tuple(
+            text
+            for t in threads
+            if not _bool(t.get("isResolved"))
+            for c in _optional_list(_mapping(t.get("comments")).get("nodes"))
+            if isinstance((text := _bounded_text(_mapping(c).get("body"))), str)
+        )
         if unresolved or comments or not result:
             result.append(
                 ReviewSnapshot(
@@ -177,6 +191,7 @@ class GitHubClient:
                     None,
                     unresolved_threads=unresolved,
                     comment_count=comments,
+                    feedback=feedback,
                 )
             )
         return tuple(result)
@@ -205,19 +220,49 @@ class GitHubClient:
                 if error.category != "not_found":
                     raise
             strict = False
+            required_names: set[str] = set()
             enforced = False
             allowances: dict[str, Any] = {"users": [], "teams": [], "apps": []}
             if protection is not None:
                 checks = protection.get("required_status_checks")
                 if checks is not None:
-                    strict = _bool(_mapping(checks).get("strict")) and bool(
-                        _list(_mapping(checks).get("contexts"))
-                    )
+                    checks = _mapping(checks)
+                    requires_current_base = _bool(checks.get("strict"))
+                    contexts = _list(checks.get("contexts", None if requires_current_base else []))
+                    required_names.update(_text(x) for x in contexts)
+                    strict = requires_current_base and bool(contexts)
                 enforced = _bool(_mapping(protection.get("enforce_admins")).get("enabled"))
                 reviews = protection.get("required_pull_request_reviews")
                 if reviews is not None:
                     allowances = _mapping(_mapping(reviews).get("bypass_pull_request_allowances"))
-            actor = _mapping(await self._json("GET", "/user"))
+            try:
+                actor = _mapping(await self._json("GET", "/user"))
+            except GitHubClientError as error:
+                if error.category != "forbidden":
+                    raise
+                repositories = await self._pages("/installation/repositories", key="repositories")
+                if not any(
+                    _positive_int(item.get("id"))
+                    and _text(item.get("full_name")).casefold() == repository.casefold()
+                    for item in repositories
+                ):
+                    return _unverified()
+                if (protection is not None and not enforced) or any(
+                    _list(allowances.get(kind)) for kind in ("users", "teams", "apps")
+                ):
+                    return _unverified()
+                rule_strict, queue, verified, bypass, rule_names = await self._rulesets(
+                    repository, branch, None
+                )
+                required_names.update(rule_names)
+                return MergeProtection(
+                    strict or rule_strict,
+                    queue,
+                    bypass,
+                    "branch_protection_rulesets_no_bypass",
+                    verified=verified,
+                    required_check_names=tuple(sorted(required_names)),
+                )
             actor_id = _positive_int(actor.get("id"))
             login = _text(actor.get("login")).casefold()
             permission = _mapping(
@@ -235,24 +280,27 @@ class GitHubClient:
                 _text(_mapping(x).get("login")).casefold() == login
                 for x in _list(allowances.get("users"))
             ) or (protection is not None and admin and not enforced)
-            rule_strict, queue, verified, rule_bypass = await self._rulesets(
+            rule_strict, queue, verified, rule_bypass, rule_names = await self._rulesets(
                 repository, branch, actor_id
             )
+            required_names.update(rule_names)
             return MergeProtection(
                 strict or rule_strict,
                 queue,
                 bypass or rule_bypass,
                 "branch_protection_rulesets_and_actor",
                 verified=verified,
+                required_check_names=tuple(sorted(required_names)),
             )
         except GitHubClientError:
             return _unverified()
 
     async def _rulesets(
-        self, repository: str, branch: str, actor_id: int
-    ) -> tuple[bool, bool, bool, bool]:
+        self, repository: str, branch: str, actor_id: int | None
+    ) -> tuple[bool, bool, bool, bool, tuple[str, ...]]:
         queue = False
         strict = False
+        names: set[str] = set()
         effective = await self._pages(self._path(repository, "rules", "branches", _ref(branch)))
         rulesets: dict[int, set[str]] = {}
         for item in effective:
@@ -265,6 +313,10 @@ class GitHubClient:
                 strict = strict or (
                     _bool(parameters.get("strict_required_status_checks_policy"))
                     and bool(_list(parameters.get("required_status_checks")))
+                )
+                names.update(
+                    _text(_mapping(x).get("context"))
+                    for x in _list(parameters.get("required_status_checks"))
                 )
         for ruleset_id, types in rulesets.items():
             rule = _mapping(
@@ -282,24 +334,26 @@ class GitHubClient:
                     {_text(_mapping(x).get("type")) for x in _list(rule.get("rules"))}
                 )
             ):
-                return False, False, False, False
+                return False, False, False, False, ()
             for entry in _list(rule.get("bypass_actors")):
+                if actor_id is None:
+                    return False, False, False, False, ()
                 item = _mapping(entry)
                 kind = _text(item.get("actor_type"))
                 mode = _text(item.get("bypass_mode"))
                 if mode not in {"always", "pull_request", "exempt"}:
-                    return False, False, False, False
+                    return False, False, False, False, ()
                 if kind == "User" and _positive_int(item.get("actor_id")) == actor_id:
-                    return strict, queue, True, True
+                    return strict, queue, True, True, tuple(sorted(names))
                 if kind != "User":
-                    return False, False, False, False
-        return strict, queue, True, False
+                    return False, False, False, False, ()
+        return strict, queue, True, False, tuple(sorted(names))
 
     async def _review_threads(self, repository: str, pull_number: int) -> list[dict[str, Any]]:
         owner, name = _repository(repository)
         cursor = None
         result: list[dict[str, Any]] = []
-        query = "query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments{totalCount}} pageInfo{hasNextPage endCursor}}}}}"
+        query = "query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments{totalCount nodes{body}} pageInfo{hasNextPage endCursor}}}}}"
         for _ in range(_MAX_PAGES):
             data = _mapping(
                 await self._json(
@@ -377,7 +431,7 @@ class GitHubClient:
             if response.is_redirect:
                 raise GitHubClientError("untrusted_redirect")
             delay = _retry_delay(response, self._now())
-            if response.status_code in {502, 503, 504} or delay is not None:
+            if response.status_code in {500, 502, 503, 504} or delay is not None:
                 if attempt < _RETRIES:
                     await self._sleep(delay if delay is not None else 0.25 * (2**attempt))
                     continue
@@ -497,6 +551,10 @@ def _mapping(v: Any) -> dict[str, Any]:
     return v
 
 
+def _optional_mapping(v: Any) -> dict[str, Any]:
+    return {} if v is None else _mapping(v)
+
+
 def _nested_mapping(v: dict[str, Any], *keys: str) -> dict[str, Any]:
     current: Any = v
     for key in keys:
@@ -510,6 +568,10 @@ def _list(v: Any) -> list[Any]:
     return v
 
 
+def _optional_list(v: Any) -> list[Any]:
+    return [] if v is None else _list(v)
+
+
 def _text(v: object) -> str:
     if type(v) is not str or not v:
         raise GitHubClientError("malformed_response")
@@ -518,6 +580,13 @@ def _text(v: object) -> str:
 
 def _optional_text(v: Any) -> str | None:
     return None if v is None else _text(v)
+
+
+def _bounded_text(v: Any) -> str | None:
+    value = _optional_text(v)
+    if value is not None and len(value.encode("utf-8")) > 16_384:
+        raise GitHubClientError("malformed_response")
+    return value
 
 
 def _bool(v: Any) -> bool:

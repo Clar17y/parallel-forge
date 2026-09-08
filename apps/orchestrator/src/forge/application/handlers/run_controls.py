@@ -13,11 +13,25 @@ from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRe
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import PreparedWorktreeInspector
 from forge.application.services.approved_plan import ApprovedPlanLoader
+from forge.application.services.base_update_replay import settle_base_updates
 from forge.application.services.failed_resume import settle_failed_delivery, validate_failed_receipt
+from forge.application.services.monitor_resume import (
+    monitor_origin,
+    resume_monitoring,
+    settle_observed_monitors,
+)
+from forge.application.services.paused_approvals import settle_paused_approvals
 from forge.application.services.preparation_resume import PreparationResumeService
+from forge.application.services.release_resume import (
+    resume_release,
+    resumed_release_origin,
+    settle_published_deliveries,
+    settle_reviewed_push_deliveries,
+)
 from forge.application.services.resume_continuation import enqueue_resumed_stage
 from forge.application.services.resume_reconciliation import ResumeReconciler
 from forge.application.services.resume_source import continuation_binding, resume_command_ids
+from forge.application.services.runs import cancellation_rejection_reason
 from forge.application.services.state_engine import StateEngine
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
@@ -64,6 +78,7 @@ class ResumeRunHandler:
         artifact_store: ArtifactStore | None = None,
         preparation_inspector: PreparedWorktreeInspector | None = None,
     ) -> None:
+        self._store = artifact_store
         self._reconciler = ResumeReconciler(artifact_store)
         self._preparation = (
             PreparationResumeService(ApprovedPlanLoader(artifact_store), preparation_inspector)
@@ -118,6 +133,9 @@ class ResumeRunHandler:
             raise ControlCommandRejected("resume command version is stale")
         target = _restored_state(run)
         if target not in _ACTIVE_RESUME_STATES | {
+            RunState.MONITORING_PR,
+            RunState.PUBLISHING_PR,
+            RunState.MERGING,
             RunState.AWAITING_PLAN_APPROVAL,
             RunState.AWAITING_PR_APPROVAL,
             RunState.AWAITING_MERGE_APPROVAL,
@@ -127,8 +145,39 @@ class ResumeRunHandler:
 
         pause_command = await _validate_pause_authority(work, run)
         await _settle_redundant_resumes(work, command, pause_command)
+        await settle_published_deliveries(work, command, run)
+        await settle_reviewed_push_deliveries(work, command, run, self._store)
+        await settle_base_updates(work, command, run, self._store)
+        await settle_observed_monitors(work, command, run, self._store)
         payload = _resume_payload(command, target, pause_command.id, run=run)
-        if target is RunState.PREPARING_WORKTREE:
+        if target in {RunState.PUBLISHING_PR, RunState.MERGING}:
+            source, queued = await resume_release(work, command, run, pause_command)
+            payload["continuation"] = continuation_binding(queued, source.id)
+        elif (
+            target is RunState.REMEDIATING
+            and any(
+                source.command_type == "update_base"
+                for source in await work.commands.list_outstanding_normal(
+                    run_id=run.id, exclude_command_id=command.id
+                )
+            )
+        ) or (
+            target is RunState.MONITORING_PR
+            and any(
+                source.command_type == "push_reviewed_pr"
+                for source in await work.commands.list_outstanding_normal(
+                    run_id=run.id, exclude_command_id=command.id
+                )
+            )
+        ):
+            source, queued = await resume_release(
+                work, command, run, pause_command, store=self._store
+            )
+            payload["continuation"] = continuation_binding(queued, source.id)
+        elif target is RunState.MONITORING_PR:
+            source, queued = await resume_monitoring(work, command, run, pause_command)
+            payload["continuation"] = continuation_binding(queued, source.id)
+        elif target is RunState.PREPARING_WORKTREE:
             sources = await work.commands.list_outstanding_normal(
                 run_id=run.id, exclude_command_id=command.id
             )
@@ -143,6 +192,7 @@ class ResumeRunHandler:
             queued = await enqueue_resumed_stage(work, command, run, sources)
             payload["continuation"] = continuation_binding(queued, sources[0].id)
         else:
+            await settle_paused_approvals(work, command, run, pause_command)
             proof = await work.runs.prove_quiescent(run.id, exclude_command_id=command.id)
             if not proof.is_quiescent:
                 raise CommandRecoveryRequired("paused run has unsettled durable work")
@@ -219,6 +269,10 @@ async def _execute(command: CommandEnvelope, work: UnitOfWork, *, target: RunSta
     if not _same_delivery(command, fenced):
         raise CommandRecoveryRequired("control command delivery differs from its lease")
     run = await work.runs.get_for_update(command.run_id)
+    if target is RunState.CANCELLED:
+        reason = cancellation_rejection_reason(run)
+        if reason is not None:
+            raise ControlCommandRejected(reason)
     payload = _event_payload(command)
     event_type = "run.paused" if target is RunState.PAUSED else "run.cancelled"
 
@@ -361,7 +415,7 @@ def _resume_payload(
     run: RunSnapshot,
 ) -> dict[str, object]:
     restored = StateEngine().resume(run) if run.state is RunState.PAUSED else run
-    return {
+    payload: dict[str, object] = {
         "command_id": str(command.id),
         "command_type": "resume",
         "command_payload": {},
@@ -375,6 +429,13 @@ def _resume_payload(
             ).encode()
         ).hexdigest(),
     }
+    if restored.pending_gate is not None and restored.pending_gate.value in {"pr", "merge"}:
+        payload["approval_gate"] = {
+            "gate": restored.pending_gate.value,
+            "evidence_digest": restored.pending_evidence_digest,
+            "source_version": command.expected_run_version - 1,
+        }
+    return payload
 
 
 async def _load_resume_event(
@@ -410,6 +471,25 @@ async def _resume_replay_payload(
     continuation: object,
 ) -> dict[str, object]:
     payload = _resume_payload(command, run.state, pause_id, run=run)
+    if run.state in {RunState.MONITORING_PR, RunState.PUBLISHING_PR, RunState.MERGING}:
+        if not isinstance(continuation, Mapping):
+            raise CommandRecoveryRequired("resumed monitor continuation is missing")
+        try:
+            queued = await work.commands.get(UUID(str(continuation.get("command_id"))))
+        except ValueError, CommandNotFound:
+            raise CommandRecoveryRequired("resumed monitor continuation is invalid") from None
+        if queued.expected_run_version != run.version or queued.payload.get(
+            "resume_command_id"
+        ) != str(command.id):
+            raise CommandRecoveryRequired("resumed monitor continuation authority differs")
+        if queued.command_type == "push_reviewed_pr":
+            await resumed_release_origin(work, queued, replaying_resume=command.id)
+        elif run.state is RunState.MONITORING_PR:
+            await monitor_origin(work, queued, replaying_resume=command.id)
+        else:
+            await resumed_release_origin(work, queued, replaying_resume=command.id)
+        payload["continuation"] = dict(continuation)
+        return payload
     if run.state not in _ACTIVE_RESUME_STATES:
         if continuation is not None:
             raise CommandRecoveryRequired("quiescent resume has unexpected continuation")
@@ -424,6 +504,12 @@ async def _resume_replay_payload(
         source = await work.commands.get(identities[1])
     except CommandNotFound, ValueError, TypeError:
         raise CommandRecoveryRequired("resumed stage continuation is invalid") from None
+    if queued.command_type == "update_base" and run.state is RunState.REMEDIATING:
+        if queued.expected_run_version != run.version:
+            raise CommandRecoveryRequired("resumed base continuation version differs")
+        await resumed_release_origin(work, queued, replaying_resume=command.id)
+        payload["continuation"] = continuation_binding(queued, source.id)
+        return payload
     if (
         queued.run_id != run.id
         or source.run_id != run.id

@@ -560,6 +560,17 @@ async def test_http_plan_requires_exact_approval_before_preparation(
         async with session_factory() as session:
             run = await session.get(Run, run_id)
             assert run.state == "PREPARING_WORKTREE"
+            from forge.artifacts.filesystem import FilesystemArtifactStore
+            from forge.domain.approval import PlanApprovalEvidence
+
+            approved_evidence = PlanApprovalEvidence.model_validate_json(
+                await FilesystemArtifactStore(settings.artifact_root).open_bytes(digest)
+            )
+            assert (run.token_budget, run.cost_budget_minor, run.duration_budget_seconds) == (
+                approved_evidence.token_budget,
+                approved_evidence.cost_budget_minor,
+                approved_evidence.duration_budget_seconds,
+            )
             commands = (
                 await session.scalars(select(RunCommand).where(RunCommand.run_id == run_id))
             ).all()

@@ -101,13 +101,14 @@ class MergeApprovalEvidence(EvidenceModel):
     review_digest: str
     runner_mode: RunnerMode
     runner_evidence_digest: str
+    protection_digest: str
     merge_method: str = Field(min_length=1)
     policy_version: int = Field(ge=1)
 
     _validate_head_sha = field_validator("head_sha")(lambda value: _require_sha(value, "head_sha"))
     _validate_base_sha = field_validator("base_sha")(lambda value: _require_sha(value, "base_sha"))
     _validate_digests = field_validator(
-        "validation_digest", "review_digest", "runner_evidence_digest"
+        "validation_digest", "review_digest", "runner_evidence_digest", "protection_digest"
     )(lambda value: _require_digest(value, "evidence digest"))
     _validate_checks = field_validator("required_checks")(lambda value: _freeze_checks(value))
 
