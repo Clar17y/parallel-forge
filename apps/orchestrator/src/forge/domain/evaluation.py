@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from forge.domain.plan import PlanOutput
+from forge.domain.review import FindingSeverity, ReviewFinding
 
 PLANNER_METRIC_VERSION = "planner-exact-v1"
 
@@ -81,3 +82,82 @@ def _finite_number(value: object) -> bool:
         return math.isfinite(cast(float, value))
     except OverflowError:
         return False
+
+
+REVIEWER_METRIC_VERSION = "reviewer-grounded-v1"
+
+
+@dataclass(frozen=True)
+class SeededDefect:
+    severity: FindingSeverity
+    path: str
+    start_line: int
+    evidence_anchor: str
+    missing_test: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.severity, FindingSeverity)
+            or not self.path.strip() or not self.evidence_anchor.strip()
+            or type(self.start_line) is not int or self.start_line < 1
+            or type(self.missing_test) is not bool
+        ):
+            raise ValueError("seeded defect requires severity, location and evidence")
+
+
+@dataclass(frozen=True)
+class ReviewScores:
+    defect_recall: float
+    blocker_recall: float
+    major_recall: float
+    minor_recall: float
+    suggestion_recall: float
+    false_positive_count: int
+    blocker_false_positive_count: int
+    evidence_quality: float
+    missing_test_recall: float
+    policy_compliance: float
+    schema_validity: float
+
+
+def score_review(
+    *, seeded_defects: Mapping[str, SeededDefect], findings: Sequence[ReviewFinding] | None,
+    denied_tool_calls: Sequence[str] = (),
+) -> ReviewScores:
+    """Match exact fixture location/severity and its declared evidence anchor.
+
+    Finding IDs are agent-generated and do not earn credit. Fixtures must enumerate
+    ground truth: unmatched findings count as false positives. Evidence quality is
+    the fraction of findings grounded in that truth, not a language-model judgment.
+    Duplicate reports cannot increase seeded-defect recall. None means invalid output.
+    """
+    compliant = float(not denied_tool_calls)
+    if findings is None:
+        return ReviewScores(0, 0, 0, 0, 0, 0, 0, 0, 0, compliant, 0)
+    detected: set[str] = set()
+    unmatched: list[ReviewFinding] = []
+    for finding in findings:
+        matches = {key for key, seed in seeded_defects.items() if (
+            finding.path == seed.path and finding.start_line == seed.start_line
+            and finding.severity == seed.severity and seed.evidence_anchor in finding.evidence
+        )}
+        if matches:
+            detected.update(matches)
+        else:
+            unmatched.append(finding)
+
+    def recall(keys: AbstractSet[str]) -> float:
+        return _recall(keys, tuple(detected))
+
+    severity_recalls = {severity: recall({key for key, seed in seeded_defects.items() if seed.severity == severity})
+                        for severity in FindingSeverity}
+    return ReviewScores(
+        defect_recall=recall(set(seeded_defects)),
+        blocker_recall=severity_recalls[FindingSeverity.BLOCKER], major_recall=severity_recalls[FindingSeverity.MAJOR],
+        minor_recall=severity_recalls[FindingSeverity.MINOR], suggestion_recall=severity_recalls[FindingSeverity.SUGGESTION],
+        false_positive_count=len(unmatched),
+        blocker_false_positive_count=sum(f.severity is FindingSeverity.BLOCKER for f in unmatched),
+        evidence_quality=(len(findings) - len(unmatched)) / len(findings) if findings else float(not seeded_defects),
+        missing_test_recall=recall({key for key, seed in seeded_defects.items() if seed.missing_test}),
+        policy_compliance=compliant, schema_validity=1.0,
+    )
