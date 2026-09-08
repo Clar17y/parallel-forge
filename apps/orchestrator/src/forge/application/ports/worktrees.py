@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Any, Protocol, cast, runtime_checkable
 from uuid import UUID
 
+from forge.domain.command import CommandEnvelope
 from forge.domain.operation import OperationIntent
 from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity, validate_resource_shape
@@ -581,3 +582,17 @@ __all__ = [
     "SecretStorePort",
     "WorktreeProvisionerPort",
 ]
+
+
+class BranchTeardownPort(Protocol):
+    """Operator-authorized branch deletion bound to the original admission."""
+
+    async def observe_head(self, run: RunSnapshot, policy: ProjectPolicy) -> str | None: ...
+
+    async def remove(
+        self, command: CommandEnvelope, policy: ProjectPolicy, expected_head: str | None
+    ) -> RunSnapshot: ...
+
+    async def validate_completed(
+        self, command: CommandEnvelope, policy: ProjectPolicy, expected_head: str | None
+    ) -> None: ...

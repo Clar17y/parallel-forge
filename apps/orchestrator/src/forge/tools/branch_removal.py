@@ -36,7 +36,9 @@ class BranchRemovalBinding(BaseModel):
     database_enabled: bool = Field(strict=True)
     worktree_name: str = Field(strict=True, min_length=1, max_length=128)
     base_sha: str = Field(strict=True, min_length=40, max_length=40, pattern=r"^[a-f0-9]{40}$")
-    expected_head: str = Field(strict=True, min_length=40, max_length=40, pattern=r"^[a-f0-9]{40}$")
+    expected_head: str | None = Field(
+        strict=True, min_length=40, max_length=40, pattern=r"^[a-f0-9]{40}$"
+    )
 
     def identity(self) -> WorktreeIdentity:
         identity = WorktreeIdentity.for_run(
@@ -48,7 +50,11 @@ class BranchRemovalBinding(BaseModel):
 
 
 def branch_removal_request(
-    handle: ManagedWorktree, *, policy_version: int, source_command_id: UUID, expected_head: str
+    handle: ManagedWorktree,
+    *,
+    policy_version: int,
+    source_command_id: UUID,
+    expected_head: str | None,
 ) -> OperationRequest:
     identity = handle.identity
     if identity.run_id is None:
@@ -156,6 +162,8 @@ class BranchRemovalAdapter:
         )
 
     def _operate(self, handle: ManagedWorktree, invoke: bool) -> bool:
+        if self._binding.expected_head is None:
+            return self._git.retained_branch_head(handle) is None
         if invoke:
             self._git.delete_retained_branch(handle, self._binding.expected_head)
         return self._git.inspect_retained_branch_deletion(handle, self._binding.expected_head)

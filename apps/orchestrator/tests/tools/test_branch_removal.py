@@ -170,3 +170,29 @@ def test_invalid_request_is_closed_and_redacted(tmp_path, field, value):
         BranchRemovalAdapter(malformed, git, validate)
     assert "private" not in str(error.value)
     assert git.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("absent", [True, False])
+async def test_initial_absence_never_authorizes_deletion_of_a_later_branch(tmp_path, absent):
+    from forge.tools.branch_removal import BranchRemovalAdapter, branch_removal_request
+
+    request, _intent, git, validate, _adapter = binding(tmp_path)
+    request = branch_removal_request(
+        git.handle, policy_version=2, source_command_id=uuid4(), expected_head=None
+    )
+    intent = OperationIntent(
+        run_id=request.run_id,
+        kind=request.kind,
+        idempotency_key=request.idempotency_key,
+        request_digest=request.request_digest,
+        request_payload=request.request_payload,
+    )
+    git.absent = absent
+    git.retained_branch_head = lambda handle: None if git.absent else "c" * 40
+    adapter = BranchRemovalAdapter(request, git, validate)
+    for method in (adapter.invoke, adapter.reconcile):
+        outcome = await method(intent)
+        assert outcome.status is (OperationStatus.SUCCEEDED if absent else OperationStatus.FAILED)
+        assert outcome.payload["expected_head"] is None
+    assert git.calls == []

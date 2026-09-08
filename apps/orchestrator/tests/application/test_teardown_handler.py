@@ -8,8 +8,8 @@ from uuid import uuid4
 
 import pytest
 from forge.application.ports.runs import RunQuiescence
+from forge.application.services.projects import _digest as policy_digest
 from forge.domain.command import CommandEnvelope, CommandStatus
-from forge.domain.operation import canonical_digest
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState
@@ -70,7 +70,7 @@ def fixture(tmp_path):
                     version=1,
                     document_schema_version=1,
                     document=policy.model_dump(mode="json"),
-                    policy_digest=canonical_digest(policy.model_dump(mode="json")),
+                    policy_digest=policy_digest(policy.model_dump(mode="json")),
                 )
             )
         ),
@@ -246,3 +246,54 @@ async def test_forged_completion_actor_does_not_authorize_replay(tmp_path):
     with pytest.raises(CommandRecoveryRequired, match="completion"):
         await handler(command, work)
     teardown.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_teardown_accepts_registered_policy_with_unicode_path(tmp_path):
+    from forge.application.handlers.teardown import TeardownRunResourcesHandler
+
+    _, command, work, teardown, events = fixture(tmp_path / "café")
+    await TeardownRunResourcesHandler(teardown)(command, work)
+    assert events[-1].event_type == "resource.teardown_completed"
+
+
+@pytest.mark.asyncio
+async def test_branch_confirmation_freezes_head_before_resource_effect_and_reuses_it(tmp_path):
+    from forge.application.handlers.teardown import TeardownRunResourcesHandler
+
+    run, command, work, teardown, events = fixture(tmp_path)
+    command = replace(
+        command,
+        payload={**command.payload, "delete_branch": True, "confirm_branch_name": run.branch_name},
+    )
+    work.commands.assert_current_lease.return_value = command
+    observed = []
+
+    async def head(source, policy):
+        assert source == run and events == []
+        observed.append("head")
+        return "b" * 40
+
+    async def remove(source, policy, expected_head):
+        assert source == command and expected_head == "b" * 40
+        assert work.runs.get_for_update.return_value.worktree_path is None
+        assert events[0].payload["branch_expected_head"] == "b" * 40
+        observed.append("delete")
+        raise RuntimeError("interrupted branch operation")
+
+    branches = SimpleNamespace(
+        observe_head=AsyncMock(side_effect=head),
+        remove=AsyncMock(side_effect=remove),
+        validate_completed=AsyncMock(),
+    )
+    handler = TeardownRunResourcesHandler(teardown, branches=branches)
+    with pytest.raises(RuntimeError, match="requires recovery"):
+        await handler(command, work)
+    assert observed == ["head", "delete"]
+    branches.remove.side_effect = None
+    branches.remove.return_value = work.runs.get_for_update.return_value
+    await handler(command, work)
+    await handler(command, work)
+    branches.observe_head.assert_awaited_once()
+    assert branches.remove.await_count == 2
+    branches.validate_completed.assert_awaited_once()

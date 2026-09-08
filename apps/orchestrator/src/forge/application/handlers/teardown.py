@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from uuid import UUID
 
@@ -9,6 +10,8 @@ from pydantic import ValidationError
 
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.ports.worktrees import BranchTeardownPort
+from forge.application.services.projects import _digest as policy_digest
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.operation import canonical_digest
@@ -27,21 +30,36 @@ class TeardownCommandRejected(RuntimeError):
 
 
 class TeardownRunResourcesHandler:
-    def __init__(self, teardown: Callable[[UUID, ProjectPolicy], Awaitable[RunSnapshot]]) -> None:
+    def __init__(
+        self,
+        teardown: Callable[[UUID, ProjectPolicy], Awaitable[RunSnapshot]],
+        *,
+        branches: BranchTeardownPort | None = None,
+    ) -> None:
         self._teardown = teardown
+        self._branches = branches
 
     async def __call__(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         await _fence(command, work)
+        delete_branch = command.payload.get("delete_branch") is True
+        payload_keys = {"delete_branch", "confirm_resource_identity"}
+        if delete_branch:
+            payload_keys.add("confirm_branch_name")
         if (
             command.command_type != "teardown_run_resources"
             or command.actor_id is None
             or command.payload_schema_version != 1
-            or set(command.payload) != {"delete_branch", "confirm_resource_identity"}
-            or command.payload.get("delete_branch") is not False
+            or set(command.payload) != payload_keys
+            or type(command.payload.get("delete_branch")) is not bool
+            or (delete_branch and self._branches is None)
             or not isinstance(command.payload.get("confirm_resource_identity"), str)
         ):
             raise TeardownCommandRejected("teardown command authority is invalid")
         run = await work.runs.get_for_update(command.run_id)
+        if delete_branch and (
+            run.branch_name is None or command.payload.get("confirm_branch_name") != run.branch_name
+        ):
+            raise TeardownCommandRejected("branch confirmation does not match the run")
         if run.state not in _TERMINAL:
             raise TeardownCommandRejected("resource teardown requires a terminal run")
         events = await work.events.list_after(run.id, 0)
@@ -60,13 +78,22 @@ class TeardownRunResourcesHandler:
         binding = _binding(command)
         if len(admissions) > 1 or len(completions) > 1 or (completions and not admissions):
             raise CommandRecoveryRequired("teardown receipt lineage is invalid")
+        admission_keys = {
+            "source_command_id",
+            "command_digest",
+            "confirmation",
+            "identity",
+            "state",
+        }
+        if delete_branch:
+            admission_keys.add("branch_expected_head")
+        branch_head: str | None = None
         if admissions:
             admission = admissions[0]
             identity = admission.payload.get("identity")
             if (
                 admission.payload_schema_version != 1
-                or set(admission.payload)
-                != {"source_command_id", "command_digest", "confirmation", "identity", "state"}
+                or set(admission.payload) != admission_keys
                 or admission.actor_id != command.actor_id
                 or admission.actor_class != "operator"
                 or admission.payload.get("command_digest") != binding
@@ -82,13 +109,21 @@ class TeardownRunResourcesHandler:
             ):
                 raise CommandRecoveryRequired("teardown admission does not match its command")
             _validate_progress(run, identity)
+            if delete_branch:
+                recorded_head = admission.payload["branch_expected_head"]
+                if recorded_head is not None and (
+                    not isinstance(recorded_head, str)
+                    or re.fullmatch(r"[a-f0-9]{40}", recorded_head) is None
+                ):
+                    raise CommandRecoveryRequired("branch head admission is invalid")
+                branch_head = recorded_head
         else:
             if (
                 run.version != command.expected_run_version
                 or teardown_confirmation(run) != command.payload["confirm_resource_identity"]
             ):
                 raise TeardownCommandRejected("resource confirmation is stale")
-            if not has_removable_resources(run):
+            if not delete_branch and not has_removable_resources(run):
                 raise TeardownCommandRejected("run has no recorded resources to remove")
             identity = teardown_identity(run)
         quiescence = await work.runs.prove_quiescent(run.id, exclude_command_id=command.id)
@@ -105,10 +140,21 @@ class TeardownRunResourcesHandler:
             ):
                 raise CommandRecoveryRequired("teardown completion does not match resources")
             _require_removed(run)
+            if delete_branch and self._branches is not None:
+                policy = await _policy(run, work)
+                await work.commit()
+                await self._branches.validate_completed(command, policy, branch_head)
             await work.commit()
             return
         policy = await _policy(run, work)
         if not admissions:
+            if delete_branch and self._branches is not None:
+                branch_head = await self._branches.observe_head(run, policy)
+                if branch_head is not None and (
+                    not isinstance(branch_head, str)
+                    or re.fullmatch(r"[a-f0-9]{40}", branch_head) is None
+                ):
+                    raise TeardownCommandRejected("branch head observation is invalid")
             await work.events.append(
                 RunEvent(
                     run_id=run.id,
@@ -122,6 +168,7 @@ class TeardownRunResourcesHandler:
                         "confirmation": command.payload["confirm_resource_identity"],
                         "identity": identity,
                         "state": run.state.value,
+                        **({"branch_expected_head": branch_head} if delete_branch else {}),
                     },
                 )
             )
@@ -130,6 +177,10 @@ class TeardownRunResourcesHandler:
         await work.commit()
         try:
             await self._teardown(run.id, policy)
+            if delete_branch and self._branches is not None:
+                await self._branches.remove(command, policy, branch_head)
+        except TeardownCommandRejected:
+            raise
         except Exception:  # noqa: BLE001 - admitted effects need durable reconciliation
             raise CommandRecoveryRequired("resource teardown requires recovery") from None
         await _fence(command, work)
@@ -216,7 +267,7 @@ async def _policy(run: RunSnapshot, work: UnitOfWork) -> ProjectPolicy:
         or record.document_schema_version != 1
         or policy.id != run.project_id
         or policy.version != run.policy_version
-        or canonical_digest(record.document) != record.policy_digest
+        or policy_digest(record.document) != record.policy_digest
     ):
         raise TeardownCommandRejected("frozen resource policy identity is invalid")
     return policy
