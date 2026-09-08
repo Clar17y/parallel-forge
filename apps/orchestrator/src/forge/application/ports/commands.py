@@ -85,6 +85,14 @@ class CommandRepository(Protocol):
         means another delivery changed the observed lease before settlement.
         """
 
+    async def cancel_pending_unstarted(self, command: CommandEnvelope) -> CommandEnvelope | None:
+        """Cancel exactly an observed pending, never-admitted normal command.
+
+        This caller-transaction-bound operation matches the complete immutable
+        command envelope and ``attempt == 0``. ``None`` means the command was
+        claimed, renewed, tampered with, or otherwise changed before settlement.
+        """
+
     async def complete(
         self, command_id: UUID, *, worker_id: str, result: Mapping[str, object] | None = None
     ) -> CommandEnvelope: ...

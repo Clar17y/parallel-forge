@@ -139,6 +139,8 @@ async def workflow_session_factory(migrated_database_url):
         "revision",
         "revision_twice",
         "revision_resume",
+        "pause_before_dispatch",
+        "pause_before_dispatch_twice",
         "revision_crash",
         "revision_crash_tamper",
         "revision_crash_removed_feedback",
@@ -223,6 +225,44 @@ async def test_http_plan_requires_exact_approval_before_preparation(
             handlers=handlers(settings, session_factory, gateway),
             worker_id="planning-e2e",
         )
+        if scenario.startswith("pause_before_dispatch"):
+            for _ in range(2 if scenario.endswith("twice") else 1):
+                async with session_factory() as session:
+                    initial = await session.get(Run, run_id)
+                    initial_version = initial.version
+                await post(
+                    client,
+                    f"/api/runs/{run_id}/commands",
+                    {"command_type": "pause", "expected_run_version": initial_version},
+                    202,
+                )
+                controls = Worker(
+                    PostgresCommandRepository(session_factory),
+                    session_factory,
+                    handlers=handlers(settings, session_factory, gateway),
+                    worker_id="before-dispatch-control",
+                    lane=CommandLane.CONTROL,
+                )
+                await tick_success(controls, session_factory, run_id)
+                assert await worker.tick() is None
+                assert not gateway.requests
+                async with session_factory() as session:
+                    paused = await session.get(Run, run_id)
+                    assert paused.state == "PAUSED"
+                    paused_version = paused.version
+                await post(
+                    client,
+                    f"/api/runs/{run_id}/commands",
+                    {"command_type": "resume", "expected_run_version": paused_version},
+                    202,
+                )
+                await tick_success(worker, session_factory, run_id)
+            await tick_success(worker, session_factory, run_id)
+            assert len(gateway.requests) == 1
+            async with session_factory() as session:
+                resumed = await session.get(Run, run_id)
+                assert resumed.state == "AWAITING_PLAN_APPROVAL"
+            return
         if scenario in {"pause", "cancel", "revision_resume"}:
             original_execute = gateway.execute
 

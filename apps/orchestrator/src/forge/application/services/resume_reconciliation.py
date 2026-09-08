@@ -6,8 +6,10 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
-from forge.application.ports.executions import ExecutionStatus
+from forge.application.ports.controller_steps import ControllerStepUnsettledError
+from forge.application.ports.executions import ExecutionStatus, ExecutionUnsettledError
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.deferred_delivery import settle_deferred_delivery
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
@@ -57,7 +59,8 @@ class ResumeReconciler:
         receipts = [
             event
             for event in events
-            if event.event_type == "delivery.suspended" and event.run_version == run.version
+            if event.event_type in {"delivery.suspended", "delivery.deferred"}
+            and event.run_version == run.version
         ]
         outstanding = await work.commands.list_outstanding_normal(
             run_id=run.id, exclude_command_id=resume_command.id
@@ -78,7 +81,8 @@ class ResumeReconciler:
 
         for source in outstanding:
             if source.status is CommandStatus.PENDING:
-                raise CommandRecoveryRequired("pending paused-run command requires recovery")
+                settled.append(await settle_deferred_delivery(work, resume_command, source))
+                continue
             if source.status is not CommandStatus.LEASED:
                 raise CommandRecoveryRequired("unsupported paused-run command state")
             source_receipt = receipt_by_command.get(source.id)
@@ -212,6 +216,48 @@ async def _validate_receipt(
     payload: Mapping[str, object] = receipt.payload
     kind = _KIND_BY_COMMAND.get(source.command_type)
     semantic_attempt = source.payload.get("semantic_attempt", 1)
+    if receipt.event_type == "delivery.deferred":
+        expected = {
+            "command_id": str(source.id),
+            "command_type": source.command_type,
+            "idempotency_key": source.idempotency_key,
+            "command_payload": dict(source.payload),
+            "expected_run_version": source.expected_run_version,
+            "actor_id": str(source.actor_id) if source.actor_id is not None else None,
+            "payload_schema_version": 1,
+            "delivery_attempt": 0,
+            "kind": kind,
+            "semantic_attempt": semantic_attempt,
+            "pause_command_id": str(pause.id),
+            "deferred_state": run.suspended_state.value
+            if run.suspended_state is not None
+            else None,
+        }
+        if (
+            payload != expected
+            or source.status is not CommandStatus.CANCELLED
+            or source.attempt != 0
+            or source.payload_schema_version != 1
+            or source.run_id != run.id
+            or receipt.run_id != run.id
+            or receipt.run_version != run.version
+            or source.expected_run_version != run.version - 1
+            or kind is None
+            or type(semantic_attempt) is not int
+            or semantic_attempt < 1
+        ):
+            raise CommandRecoveryRequired("deferred delivery receipt binding is invalid")
+        try:
+            next_attempt = (
+                await work.controller_steps.next_attempt(run.id, kind)
+                if kind == "validate"
+                else await work.executions.next_attempt(run.id, kind)
+            )
+        except ControllerStepUnsettledError, ExecutionUnsettledError:
+            raise CommandRecoveryRequired("deferred delivery admission is unsettled") from None
+        if next_attempt != semantic_attempt:
+            raise CommandRecoveryRequired("deferred delivery already has an admission")
+        return
     admitted_version = payload.get("admitted_run_version")
     if (
         source_id != source.id

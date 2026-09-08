@@ -742,7 +742,7 @@ class PlanningService:
             policy = _parse_policy(policy_record)
             self._validate_binding(command, run, task, project, policy_record, policy)
             if run.state is not RunState.PLANNING or run.version != command.expected_run_version + (
-                1 if command.payload == {} else 0
+                1 if binding.run.state is RunState.CREATED else 0
             ):
                 raise PlanningRecoveryRequired
             if await pending_current_control_stop(work, run):
@@ -882,7 +882,7 @@ class PlanningService:
             policy = _parse_policy(policy_record)
             self._validate_binding(command, run, task, project, policy_record, policy)
             if run.state is not RunState.PLANNING or run.version != command.expected_run_version + (
-                1 if command.payload == {} else 0
+                1 if binding.run.state is RunState.CREATED else 0
             ):
                 raise PlanningRecoveryRequired
             if await pending_current_control_stop(work, run):
@@ -1405,7 +1405,8 @@ def _semantic_attempt(command: CommandEnvelope) -> int:
     if command.payload == {}:
         return 1
     value = command.payload.get("semantic_attempt")
-    if type(value) is not int or value < 2:
+    minimum = 1 if resume_command_ids(command.payload) is not None else 2
+    if type(value) is not int or value < minimum:
         raise PlanningValidationError
     return value
 
@@ -1413,7 +1414,7 @@ def _semantic_attempt(command: CommandEnvelope) -> int:
 def _valid_planning_payload(payload: Mapping[str, object]) -> bool:
     if payload == {}:
         return True
-    resume_command_ids(payload)
+    resumed = resume_command_ids(payload) is not None
     if set(payload) - RESUME_FIELDS not in (
         {"semantic_attempt"},
         {"semantic_attempt", "feedback_digest"},
@@ -1423,7 +1424,7 @@ def _valid_planning_payload(payload: Mapping[str, object]) -> bool:
     digest = payload.get("feedback_digest")
     return (
         type(value) is int
-        and value >= 2
+        and value >= (1 if resumed else 2)
         and (
             digest is None
             or (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None)

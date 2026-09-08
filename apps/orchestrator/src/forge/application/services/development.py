@@ -27,7 +27,11 @@ from forge.application.ports.commands import (
     CommandSuspended,
 )
 from forge.application.ports.evidence import EvidenceKind
-from forge.application.ports.executions import ExecutionOutcome, ExecutionUnsettledError
+from forge.application.ports.executions import (
+    ExecutionOutcome,
+    ExecutionStatus,
+    ExecutionUnsettledError,
+)
 from forge.application.ports.repository import (
     InstructionDocument,
     RepositoryError,
@@ -54,6 +58,7 @@ from forge.application.services.developer_result import verify_developer_output
 from forge.application.services.resume_source import (
     RESUME_FIELDS,
     resume_command_ids,
+    resume_history,
     resume_origin,
 )
 from forge.application.services.suspended_delivery import record_suspended_delivery
@@ -150,6 +155,7 @@ class DevelopmentService:
             UUID(str(command.payload["feedback_command_id"]))
             if command.payload.get("feedback_command_id") is not None
             else None,
+            command,
         )
         prompt = self._prompt()
         request = AgentRequest(
@@ -536,6 +542,7 @@ class DevelopmentService:
         prior_review_id: UUID | None,
         feedback_digest: str | None = None,
         feedback_command_id: UUID | None = None,
+        command: CommandEnvelope | None = None,
     ) -> DeveloperInput:
         def read() -> tuple[UntrustedContent, ...]:
             reader = self._reader_factory(approved.policy, worktree)
@@ -604,6 +611,7 @@ class DevelopmentService:
                 validation_id,
                 prior_review_id,
                 require_blocking=feedback_digest is None,
+                command=command,
             )
             check_evidence = (
                 UntrustedContent.from_text(
@@ -664,6 +672,7 @@ class DevelopmentService:
                 validation_id,
                 prior_review_id,
                 require_blocking=command.payload.get("automatic") is not False,
+                command=command,
             )
             expected_check = UntrustedContent.from_text(
                 encode_evidence_manifest(validation).decode(),
@@ -708,6 +717,7 @@ class DevelopmentService:
                 validation_id,
                 prior_review_id,
                 require_blocking=command.payload.get("automatic") is not False,
+                command=command,
             )
         await self._fence(command, work)
         admission = await work.executions.admit(
@@ -971,6 +981,80 @@ class DevelopmentService:
                 "implementation late usage requires recovery"
             ) from None
 
+    async def _resumed_candidate(
+        self,
+        work: UnitOfWork,
+        command: CommandEnvelope | None,
+        approved: ApprovedPlan,
+        worktree: ManagedWorktree,
+        git: ControlledGitPort,
+    ) -> bool:
+        """Accept changed HEAD only from the latest verified stopped Developer result."""
+        if command is None:
+            return False
+        history = await resume_history(work, command)
+        source = next((item for item in history if item.attempt > 0), None)
+        if source is None:
+            return False
+        try:
+            execution_id = uuid5(_EXECUTION_NAMESPACE, str(source.id))
+            outcome = await work.executions.get_outcome(
+                command.run_id, "implement", cast(int, source.payload["semantic_attempt"])
+            )
+            if (
+                outcome is None
+                or outcome.status is not ExecutionStatus.CANCELLED
+                or outcome.finish_status is not AgentFinishStatus.CANCELLED
+                or outcome.agent_execution_id != execution_id
+                or outcome.step_id != uuid5(_STEP_NAMESPACE, str(source.id))
+                or outcome.role is not AgentRole.DEVELOPER
+                or outcome.provider != approved.policy.developer_model.provider
+                or outcome.model != approved.policy.developer_model.model
+                or outcome.output_artifact_id is None
+            ):
+                raise DevelopmentRecoveryRequired("stopped developer result is unavailable")
+            artifacts = await work.artifacts.get_by_producer(
+                run_id=command.run_id,
+                producer_type="developer_late_result",
+                producer_id=execution_id,
+            )
+            if len(artifacts) != 1 or artifacts[0].artifact_id != outcome.output_artifact_id:
+                raise DevelopmentRecoveryRequired("stopped developer receipt is unavailable")
+            artifact = artifacts[0]
+            wire = await self._store.open_bytes(artifact.digest)
+            payload = json.loads(wire)
+            output = DeveloperOutput.model_validate(payload["output"])
+            expected = {
+                "schema_version": 1,
+                "command_id": str(source.id),
+                "execution_id": str(execution_id),
+                "output_digest": hashlib.sha256(
+                    self._json(output.model_dump(mode="json"))
+                ).hexdigest(),
+                "output": output.model_dump(mode="json"),
+            }
+            if (
+                artifact.schema_version != 1
+                or artifact.media_type != "application/json"
+                or artifact.truncated
+                or artifact.byte_count != len(wire)
+                or hashlib.sha256(wire).hexdigest() != artifact.digest
+                or wire != self._json(expected)
+            ):
+                raise DevelopmentRecoveryRequired("stopped developer receipt differs")
+            verification = await verify_developer_output(
+                output, git=git, worktree=worktree, approved_plan=approved.plan
+            )
+            if not verification.accepted:
+                raise DevelopmentRecoveryRequired("stopped developer candidate changed")
+            return True
+        except DevelopmentRecoveryRequired:
+            raise
+        except Exception:  # noqa: BLE001 - unreadable stopped evidence must fail closed
+            raise DevelopmentRecoveryRequired(
+                "stopped developer candidate requires recovery"
+            ) from None
+
     async def _remediation_evidence(
         self,
         work: UnitOfWork,
@@ -979,6 +1063,7 @@ class DevelopmentService:
         prior_review_id: UUID | None,
         *,
         require_blocking: bool = True,
+        command: CommandEnvelope | None = None,
     ) -> tuple[ValidationEvidenceManifest, ReviewEvidenceManifest | None]:
         """Load only immutable controller evidence named by the leased command."""
         descriptor = await work.evidence.get_by_id(validation_id, run_id=approved.run.id)
@@ -998,7 +1083,10 @@ class DevelopmentService:
             or descriptor.step_id != validation.step_id
             or descriptor.producer_execution_id is not None
             or descriptor.prior_review_evidence_set_id != validation.prior_review_evidence_set_id
-            or git.head_sha(worktree) != validation.head_sha
+            or (
+                git.head_sha(worktree) != validation.head_sha
+                and not await self._resumed_candidate(work, command, approved, worktree, git)
+            )
             or {m.command_name: m.command_digest for m in validation.members}
             != {s.name: command_spec_digest(s) for s in approved.policy.required_checks}
             or len(validation.members) != len(approved.policy.required_checks)

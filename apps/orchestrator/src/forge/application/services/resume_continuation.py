@@ -13,6 +13,7 @@ from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.run import RunSnapshot, RunState
 
 _STAGE = {
+    RunState.CREATED: ("start_planning", "plan"),
     RunState.PLANNING: ("start_planning", "plan"),
     RunState.IMPLEMENTING: ("implement", "implement"),
     RunState.REMEDIATING: ("remediate", "implement"),
@@ -65,7 +66,7 @@ async def enqueue_resumed_stage(
         else await work.executions.next_attempt(paused.id, kind)
     )
     previous = source.payload.get("semantic_attempt", 1)
-    if type(previous) is not int or attempt != previous + 1:
+    if type(previous) is not int or attempt != previous + (0 if source.attempt == 0 else 1):
         raise CommandRecoveryRequired("resume stage attempt is not next")
     payload = {key: value for key, value in source.payload.items() if key not in RESUME_FIELDS}
     payload.update(

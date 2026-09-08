@@ -20,6 +20,7 @@ from forge.persistence.repositories.commands import CommandNotFound
 
 _ACTIVE_RESUME_STATES = frozenset(
     {
+        RunState.CREATED,
         RunState.PLANNING,
         RunState.IMPLEMENTING,
         RunState.REMEDIATING,

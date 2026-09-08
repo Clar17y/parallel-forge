@@ -54,17 +54,24 @@ async def resume_source(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnv
     return await _resume_source(work, queued, historical=False)
 
 
-async def resume_origin(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnvelope | None:
-    """Follow verified, strictly older resume links to the original stage authority."""
+async def resume_history(work: UnitOfWork, queued: CommandEnvelope) -> tuple[CommandEnvelope, ...]:
+    """Return verified predecessors, newest first, with strictly decreasing versions."""
     source = await resume_source(work, queued)
-    if source is None:
-        return None
-    while resume_command_ids(source.payload) is not None:
-        previous = await _resume_source(work, source, historical=True)
-        if previous is None:
+    history = []
+    while source is not None:
+        history.append(source)
+        if resume_command_ids(source.payload) is None:
+            break
+        source = await _resume_source(work, source, historical=True)
+        if source is None:
             raise CommandRecoveryRequired("resume origin is unavailable")
-        source = previous
-    return source
+    return tuple(history)
+
+
+async def resume_origin(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnvelope | None:
+    """Resolve original stage authority through verified resume predecessors."""
+    history = await resume_history(work, queued)
+    return history[-1] if history else None
 
 
 async def _resume_source(
@@ -105,7 +112,6 @@ async def _resume_source(
         or source.actor_id != queued.actor_id
         or type(attempt) is not int
         or type(previous_attempt) is not int
-        or attempt != previous_attempt + 1
         or queued.idempotency_key
         != f"{queued.run_id}:resume:{resume.id}:{queued.command_type}:{attempt}"
         or {
@@ -130,15 +136,26 @@ async def _resume_source(
         event
         for event in events
         if event.run_version == resume.expected_run_version
-        and event.event_type == "delivery.suspended"
+        and event.event_type in {"delivery.suspended", "delivery.deferred"}
         and event.payload.get("command_id") == str(source.id)
     ]
     if len(resumed) != 1 or len(stopped) != 1:
         raise CommandRecoveryRequired("resume continuation has no unique causal evidence")
     event, receipt = resumed[0], stopped[0]
     payload = event.payload
+    deferred = receipt.event_type == "delivery.deferred"
+    if deferred and (
+        source.status is not CommandStatus.CANCELLED
+        or source.attempt != 0
+        or source.expected_run_version != resume.expected_run_version - 1
+        or receipt.payload.get("actor_id")
+        != (str(source.actor_id) if source.actor_id is not None else None)
+        or receipt.payload.get("payload_schema_version") != source.payload_schema_version
+    ):
+        raise CommandRecoveryRequired("deferred continuation authority differs")
     if (
-        event.actor_class != "operator"
+        attempt != previous_attempt + (0 if deferred else 1)
+        or event.actor_class != "operator"
         or event.actor_id != resume.actor_id
         or event.payload_schema_version != 1
         or payload.get("command_id") != str(resume.id)
@@ -150,8 +167,10 @@ async def _resume_source(
         or receipt.actor_class != "worker"
         or receipt.actor_id is not None
         or receipt.payload_schema_version != 1
-        or receipt.payload.get("control_command_id") != payload.get("pause_command_id")
-        or receipt.payload.get("admitted_state") != payload.get("restored_state")
+        or receipt.payload.get("pause_command_id" if deferred else "control_command_id")
+        != payload.get("pause_command_id")
+        or receipt.payload.get("deferred_state" if deferred else "admitted_state")
+        != payload.get("restored_state")
         or receipt.payload.get("command_type") != source.command_type
         or receipt.payload.get("command_payload") != source.payload
         or receipt.payload.get("idempotency_key") != source.idempotency_key
@@ -167,6 +186,7 @@ __all__ = [
     "RESUME_FIELDS",
     "continuation_binding",
     "resume_command_ids",
+    "resume_history",
     "resume_origin",
     "resume_source",
 ]

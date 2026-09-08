@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 from forge.api.app import create_app
+from forge.application.ports.commands import CommandLane
 from forge.application.services.worker import Worker
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
@@ -35,11 +36,23 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 
 
 @pytest.mark.parametrize(
-    ("repair_failed_check", "operator_revision"), [(False, False), (True, False), (False, True)]
+    ("repair_failed_check", "operator_revision"),
+    [
+        (False, False),
+        (True, False),
+        (False, True),
+        (False, "resume"),
+        (False, "resume_after_commit"),
+        (False, "resume_after_commit_drift"),
+    ],
 )
 async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_check(
     tmp_path, workflow_session_factory, monkeypatch, repair_failed_check, operator_revision
 ):
+    resume_revision = isinstance(operator_revision, str) and operator_revision.startswith("resume")
+    after_commit = isinstance(operator_revision, str) and operator_revision.startswith(
+        "resume_after_commit"
+    )
     repository = tmp_path / "repository"
     repository.mkdir()
     (repository / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
@@ -107,25 +120,31 @@ async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_che
 
             if request.role is AgentRole.DEVELOPER:
                 needs_repair = repair_failed_check and roles.count(AgentRole.DEVELOPER) == 1
-                revised = operator_revision and roles.count(AgentRole.DEVELOPER) == 2
+                revised = operator_revision and roles.count(AgentRole.DEVELOPER) >= 2
                 if revised:
                     assert request.context.operator_feedback is not None
                     assert request.context.operator_feedback.content == (
                         "Use Operator revised delivery as the README text."
                     )
                     assert request.context.check_evidence
-                await call(
-                    "repository.write_file",
-                    path="README.md",
-                    content=(
-                        "Repair needed\n"
-                        if needs_repair
-                        else "Operator revised delivery\n"
-                        if revised
-                        else "Verified delivery\n"
-                    ),
+                pause_revision = resume_revision and roles.count(AgentRole.DEVELOPER) == 2
+                repeat_committed = after_commit and roles.count(AgentRole.DEVELOPER) == 3
+                wrote_candidate = (
+                    not (pause_revision and operator_revision == "resume") and not repeat_committed
                 )
-                await call("git.commit", message="Clarify README")
+                if wrote_candidate:
+                    await call(
+                        "repository.write_file",
+                        path="README.md",
+                        content=(
+                            "Repair needed\n"
+                            if needs_repair
+                            else "Operator revised delivery\n"
+                            if revised
+                            else "Verified delivery\n"
+                        ),
+                    )
+                    await call("git.commit", message="Clarify README")
                 candidate = await call("git.diff", scope="candidate")
                 output = DeveloperOutput(
                     summary="Updated README",
@@ -137,7 +156,25 @@ async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_che
                     unresolved_concerns=(),
                     plan_deviations=(),
                 )
-                count = 3
+                count = 3 if wrote_candidate else 1
+                if pause_revision:
+                    async with factory() as session:
+                        current = await session.get(Run, request.run_id)
+                        pause_version = current.version
+                    await post(
+                        client,
+                        f"/api/runs/{request.run_id}/commands",
+                        {"command_type": "pause", "expected_run_version": pause_version},
+                        202,
+                    )
+                    controls = Worker(
+                        PostgresCommandRepository(factory),
+                        factory,
+                        handlers=composition.compose_worker_handlers(settings, factory),
+                        worker_id="revision-control",
+                        lane=CommandLane.CONTROL,
+                    )
+                    await tick_success(controls, factory, request.run_id)
             else:
                 await call("validation-results.read")
                 output = ReviewOutput(
@@ -254,6 +291,27 @@ async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_che
                 },
                 202,
             )
+            if resume_revision:
+                await tick_success(worker, factory, run_id)
+                await tick_success(worker, factory, run_id)
+                async with factory() as session:
+                    paused = await session.get(Run, run_id)
+                    assert paused.state == "PAUSED" and paused.local_remediation_count == 0
+                    resume_version = paused.version
+                    paused_path = Path(paused.worktree_path)
+                if operator_revision == "resume_after_commit_drift":
+                    git(paused_path, "commit", "--allow-empty", "-m", "unexpected candidate drift")
+                await post(
+                    client,
+                    f"/api/runs/{run_id}/commands",
+                    {"command_type": "resume", "expected_run_version": resume_version},
+                    202,
+                )
+            if operator_revision == "resume_after_commit_drift":
+                await tick_success(worker, factory, run_id)
+                assert await worker.tick() is False
+                assert roles.count(AgentRole.DEVELOPER) == 2
+                return
             for _ in range(4):
                 await tick_success(worker, factory, run_id)
             assert await worker.tick() is None
@@ -294,6 +352,8 @@ async def test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_che
     if repair_failed_check:
         expected_roles.append(AgentRole.DEVELOPER)
     expected_roles.append(AgentRole.REVIEWER)
+    if resume_revision:
+        expected_roles.append(AgentRole.DEVELOPER)
     if operator_revision:
         expected_roles.extend((AgentRole.DEVELOPER, AgentRole.REVIEWER))
     assert roles == expected_roles

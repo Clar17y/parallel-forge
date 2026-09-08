@@ -76,7 +76,7 @@ async def test_automatic_remediation_requires_closed_evidence_authority():
 
 
 @pytest.mark.parametrize("failure_source", ["checks", "review"])
-@pytest.mark.parametrize("tamper", [None, "head", "count", "settled_payload"])
+@pytest.mark.parametrize("tamper", [None, "head", "count", "settled_payload", "resume"])
 async def test_failed_validation_runs_fresh_developer_remediation_and_revalidates(
     tmp_path, workflow_session_factory, failure_source, tamper
 ):
@@ -188,6 +188,21 @@ async def test_failed_validation_runs_fresh_developer_remediation_and_revalidate
             }
         )
 
+    if tamper == "resume":
+        from forge.application.ports.commands import CommandSuspended
+
+        from tests.integration.test_resumed_delivery import _pause_stage, _resume_stage
+
+        async def stopped_before_change(request):
+            result = await original_gateway(request)
+            await _pause_stage(workflow_session_factory, remediate)
+            return result
+
+        gateway.execute = stopped_before_change
+        async with PostgresUnitOfWork(workflow_session_factory) as work:
+            with pytest.raises(CommandSuspended):
+                await development.execute(remediate, work)
+        remediate = await _resume_stage(workflow_session_factory, remediate)
     gateway.execute = remediated
     async with PostgresUnitOfWork(workflow_session_factory) as work:
         outcome = await development.execute(remediate, work)
@@ -200,9 +215,9 @@ async def test_failed_validation_runs_fresh_developer_remediation_and_revalidate
         async with PostgresUnitOfWork(workflow_session_factory) as work:
             with pytest.raises(DevelopmentRecoveryRequired, match="replay evidence"):
                 await development.execute(replace(remediate, payload=changed), work)
-        assert len(gateway.requests) == 2
+        assert len(gateway.requests) == (3 if tamper == "resume" else 2)
         return
-    assert len(gateway.requests) == 2
+    assert len(gateway.requests) == (3 if tamper == "resume" else 2)
     assert gateway.requests[-1].context.check_evidence
     assert [f.finding_id for f in gateway.requests[-1].context.remediation_findings] == (
         ["R1"] if prior_review else []
@@ -210,8 +225,8 @@ async def test_failed_validation_runs_fresh_developer_remediation_and_revalidate
     async with PostgresUnitOfWork(workflow_session_factory) as work:
         assert await development.execute(remediate, work) == replace(outcome, changed=False)
         assert (await work.runs.get(case.run_id)).local_remediation_count == 1
-    assert len(gateway.requests) == 2
-    await commands.complete(remediate.id, worker_id="developer")
+    assert len(gateway.requests) == (3 if tamper == "resume" else 2)
+    await commands.complete(remediate.id, worker_id=remediate.lease_owner)
     queued = await commands.get_by_idempotency_key(f"{case.run_id}:validate:2")
     expected = {"semantic_attempt": 2}
     if prior_review:

@@ -408,6 +408,45 @@ class PostgresCommandRepository:
         record = result.scalar_one_or_none()
         return None if record is None else _command_from_record(record)
 
+    async def cancel_pending_unstarted(self, command: CommandEnvelope) -> CommandEnvelope | None:
+        """Cancel only an unchanged pending delivery which has never been claimed."""
+
+        if self._session is None:
+            raise CommandError("deferred settlement requires an active unit of work")
+        if (
+            command.status is not CommandStatus.PENDING
+            or command.attempt != 0
+            or command.lease_owner is not None
+            or command.lease_expires_at is not None
+        ):
+            raise CommandLeaseError("deferred settlement requires an unstarted pending command")
+        result = await self._session.execute(
+            update(RunCommand)
+            .where(
+                RunCommand.id == command.id,
+                RunCommand.run_id == command.run_id,
+                RunCommand.command_type == command.command_type,
+                RunCommand.idempotency_key == command.idempotency_key,
+                RunCommand.expected_run_version == command.expected_run_version,
+                RunCommand.actor_id == command.actor_id,
+                RunCommand.payload_schema_version == command.payload_schema_version,
+                RunCommand.payload == thaw_payload(command.payload),
+                RunCommand.status == "PENDING",
+                RunCommand.attempt_count == 0,
+                RunCommand.lease_owner.is_(None),
+                RunCommand.lease_expires_at.is_(None),
+                RunCommand.command_type.not_in(_CONTROL_COMMAND_TYPES),
+            )
+            .values(
+                status="CANCELLED",
+                completed_at=func.now(),
+                error_summary="delivery deferred before admission during pause reconciliation",
+            )
+            .returning(RunCommand)
+        )
+        record = result.scalar_one_or_none()
+        return None if record is None else _command_from_record(record)
+
     async def complete(
         self,
         command_id: UUID,
