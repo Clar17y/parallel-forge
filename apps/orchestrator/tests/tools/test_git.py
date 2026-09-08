@@ -2716,8 +2716,7 @@ def test_retained_branch_deletion_recovery_restores_interrupted_checked_out_ref(
         f"refs/heads/{identity.branch}",
         handle.base_sha,
     )
-    with pytest.raises(ControlledGitError):
-        controlled.inspect_retained_branch_deletion(handle, handle.base_sha)
+    assert controlled.inspect_retained_branch_deletion(handle, handle.base_sha) is False
     _git(repository, "show-ref", "--verify", f"refs/heads/{identity.branch}")
 
 

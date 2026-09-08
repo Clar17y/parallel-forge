@@ -20,6 +20,7 @@ from forge.application.ports.mutations import ApiMutationRecord, MutationReposit
 from forge.application.ports.projects import ProjectRepository, RepositoryInspector
 from forge.application.ports.runs import RunRepository
 from forge.application.ports.tasks import TaskRepository
+from forge.application.ports.unit_of_work import EventRepository
 from forge.application.services.auth import AuthenticatedActor
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
@@ -51,7 +52,7 @@ class RunUnitOfWork(Protocol):
     projects: ProjectRepository
     tasks: TaskRepository
     runs: RunRepository
-    events: object
+    events: EventRepository
     commands: CommandRepository
     mutations: MutationRepository
     audit: AuditRepository
@@ -332,6 +333,11 @@ class RunCommandService:
             _validate_state(run.state, request.command_type)
             payload = _command_payload(request, run)
             if request.command_type == RunCommandType.TEARDOWN_RUN_RESOURCES:
+                if request.delete_branch and any(
+                    event.event_type == "resource.branch_removed"
+                    for event in await work.events.list_after(run_id, 0)
+                ):
+                    raise RunCommandValidationError("branch removal is already recorded")
                 quiescence = await work.runs.prove_quiescent(run_id)
                 if not quiescence.is_quiescent:
                     raise RunCommandValidationError(

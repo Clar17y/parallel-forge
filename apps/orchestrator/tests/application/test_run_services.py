@@ -174,6 +174,9 @@ class FakeEvents:
     records: list[RunEvent] = field(default_factory=list)
     fail: bool = False
 
+    async def list_after(self, run_id, sequence):
+        return [event for event in self.records if event.run_id == run_id]
+
     async def append(self, event: RunEvent) -> RunEvent:
         if self.fail:
             raise RuntimeError("injected event failure")
@@ -694,3 +697,54 @@ async def test_completed_run_without_resources_cannot_enqueue_teardown() -> None
             ),
         )
     assert not work.committed
+
+
+@pytest.mark.asyncio
+async def test_recorded_branch_removal_rejects_fresh_key_but_preserves_exact_replay():
+    from forge.application.services.runs import (
+        RunCommandRequest,
+        RunCommandService,
+        RunCommandValidationError,
+    )
+    from forge.domain.teardown import teardown_confirmation
+
+    work, _, _ = _uow(state=RunState.COMPLETED, branch_name="forge/main")
+    run = next(iter(work.runs.records.values()))
+    service = RunCommandService(lambda: work)
+    request = RunCommandRequest(
+        command_type="teardown_run_resources",
+        expected_run_version=run.version,
+        delete_branch=True,
+        confirm_branch_name=run.branch_name,
+        confirm_resource_identity=teardown_confirmation(run),
+    )
+    original = await service.enqueue(
+        actor=ACTOR,
+        run_id=run.id,
+        idempotency_key="original",
+        request=request,
+    )
+    work.events.records.append(
+        RunEvent(
+            run_id=run.id,
+            run_version=run.version,
+            event_type="resource.branch_removed",
+            actor_class="worker",
+            payload={"source_command_id": str(original.id)},
+        )
+    )
+    replay = await service.enqueue(
+        actor=ACTOR,
+        run_id=run.id,
+        idempotency_key="original",
+        request=request,
+    )
+    assert replay.id == original.id
+    with pytest.raises(RunCommandValidationError, match="already recorded"):
+        await service.enqueue(
+            actor=ACTOR,
+            run_id=run.id,
+            idempotency_key="fresh",
+            request=request,
+        )
+    assert len(work.commands.records) == 1

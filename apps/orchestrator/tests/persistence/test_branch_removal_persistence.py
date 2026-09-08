@@ -18,6 +18,47 @@ from apps.orchestrator.tests.tools.test_branch_removal import Git
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("rejection", ["git", "source"])
+async def test_conclusive_git_refusal_does_not_leave_unresolved_intent(
+    operation_repository,
+    persisted_run,
+    tmp_path,
+    rejection,
+):
+    from forge.domain.branch_removal import BranchSourceRejected
+    from forge.tools.git import ControlledGitError
+
+    identity = WorktreeIdentity.for_run(
+        persisted_run.project_id, persisted_run.id, "forge/refused", False
+    )
+    handle = ManagedWorktree(
+        identity=identity, path=tmp_path / identity.worktree_name, base_sha="a" * 40
+    )
+    request = branch_removal_request(
+        handle, policy_version=1, source_command_id=uuid4(), expected_head="b" * 40
+    )
+    git = Git(handle)
+
+    async def validate(intent):
+        if rejection == "source":
+            raise BranchSourceRejected("private authority diagnostic")
+        return handle
+
+    def refuse(handle, head):
+        raise ControlledGitError()
+
+    git.delete_retained_branch = refuse
+    outcome = await OperationExecutor(operation_repository).execute(
+        request, BranchRemovalAdapter(request, git, validate)
+    )
+    assert outcome.status is OperationStatus.FAILED
+    stored = await operation_repository.get_by_idempotency_key(request.idempotency_key)
+    assert stored.status is OperationStatus.FAILED
+    assert await operation_repository.list_unresolved() == []
+    assert git.calls == ([("inspect", "b" * 40)] if rejection == "git" else [])
+
+
+@pytest.mark.integration
 async def test_branch_only_projection_requires_successful_exact_creation(
     session_factory,
     operation_repository,

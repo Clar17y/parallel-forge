@@ -97,6 +97,21 @@ async def test_source_rejection_is_redacted_before_git(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_conclusive_source_rejection_fails_fresh_invoke_but_not_unknown_recovery(tmp_path):
+    from forge.domain.branch_removal import BranchRemovalError, BranchSourceRejected
+
+    _, intent, git, validate, adapter = binding(tmp_path)
+    validate.side_effect = BranchSourceRejected("private ownership reason")
+    outcome = await adapter.invoke(intent)
+    assert outcome.status is OperationStatus.FAILED
+    assert outcome.payload["removed"] is False
+    assert "private" not in outcome.error
+    with pytest.raises(BranchRemovalError):
+        await adapter.reconcile(intent)
+    assert git.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("absent", [False, True])
 async def test_recovery_only_inspects_and_never_retries_deletion(tmp_path, absent):
     _, intent, git, _validate, adapter = binding(tmp_path)
@@ -107,6 +122,24 @@ async def test_recovery_only_inspects_and_never_retries_deletion(tmp_path, absen
     assert outcome.payload["removed"] is absent
     if not absent:
         assert outcome.error == "branch remains; fresh confirmation required"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("absent", [False, True])
+async def test_git_refusal_is_settled_only_by_followup_observation(tmp_path, absent):
+    from forge.tools.git import ControlledGitError
+
+    _, intent, git, _, adapter = binding(tmp_path)
+    git.absent = absent
+
+    def refuse(handle, head):
+        git.calls.append(("delete", head))
+        raise ControlledGitError()
+
+    git.delete_retained_branch = refuse
+    outcome = await adapter.invoke(intent)
+    assert outcome.status is (OperationStatus.SUCCEEDED if absent else OperationStatus.FAILED)
+    assert git.calls == [("delete", "b" * 40), ("inspect", "b" * 40)]
 
 
 @pytest.mark.asyncio

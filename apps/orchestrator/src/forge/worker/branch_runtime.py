@@ -19,6 +19,7 @@ from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.projects import _digest as policy_digest
 from forge.application.services.recovery import OperationExecutor, RecoveryError
+from forge.domain.branch_removal import BranchSourceRejected
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.operation import (
@@ -193,7 +194,10 @@ class BranchRemovalRuntime:
 
     def adapter(self, request: OperationRequest, policy: ProjectPolicy) -> BranchRemovalAdapter:
         async def source(intent: OperationIntent) -> ManagedWorktree:
-            return await self._source(intent, policy)
+            try:
+                return await self._source(intent, policy)
+            except TeardownCommandRejected:
+                raise BranchSourceRejected("branch source authority rejected") from None
 
         return BranchRemovalAdapter(request, self._git(policy), source)
 

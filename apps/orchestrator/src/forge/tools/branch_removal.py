@@ -11,6 +11,7 @@ from forge.domain.branch_removal import (
     BRANCH_REMOVAL_KIND,
     BranchRemovalBinding,
     BranchRemovalError,
+    BranchSourceRejected,
 )
 from forge.domain.operation import (
     OperationIntent,
@@ -19,6 +20,7 @@ from forge.domain.operation import (
     OperationStatus,
     canonical_digest,
 )
+from forge.tools.git import ControlledGitError
 from forge.tools.runner import await_deferred_cancellation
 
 __all__ = [
@@ -119,7 +121,13 @@ class BranchRemovalAdapter:
         ):
             raise BranchRemovalError("branch removal intent differs from its source")
         try:
-            handle = await self._validate_source(intent)
+            try:
+                handle = await self._validate_source(intent)
+            except BranchSourceRejected:
+                if invoke:
+                    return self._outcome(False, error="branch source authority rejected")
+                # A recovery rejection cannot prove what the earlier writer did.
+                raise
             expected = self._git.expected_worktree(self._binding.identity(), self._binding.base_sha)
             if handle != expected:
                 raise BranchRemovalError("branch removal source handle differs")
@@ -130,21 +138,29 @@ class BranchRemovalAdapter:
             raise BranchRemovalError("branch removal requires reconciliation") from None
         if cancelled:
             raise asyncio.CancelledError()
+        return self._outcome(removed)
+
+    def _outcome(self, removed: bool, *, error: str | None = None) -> OperationOutcome:
         return OperationOutcome(
             status=OperationStatus.SUCCEEDED if removed else OperationStatus.FAILED,
             payload={
                 "source_command_id": str(self._binding.source_command_id),
-                "request_digest": request.request_digest,
+                "request_digest": self._request.request_digest,
                 "branch": self._binding.branch,
                 "expected_head": self._binding.expected_head,
                 "removed": removed,
             },
-            error=None if removed else "branch remains; fresh confirmation required",
+            error=None if removed else error or "branch remains; fresh confirmation required",
         )
 
     def _operate(self, handle: ManagedWorktree, invoke: bool) -> bool:
         if self._binding.expected_head is None:
             return self._git.retained_branch_head(handle) is None
         if invoke:
-            self._git.delete_retained_branch(handle, self._binding.expected_head)
+            try:
+                self._git.delete_retained_branch(handle, self._binding.expected_head)
+            except ControlledGitError:
+                # A refusal can occur before or after mutation. Only a fresh
+                # guarded observation can settle it; never retry deletion.
+                pass
         return self._git.inspect_retained_branch_deletion(handle, self._binding.expected_head)

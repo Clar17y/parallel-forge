@@ -1202,7 +1202,14 @@ class ControlledGit:
             # or checked-out branch. Preserve it and settle the operation failed.
             if self._direct_branch_head(ref) is not None:
                 return False
-            self._reject_checkout_and_restore_missing_ref(ref, expected_head)
+            try:
+                self._reject_checkout_and_restore_missing_ref(ref, expected_head)
+            except ControlledGitError:
+                # Successful compensation (or a concurrent recreation) proves
+                # the branch remains. Failed restoration stays unresolved.
+                if self._direct_branch_head(ref) is not None:
+                    return False
+                raise
             return self._direct_branch_head(ref) is None
 
     def _reject_checkout_and_restore_missing_ref(self, ref: str, expected_head: str) -> None:

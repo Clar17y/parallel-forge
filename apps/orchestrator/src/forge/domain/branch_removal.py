@@ -16,6 +16,10 @@ class BranchRemovalError(RuntimeError):
     """An immutable branch-removal operation requires reconciliation."""
 
 
+class BranchSourceRejected(BranchRemovalError):
+    """The source authority check rejected access before any Git operation."""
+
+
 class BranchRemovalBinding(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     run_id: UUID
