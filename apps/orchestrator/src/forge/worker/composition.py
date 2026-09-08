@@ -486,6 +486,9 @@ def compose_worker_handlers(
         artifact_store, approved_plans, delivery_dependencies.git, clock=clock
     )
 
+    branch_removal = BranchRemovalRuntime(
+        uow_factory, delivery_dependencies.git, delivery_dependencies.operation_executor
+    )
     handlers = WorkerHandlers(
         {
             "start_planning": start_planning_handler,
@@ -503,7 +506,9 @@ def compose_worker_handlers(
             ),
             "cancel": CancelRunHandler(),
             "request_candidate_changes": candidate_revision.execute,
-            "teardown_run_resources": TeardownRunResourcesHandler(delivery_dependencies.teardown),
+            "teardown_run_resources": TeardownRunResourcesHandler(
+                delivery_dependencies.teardown, branches=branch_removal
+            ),
         }
     )
     release_commands = (
@@ -521,9 +526,7 @@ def compose_worker_handlers(
     handlers.recovery_adapters.update(
         resource_recovery_adapters(session_factory, delivery_dependencies)
     )
-    handlers.recovery_adapters["git.branch_delete"] = BranchRemovalRuntime(
-        uow_factory, delivery_dependencies.git, delivery_dependencies.operation_executor
-    ).recovery_adapter()
+    handlers.recovery_adapters["git.branch_delete"] = branch_removal.recovery_adapter()
 
     handlers.recovery_adapters.update(
         local_recovery_adapters(

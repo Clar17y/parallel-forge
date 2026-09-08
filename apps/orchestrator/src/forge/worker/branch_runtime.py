@@ -17,6 +17,7 @@ from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
+from forge.application.services.projects import _digest as policy_digest
 from forge.application.services.recovery import OperationExecutor, RecoveryError
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
@@ -36,6 +37,8 @@ from forge.tools.branch_removal import (
     BranchRemovalBinding,
     branch_removal_request,
 )
+from forge.tools.database import DatabaseProvisioner
+from forge.tools.database import _request as database_request
 from forge.tools.runner import await_deferred_cancellation
 from forge.tools.worktree import (
     WorktreeProvisionerError,
@@ -43,6 +46,7 @@ from forge.tools.worktree import (
     _request,
     _teardown_checkpoint_payload,
     _teardown_request,
+    _validate_intent,
     _validate_succeeded_intent,
     _validate_teardown_checkpoint_shape,
 )
@@ -133,8 +137,8 @@ class BranchRemovalRuntime:
             frozen = await _policy(run, work)
             project = await work.projects.get(run.project_id, for_update=True)
             if (
-                canonical_digest(frozen.model_dump(mode="json"))
-                != canonical_digest(policy.model_dump(mode="json"))
+                policy_digest(frozen.model_dump(mode="json"))
+                != policy_digest(policy.model_dump(mode="json"))
                 or project.canonical_path != policy.repository_path
                 or project.github_repository != policy.github_repository
                 or project.default_branch != policy.default_branch
@@ -422,6 +426,39 @@ async def require_owned_removed_worktree(
             or canonical_digest(event.payload) != canonical_digest(expected_checkpoint)
         ):
             raise TeardownCommandRejected("branch resource ownership is unproven")
+        if policy.database.enabled:
+            request = database_request(
+                identity, policy.version, "database.teardown", ResourceState.REMOVED
+            )
+            database_intent = await work.operations.get_by_idempotency_key(request.idempotency_key)
+            if database_intent is None:
+                raise TeardownCommandRejected("branch database ownership is unproven")
+            _validate_intent(database_intent, request)
+            expected_database = DatabaseProvisioner._outcome(
+                state=ResourceState.REMOVED, identity=identity, secret_id=None
+            )
+            checkpoints = [
+                event for event in events if event.event_type == "resource.database_removed"
+            ]
+            expected_payload = _teardown_checkpoint_payload(
+                removal_request, intent.id, target_state=ResourceState.REMOVED
+            )
+            if (
+                database_intent.status is not OperationStatus.SUCCEEDED
+                or database_intent.outcome_schema_version != 1
+                or database_intent.remote_resource_id is not None
+                or database_intent.outcome is None
+                or canonical_digest(database_intent.outcome)
+                != canonical_digest(expected_database.payload)
+                or len(checkpoints) != 1
+                or checkpoints[0].run_id != run.id
+                or checkpoints[0].actor_class != "system"
+                or checkpoints[0].actor_id is not None
+                or checkpoints[0].payload_schema_version != 1
+                or checkpoints[0].run_version > run.version
+                or canonical_digest(checkpoints[0].payload) != canonical_digest(expected_payload)
+            ):
+                raise TeardownCommandRejected("branch database ownership is unproven")
         return identity
     except WorktreeProvisionerError, ValueError, TypeError:
         raise TeardownCommandRejected("branch resource ownership is unproven") from None

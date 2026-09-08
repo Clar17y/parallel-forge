@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from forge.domain.event import RunEvent
 from forge.domain.operation import OperationIntent, OperationStatus
-from forge.domain.policy import ProjectPolicy
+from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
 from forge.tools.worktree import (
@@ -35,7 +35,7 @@ async def test_startup_branch_adapter_cannot_invoke_effects():
     executor.execute.assert_not_called()
 
 
-def ownership_fixture(tmp_path):
+def ownership_fixture(tmp_path, *, enabled=False):
     run = RunSnapshot(
         id=uuid4(),
         project_id=uuid4(),
@@ -45,7 +45,7 @@ def ownership_fixture(tmp_path):
         branch_name="forge/task",
         base_ref="main",
         base_sha="a" * 40,
-        database_state=ResourceState.DISABLED,
+        database_state=ResourceState.REMOVED if enabled else ResourceState.DISABLED,
     )
     policy = ProjectPolicy(
         id=run.project_id,
@@ -53,8 +53,11 @@ def ownership_fixture(tmp_path):
         repository_path=str(tmp_path),
         github_repository="owner/repo",
         default_branch="main",
+        database=DatabaseProvisioningPolicy(
+            enabled=enabled, admin_url_secret_reference="secret://test/admin" if enabled else None
+        ),
     )
-    identity = WorktreeIdentity.for_run(run.project_id, run.id, run.branch_name, False)
+    identity = WorktreeIdentity.for_run(run.project_id, run.id, run.branch_name, enabled)
     receipts = {}
     for request in (_request(run, identity, policy), _teardown_request(run, identity, policy)):
         outcome = _worktree_outcome(request, identity)
@@ -77,7 +80,9 @@ def ownership_fixture(tmp_path):
             run_version=run.version,
             event_type="resource.worktree_removed",
             payload=_teardown_checkpoint_payload(
-                request, removal.id, target_state=ResourceState.DISABLED
+                request,
+                removal.id,
+                target_state=ResourceState.ACTIVE if enabled else ResourceState.DISABLED,
             ),
         )
     ]
@@ -85,6 +90,50 @@ def ownership_fixture(tmp_path):
         operations=SimpleNamespace(get_by_idempotency_key=AsyncMock(side_effect=receipts.get))
     )
     return run, policy, identity, receipts, events, work
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "proof", ["valid", "missing_receipt", "missing_checkpoint", "foreign_database"]
+)
+async def test_enabled_database_requires_exact_removal_receipt(tmp_path, proof):
+    from forge.application.handlers.teardown import TeardownCommandRejected
+    from forge.tools.database import DatabaseProvisioner
+    from forge.tools.database import _request as database_request
+    from forge.worker.branch_runtime import require_owned_removed_worktree
+
+    run, policy, identity, receipts, events, work = ownership_fixture(tmp_path, enabled=True)
+    request = database_request(identity, policy.version, "database.teardown", ResourceState.REMOVED)
+    outcome = DatabaseProvisioner._outcome(
+        state=ResourceState.REMOVED, identity=identity, secret_id=None
+    )
+    if proof != "missing_receipt":
+        receipts[request.idempotency_key] = OperationIntent(
+            run_id=run.id,
+            kind=request.kind,
+            idempotency_key=request.idempotency_key,
+            request_digest=request.request_digest,
+            request_payload=request.request_payload,
+            status=OperationStatus.SUCCEEDED,
+            completed_at=datetime.now(UTC),
+            outcome=outcome.payload
+            if proof != "foreign_database"
+            else {**outcome.payload, "database_name": "foreign"},
+            outcome_schema_version=1,
+        )
+    if proof != "missing_checkpoint":
+        events.append(
+            replace(
+                events[0],
+                event_type="resource.database_removed",
+                payload={**events[0].payload, "database_state": ResourceState.REMOVED.value},
+            )
+        )
+    if proof == "valid":
+        assert await require_owned_removed_worktree(run, policy, events, work) == identity
+    else:
+        with pytest.raises(TeardownCommandRejected, match="ownership"):
+            await require_owned_removed_worktree(run, policy, events, work)
 
 
 @pytest.mark.asyncio

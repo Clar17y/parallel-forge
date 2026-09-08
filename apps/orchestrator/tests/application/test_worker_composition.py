@@ -288,6 +288,7 @@ async def test_compose_worker_handlers_production_construction(tmp_path: Path) -
     }
     assert isinstance(handlers["start_planning"], PlanningHandler)
     assert "git.branch_delete" in handlers.recovery_adapters
+    assert handlers["teardown_run_resources"]._branches is not None
     assert isinstance(handlers["approve_plan"], ApprovePlanHandler)
     assert isinstance(handlers["request_plan_revision"], RequestPlanRevisionHandler)
 

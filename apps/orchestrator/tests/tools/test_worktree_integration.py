@@ -105,6 +105,20 @@ class _PersistedDatabase:
         self.arrivals = 0
         self.effect_calls = 0
 
+    async def teardown(self, identity, policy, resource, *, policy_version):
+        from forge.tools.database import DatabaseProvisioner
+        from forge.tools.database import _request as database_request
+
+        self.validate_binding(identity, resource)
+        request = database_request(
+            identity, policy_version, "database.teardown", ResourceState.REMOVED
+        )
+        outcome = DatabaseProvisioner._outcome(
+            state=ResourceState.REMOVED, identity=identity, secret_id=None
+        )
+        await self._executor.execute(request, _DatabaseEffectAdapter(self, outcome))
+        return DatabaseBinding(state=ResourceState.REMOVED)
+
     def _binding(self, identity: WorktreeIdentity) -> DatabaseBinding:
         if identity.run_id is None:
             raise AssertionError("integration database requires a persisted run")
@@ -478,6 +492,7 @@ class _TeardownGitEffect(_GitEffect):
 @pytest.mark.integration
 @pytest.mark.parametrize("interrupt_after_removal", [False, True, "branch"])
 @pytest.mark.parametrize("delete_branch", [False, True])
+@pytest.mark.parametrize("database_enabled", [False, True])
 async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipts(
     session_factory,
     operation_repository,
@@ -485,6 +500,7 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     command_repository,
     interrupt_after_removal,
     delete_branch,
+    database_enabled,
 ) -> None:
     from dataclasses import replace
     from uuid import uuid4
@@ -492,6 +508,7 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     from forge.application.handlers.teardown import TeardownRunResourcesHandler
     from forge.application.ports.commands import CommandRecoveryRequired
     from forge.application.services.auth import AuthenticatedActor
+    from forge.application.services.projects import _digest as policy_digest
     from forge.application.services.runs import RunCommandRequest, RunCommandService
     from forge.domain.teardown import teardown_confirmation
     from forge.persistence.models import Task
@@ -502,7 +519,7 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     )
     git = _TeardownGitEffect()
     git.interrupt_branch = interrupt_after_removal == "branch" and delete_branch
-    policy = _policy(persisted_run, git, enabled=False)
+    policy = _policy(persisted_run, git, enabled=database_enabled)
     policy = policy.model_copy(update={"github_repository": policy.github_repository.lower()})
     document = policy.model_dump(mode="json")
     async with PostgresUnitOfWork(session_factory) as work:
@@ -514,7 +531,7 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
             github_repository=policy.github_repository,
             default_branch=policy.default_branch,
             policy_document=document,
-            policy_digest=canonical_digest(document),
+            policy_digest=policy_digest(document),
         )
         await work.commit()
     async with session_factory() as session, session.begin():
@@ -534,7 +551,9 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
         lambda: PostgresUnitOfWork(session_factory),
         operations=operation_repository,
         git=git,
-        database=_DisabledDatabase(),
+        database=_PersistedDatabase(operation_repository)
+        if database_enabled
+        else _DisabledDatabase(),
     )
     await provisioner.prepare(persisted_run.id, policy)
     async with PostgresUnitOfWork(session_factory) as work:
@@ -619,7 +638,9 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
         events = await work.events.list_after(run.id, 0)
     assert final.worktree_path is None
     assert final.branch_name == run.branch_name
-    assert final.database_state is ResourceState.DISABLED
+    assert final.database_state is (
+        ResourceState.REMOVED if database_enabled else ResourceState.DISABLED
+    )
     assert git.remove_calls == 1
     assert git.branch_delete_calls == int(delete_branch)
     assert sum(event.event_type == "resource.branch_removed" for event in events) == int(
