@@ -1,7 +1,11 @@
 """Agent cards report the selected execution's usage rather than the whole run."""
 
+from uuid import uuid4
+
 import pytest
 from forge.api.schemas.projections import RunProjection
+from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.projections import ProjectionService
 from forge.persistence.queries.dashboard import DashboardQuery
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from test_delivery_development import _service_case
@@ -15,12 +19,13 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 async def test_agent_usage_is_bound_to_the_latest_execution(tmp_path, workflow_session_factory):
     _case, command, service, gateway, _git = await _service_case(tmp_path, workflow_session_factory)
-    query = DashboardQuery(workflow_session_factory)
-    before = await query.run_projection(command.run_id)
+    query = ProjectionService(DashboardQuery(workflow_session_factory))
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    before = await query.run_projection(command.run_id, actor)
     assert before["agents"]["developer"]["usage"] is None
     async with PostgresUnitOfWork(workflow_session_factory) as work:
         await service.execute(command, work)
-    result = RunProjection.model_validate(await query.run_projection(command.run_id))
+    result = RunProjection.model_validate(await query.run_projection(command.run_id, actor))
     developer = result.agents["developer"]
     assert developer.execution_id == gateway.requests[0].execution_id
     assert developer.usage.input_tokens == 3

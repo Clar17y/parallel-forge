@@ -2,10 +2,13 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from forge.application.services.approved_plan import ApprovedPlanLoader
+from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.pr_evidence import PrEvidenceValidator
+from forge.application.services.projections import ProjectionService
 from forge.application.services.recovery import OperationExecutor
 from forge.application.services.release import ReleaseService
 from forge.application.services.release_monitor import ReleaseMonitor
@@ -187,7 +190,10 @@ async def test_monitor_persists_observation_and_replays_without_duplicate_delive
         assert projected.merge_state == events[0].payload["disposition"]
         from forge.persistence.queries.dashboard import DashboardQuery
 
-        cockpit = await DashboardQuery(factory).run_projection(run.id)
+        cockpit = await ProjectionService(DashboardQuery(factory)).run_projection(
+            run.id,
+            AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4()),
+        )
         from forge.api.schemas.projections import RunProjection
 
         RunProjection.model_validate(cockpit)
