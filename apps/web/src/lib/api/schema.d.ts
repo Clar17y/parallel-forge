@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/agent-prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Prompts */
+        get: operations["prompts_api_agent_prompts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -297,6 +314,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/policy-versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project Policy */
+        get: operations["get_project_policy_api_projects__project_id__policy_versions__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/run-projections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Projections */
+        get: operations["run_projections_api_run_projections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -435,6 +486,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tasks/import-github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Github Issue */
+        post: operations["import_github_issue_api_tasks_import_github_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks/{task_id}": {
         parameters: {
             query?: never;
@@ -564,6 +632,8 @@ export interface components {
         AgentSection: {
             /** Allowed Tools */
             allowed_tools: string[];
+            /** Completed At */
+            completed_at?: string | null;
             /** Execution Id */
             execution_id: string | null;
             /** Independent */
@@ -579,8 +649,11 @@ export interface components {
             /** Provider */
             provider: string;
             role: components["schemas"]["AgentRole"];
+            /** Started At */
+            started_at?: string | null;
             /** Status */
             status: string | null;
+            usage?: components["schemas"]["UsageSummary"] | null;
             /** Validation Evidence Set Id */
             validation_evidence_set_id: string | null;
         };
@@ -975,6 +1048,16 @@ export interface components {
          * @enum {string}
          */
         FindingSeverity: "blocker" | "major" | "minor" | "suggestion";
+        /** GitHubIssueImportRequest */
+        GitHubIssueImportRequest: {
+            /** Issue Number */
+            issue_number: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1243,6 +1326,11 @@ export interface components {
             id: string;
             /** Instructions Path */
             instructions_path: string | null;
+            /**
+             * Issue Import Available
+             * @default false
+             */
+            issue_import_available: boolean;
             /** Name */
             name: string;
             /** Policy */
@@ -1271,6 +1359,20 @@ export interface components {
             policy_digest: string;
             /** Policy Version */
             policy_version: number;
+        };
+        /** PromptMetadata */
+        PromptMetadata: {
+            /** Digest */
+            digest: string;
+            role: components["schemas"]["AgentRole"];
+            /**
+             * Scope
+             * @default current_configuration
+             * @constant
+             */
+            scope: "current_configuration";
+            /** Version */
+            version: string;
         };
         /** PullRequestSection */
         PullRequestSection: {
@@ -1369,6 +1471,94 @@ export interface components {
              * Format: uuid
              */
             task_id: string;
+        };
+        /** RunListCostSummary */
+        RunListCostSummary: {
+            /** Currencies */
+            currencies: components["schemas"]["RunListCurrencyCost"][];
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
+        /** RunListCurrencyCost */
+        RunListCurrencyCost: {
+            /** Currency */
+            currency: string;
+            /** Known Cost Minor */
+            known_cost_minor: number;
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
+        /** RunListItem */
+        RunListItem: {
+            /** Attention Required */
+            attention_required: boolean;
+            cost_summary: components["schemas"]["RunListCostSummary"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Elapsed Seconds */
+            elapsed_seconds: number;
+            /** Local Remediation Count */
+            local_remediation_count: number;
+            /** Next Gate */
+            next_gate: ("plan" | "pr" | "merge") | null;
+            /** Pending Gate */
+            pending_gate: ("plan" | "pr" | "merge") | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Project Name */
+            project_name: string;
+            pull_request: components["schemas"]["RunListPullRequest"] | null;
+            /** Remote Remediation Count */
+            remote_remediation_count: number;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** State */
+            state: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+            /** Task Title */
+            task_title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+        };
+        /** RunListPage */
+        RunListPage: {
+            /** Items */
+            items: components["schemas"]["RunListItem"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** RunListPullRequest */
+        RunListPullRequest: {
+            /** Head Sha */
+            head_sha: string;
+            /** Number */
+            number: number;
+            /** Repository */
+            repository: string;
         };
         /** RunProjection */
         RunProjection: {
@@ -1600,6 +1790,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    prompts_api_agent_prompts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptMetadata"][];
+                };
+            };
+        };
+    };
     agents_api_agents_get: {
         parameters: {
             query?: {
@@ -2106,6 +2316,74 @@ export interface operations {
             };
         };
     };
+    get_project_policy_api_projects__project_id__policy_versions__version__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPolicyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_projections_api_run_projections_get: {
+        parameters: {
+            query?: {
+                state?: components["schemas"]["RunState"] | null;
+                project_id?: string | null;
+                attention?: boolean | null;
+                updated_since?: string | null;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunListPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_runs_api_runs_get: {
         parameters: {
             query?: {
@@ -2421,6 +2699,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["TaskCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_github_issue_api_tasks_import_github_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GitHubIssueImportRequest"];
             };
         };
         responses: {

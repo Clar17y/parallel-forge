@@ -123,6 +123,18 @@ class PostgresTaskRepository:
         )
         return [_task_from_record(task) for task in result.scalars().all()]
 
+    async def find_external(
+        self, project_id: UUID, external_source: str, external_id: str
+    ) -> TaskRecord | None:
+        task = await self._session.scalar(
+            select(Task).where(
+                Task.project_id == project_id,
+                Task.external_source == external_source,
+                Task.external_id == external_id,
+            )
+        )
+        return _task_from_record(task) if task is not None else None
+
 
 def derive_normalized_text(title: str, body: str) -> str:
     """Normalize line endings and Unicode without changing stored sources."""

@@ -110,6 +110,9 @@ class AgentSection(ProjectionModel):
     validation_evidence_set_id: UUID | None
     independent: bool | None
     allowed_tools: list[str]
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    usage: UsageSummary | None = None
 
 
 class BudgetSection(ProjectionModel):

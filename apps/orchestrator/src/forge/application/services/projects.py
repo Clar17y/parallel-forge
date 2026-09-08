@@ -311,6 +311,15 @@ class ProjectService:
             await work.commit()
             return record
 
+    async def get_policy(self, project_id: UUID, version: int) -> ProjectPolicyRecord:
+        """Read the requested immutable version, including versions used by older runs."""
+        if type(version) is not int or version < 1:
+            raise ValueError("policy version must be positive")
+        async with self._unit_of_work_factory() as work:
+            record = await work.projects.get_policy(project_id, version)
+            await work.commit()
+            return record
+
 
 def _registration_policy(
     request: ProjectRegistrationRequest,

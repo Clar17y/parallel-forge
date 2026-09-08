@@ -43,9 +43,12 @@ class ProjectResponse(BaseModel):
     policy_version: int | None
     policy_digest: str | None
     policy: dict[str, Any] | None = None
+    issue_import_available: bool = False
 
     @classmethod
-    def from_record(cls, project: ProjectRecord) -> ProjectResponse:
+    def from_record(
+        cls, project: ProjectRecord, *, issue_import_available: bool = False
+    ) -> ProjectResponse:
         policy = project.policy
         return cls(
             id=project.id,
@@ -58,6 +61,7 @@ class ProjectResponse(BaseModel):
             policy_version=project.current_policy_version,
             policy_digest=None if policy is None else policy.policy_digest,
             policy=None if policy is None else dict(policy.document),
+            issue_import_available=issue_import_available,
         )
 
 

@@ -117,6 +117,18 @@
             "title": "Allowed Tools",
             "type": "array"
           },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
           "execution_id": {
             "anyOf": [
               {
@@ -184,6 +196,18 @@
           "role": {
             "$ref": "#/components/schemas/AgentRole"
           },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
           "status": {
             "anyOf": [
               {
@@ -194,6 +218,16 @@
               }
             ],
             "title": "Status"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "validation_evidence_set_id": {
             "anyOf": [
@@ -1312,6 +1346,28 @@
         "title": "FindingSeverity",
         "type": "string"
       },
+      "GitHubIssueImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "issue_number": {
+            "maximum": 9007199254740991.0,
+            "minimum": 1.0,
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "issue_number"
+        ],
+        "title": "GitHubIssueImportRequest",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2068,6 +2124,11 @@
             ],
             "title": "Instructions Path"
           },
+          "issue_import_available": {
+            "default": false,
+            "title": "Issue Import Available",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -2158,6 +2219,35 @@
           "policy_digest"
         ],
         "title": "ProjectSection",
+        "type": "object"
+      },
+      "PromptMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AgentRole"
+          },
+          "scope": {
+            "const": "current_configuration",
+            "default": "current_configuration",
+            "title": "Scope",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "version",
+          "digest"
+        ],
+        "title": "PromptMetadata",
         "type": "object"
       },
       "PullRequestSection": {
@@ -2431,6 +2521,241 @@
           "task_id"
         ],
         "title": "RunCreateRequest",
+        "type": "object"
+      },
+      "RunListCostSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "currencies": {
+            "items": {
+              "$ref": "#/components/schemas/RunListCurrencyCost"
+            },
+            "title": "Currencies",
+            "type": "array"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currencies",
+          "unpriced_calls"
+        ],
+        "title": "RunListCostSummary",
+        "type": "object"
+      },
+      "RunListCurrencyCost": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "known_cost_minor": {
+            "title": "Known Cost Minor",
+            "type": "integer"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "known_cost_minor",
+          "unpriced_calls"
+        ],
+        "title": "RunListCurrencyCost",
+        "type": "object"
+      },
+      "RunListItem": {
+        "additionalProperties": false,
+        "properties": {
+          "attention_required": {
+            "title": "Attention Required",
+            "type": "boolean"
+          },
+          "cost_summary": {
+            "$ref": "#/components/schemas/RunListCostSummary"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "elapsed_seconds": {
+            "title": "Elapsed Seconds",
+            "type": "number"
+          },
+          "local_remediation_count": {
+            "title": "Local Remediation Count",
+            "type": "integer"
+          },
+          "next_gate": {
+            "anyOf": [
+              {
+                "enum": [
+                  "plan",
+                  "pr",
+                  "merge"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Gate"
+          },
+          "pending_gate": {
+            "anyOf": [
+              {
+                "enum": [
+                  "plan",
+                  "pr",
+                  "merge"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Gate"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_name": {
+            "title": "Project Name",
+            "type": "string"
+          },
+          "pull_request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunListPullRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remote_remediation_count": {
+            "title": "Remote Remediation Count",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_title": {
+            "title": "Task Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_id",
+          "task_title",
+          "project_id",
+          "project_name",
+          "run_id",
+          "state",
+          "version",
+          "pending_gate",
+          "next_gate",
+          "attention_required",
+          "local_remediation_count",
+          "remote_remediation_count",
+          "created_at",
+          "updated_at",
+          "elapsed_ms",
+          "elapsed_seconds",
+          "pull_request",
+          "cost_summary"
+        ],
+        "title": "RunListItem",
+        "type": "object"
+      },
+      "RunListPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "RunListPage",
+        "type": "object"
+      },
+      "RunListPullRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "repository",
+          "head_sha"
+        ],
+        "title": "RunListPullRequest",
         "type": "object"
       },
       "RunProjection": {
@@ -3099,6 +3424,33 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/agent-prompts": {
+      "get": {
+        "operationId": "prompts_api_agent_prompts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PromptMetadata"
+                  },
+                  "title": "Response Prompts Api Agent Prompts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Prompts"
+      }
+    },
     "/api/agents": {
       "get": {
         "operationId": "agents_api_agents_get",
@@ -3846,6 +4198,185 @@
         "summary": "Update Project Policy"
       }
     },
+    "/api/projects/{project_id}/policy-versions/{version}": {
+      "get": {
+        "operationId": "get_project_policy_api_projects__project_id__policy_versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPolicyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Project Policy"
+      }
+    },
+    "/api/run-projections": {
+      "get": {
+        "operationId": "run_projections_api_run_projections_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RunState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "attention",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Attention"
+            }
+          },
+          {
+            "in": "query",
+            "name": "updated_since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Updated Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunListPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Run Projections"
+      }
+    },
     "/api/runs": {
       "get": {
         "operationId": "list_runs_api_runs_get",
@@ -4413,6 +4944,62 @@
           }
         ],
         "summary": "Create Task"
+      }
+    },
+    "/api/tasks/import-github": {
+      "post": {
+        "operationId": "import_github_issue_api_tasks_import_github_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubIssueImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Import Github Issue"
       }
     },
     "/api/tasks/{task_id}": {

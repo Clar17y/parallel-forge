@@ -82,3 +82,16 @@ def test_settings_ignores_raw_provider_environment_keys(monkeypatch: pytest.Monk
     assert settings.provider_secret_reference == ""
     assert settings.google_api_key_reference == ""
     assert settings.effective_provider_secret_reference == ""
+
+
+def test_github_reference_is_explicit_validated_and_hidden() -> None:
+    from forge.release.credentials import GitHubCredentialError
+
+    assert Settings().github_token_reference == ""
+    for reference in ("env://FORGE_GITHUB_TOKEN", "secret://forge/github"):
+        settings = Settings(github_token_reference=reference)
+        assert settings.github_token_reference == reference
+        assert reference not in repr(settings)
+    for reference in ("raw-token-value", "https://example.com/token", "env://bad-name"):
+        with pytest.raises(GitHubCredentialError):
+            Settings(github_token_reference=reference)

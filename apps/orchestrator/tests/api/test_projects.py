@@ -36,6 +36,20 @@ async def test_projects_list_and_registration_use_injected_service(
 
 
 @pytest.mark.asyncio
+async def test_issue_import_capability_requires_configured_server_service(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    url = f"/api/projects/{task10_route_context.project.id}"
+    response = await task10_client.get(url)
+    assert response.json()["issue_import_available"] is False
+    task10_route_context.app.state.github_issue_import_service = object()
+    response = await task10_client.get(url)
+    assert response.json()["issue_import_available"] is True
+    listed = await task10_client.get("/api/projects")
+    assert listed.json()[0]["issue_import_available"] is True
+
+
+@pytest.mark.asyncio
 async def test_project_policy_update_uses_closed_mutable_request(
     task10_client, task10_route_context, route_headers
 ) -> None:

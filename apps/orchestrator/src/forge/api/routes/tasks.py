@@ -15,6 +15,7 @@ from forge.api.dependencies import (
 from forge.api.errors import translate_error
 from forge.api.schemas.tasks import TaskCreateRequest, TaskResponse
 from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.github_issue_import import GitHubIssueImportRequest
 
 
 def router_for() -> APIRouter:
@@ -50,6 +51,26 @@ def router_for() -> APIRouter:
                 request=body,
             )
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
+            raise translate_error(error) from None
+        return TaskResponse.from_record(task)
+
+    @router.post(
+        "/tasks/import-github", response_model=TaskResponse, status_code=status.HTTP_201_CREATED
+    )
+    async def import_github_issue(
+        body: GitHubIssueImportRequest,
+        request: Request,
+        idempotency_key: str = Depends(require_idempotency_key),
+        actor: AuthenticatedActor = Depends(require_operator_mutation),  # noqa: B008
+    ) -> TaskResponse:
+        service = getattr(request.app.state, "github_issue_import_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="issue import unavailable")
+        try:
+            task = await service.import_issue(
+                actor=actor, idempotency_key=idempotency_key, request=body
+            )
+        except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
         return TaskResponse.from_record(task)
 

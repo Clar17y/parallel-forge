@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.application.ports.provider_credentials import validate_provider_secret_reference
 from forge.domain.validation import validate_runner_image_reference
+from forge.release.credentials import validate_github_credential_reference
 
 
 class Settings(BaseSettings):
@@ -31,6 +32,7 @@ class Settings(BaseSettings):
     allow_remote: bool = False
     provider_secret_reference: str = Field(default="", repr=False)
     google_api_key_reference: str = Field(default="", repr=False)
+    github_token_reference: str = Field(default="", repr=False)
     pricing_catalog_path: Path | None = None
     prompt_root: Path | None = None
 
@@ -44,6 +46,11 @@ class Settings(BaseSettings):
     @classmethod
     def runner_image_must_be_immutable(cls, value: str) -> str:
         return validate_runner_image_reference(value)
+
+    @field_validator("github_token_reference")
+    @classmethod
+    def github_reference_must_be_local(cls, value: str) -> str:
+        return validate_github_credential_reference(value) if value else ""
 
     @field_validator(
         "provider_secret_reference",

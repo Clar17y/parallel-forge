@@ -23,6 +23,8 @@ from forge.api.routes.events import router_for as event_router_for
 from forge.api.routes.health import router_for as health_router_for
 from forge.api.routes.projection_lists import router_for as list_router_for
 from forge.api.routes.projects import router_for as project_router_for
+from forge.api.routes.prompts import router_for as prompt_router_for
+from forge.api.routes.run_list import router_for as run_list_router_for
 from forge.api.routes.runs import router_for as run_router_for
 from forge.api.routes.tasks import router_for as task_router_for
 from forge.api.security import parse_web_origin
@@ -34,6 +36,7 @@ from forge.application.services.approvals import (
 )
 from forge.application.services.artifact_reads import ArtifactReadService
 from forge.application.services.auth import AuthService
+from forge.application.services.github_issue_import import GitHubIssueImportService
 from forge.application.services.plan_evidence import PlanEvidenceValidator
 from forge.application.services.projections import ProjectionService
 from forge.application.services.projects import ProjectService
@@ -45,8 +48,12 @@ from forge.persistence.queries.artifacts import PostgresArtifactReadQuery
 from forge.persistence.queries.dashboard import DashboardQuery
 from forge.persistence.queries.dashboard_lists import DashboardListQuery
 from forge.persistence.queries.events import EventQuery
+from forge.persistence.queries.run_list import RunListQuery
 from forge.persistence.unit_of_work import PostgresUnitOfWork
+from forge.release.credentials import LocalGitHubCredentialResolver
+from forge.release.github_client import GitHubClient
 from forge.settings import Settings
+from forge.tools.secrets import LocalSecretStore
 
 
 def create_app(
@@ -66,6 +73,7 @@ def create_app(
     artifact_read_service: Any | None = None,
     event_query: Any | None = None,
     dashboard_list_query: Any | None = None,
+    github_issue_import_service: Any | None = None,
 ) -> FastAPI:
     """Create the API without opening a database connection."""
 
@@ -104,6 +112,14 @@ def create_app(
         resolved_uow_factory, settings=resolved_settings
     )
     resolved_run_command_service = run_command_service or RunCommandService(resolved_uow_factory)
+    owned_github: GitHubClient | None = None
+    resolved_issue_import = github_issue_import_service
+    if resolved_issue_import is None and resolved_settings.github_token_reference:
+        owned_github = GitHubClient(
+            LocalGitHubCredentialResolver(LocalSecretStore(resolved_settings.data_root)),
+            resolved_settings.github_token_reference,
+        )
+        resolved_issue_import = GitHubIssueImportService(resolved_uow_factory, owned_github)
 
     shutdown = asyncio.Event()
 
@@ -114,6 +130,8 @@ def create_app(
             yield
         finally:
             shutdown.set()
+            if owned_github is not None:
+                await owned_github.aclose()
 
     app = FastAPI(
         title="Parallel Forge",
@@ -146,6 +164,7 @@ def create_app(
     app.state.approval_authorization_service = resolved_authorization_service
     app.state.project_service = resolved_project_service
     app.state.task_service = resolved_task_service
+    app.state.github_issue_import_service = resolved_issue_import
     app.state.run_service = resolved_run_service
     app.state.run_command_service = resolved_run_command_service
     app.state.session_factory = session_factory
@@ -167,16 +186,21 @@ def create_app(
     app.state.dashboard_list_query = dashboard_list_query or (
         DashboardListQuery(session_factory) if session_factory is not None else None
     )
+    app.state.run_list_query = (
+        RunListQuery(session_factory) if session_factory is not None else None
+    )
     app.include_router(health_router_for(resolved_settings.process_role), prefix="/api")
     app.include_router(auth_router_for(), prefix="/api")
     app.include_router(approval_router_for(), prefix="/api")
     app.include_router(project_router_for(), prefix="/api")
+    app.include_router(prompt_router_for(), prefix="/api")
     app.include_router(task_router_for(), prefix="/api")
     app.include_router(run_router_for(), prefix="/api")
     app.include_router(dashboard_router_for(), prefix="/api")
     app.include_router(artifact_router_for(), prefix="/api")
     app.include_router(event_router_for(), prefix="/api")
     app.include_router(list_router_for(), prefix="/api")
+    app.include_router(run_list_router_for(), prefix="/api")
     install_openapi(app)
     install_docs(app)
     return app

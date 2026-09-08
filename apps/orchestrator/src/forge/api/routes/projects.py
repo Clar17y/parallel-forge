@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 
 from forge.api.dependencies import (
     require_idempotency_key,
@@ -37,7 +37,27 @@ def router_for() -> APIRouter:
             records = await service.list()
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
             raise translate_error(error) from None
-        return [ProjectResponse.from_record(record) for record in records]
+        return [
+            ProjectResponse.from_record(
+                record, issue_import_available=_issue_import_available(request)
+            )
+            for record in records
+        ]
+
+    @router.get(
+        "/projects/{project_id}/policy-versions/{version}", response_model=ProjectPolicyResponse
+    )
+    async def get_project_policy(
+        project_id: UUID,
+        request: Request,
+        version: int = Path(ge=1),
+        _actor: AuthenticatedActor = Depends(require_operator),  # noqa: B008
+    ) -> ProjectPolicyResponse:
+        try:
+            policy = await _service(request, "project_service").get_policy(project_id, version)
+        except Exception as error:  # noqa: BLE001 - translate service-boundary failures
+            raise translate_error(error) from None
+        return ProjectPolicyResponse.from_record(policy)
 
     @router.post(
         "/projects",
@@ -59,7 +79,9 @@ def router_for() -> APIRouter:
             )
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
             raise translate_error(error) from None
-        return ProjectResponse.from_record(project)
+        return ProjectResponse.from_record(
+            project, issue_import_available=_issue_import_available(request)
+        )
 
     @router.get("/projects/{project_id}", response_model=ProjectResponse)
     async def get_project(
@@ -72,7 +94,9 @@ def router_for() -> APIRouter:
             project = await service.get(project_id)
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
             raise translate_error(error) from None
-        return ProjectResponse.from_record(project)
+        return ProjectResponse.from_record(
+            project, issue_import_available=_issue_import_available(request)
+        )
 
     @router.post(
         "/projects/{project_id}/policy-versions",
@@ -106,6 +130,10 @@ def _service(request: Request, name: str) -> Any:
     if service is None:
         raise HTTPException(status_code=500, detail="API service is not configured")
     return service
+
+
+def _issue_import_available(request: Request) -> bool:
+    return getattr(request.app.state, "github_issue_import_service", None) is not None
 
 
 __all__ = ["router_for"]

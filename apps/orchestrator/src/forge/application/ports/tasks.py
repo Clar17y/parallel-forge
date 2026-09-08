@@ -47,5 +47,9 @@ class TaskRepository(Protocol):
 
     async def list(self, project_id: UUID) -> Sequence[TaskRecord]: ...
 
+    async def find_external(
+        self, project_id: UUID, external_source: str, external_id: str
+    ) -> TaskRecord | None: ...
+
 
 __all__ = ["TaskRecord", "TaskRepository"]

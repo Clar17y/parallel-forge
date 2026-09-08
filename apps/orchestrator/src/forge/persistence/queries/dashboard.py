@@ -323,11 +323,16 @@ async def _agents(
                 else None
             ),
             "allowed_tools": sorted(tool.value for tool in _ALLOWED_ROLE_TOOLS[role]),
+            "started_at": execution.started_at if execution else None,
+            "completed_at": execution.completed_at if execution else None,
+            "usage": await _usage(session, run.id, execution.id) if execution else None,
         }
     return result
 
 
-async def _usage(session: AsyncSession, run_id: UUID | None) -> dict[str, object]:
+async def _usage(
+    session: AsyncSession, run_id: UUID | None, execution_id: UUID | None = None
+) -> dict[str, object]:
     statement = (
         select(
             ModelUsage.currency,
@@ -345,6 +350,8 @@ async def _usage(session: AsyncSession, run_id: UUID | None) -> dict[str, object
     )
     if run_id is not None:
         statement = statement.where(ModelUsage.run_id == run_id)
+    if execution_id is not None:
+        statement = statement.where(ModelUsage.agent_execution_id == execution_id)
     rows = (await session.execute(statement)).all()
     if len(rows) > 100:
         raise PersistenceDataError("usage currency projection exceeds bound")
