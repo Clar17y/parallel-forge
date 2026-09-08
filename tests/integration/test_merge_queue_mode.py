@@ -7,7 +7,6 @@ from uuid import UUID, uuid4
 import pytest
 from forge.application.handlers.merge import ApproveMergeHandler
 from forge.application.services.merge_evidence import MergeEvidenceValidator
-from forge.application.services.recovery import OperationExecutor
 from forge.application.services.release_monitor import ReleaseMonitor
 from forge.domain.github import CheckSnapshot, MergeProtection
 from forge.domain.operation import OperationStatus
@@ -26,6 +25,35 @@ from apps.orchestrator.tests.release.test_queue_operation import Queue
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
+
+
+@pytest.fixture
+async def composed_queue_handlers(tmp_path):
+    from contextlib import AsyncExitStack
+
+    from forge.settings import Settings
+    from forge.worker.composition import ReleaseDependencies, compose_worker_handlers
+    from forge.worker.delivery_runtime import DeliveryRuntime
+
+    async with AsyncExitStack() as resources:
+        def compose(case, factory, git, read, writes, queue):
+            class Runtime(DeliveryRuntime):
+                def git(self, policy):
+                    return git
+
+            def unused_push(policy):
+                raise AssertionError("queue processing must not push")
+
+            settings = Settings(data_root=tmp_path, prompt_root=tmp_path / "prompts")
+            handlers = compose_worker_handlers(
+                settings, factory, agent_gateway=case.gateway,
+                delivery_runtime=Runtime(settings, factory, case.artifact_store),
+                release_dependencies=ReleaseDependencies(read, writes, unused_push, queue=queue),
+            )
+            resources.push_async_callback(handlers.aclose)
+            return handlers
+
+        yield compose
 
 
 @pytest.mark.parametrize("queue,crash,ending", [
@@ -52,7 +80,7 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, None, "routing_history_unavailable"), (True, None, "routing_mode_unavailable"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
-    tmp_path, workflow_session_factory, queue, crash, ending
+    tmp_path, workflow_session_factory, composed_queue_handlers, queue, crash, ending
 ):
     factory = workflow_session_factory
     case, git, read, writes, publication, poll, policy, _ = await published(tmp_path, factory)
@@ -93,17 +121,13 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         approved = await validator.consumed(work, case.run_id, approval_id, recheck=False)
         assert await validator.queue_required(work, case.run_id, approval_id, approved) is queue
     if not queue:
-        from forge.application.services.merge import MergeService
-
         read.merge_protections[key, "main"] = original_protection
         await commands.complete(command.id, worker_id=command.lease_owner)
         source = await commands.claim_next(worker_id="direct-merge", lease_seconds=120)
         unused_queue = Queue()
+        handlers = composed_queue_handlers(case, factory, git, read, writes, unused_queue)
         async with PostgresUnitOfWork(factory) as work:
-            await MergeService(
-                validator, MergeController(read, writes),
-                OperationExecutor(PostgresOperationRepository(factory)), queue=unused_queue,
-            ).execute(source, work)
+            await handlers["merge_pr"](source, work)
         async with PostgresUnitOfWork(factory) as work:
             assert (await work.runs.get(case.run_id)).state is RunState.COMPLETED
         assert unused_queue.writes == 0
@@ -136,12 +160,9 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
 
     queue_port = InspectCommittedQueue()
     queue_port.crash = crash == "after_acceptance"
-    from forge.application.services.merge import MergeService
-
-    service = MergeService(
-        validator, MergeController(read, writes),
-        OperationExecutor(PostgresOperationRepository(factory)), queue=queue_port,
-    )
+    handlers = composed_queue_handlers(case, factory, git, read, writes, queue_port)
+    service = handlers["merge_pr"].__self__
+    validator = service._evidence
     if ending.startswith("routing_"):
         from forge.release.merge import StaleMergeEvidence
 
@@ -149,7 +170,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         with patch.object(validator, method, side_effect=StaleMergeEvidence()):
             for _ in range(2):
                 async with PostgresUnitOfWork(factory) as work:
-                    await service.execute(source, work)
+                    await handlers["merge_pr"](source, work)
         async with PostgresUnitOfWork(factory) as work:
             assert (await work.runs.get(case.run_id)).state is RunState.AWAITING_HUMAN_INTERVENTION
             events = await work.events.list_after(case.run_id, 0)
@@ -177,14 +198,14 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
                     raise RuntimeError("scheduling crash")
                 work.commands.enqueue = fail_scheduling
             with pytest.raises(RuntimeError):
-                await service.execute(source, work)
+                await handlers["merge_pr"](source, work)
     if ending in {"admission_rejected_crash", "admission_uncertain_crash"}:
         async with PostgresUnitOfWork(factory) as work:
             async def fail_rejection(*args, **kwargs):
                 raise RuntimeError("rejection settlement crash")
             work.runs.intervene = fail_rejection
             with pytest.raises(RuntimeError, match="rejection settlement crash"):
-                await service.execute(source, work)
+                await handlers["merge_pr"](source, work)
     if ending.startswith("merged_before_entry_receipt"):
         writes.pull_requests[policy.github_repository, 1] = replace(
             writes.pull_requests[policy.github_repository, 1], state="closed", merged=True,
@@ -201,7 +222,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
                 raise RuntimeError("resolved completion crash")
             work.runs.transition = fail_resolved_completion
             with pytest.raises(RuntimeError, match="resolved completion crash"):
-                await service.execute(source, work)
+                await handlers["merge_pr"](source, work)
 
         async def no_more_remote_reads(*args, **kwargs):
             raise AssertionError("durable merge resolution must survive remote unavailability")
@@ -226,7 +247,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
                         return None
                     return await actual_lookup(key)
                 work.operations.get_by_idempotency_key = stale_initial_lookup
-            await service.execute(source, work)
+            await handlers["merge_pr"](source, work)
     if ending == "merged_admission_race":
         writes.get_pull_request = saved_pull_read
     if ending.startswith("merged_before_entry_receipt"):
@@ -275,21 +296,18 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         if ending == "admission_uncertain_startup":
             from forge.application.services.recovery import RecoveryError, RecoveryService
             from forge.domain.merge_queue import MergeQueueReceipt
-            from forge.worker.release_recovery import merge_recovery_adapters
 
             queue_port.receipt = MergeQueueReceipt(
                 repository=approved.repository, pull_request_number=approved.pull_request_number,
                 pull_request_node_id="PR_1", head_sha=approved.head_sha,
                 merge_method=approved.merge_method, entry_id="late-entry",
             )
-            recovery_adapter = merge_recovery_adapters(
-                factory, validator, MergeController(read, writes), queue_port
-            )["enqueue_pr"]
+            recovery_adapter = handlers.recovery_adapters["enqueue_pr"]
             with pytest.raises(RecoveryError):
                 await recovery_adapter.invoke(rejected)
             await RecoveryService(PostgresOperationRepository(factory)).reconcile(rejected.id, recovery_adapter)
             async with PostgresUnitOfWork(factory) as work:
-                await service.execute(source, work)
+                await handlers["merge_pr"](source, work)
             async with PostgresUnitOfWork(factory) as work:
                 assert (await work.operations.get(rejected.id)).status is OperationStatus.SUCCEEDED
                 assert (await work.runs.get(case.run_id)).state is RunState.AWAITING_HUMAN_INTERVENTION
@@ -313,7 +331,6 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         assert observer.payload["receipt_digest"] == event.payload["receipt_digest"]
         assert observer.payload["deadline"] == (await work.runs.duration_deadline(run.id)).isoformat()
     assert queue_port.writes == 1
-    from forge.application.services.queue_observation import QueueObservationService
 
     continued_observer = None
     if ending.startswith("merged_admission_ack"):
@@ -338,10 +355,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             assert (await work.commands.get(source.id)).status.value == "completed"
     else:
         await commands.complete(source.id, worker_id=source.lease_owner)
-    observation_service = QueueObservationService(
-        validator, MergeController(read, writes), queue_port,
-        OperationExecutor(PostgresOperationRepository(factory)),
-    )
+    observation_service = handlers["observe_merge_queue"].__self__
     with patch("forge.persistence.repositories.commands._utc_now", return_value=datetime.now(UTC) + timedelta(seconds=20)):
         first_poll = continued_observer or await commands.claim_next(worker_id="queue-observer", lease_seconds=120)
     if ending == "merged_poll_resume":
@@ -369,7 +383,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             first_poll = await resumed_release(case, first_poll, factory)
     for _ in range(2):
         async with PostgresUnitOfWork(factory) as work:
-            await observation_service.execute(first_poll, work)
+            await handlers["observe_merge_queue"](first_poll, work)
     async with PostgresUnitOfWork(factory) as work:
         assert (await work.runs.get(case.run_id)).state is RunState.MERGING
     await commands.complete(first_poll.id, worker_id=first_poll.lease_owner)
@@ -408,7 +422,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             else:
                 work.runs.transition = fail_completion
             with pytest.raises(RuntimeError, match="completion transaction crash"):
-                await observation_service.execute(final_poll, work)
+                await handlers["observe_merge_queue"](final_poll, work)
         from forge.release.github_write import GitHubWriteError
 
         async def remote_unavailable(*args, **kwargs):
@@ -416,7 +430,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         writes.get_pull_request = remote_unavailable
     for _ in range(2):
         async with PostgresUnitOfWork(factory) as work:
-            await observation_service.execute(final_poll, work)
+            await handlers["observe_merge_queue"](final_poll, work)
     async with PostgresUnitOfWork(factory) as work:
         assert (await work.runs.get(case.run_id)).state is (
             RunState.COMPLETED if ending.startswith("merged") else RunState.AWAITING_HUMAN_INTERVENTION
