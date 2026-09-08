@@ -70,6 +70,7 @@ class _Gateway:
                 )
             ).all()
             self.admitted = len(rows) == 1
+            assert len(rows) == 1 and rows[0].instruction_digest == request.instruction_digest
         return AgentResult(
             execution_id=request.execution_id,
             role=request.role,

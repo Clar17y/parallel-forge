@@ -58,6 +58,57 @@ async def _get(app: FastAPI, path: str):
 
 
 @pytest.mark.asyncio
+async def test_review_representation_retains_explicit_decision_with_no_findings() -> None:
+    from forge.domain.agent import ReviewDecision, ReviewOutput
+    from forge.domain.evidence import ReviewEvidenceManifest, encode_evidence_manifest
+
+    manifest = ReviewEvidenceManifest(
+        evidence_set_id=uuid4(),
+        run_id=uuid4(),
+        step_id=uuid4(),
+        policy_version=1,
+        head_sha="a" * 40,
+        producer_execution_id=uuid4(),
+        validation_evidence_set_id=uuid4(),
+        review=ReviewOutput(
+            decision=ReviewDecision.REQUEST_CHANGES,
+            tested_claims=(),
+            missing_evidence=("No test evidence",),
+            summary="Evidence missing",
+        ),
+    )
+    data = encode_evidence_manifest(manifest)
+    descriptor = _descriptor(data, "application/vnd.forge.evidence-manifest+json")
+    app = _app(ArtifactReadService(_Query([descriptor]), _Store(data)))
+    response = await _get(app, f"/api/artifacts/{descriptor.digest}/review")
+    assert response.status_code == 200, response.text
+    assert response.json()["decision"] == "request_changes"
+    assert response.json()["head_sha"] == manifest.head_sha
+    assert response.json()["run_id"] == str(manifest.run_id)
+    assert response.json()["missing_evidence"] == ["No test evidence"]
+    app.dependency_overrides[require_operator] = lambda: (_ for _ in ()).throw(
+        HTTPException(status_code=401, detail="authentication required")
+    )
+    assert (await _get(app, f"/api/artifacts/{descriptor.digest}/review")).status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data,media_type",
+    [
+        (b"not json", "application/vnd.forge.evidence-manifest+json"),
+        (b'{"schema_version":99}', "application/vnd.forge.evidence-manifest+json"),
+        (b"plain text", "text/plain"),
+    ],
+)
+async def test_review_representation_rejects_wrong_or_unknown_content(data, media_type):
+    descriptor = _descriptor(data, media_type)
+    app = _app(ArtifactReadService(_Query([descriptor]), _Store(data)))
+    assert (await _get(app, f"/api/artifacts/{descriptor.digest}/review")).status_code == 422
+    assert (await _get(app, f"/api/artifacts/{descriptor.digest}/reviewer-diff")).status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_artifact_routes_auth_metadata_text_and_download() -> None:
     data = b'{"text":"safe"}'
     descriptor = _descriptor(data, "application/json")

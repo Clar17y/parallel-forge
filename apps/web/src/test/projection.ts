@@ -2,6 +2,7 @@ import type { components } from '@/lib/api/schema';
 
 export function projection(overrides: Partial<components['schemas']['RunProjection']> = {}): components['schemas']['RunProjection'] {
   return {
+    recovery_hold: false, remote_observation: null,
     run: { id: 'run-1', project_id: 'project-1', task_id: 'task-1', state: 'AWAITING_PLAN_APPROVAL', version: 7,
       suspended_state: null, suspension_kind: null, local_remediation_count: 0, remote_remediation_count: 0,
       policy_version: 2, base_ref: 'main', base_sha: 'a'.repeat(40), branch_name: null },
@@ -15,7 +16,7 @@ export function projection(overrides: Partial<components['schemas']['RunProjecti
       remote_remediation_count: 0, remote_remediation_limit: 3, remote_remediation_remaining: 3,
       token_limit: 116000, cost_limit_minor: 1000, duration_limit_seconds: 1800 },
     usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, duration_ms: 0, tool_calls: 0, model_calls: 0, currencies: [] },
-    security: { runner_mode: 'docker', trusted_project: false, database_enabled: false }, latest_events: [],
+    security: { commands: [], secret_paths: ['.env', '.env.local'], runner_mode: 'docker', trusted_project: false, database_enabled: false }, latest_events: [],
     available_commands: [{ name: 'approve_plan', expected_run_version: 7, requires_feedback: false,
       gate: 'plan', evidence_digest: 'd'.repeat(64), policy_version: 2 }], next_gate: 'plan', ...overrides,
   };

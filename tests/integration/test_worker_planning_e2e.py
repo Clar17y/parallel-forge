@@ -294,6 +294,9 @@ async def test_http_plan_requires_exact_approval_before_preparation(
 
             gateway.execute = controlled_planner
         await tick_success(worker, session_factory, run_id)
+        async with session_factory() as session:
+            prompt_execution = await session.get(AgentExecution, gateway.requests[0].execution_id)
+            assert prompt_execution.instruction_digest == gateway.requests[0].instruction_digest
         if scenario in {"pause", "cancel"}:
             async with session_factory() as session:
                 stopped = await session.get(Run, run_id)

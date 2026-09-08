@@ -25,3 +25,26 @@ test('a disabled database is not a missing resource and terminal runs have no in
   expect(screen.queryByRole('button', { name: 'Approve plan' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument();
 });
+
+test('recovery hold explains uncertainty while preserving the server-provided cancel control', () => {
+  const initial = projection({ recovery_hold: true });
+  initial.run.state = 'PAUSED';
+  initial.available_commands = [{ name: 'cancel', expected_run_version: 7, requires_feedback: false }];
+  render(<RunCockpit initial={initial} />);
+  expect(screen.getByRole('alert')).toHaveTextContent('Recovery needs attention');
+  expect(screen.getByRole('alert')).toHaveTextContent('Resume and resource teardown are held');
+  expect(screen.getByRole('button', { name: 'Cancel run' })).toBeEnabled();
+  expect(screen.queryByRole('button', { name: 'Resume run' })).not.toBeInTheDocument();
+});
+
+test('cockpit exposes checks and review without inferring release authority', async () => {
+  vi.mocked(api).mockResolvedValue({ items: [], truncated: false });
+  render(<RunCockpit initial={projection()} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Checks' }));
+  expect(screen.getByRole('region', { name: 'Check evidence' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Review' }));
+  expect(screen.getByRole('region', { name: 'Review evidence' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Activity' }));
+  expect(screen.getByRole('region', { name: 'Run activity' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /approve merge/i })).not.toBeInTheDocument();
+});

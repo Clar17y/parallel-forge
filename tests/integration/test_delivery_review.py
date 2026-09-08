@@ -46,6 +46,7 @@ class _Gateway:
         async with self.factory() as session:
             row = await session.get(AgentExecution, request.execution_id)
             self.admitted = row is not None and row.status == "RUNNING"
+            assert row is not None and row.instruction_digest == request.instruction_digest
             binding = await session.get(
                 AgentExecutionEvidenceInput, (request.execution_id, "validation_results")
             )
@@ -123,6 +124,31 @@ async def test_review_is_fresh_bound_and_persists_canonical_evidence(
     )
     async with PostgresUnitOfWork(workflow_session_factory) as work:
         evidence = await service.execute(command, work)
+    from fastapi import FastAPI
+    from forge.api.dependencies import require_operator
+    from forge.api.routes.artifacts import router_for
+    from forge.application.services.artifact_reads import ArtifactReadService
+    from forge.persistence.queries.artifacts import PostgresArtifactReadQuery
+    from httpx import ASGITransport, AsyncClient
+
+    async with workflow_session_factory() as session:
+        execution = await session.get(AgentExecution, gateway.requests[0].execution_id)
+        context_artifact = await session.get(Artifact, execution.input_artifact_id)
+    app = FastAPI()
+    app.state.artifact_read_service = ArtifactReadService(
+        PostgresArtifactReadQuery(workflow_session_factory), _case.artifact_store
+    )
+    app.dependency_overrides[require_operator] = lambda: object()
+    app.include_router(router_for(), prefix="/api")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/api/artifacts/{context_artifact.digest}/reviewer-diff")
+    assert response.status_code == 200, response.text
+    assert response.json()["text"] == gateway.requests[0].context.current_diff.content
+    assert response.json()["diff_digest"] == gateway.requests[0].context.current_diff.content_digest
+    assert response.json()["run_id"] == str(command.run_id)
+    assert response.json()["producer_execution_id"] == str(execution.id)
+    assert response.json()["validation_evidence_set_id"] == str(decision.validation_evidence_set_id)
+    assert response.json()["truncated"] is False
     assert gateway.admitted and gateway.requests[0].parent_execution_id is None
     assert gateway.requests[0].context.check_evidence
     async with workflow_session_factory() as session:

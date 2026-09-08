@@ -24,6 +24,7 @@ from forge.application.ports.executions import (
     ExecutionUnsettledError,
     ReviewerEvidenceBinding,
     database_status_for_finish,
+    validate_instruction_digest,
 )
 from forge.domain.actor import AgentRole
 from forge.domain.agent import AgentFinishStatus
@@ -133,9 +134,11 @@ class PostgresExecutionRepository:
         transition_to: str | None = None,
         admitted_at: datetime | None = None,
         reviewer_input: ReviewerEvidenceBinding | None = None,
+        instruction_digest: str | None = None,
     ) -> ExecutionAdmission:
         """Admit one running step and execution in the caller's transaction."""
 
+        validate_instruction_digest(instruction_digest)
         requested_admitted_at = admitted_at
         timestamp = _validate_admission_arguments(
             run_id,
@@ -187,6 +190,7 @@ class PostgresExecutionRepository:
                     step_id=step_id,
                     role=role.value,
                     instruction_version=instruction_version,
+                    instruction_digest=instruction_digest,
                     provider=provider,
                     model=model,
                     status="PENDING" if pending_reviewer else ExecutionStatus.RUNNING.value,
@@ -234,6 +238,7 @@ class PostgresExecutionRepository:
                 transition_from=transition_from,
                 transition_to=transition_to,
                 requested_admitted_at=requested_admitted_at,
+                instruction_digest=instruction_digest,
             )
             if reviewer_input is not None:
                 await self._validate_stored_reviewer_input(execution, reviewer_input)
@@ -821,6 +826,7 @@ def _validate_admission_identity(
     transition_from: str | None,
     transition_to: str | None,
     requested_admitted_at: datetime | None,
+    instruction_digest: str | None,
 ) -> None:
     if (
         step.id != step_id
@@ -831,6 +837,7 @@ def _validate_admission_identity(
         or execution.run_id != run_id
         or execution.step_id != step.id
         or execution.role != role.value
+        or execution.instruction_digest != instruction_digest
         or execution.instruction_version != instruction_version
         or execution.provider != provider
         or execution.model != model
@@ -887,6 +894,7 @@ def _validate_stored_lineage(step: Step, execution: AgentExecution) -> None:
             raise ExecutionDataError()
         if execution.role not in {role.value for role in AgentRole}:
             raise ExecutionDataError()
+        validate_instruction_digest(execution.instruction_digest)
         _validate_text(execution.instruction_version, "instruction version", 96)
         _validate_text(execution.provider, "provider", 96)
         _validate_text(execution.model, "model", 255)
@@ -1055,6 +1063,7 @@ def _admission_from_rows(
         transition_from=step.transition_from,
         transition_to=step.transition_to,
         admitted_at=step.started_at,
+        instruction_digest=execution.instruction_digest,
         is_new=is_new,
         status=status,
         finish_status=finish_status,

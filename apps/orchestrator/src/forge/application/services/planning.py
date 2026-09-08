@@ -703,6 +703,7 @@ class PlanningService:
             request.instruction_version,
             request.provider,
             request.model,
+            instruction_digest=request.instruction_digest,
             input_artifact_id=input_id,
             transition_from=(
                 RunState.CREATED.value if latest.run.state is RunState.CREATED else None

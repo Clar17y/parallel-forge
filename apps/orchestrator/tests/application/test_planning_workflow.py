@@ -138,6 +138,7 @@ class _FakeExecutionsRepo:
         transition_from: str | None = None,
         transition_to: str | None = None,
         admitted_at: datetime | None = None,
+        instruction_digest: str | None = None,
     ) -> ExecutionAdmission:
         del transition_from, transition_to
         self.admitted_attempts.append(attempt)
@@ -150,6 +151,7 @@ class _FakeExecutionsRepo:
             attempt=attempt,
             role=role,
             instruction_version=instruction_version,
+            instruction_digest=instruction_digest,
             provider=provider,
             model=model,
             input_artifact_id=input_artifact_id,

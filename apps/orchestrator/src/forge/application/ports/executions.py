@@ -130,8 +130,10 @@ class ExecutionAdmission:
     is_new: bool
     status: ExecutionStatus = ExecutionStatus.RUNNING
     finish_status: AgentFinishStatus | None = None
+    instruction_digest: str | None = None
 
     def __post_init__(self) -> None:
+        validate_instruction_digest(self.instruction_digest)
         _non_nil_uuid(self.run_id, "run identifier")
         _non_nil_uuid(self.step_id, "step identifier")
         _non_nil_uuid(self.agent_execution_id, "agent execution identifier")
@@ -292,6 +294,7 @@ class ExecutionRepository(Protocol):
         transition_to: str | None = None,
         admitted_at: datetime | None = None,
         reviewer_input: ReviewerEvidenceBinding | None = None,
+        instruction_digest: str | None = None,
     ) -> ExecutionAdmission: ...
 
     async def finalize(
@@ -333,3 +336,13 @@ __all__ = [
     "ReviewerEvidenceBinding",
     "database_status_for_finish",
 ]
+
+
+def validate_instruction_digest(value: str | None) -> None:
+    """Validate historical SHA-256 identity; null denotes legacy missing evidence."""
+    if value is not None and (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError("instruction digest must be a lowercase SHA-256 digest")

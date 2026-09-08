@@ -177,6 +177,10 @@ class AgentExecution(Base, TimestampMixin):
         UniqueConstraint(
             "id", "run_id", "step_id", "role", name="uq_agent_executions_id_run_step_role"
         ),
+        CheckConstraint(
+            "instruction_digest IS NULL OR instruction_digest ~ '^[0-9a-f]{64}$'",
+            name="instruction_digest",
+        ),
         CheckConstraint("role IN ('planner','developer','reviewer')", name="role"),
         CheckConstraint(
             "status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED')", name="status"
@@ -189,6 +193,7 @@ class AgentExecution(Base, TimestampMixin):
     )
     step_id: Mapped[UUID | None] = mapped_column(Uuid, ForeignKey("steps.id", ondelete="SET NULL"))
     role: Mapped[str] = mapped_column(String(24), nullable=False)
+    instruction_digest: Mapped[str | None] = mapped_column(String(64))
     instruction_version: Mapped[str] = mapped_column(String(96), nullable=False)
     provider: Mapped[str] = mapped_column(String(96), nullable=False)
     model: Mapped[str] = mapped_column(String(255), nullable=False)

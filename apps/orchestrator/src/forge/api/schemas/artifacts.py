@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from forge.domain.agent import ReviewDecision
+
 
 class ArtifactLineageResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -35,6 +37,33 @@ class ArtifactTextResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     digest: str
     text: str
+
+
+class ReviewArtifactResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    digest: str
+    run_id: UUID
+    producer_execution_id: UUID
+    head_sha: str
+    policy_version: int
+    decision: ReviewDecision
+    summary: str
+    tested_claims: list[str]
+    missing_evidence: list[str]
+
+
+class ReviewerDiffResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    digest: str
+    run_id: UUID
+    producer_execution_id: UUID
+    validation_evidence_set_id: UUID
+    head_sha: str
+    policy_version: int
+    diff_digest: str
+    text: str
+    original_byte_count: int
+    truncated: bool
 
 
 __all__ = ["ArtifactLineageResponse", "ArtifactResponse", "ArtifactTextResponse"]

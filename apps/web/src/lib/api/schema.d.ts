@@ -89,6 +89,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/artifacts/{digest}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Review Artifact */
+        get: operations["review_artifact_api_artifacts__digest__review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/artifacts/{digest}/reviewer-diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reviewer Diff */
+        get: operations["reviewer_diff_api_artifacts__digest__reviewer_diff_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/artifacts/{digest}/text": {
         parameters: {
             query?: never;
@@ -115,6 +149,40 @@ export interface paths {
         };
         /** Audit */
         get: operations["audit_api_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit/run-events/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Audit Detail */
+        get: operations["run_audit_detail_api_audit_run_events__event_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Audit Detail */
+        get: operations["audit_detail_api_audit__event_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -400,6 +468,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/approval-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Approval History */
+        get: operations["approval_history_api_runs__run_id__approval_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/approvals": {
         parameters: {
             query?: never;
@@ -411,6 +496,23 @@ export interface paths {
         put?: never;
         /** Authorize */
         post: operations["authorize_api_runs__run_id__approvals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Checks */
+        get: operations["checks_api_runs__run_id__checks_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -460,6 +562,23 @@ export interface paths {
         };
         /** Projection */
         get: operations["projection_api_runs__run_id__projection_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Usage */
+        get: operations["run_usage_api_runs__run_id__usage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -675,6 +794,39 @@ export interface components {
             /** Token */
             token: string;
         };
+        /** ApprovalHistoryItem */
+        ApprovalHistoryItem: {
+            /**
+             * Authenticated Actor Id
+             * Format: uuid
+             */
+            authenticated_actor_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /**
+             * Gate
+             * @enum {string}
+             */
+            gate: "plan" | "pr" | "merge";
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Invalidated At */
+            invalidated_at: string | null;
+            /** Invalidation Reason */
+            invalidation_reason: string | null;
+            /** Policy Version */
+            policy_version: number;
+            /** Run Version */
+            run_version: number;
+        };
         /** ApprovalItem */
         ApprovalItem: {
             /** Evidence Digest */
@@ -771,8 +923,10 @@ export interface components {
             /** Text */
             text: string;
         };
-        /** AuditItem */
-        AuditItem: {
+        /** AuditEventEvidence */
+        AuditEventEvidence: {
+            /** Actor Class */
+            actor_class: string;
             /** Actor Id */
             actor_id: string | null;
             /**
@@ -791,15 +945,72 @@ export interface components {
             payload: {
                 [key: string]: unknown;
             };
+            /** Project Id */
+            project_id: string | null;
+            /** Run Id */
+            run_id: string | null;
             /**
              * Source
-             * @constant
+             * @enum {string}
              */
-            source: "operator";
+            source: "operator" | "run";
             /** Subject Id */
             subject_id: string | null;
             /** Subject Type */
             subject_type: string;
+        };
+        /** AuditItem */
+        AuditItem: {
+            /** Actor Class */
+            actor_class: string;
+            /** Actor Id */
+            actor_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Event Type */
+            event_type: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Operations */
+            operations: components["schemas"]["AuditOperation"][];
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Project Id */
+            project_id: string | null;
+            /** Run Id */
+            run_id: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "operator" | "run";
+            /** Subject Id */
+            subject_id: string | null;
+            /** Subject Type */
+            subject_type: string;
+        };
+        /** AuditOperation */
+        AuditOperation: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PENDING" | "SUCCEEDED" | "FAILED" | "NEEDS_RECONCILIATION";
         };
         /** AvailableCommand */
         AvailableCommand: {
@@ -868,6 +1079,45 @@ export interface components {
             /** Validation Evidence Digest */
             validation_evidence_digest: string | null;
         };
+        /** CheckHistoryItem */
+        CheckHistoryItem: {
+            /** Attempt */
+            attempt: number | null;
+            /** Command Name */
+            command_name: string;
+            /** Command Version */
+            command_version: number;
+            /** Completed At */
+            completed_at: string | null;
+            /** Configured Runner Mode */
+            configured_runner_mode: string;
+            /** Duration Ms */
+            duration_ms: number | null;
+            /** Evidence Digest */
+            evidence_digest: string | null;
+            /** Exit Code */
+            exit_code: number | null;
+            /** Head Sha */
+            head_sha: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Output Artifact Digest */
+            output_artifact_digest: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Status */
+            status: string;
+            /** Step Id */
+            step_id: string | null;
+        };
         /** CheckItem */
         CheckItem: {
             /** Command Name */
@@ -891,6 +1141,13 @@ export interface components {
             output_artifact_digest: string | null;
             /** Status */
             status: string;
+        };
+        /** CommandNetworkPolicy */
+        CommandNetworkPolicy: {
+            /** Name */
+            name: string;
+            /** Network Enabled */
+            network_enabled: boolean;
         };
         /**
          * CommandSpec
@@ -977,20 +1234,36 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Currency */
+            currency: string | null;
+            /** Duration Ms */
+            duration_ms: number | null;
+            /** Estimated Cost Minor */
+            estimated_cost_minor: number | null;
             /** Fixture Version */
             fixture_version: string;
             /** Input Artifact Digest */
             input_artifact_digest: string | null;
+            /** Input Tokens */
+            input_tokens: number | null;
             /** Metric Version */
             metric_version: string;
             /** Metrics */
             metrics: {
                 [key: string]: unknown;
             } | null;
+            /** Model */
+            model: string | null;
             /** Model Usage Id */
             model_usage_id: string | null;
             /** Output Artifact Digest */
             output_artifact_digest: string | null;
+            /** Output Tokens */
+            output_tokens: number | null;
+            /** Prompt Version */
+            prompt_version: string | null;
+            /** Provider */
+            provider: string | null;
             /** Role */
             role: string | null;
             /** Status */
@@ -1081,6 +1354,17 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** ListPage[ApprovalHistoryItem] */
+        ListPage_ApprovalHistoryItem_: {
+            /** Items */
+            items: components["schemas"]["ApprovalHistoryItem"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Truncated */
+            truncated: boolean;
+        };
         /** ListPage[ApprovalItem] */
         ListPage_ApprovalItem_: {
             /** Items */
@@ -1103,6 +1387,17 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** ListPage[CheckHistoryItem] */
+        ListPage_CheckHistoryItem_: {
+            /** Items */
+            items: components["schemas"]["CheckHistoryItem"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Truncated */
+            truncated: boolean;
+        };
         /** ListPage[EvaluationItem] */
         ListPage_EvaluationItem_: {
             /** Items */
@@ -1118,6 +1413,17 @@ export interface components {
         ListPage_PermissionItem_: {
             /** Items */
             items: components["schemas"]["PermissionItem"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** ListPage[RunUsageItem] */
+        ListPage_RunUsageItem_: {
+            /** Items */
+            items: components["schemas"]["RunUsageItem"][];
             /** Limit */
             limit: number;
             /** Offset */
@@ -1393,6 +1699,51 @@ export interface components {
             /** State */
             state: string;
         };
+        /** RemoteCheckItem */
+        RemoteCheckItem: {
+            /** Conclusion */
+            conclusion: string | null;
+            /** Head Sha */
+            head_sha: string | null;
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Summary */
+            summary: string | null;
+            /** Text */
+            text: string | null;
+        };
+        /** RemoteObservationSection */
+        RemoteObservationSection: {
+            /** Checks */
+            checks: components["schemas"]["RemoteCheckItem"][];
+            /** Head Sha */
+            head_sha: string | null;
+            /** Observation Digest */
+            observation_digest: string;
+            /** Reviews */
+            reviews: components["schemas"]["RemoteReviewItem"][];
+        };
+        /** RemoteReviewItem */
+        RemoteReviewItem: {
+            /** Body */
+            body: string | null;
+            /** Comment Count */
+            comment_count: number;
+            /** Feedback */
+            feedback: string[];
+            /** Requested Changes */
+            requested_changes: boolean;
+            /** Reviewer */
+            reviewer: string;
+            /** State */
+            state: string;
+            /** Submitted At */
+            submitted_at: string | null;
+            /** Unresolved Threads */
+            unresolved_threads: number;
+        };
         /** ResourceSection */
         ResourceSection: {
             /** Branch Name */
@@ -1409,6 +1760,38 @@ export interface components {
          * @enum {string}
          */
         ResourceState: "DISABLED" | "PROVISIONING" | "ACTIVE" | "FAILED" | "REMOVED";
+        /** ReviewArtifactResponse */
+        ReviewArtifactResponse: {
+            decision: components["schemas"]["ReviewDecision"];
+            /** Digest */
+            digest: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Missing Evidence */
+            missing_evidence: string[];
+            /** Policy Version */
+            policy_version: number;
+            /**
+             * Producer Execution Id
+             * Format: uuid
+             */
+            producer_execution_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Summary */
+            summary: string;
+            /** Tested Claims */
+            tested_claims: string[];
+        };
+        /**
+         * ReviewDecision
+         * @description Closed decision values for Reviewer evaluations.
+         * @enum {string}
+         */
+        ReviewDecision: "approve" | "request_changes" | "blocked";
         /** ReviewSection */
         ReviewSection: {
             /** Evidence Digest */
@@ -1419,6 +1802,38 @@ export interface components {
             findings: components["schemas"]["FindingItem"][];
             /** Head Sha */
             head_sha: string | null;
+        };
+        /** ReviewerDiffResponse */
+        ReviewerDiffResponse: {
+            /** Diff Digest */
+            diff_digest: string;
+            /** Digest */
+            digest: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Original Byte Count */
+            original_byte_count: number;
+            /** Policy Version */
+            policy_version: number;
+            /**
+             * Producer Execution Id
+             * Format: uuid
+             */
+            producer_execution_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Text */
+            text: string;
+            /** Truncated */
+            truncated: boolean;
+            /**
+             * Validation Evidence Set Id
+             * Format: uuid
+             */
+            validation_evidence_set_id: string;
         };
         /**
          * RunCommandRequest
@@ -1579,6 +1994,9 @@ export interface components {
             plan: components["schemas"]["PlanSection"];
             project: components["schemas"]["ProjectSection"];
             pull_request: components["schemas"]["PullRequestSection"] | null;
+            /** Recovery Hold */
+            recovery_hold: boolean;
+            remote_observation: components["schemas"]["RemoteObservationSection"] | null;
             resource: components["schemas"]["ResourceSection"];
             review: components["schemas"]["ReviewSection"];
             run: components["schemas"]["RunResponse"];
@@ -1629,6 +2047,52 @@ export interface components {
          * @enum {string}
          */
         RunState: "CREATED" | "PLANNING" | "AWAITING_PLAN_APPROVAL" | "PREPARING_WORKTREE" | "IMPLEMENTING" | "VALIDATING" | "REVIEWING" | "REMEDIATING" | "AWAITING_PR_APPROVAL" | "PUBLISHING_PR" | "MONITORING_PR" | "AWAITING_HUMAN_INTERVENTION" | "AWAITING_MERGE_APPROVAL" | "MERGING" | "PAUSED" | "COMPLETED" | "FAILED" | "CANCELLED";
+        /** RunUsageItem */
+        RunUsageItem: {
+            /**
+             * Agent Execution Id
+             * Format: uuid
+             */
+            agent_execution_id: string;
+            /** Cached Input Tokens */
+            cached_input_tokens: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Currency */
+            currency: string;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Estimated Cost Minor */
+            estimated_cost_minor: number | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Instruction Digest */
+            instruction_digest: string | null;
+            /** Model */
+            model: string;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Pricing Version */
+            pricing_version: string;
+            /** Prompt Version */
+            prompt_version: string;
+            /** Provider */
+            provider: string;
+            /** Role */
+            role: string;
+            /** Tool Call Count */
+            tool_call_count: number;
+            /** Unknown Price Reason */
+            unknown_price_reason: string | null;
+        };
         /**
          * RunnerMode
          * @description The execution boundary used for policy-controlled commands.
@@ -1637,10 +2101,14 @@ export interface components {
         RunnerMode: "docker" | "trusted_host";
         /** SecuritySection */
         SecuritySection: {
+            /** Commands */
+            commands: components["schemas"]["CommandNetworkPolicy"][];
             /** Database Enabled */
             database_enabled: boolean;
             /** Runner Mode */
             runner_mode: string;
+            /** Secret Paths */
+            secret_paths: string[];
             /** Trusted Project */
             trusted_project: boolean;
         };
@@ -1740,14 +2208,30 @@ export interface components {
         UsageItem: {
             /** Currency */
             currency: string;
+            /** Duration Ms */
+            duration_ms: number;
             /** Input Tokens */
             input_tokens: number;
             /** Known Cost Minor */
             known_cost_minor: number;
+            /** Model */
+            model: string;
             /** Model Calls */
             model_calls: number;
             /** Output Tokens */
             output_tokens: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Provider */
+            provider: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
             /** Unpriced Calls */
             unpriced_calls: number;
         };
@@ -1936,6 +2420,68 @@ export interface operations {
             };
         };
     };
+    review_artifact_api_artifacts__digest__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                digest: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewArtifactResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reviewer_diff_api_artifacts__digest__reviewer_diff_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                digest: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewerDiffResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_text_api_artifacts__digest__text_get: {
         parameters: {
             query?: never;
@@ -1970,6 +2516,11 @@ export interface operations {
     audit_api_audit_get: {
         parameters: {
             query?: {
+                run_id?: string | null;
+                project_id?: string | null;
+                actor_id?: string | null;
+                operation_id?: string | null;
+                operation_status?: ("PENDING" | "SUCCEEDED" | "FAILED" | "NEEDS_RECONCILIATION") | null;
                 offset?: number;
                 limit?: number;
             };
@@ -1986,6 +2537,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListPage_AuditItem_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_audit_detail_api_audit_run_events__event_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditEventEvidence"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audit_detail_api_audit__event_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditEventEvidence"];
                 };
             };
             /** @description Validation Error */
@@ -2517,6 +3130,40 @@ export interface operations {
             };
         };
     };
+    approval_history_api_runs__run_id__approval_history_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPage_ApprovalHistoryItem_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     authorize_api_runs__run_id__approvals_post: {
         parameters: {
             query?: never;
@@ -2539,6 +3186,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApprovalResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    checks_api_runs__run_id__checks_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPage_CheckHistoryItem_"];
                 };
             };
             /** @description Validation Error */
@@ -2643,6 +3324,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunProjection"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_usage_api_runs__run_id__usage_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPage_RunUsageItem_"];
                 };
             };
             /** @description Validation Error */

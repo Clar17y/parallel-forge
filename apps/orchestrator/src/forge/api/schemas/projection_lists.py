@@ -38,23 +38,41 @@ class ApprovalItem(ProjectionModel):
 
 
 class UsageItem(ProjectionModel):
+    project_id: UUID
+    run_id: UUID
+    provider: str
+    model: str
     currency: str
     input_tokens: int
     output_tokens: int
+    duration_ms: int
     known_cost_minor: int
     unpriced_calls: int
     model_calls: int
 
 
-class AuditItem(ProjectionModel):
+class AuditOperation(ProjectionModel):
     id: UUID
-    source: Literal["operator"]
+    kind: str
+    status: Literal["PENDING", "SUCCEEDED", "FAILED", "NEEDS_RECONCILIATION"]
+
+
+class AuditEventEvidence(ProjectionModel):
+    id: UUID
+    source: Literal["operator", "run"]
+    actor_class: str
+    run_id: UUID | None
+    project_id: UUID | None
     actor_id: UUID | None
     event_type: str
     subject_type: str
     subject_id: UUID | None
     created_at: datetime
     payload: dict[str, object]
+
+
+class AuditItem(AuditEventEvidence):
+    operations: list[AuditOperation]
 
 
 class AgentItem(ProjectionModel):
@@ -83,7 +101,47 @@ class EvaluationItem(ProjectionModel):
     status: str | None
     metrics: dict[str, object] | None
     model_usage_id: UUID | None
+    prompt_version: str | None
+    provider: str | None
+    model: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    duration_ms: int | None
+    currency: str | None
+    estimated_cost_minor: int | None
     input_artifact_digest: str | None
     output_artifact_digest: str | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class RunUsageItem(ProjectionModel):
+    id: UUID
+    agent_execution_id: UUID
+    role: str
+    provider: str
+    model: str
+    prompt_version: str
+    instruction_digest: str | None
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    duration_ms: int
+    tool_call_count: int
+    pricing_version: str
+    estimated_cost_minor: int | None
+    currency: str
+    unknown_price_reason: str | None
+    created_at: datetime
+
+
+class ApprovalHistoryItem(ProjectionModel):
+    id: UUID
+    gate: Literal["plan", "pr", "merge"]
+    evidence_digest: str
+    run_version: int
+    policy_version: int
+    authenticated_actor_id: UUID
+    created_at: datetime
+    invalidated_at: datetime | None
+    invalidation_reason: str | None

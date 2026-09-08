@@ -80,6 +80,42 @@ class CheckItem(ProjectionModel):
     head_sha: str | None
 
 
+class CheckHistoryItem(CheckItem):
+    step_id: UUID | None
+    attempt: int | None
+    started_at: datetime
+    duration_ms: int | None
+    evidence_digest: str | None
+    configured_runner_mode: str
+
+
+class RemoteCheckItem(ProjectionModel):
+    name: str
+    status: str
+    conclusion: str | None
+    head_sha: str | None
+    summary: str | None
+    text: str | None
+
+
+class RemoteReviewItem(ProjectionModel):
+    reviewer: str
+    state: str
+    submitted_at: datetime | None
+    requested_changes: bool
+    unresolved_threads: int
+    comment_count: int
+    body: str | None
+    feedback: list[str]
+
+
+class RemoteObservationSection(ProjectionModel):
+    observation_digest: str
+    head_sha: str | None
+    checks: list[RemoteCheckItem]
+    reviews: list[RemoteReviewItem]
+
+
 class FindingItem(ProjectionModel):
     id: str
     severity: str
@@ -143,7 +179,14 @@ class UsageSummary(ProjectionModel):
     currencies: list[CurrencyUsage]
 
 
+class CommandNetworkPolicy(ProjectionModel):
+    name: str
+    network_enabled: bool
+
+
 class SecuritySection(ProjectionModel):
+    commands: list[CommandNetworkPolicy]
+    secret_paths: list[str]
     runner_mode: str
     trusted_project: bool
     database_enabled: bool
@@ -176,6 +219,7 @@ class RunProjection(ProjectionModel):
     plan: PlanSection
     candidate: CandidateSection
     pull_request: PullRequestSection | None
+    remote_observation: RemoteObservationSection | None
     checks: list[CheckItem]
     review: ReviewSection
     agents: dict[str, AgentSection]

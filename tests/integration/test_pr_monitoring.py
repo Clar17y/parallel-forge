@@ -9,7 +9,7 @@ from forge.application.services.pr_evidence import PrEvidenceValidator
 from forge.application.services.recovery import OperationExecutor
 from forge.application.services.release import ReleaseService
 from forge.application.services.release_monitor import ReleaseMonitor
-from forge.domain.github import CheckSnapshot, MergeProtection
+from forge.domain.github import CheckSnapshot, MergeProtection, ReviewSnapshot
 from forge.domain.run import RunState
 from forge.persistence.models import RunCommand
 from forge.persistence.repositories.commands import PostgresCommandRepository
@@ -99,6 +99,17 @@ async def test_monitor_persists_observation_and_replays_without_duplicate_delive
         writes.pull_requests[repository, 1] = replace(
             writes.pull_requests[repository, 1], head_sha="f" * 40
         )
+    if observation == "ready":
+        read.reviews[repository.casefold(), 1] = (
+            ReviewSnapshot(
+                "reviewer",
+                "COMMENTED",
+                datetime.now(UTC),
+                comment_count=1,
+                body="<script>remote text remains evidence</script>",
+                feedback=("Check naming",),
+            ),
+        )
     monitor = ReleaseMonitor(case.artifact_store, validator, read, writes)
     if observation.startswith("read_"):
         from forge.release.github_client import GitHubClientError
@@ -174,6 +185,34 @@ async def test_monitor_persists_observation_and_replays_without_duplicate_delive
             "items": wire.get("reviews", []),
         }
         assert projected.merge_state == events[0].payload["disposition"]
+        from forge.persistence.queries.dashboard import DashboardQuery
+
+        cockpit = await DashboardQuery(factory).run_projection(run.id)
+        from forge.api.schemas.projections import RunProjection
+
+        RunProjection.model_validate(cockpit)
+        from forge.persistence.queries.dashboard_lists import DashboardListQuery
+
+        history, truncated = await DashboardListQuery(factory).check_history(run.id, 0, 100)
+        assert not truncated
+        by_id = {check["id"]: check for check in history}
+        for check in cockpit["checks"]:
+            assert by_id[check["id"]]["head_sha"] == check["head_sha"]
+            assert by_id[check["id"]]["evidence_digest"] == cockpit["candidate"]["validation_evidence_digest"]
+            assert by_id[check["id"]]["attempt"] is not None
+        remote = cockpit["remote_observation"]
+        assert remote["observation_digest"] == descriptor.digest
+        assert remote["head_sha"] == wire.get("pull_request", {}).get("head_sha")
+        assert [item["name"] for item in remote["checks"]] == [
+            item["name"] for item in wire.get("checks", [])
+        ]
+        if observation == "ready":
+            assert remote["reviews"][0]["comment_count"] == 1
+            assert remote["reviews"][0]["requested_changes"] is False
+            assert remote["reviews"][0]["body"] == "<script>remote text remains evidence</script>"
+        if observation in {"ready", "failure"}:
+            assert remote["checks"][0]["summary"] == wire["checks"][0]["summary"]
+
         next_poll = await work.commands.get_by_idempotency_key(f"{run.id}:monitor-pr:2")
         assert (next_poll is not None) == (
             observation in {"pending", "read_timeout", "read_checks", "read_validation"}

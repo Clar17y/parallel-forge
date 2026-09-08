@@ -1,5 +1,6 @@
 """Selected, bounded dashboard reads from one consistent PostgreSQL snapshot."""
 
+import json
 from typing import cast
 from uuid import UUID
 
@@ -187,6 +188,7 @@ class DashboardQuery:
                 }
                 if pr
                 else None,
+                "remote_observation": _remote_observation(pr),
                 "checks": [
                     {
                         "id": check.id,
@@ -237,6 +239,11 @@ class DashboardQuery:
                 },
                 "usage": await _usage(session, run_id),
                 "security": {
+                    "commands": [
+                        {"name": command.name, "network_enabled": command.network_enabled}
+                        for command in policy.commands
+                    ],
+                    "secret_paths": list(policy.effective_secret_paths),
                     "runner_mode": policy.runner_mode.value,
                     "trusted_project": policy.trusted_project,
                     "database_enabled": policy.database.enabled,
@@ -252,7 +259,9 @@ class DashboardQuery:
                     }
                     for event in reversed(events)
                 ],
-                "recovery_hold": bool(await session.scalar(select(startup_intervention_hold(run_id)))),
+                "recovery_hold": bool(
+                    await session.scalar(select(startup_intervention_hold(run_id)))
+                ),
                 "available_commands": [],
                 "next_gate": run.pending_gate,
             }
@@ -376,3 +385,52 @@ def _text(value: str | None) -> str | None:
         return None
     result = redact_value(value)
     return result if isinstance(result, str) else "[REDACTED]"
+
+
+def _remote_observation(pr: PullRequest | None) -> dict[str, object] | None:
+    if pr is None or (pr.checks == {} and pr.review_state == {}):
+        return None
+    checks, reviews = pr.checks, pr.review_state
+    if (
+        pr.checks_schema_version != 1
+        or pr.reviews_schema_version != 1
+        or not isinstance(checks, dict)
+        or not isinstance(reviews, dict)
+        or set(checks) != {"observation_digest", "head_sha", "items"}
+        or set(reviews) != set(checks)
+        or checks["observation_digest"] != reviews["observation_digest"]
+        or checks["head_sha"] != reviews["head_sha"]
+        or not isinstance(checks["observation_digest"], str)
+        or len(checks["observation_digest"]) != 64
+        or any(c not in "0123456789abcdef" for c in checks["observation_digest"])
+        or not isinstance(checks["items"], list)
+        or not isinstance(reviews["items"], list)
+        or len(json.dumps([checks, reviews]).encode("utf-8")) > 2 * 1048576
+    ):
+        raise PersistenceDataError("remote observation binding differs")
+    check_fields = ("name", "status", "conclusion", "head_sha", "summary", "text")
+    review_fields = (
+        "reviewer",
+        "state",
+        "submitted_at",
+        "requested_changes",
+        "unresolved_threads",
+        "comment_count",
+        "body",
+        "feedback",
+    )
+    if any(not isinstance(item, dict) for item in checks["items"] + reviews["items"]):
+        raise PersistenceDataError("remote observation item differs")
+    # Select normalized evidence fields only; remote links and unknown metadata
+    # never become navigation or actions in the operator cockpit.
+    return {
+        "observation_digest": checks["observation_digest"],
+        "head_sha": checks["head_sha"],
+        "checks": [
+            public_payload({key: item.get(key) for key in check_fields}) for item in checks["items"]
+        ],
+        "reviews": [
+            public_payload({key: item.get(key) for key in review_fields})
+            for item in reviews["items"]
+        ],
+    }

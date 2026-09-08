@@ -443,6 +443,7 @@ class ReviewService:
             request.instruction_version,
             request.provider,
             request.model,
+            instruction_digest=request.instruction_digest,
             input_artifact_id=persisted.artifact_id,
             reviewer_input=ReviewerEvidenceBinding(
                 validation_evidence_set_id=validation_id,

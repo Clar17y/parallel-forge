@@ -269,7 +269,7 @@ def test_task10_downgrade_refuses_cross_project_external_identity_duplicates(
         assert isinstance(value, str)
         return value
 
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0006"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0007"
 
     def duplicate_count(connection: Any) -> int:
         value = connection.execute(
@@ -344,7 +344,7 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
 
     command.upgrade(config, "head")
     assert _table_names(test_database_url) == EXPECTED_TABLES
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0006"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0007"
 
     def reupgraded_task(connection: Any) -> tuple[str, str, bool, str, str]:
         row = connection.execute(
@@ -625,7 +625,7 @@ def test_migration_has_one_exact_reviewable_head(
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
     config = alembic_config_factory("postgresql+asyncpg://unused:unused@127.0.0.1/unused")
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260908_0006"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260908_0007"]
 
 
 def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:

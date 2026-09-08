@@ -746,6 +746,7 @@ class DevelopmentService:
             request.instruction_version,
             request.provider,
             request.model,
+            instruction_digest=request.instruction_digest,
             input_artifact_id=persisted.artifact_id,
         )
         if not admission.is_new:

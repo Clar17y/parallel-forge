@@ -8,11 +8,17 @@ import { PlanPanel } from './plan-panel';
 import { PhaseTimeline } from './phase-timeline';
 import { AutonomyBanner } from './autonomy-banner';
 import { AgentStatus } from './agent-status';
+import { ChecksPanel } from './checks-panel';
+import { ReviewPanel } from './review-panel';
+import { ActivityPanel } from './activity-panel';
+import { UsagePanel } from './usage-panel';
+import { SecurityPanel } from './security-panel';
+import { ChangesPanel } from './changes-panel';
 
 type Projection = components['schemas']['RunProjection'];
 export function RunCockpit({ initial }: { initial: Projection }) {
   const [value, setValue] = useState(initial);
-  const [section, setSection] = useState<'overview' | 'plan'>('overview');
+  const [section, setSection] = useState<'overview' | 'plan' | 'checks' | 'review' | 'activity' | 'usage' | 'security' | 'changes'>('overview');
   const [failed, setFailed] = useState(false);
   const [reading, setReading] = useState(false);
   const [after] = useState(() => String(Math.max(0, ...initial.latest_events.map(event => event.sequence))));
@@ -52,6 +58,7 @@ export function RunCockpit({ initial }: { initial: Projection }) {
     <h1>{value.task.title}</h1>
     <header><p>{value.project.name} · {value.run.state.replaceAll('_', ' ')}</p><p role="status">Events: {connection}</p></header>
     {failed && <p role="alert">Current run state could not be refreshed. Actions are disabled until a successful refresh.</p>}
+    {value.recovery_hold && <p role="alert">Recovery needs attention: an earlier operation has an unresolved outcome. Resume and resource teardown are held until its evidence is reconciled. Review the activity before taking further action.</p>}
     <button onClick={() => void refresh().catch(() => {})} disabled={reading}>Refresh run</button>
     <dl><dt>Branch</dt><dd>{value.resource.branch_name ?? 'Not yet created'}</dd>
       <dt>Worktree</dt><dd>{value.resource.worktree_path ?? 'Not yet created'}</dd>
@@ -63,8 +70,14 @@ export function RunCockpit({ initial }: { initial: Projection }) {
     </dl>
     <RunControls projection={value} onRefresh={refresh} disabled={failed || reading || connection !== 'connected'} />
     <nav aria-label="Run sections"><button aria-pressed={section === 'overview'} onClick={() => setSection('overview')}>Overview</button>
-      <button aria-pressed={section === 'plan'} onClick={() => setSection('plan')}>Plan</button></nav>
-    {section === 'plan' ? <PlanPanel projection={value} /> : <>
+      <button aria-pressed={section === 'plan'} onClick={() => setSection('plan')}>Plan</button>
+      <button aria-pressed={section === 'checks'} onClick={() => setSection('checks')}>Checks</button>
+      <button aria-pressed={section === 'review'} onClick={() => setSection('review')}>Review</button>
+      <button aria-pressed={section === 'activity'} onClick={() => setSection('activity')}>Activity</button>
+      <button aria-pressed={section === 'usage'} onClick={() => setSection('usage')}>Usage</button>
+      <button aria-pressed={section === 'security'} onClick={() => setSection('security')}>Security</button>
+      <button aria-pressed={section === 'changes'} onClick={() => setSection('changes')}>Changes</button></nav>
+    {section === 'plan' ? <PlanPanel projection={value} /> : section === 'checks' ? <ChecksPanel key={`${value.run.id}:${value.run.version}`} projection={value} /> : section === 'review' ? <ReviewPanel projection={value} /> : section === 'changes' ? <ChangesPanel projection={value} /> : section === 'security' ? <SecurityPanel key={`${value.run.id}:${value.latest_events.at(-1)?.sequence ?? 0}`} projection={value} /> : section === 'usage' ? <UsagePanel key={`${value.run.id}:${value.latest_events.at(-1)?.sequence ?? 0}`} runId={value.run.id} /> : section === 'activity' ? <ActivityPanel key={`${value.run.id}:${value.latest_events.at(-1)?.sequence ?? 0}`} runId={value.run.id} /> : <>
       <AutonomyBanner projection={value} />
       <section><h2>Agent activity</h2>{Object.values(value.agents).map(agent => <AgentStatus key={agent.role} agent={agent} />)}</section>
       <section><h2>Remaining remediation</h2><p>Local: {value.budgets.local_remediation_remaining} / {value.budgets.local_remediation_limit} · Remote: {value.budgets.remote_remediation_remaining} / {value.budgets.remote_remediation_limit}</p></section>

@@ -315,6 +315,83 @@
         "title": "ApprovalChallengeResponse",
         "type": "object"
       },
+      "ApprovalHistoryItem": {
+        "additionalProperties": false,
+        "properties": {
+          "authenticated_actor_id": {
+            "format": "uuid",
+            "title": "Authenticated Actor Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "evidence_digest": {
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "gate": {
+            "enum": [
+              "plan",
+              "pr",
+              "merge"
+            ],
+            "title": "Gate",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "invalidated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated At"
+          },
+          "invalidation_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation Reason"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "run_version": {
+            "title": "Run Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "gate",
+          "evidence_digest",
+          "run_version",
+          "policy_version",
+          "authenticated_actor_id",
+          "created_at",
+          "invalidated_at",
+          "invalidation_reason"
+        ],
+        "title": "ApprovalHistoryItem",
+        "type": "object"
+      },
       "ApprovalItem": {
         "additionalProperties": false,
         "properties": {
@@ -555,9 +632,13 @@
         "title": "ArtifactTextResponse",
         "type": "object"
       },
-      "AuditItem": {
+      "AuditEventEvidence": {
         "additionalProperties": false,
         "properties": {
+          "actor_class": {
+            "title": "Actor Class",
+            "type": "string"
+          },
           "actor_id": {
             "anyOf": [
               {
@@ -589,8 +670,35 @@
             "title": "Payload",
             "type": "object"
           },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
           "source": {
-            "const": "operator",
+            "enum": [
+              "operator",
+              "run"
+            ],
             "title": "Source",
             "type": "string"
           },
@@ -614,6 +722,9 @@
         "required": [
           "id",
           "source",
+          "actor_class",
+          "run_id",
+          "project_id",
           "actor_id",
           "event_type",
           "subject_type",
@@ -621,7 +732,149 @@
           "created_at",
           "payload"
         ],
+        "title": "AuditEventEvidence",
+        "type": "object"
+      },
+      "AuditItem": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_class": {
+            "title": "Actor Class",
+            "type": "string"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/AuditOperation"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "source": {
+            "enum": [
+              "operator",
+              "run"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Id"
+          },
+          "subject_type": {
+            "title": "Subject Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "actor_class",
+          "run_id",
+          "project_id",
+          "actor_id",
+          "event_type",
+          "subject_type",
+          "subject_id",
+          "created_at",
+          "payload",
+          "operations"
+        ],
         "title": "AuditItem",
+        "type": "object"
+      },
+      "AuditOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "SUCCEEDED",
+              "FAILED",
+              "NEEDS_RECONCILIATION"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status"
+        ],
+        "title": "AuditOperation",
         "type": "object"
       },
       "AvailableCommand": {
@@ -850,6 +1103,150 @@
         "title": "CandidateSection",
         "type": "object"
       },
+      "CheckHistoryItem": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt"
+          },
+          "command_name": {
+            "title": "Command Name",
+            "type": "string"
+          },
+          "command_version": {
+            "title": "Command Version",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "configured_runner_mode": {
+            "title": "Configured Runner Mode",
+            "type": "string"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Digest"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Artifact Digest"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "command_name",
+          "command_version",
+          "status",
+          "exit_code",
+          "output_artifact_digest",
+          "completed_at",
+          "head_sha",
+          "step_id",
+          "attempt",
+          "started_at",
+          "duration_ms",
+          "evidence_digest",
+          "configured_runner_mode"
+        ],
+        "title": "CheckHistoryItem",
+        "type": "object"
+      },
       "CheckItem": {
         "additionalProperties": false,
         "properties": {
@@ -932,6 +1329,25 @@
           "head_sha"
         ],
         "title": "CheckItem",
+        "type": "object"
+      },
+      "CommandNetworkPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "network_enabled": {
+            "title": "Network Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "network_enabled"
+        ],
+        "title": "CommandNetworkPolicy",
         "type": "object"
       },
       "CommandSpec": {
@@ -1119,6 +1535,39 @@
             "title": "Created At",
             "type": "string"
           },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "estimated_cost_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Minor"
+          },
           "fixture_version": {
             "title": "Fixture Version",
             "type": "string"
@@ -1133,6 +1582,17 @@
               }
             ],
             "title": "Input Artifact Digest"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
           },
           "metric_version": {
             "title": "Metric Version",
@@ -1149,6 +1609,17 @@
               }
             ],
             "title": "Metrics"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           },
           "model_usage_id": {
             "anyOf": [
@@ -1172,6 +1643,39 @@
               }
             ],
             "title": "Output Artifact Digest"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
           },
           "role": {
             "anyOf": [
@@ -1216,6 +1720,14 @@
           "status",
           "metrics",
           "model_usage_id",
+          "prompt_version",
+          "provider",
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "duration_ms",
+          "currency",
+          "estimated_cost_minor",
           "input_artifact_digest",
           "output_artifact_digest",
           "created_at",
@@ -1431,6 +1943,38 @@
         "title": "ListPage[AgentItem]",
         "type": "object"
       },
+      "ListPage_ApprovalHistoryItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalHistoryItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[ApprovalHistoryItem]",
+        "type": "object"
+      },
       "ListPage_ApprovalItem_": {
         "additionalProperties": false,
         "properties": {
@@ -1495,6 +2039,38 @@
         "title": "ListPage[AuditItem]",
         "type": "object"
       },
+      "ListPage_CheckHistoryItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CheckHistoryItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[CheckHistoryItem]",
+        "type": "object"
+      },
       "ListPage_EvaluationItem_": {
         "additionalProperties": false,
         "properties": {
@@ -1557,6 +2133,38 @@
           "truncated"
         ],
         "title": "ListPage[PermissionItem]",
+        "type": "object"
+      },
+      "ListPage_RunUsageItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunUsageItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[RunUsageItem]",
         "type": "object"
       },
       "ListPage_UsageItem_": {
@@ -2306,6 +2914,182 @@
         "title": "PullRequestSection",
         "type": "object"
       },
+      "RemoteCheckItem": {
+        "additionalProperties": false,
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "conclusion",
+          "head_sha",
+          "summary",
+          "text"
+        ],
+        "title": "RemoteCheckItem",
+        "type": "object"
+      },
+      "RemoteObservationSection": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteCheckItem"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "observation_digest": {
+            "title": "Observation Digest",
+            "type": "string"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteReviewItem"
+            },
+            "title": "Reviews",
+            "type": "array"
+          }
+        },
+        "required": [
+          "observation_digest",
+          "head_sha",
+          "checks",
+          "reviews"
+        ],
+        "title": "RemoteObservationSection",
+        "type": "object"
+      },
+      "RemoteReviewItem": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "comment_count": {
+            "title": "Comment Count",
+            "type": "integer"
+          },
+          "feedback": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Feedback",
+            "type": "array"
+          },
+          "requested_changes": {
+            "title": "Requested Changes",
+            "type": "boolean"
+          },
+          "reviewer": {
+            "title": "Reviewer",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "unresolved_threads": {
+            "title": "Unresolved Threads",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reviewer",
+          "state",
+          "submitted_at",
+          "requested_changes",
+          "unresolved_threads",
+          "comment_count",
+          "body",
+          "feedback"
+        ],
+        "title": "RemoteReviewItem",
+        "type": "object"
+      },
       "ResourceSection": {
         "additionalProperties": false,
         "properties": {
@@ -2367,6 +3151,77 @@
         "title": "ResourceState",
         "type": "string"
       },
+      "ReviewArtifactResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ReviewDecision"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "missing_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Evidence",
+            "type": "array"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "producer_execution_id": {
+            "format": "uuid",
+            "title": "Producer Execution Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "tested_claims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tested Claims",
+            "type": "array"
+          }
+        },
+        "required": [
+          "digest",
+          "run_id",
+          "producer_execution_id",
+          "head_sha",
+          "policy_version",
+          "decision",
+          "summary",
+          "tested_claims",
+          "missing_evidence"
+        ],
+        "title": "ReviewArtifactResponse",
+        "type": "object"
+      },
+      "ReviewDecision": {
+        "description": "Closed decision values for Reviewer evaluations.",
+        "enum": [
+          "approve",
+          "request_changes",
+          "blocked"
+        ],
+        "title": "ReviewDecision",
+        "type": "string"
+      },
       "ReviewSection": {
         "additionalProperties": false,
         "properties": {
@@ -2419,6 +3274,68 @@
           "findings"
         ],
         "title": "ReviewSection",
+        "type": "object"
+      },
+      "ReviewerDiffResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "diff_digest": {
+            "title": "Diff Digest",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "original_byte_count": {
+            "title": "Original Byte Count",
+            "type": "integer"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "producer_execution_id": {
+            "format": "uuid",
+            "title": "Producer Execution Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "validation_evidence_set_id": {
+            "format": "uuid",
+            "title": "Validation Evidence Set Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "run_id",
+          "producer_execution_id",
+          "validation_evidence_set_id",
+          "head_sha",
+          "policy_version",
+          "diff_digest",
+          "text",
+          "original_byte_count",
+          "truncated"
+        ],
+        "title": "ReviewerDiffResponse",
         "type": "object"
       },
       "RunCommandRequest": {
@@ -2827,6 +3744,20 @@
               }
             ]
           },
+          "recovery_hold": {
+            "title": "Recovery Hold",
+            "type": "boolean"
+          },
+          "remote_observation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteObservationSection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "resource": {
             "$ref": "#/components/schemas/ResourceSection"
           },
@@ -2847,6 +3778,7 @@
           }
         },
         "required": [
+          "recovery_hold",
           "run",
           "task",
           "project",
@@ -2854,6 +3786,7 @@
           "plan",
           "candidate",
           "pull_request",
+          "remote_observation",
           "checks",
           "review",
           "agents",
@@ -3008,6 +3941,124 @@
         "title": "RunState",
         "type": "string"
       },
+      "RunUsageItem": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_execution_id": {
+            "format": "uuid",
+            "title": "Agent Execution Id",
+            "type": "string"
+          },
+          "cached_input_tokens": {
+            "title": "Cached Input Tokens",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "estimated_cost_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Minor"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "instruction_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction Digest"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "pricing_version": {
+            "title": "Pricing Version",
+            "type": "string"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "tool_call_count": {
+            "title": "Tool Call Count",
+            "type": "integer"
+          },
+          "unknown_price_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Price Reason"
+          }
+        },
+        "required": [
+          "id",
+          "agent_execution_id",
+          "role",
+          "provider",
+          "model",
+          "prompt_version",
+          "instruction_digest",
+          "input_tokens",
+          "output_tokens",
+          "cached_input_tokens",
+          "duration_ms",
+          "tool_call_count",
+          "pricing_version",
+          "estimated_cost_minor",
+          "currency",
+          "unknown_price_reason",
+          "created_at"
+        ],
+        "title": "RunUsageItem",
+        "type": "object"
+      },
       "RunnerMode": {
         "description": "The execution boundary used for policy-controlled commands.",
         "enum": [
@@ -3020,6 +4071,13 @@
       "SecuritySection": {
         "additionalProperties": false,
         "properties": {
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/CommandNetworkPolicy"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
           "database_enabled": {
             "title": "Database Enabled",
             "type": "boolean"
@@ -3028,12 +4086,21 @@
             "title": "Runner Mode",
             "type": "string"
           },
+          "secret_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Secret Paths",
+            "type": "array"
+          },
           "trusted_project": {
             "title": "Trusted Project",
             "type": "boolean"
           }
         },
         "required": [
+          "commands",
+          "secret_paths",
           "runner_mode",
           "trusted_project",
           "database_enabled"
@@ -3285,6 +4352,10 @@
             "title": "Currency",
             "type": "string"
           },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
           "input_tokens": {
             "title": "Input Tokens",
             "type": "integer"
@@ -3292,6 +4363,10 @@
           "known_cost_minor": {
             "title": "Known Cost Minor",
             "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
           },
           "model_calls": {
             "title": "Model Calls",
@@ -3301,15 +4376,34 @@
             "title": "Output Tokens",
             "type": "integer"
           },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
           "unpriced_calls": {
             "title": "Unpriced Calls",
             "type": "integer"
           }
         },
         "required": [
+          "project_id",
+          "run_id",
+          "provider",
+          "model",
           "currency",
           "input_tokens",
           "output_tokens",
+          "duration_ms",
           "known_cost_minor",
           "unpriced_calls",
           "model_calls"
@@ -3656,6 +4750,94 @@
         "summary": "Download"
       }
     },
+    "/api/artifacts/{digest}/review": {
+      "get": {
+        "operationId": "review_artifact_api_artifacts__digest__review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewArtifactResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Review Artifact"
+      }
+    },
+    "/api/artifacts/{digest}/reviewer-diff": {
+      "get": {
+        "operationId": "reviewer_diff_api_artifacts__digest__reviewer_diff_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewerDiffResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Reviewer Diff"
+      }
+    },
     "/api/artifacts/{digest}/text": {
       "get": {
         "operationId": "get_text_api_artifacts__digest__text_get",
@@ -3704,6 +4886,96 @@
       "get": {
         "operationId": "audit_api_audit_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "operation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Operation Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "operation_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "PENDING",
+                    "SUCCEEDED",
+                    "FAILED",
+                    "NEEDS_RECONCILIATION"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Operation Status"
+            }
+          },
           {
             "in": "query",
             "name": "offset",
@@ -3756,6 +5028,96 @@
           }
         ],
         "summary": "Audit"
+      }
+    },
+    "/api/audit/run-events/{event_id}": {
+      "get": {
+        "operationId": "run_audit_detail_api_audit_run_events__event_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditEventEvidence"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Run Audit Detail"
+      }
+    },
+    "/api/audit/{event_id}": {
+      "get": {
+        "operationId": "audit_detail_api_audit__event_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditEventEvidence"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Audit Detail"
       }
     },
     "/api/auth/bootstrap": {
@@ -4605,6 +5967,74 @@
         "summary": "Issue Challenge"
       }
     },
+    "/api/runs/{run_id}/approval-history": {
+      "get": {
+        "operationId": "approval_history_api_runs__run_id__approval_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_ApprovalHistoryItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Approval History"
+      }
+    },
     "/api/runs/{run_id}/approvals": {
       "post": {
         "operationId": "authorize_api_runs__run_id__approvals_post",
@@ -4659,6 +6089,74 @@
           }
         ],
         "summary": "Authorize"
+      }
+    },
+    "/api/runs/{run_id}/checks": {
+      "get": {
+        "operationId": "checks_api_runs__run_id__checks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_CheckHistoryItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Checks"
       }
     },
     "/api/runs/{run_id}/commands": {
@@ -4841,6 +6339,74 @@
           }
         ],
         "summary": "Projection"
+      }
+    },
+    "/api/runs/{run_id}/usage": {
+      "get": {
+        "operationId": "run_usage_api_runs__run_id__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_RunUsageItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Run Usage"
       }
     },
     "/api/tasks": {
