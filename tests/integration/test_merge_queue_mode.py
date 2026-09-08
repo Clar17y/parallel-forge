@@ -81,6 +81,7 @@ async def composed_queue_handlers(tmp_path):
     (True, None, "merged_completion_unavailable"),
     (True, None, "merged_protection_unavailable"),
     (True, None, "admission_rejected_graphql"),
+    (True, None, "revoked_approval"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, composed_queue_handlers, queue, crash, ending
@@ -440,6 +441,19 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         )
     elif ending == "protection":
         read.merge_protections[key, "main"] = replace(original_protection, merge_queue_enabled=False)
+    elif ending == "revoked_approval":
+        async with PostgresUnitOfWork(factory) as work:
+            approval = await work.auth.get_approval(approval_id=approval_id)
+            await work.auth.invalidate_merge_gate(
+                run_id=case.run_id, run_version=approval.run_version,
+                at=datetime.now(UTC),
+            )
+            await work.commit()
+
+        async def no_remote_read(*args):
+            raise AssertionError("invalidated queue approval must settle without remote reads")
+
+        writes.get_pull_request = no_remote_read
     with patch("forge.persistence.repositories.commands._utc_now", return_value=datetime.now(UTC) + timedelta(seconds=40)):
         final_poll = await commands.claim_next(worker_id="queue-final", lease_seconds=120)
     if ending.startswith("deadline"):

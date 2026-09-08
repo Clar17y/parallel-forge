@@ -132,7 +132,7 @@ class QueueObservationService:
             return
         if (
             run.state is not RunState.MERGING or run.version != command.expected_run_version
-            or approval.invalidated_at is not None or await pending_current_control_stop(work, run)
+            or await pending_current_control_stop(work, run)
         ):
             raise CommandRecoveryRequired("queue observation awaits control settlement")
         completion = ObservedMergeOperation(self._controller, record, approval_id, approved, no_new_authority)
@@ -151,31 +151,32 @@ class QueueObservationService:
                     raise CommandRecoveryRequired("completed queue merge receipt differs")
         await work.commit()
         pull = None
-        reason = None
-        try:
-            # A canonical persisted completion survives GitHub outages after a crash.
-            pull = completed_pull or await self._controller.observe_pull(record, approved)
-            if not pull.merged:
-                if pull.state != "open":
-                    reason = "queue_pull_request_closed"
+        reason = "queue_approval_invalidated" if approval.invalidated_at is not None else None
+        if reason is None:
+            try:
+                # A canonical persisted completion survives GitHub outages after a crash.
+                pull = completed_pull or await self._controller.observe_pull(record, approved)
+                if not pull.merged:
+                    if pull.state != "open":
+                        reason = "queue_pull_request_closed"
+                    elif self._clock.now() >= deadline:
+                        reason = "queue_duration_exhausted"
+                    elif not await self._controller.queue_required(approved):
+                        reason = "queue_protection_changed"
+                    else:
+                        observed = await self._queue.observe(
+                            approved.repository, approved.pull_request_number,
+                            receipt.pull_request_node_id, approved.head_sha,
+                        )
+                        if observed != receipt:
+                            reason = "queue_entry_changed_or_removed"
+            except StaleMergeEvidence:
+                reason = "queue_evidence_drift"
+            except (GitHubWriteError, GitHubClientError) as error:
+                if error.category not in {"unavailable", "rate_limited"}:
+                    reason = "queue_observation_unverified"
                 elif self._clock.now() >= deadline:
                     reason = "queue_duration_exhausted"
-                elif not await self._controller.queue_required(approved):
-                    reason = "queue_protection_changed"
-                else:
-                    observed = await self._queue.observe(
-                        approved.repository, approved.pull_request_number,
-                        receipt.pull_request_node_id, approved.head_sha,
-                    )
-                    if observed != receipt:
-                        reason = "queue_entry_changed_or_removed"
-        except StaleMergeEvidence:
-            reason = "queue_evidence_drift"
-        except (GitHubWriteError, GitHubClientError) as error:
-            if error.category not in {"unavailable", "rate_limited"}:
-                reason = "queue_observation_unverified"
-            elif self._clock.now() >= deadline:
-                reason = "queue_duration_exhausted"
         await _fence_command(command, work)
         latest = await work.runs.get_for_update(run.id)
         if latest != run or await pending_current_control_stop(work, latest):
