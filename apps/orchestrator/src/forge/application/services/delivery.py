@@ -14,6 +14,7 @@ from forge.application.ports.evidence import EvidenceKind, EvidenceSetDescriptor
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.control_settlement import pending_current_control_stop
 from forge.application.services.resume_source import resume_origin
 from forge.application.services.validation import (
     ValidationService,
@@ -140,6 +141,8 @@ class DeliveryService:
         refreshed = await self._approved_plans.load(work, command.run_id)
         if refreshed.run != approved.run or refreshed.approval_id != approved.approval_id:
             raise CommandRecoveryRequired("validation decision authority changed")
+        if await pending_current_control_stop(work, refreshed.run):
+            raise CommandRecoveryRequired("validation decision fenced by operator control")
         descriptor, manifest = await self._evidence(
             work, refreshed, evidence_id, step_id, prior_review_id
         )

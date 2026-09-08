@@ -20,6 +20,7 @@ from forge.application.services.approved_plan import (
     ApprovedPlanError,
     ApprovedPlanLoader,
 )
+from forge.application.services.control_settlement import pending_current_control_stop
 from forge.application.services.resume_source import resume_origin
 from forge.application.services.review import _EXECUTION_NAMESPACE, _STEP_NAMESPACE, ReviewService
 from forge.domain.actor import AgentRole
@@ -461,6 +462,8 @@ class ReviewDecisionService:
         current = await self._approved.load(work, command.run_id)
         if current.run != approved.run or current.approval_id != approved.approval_id:
             raise ReviewDecisionRecoveryRequired("review decision authority changed")
+        if await pending_current_control_stop(work, current.run):
+            raise ReviewDecisionRecoveryRequired("review decision fenced by operator control")
         _, validation_id, prior_id = self._command(command, await resume_origin(work, command))
         _, _, refreshed = await self._evidence(
             work, current, candidate[0].evidence_set_id, validation_id, prior_id

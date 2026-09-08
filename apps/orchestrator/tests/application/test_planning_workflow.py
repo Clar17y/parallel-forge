@@ -245,6 +245,17 @@ class _FakeCommandsRepo:
     def add(self, command: CommandEnvelope) -> None:
         self.commands[command.id] = command
 
+    async def has_pending_current_control_stop(
+        self, *, run_id: UUID, expected_run_version: int
+    ) -> bool:
+        return any(
+            command.run_id == run_id
+            and command.expected_run_version == expected_run_version
+            and command.command_type in {"pause", "cancel"}
+            and command.status in {CommandStatus.PENDING, CommandStatus.LEASED}
+            for command in self.commands.values()
+        )
+
     async def get(self, command_id: UUID) -> CommandEnvelope:
         if command_id in self.commands:
             return self.commands[command_id]
