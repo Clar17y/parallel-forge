@@ -35,6 +35,8 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, None, "evicted"), (True, None, "closed"), (True, None, "protection"),
     (True, None, "merged_receipt_crash"), (True, None, "merged_transaction_crash"),
     (True, None, "deadline"), (True, None, "deadline_unavailable"),
+    (True, None, "admission_rejected"),
+    (True, None, "admission_rejected_crash"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -82,6 +84,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
     read.merge_protections[key, "main"] = original_protection
     await commands.complete(command.id, worker_id=command.lease_owner)
     source = await commands.claim_next(worker_id="queue-admission", lease_seconds=120)
+    enqueue_attempts = []
     class InspectCommittedQueue(Queue):
         async def enqueue(self, *args):
             # Independent connection must see the intent before the external effect.
@@ -90,6 +93,10 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             assert admitted.kind == "enqueue_pr"
             assert admitted.request_payload["approval_id"] == str(approval_id)
             assert admitted.request_payload["head_sha"] == git.head
+            enqueue_attempts.append(admitted.id)
+            if ending.startswith("admission_rejected"):
+                from forge.release.github_write import GitHubWriteError
+                raise GitHubWriteError("rejected")
             return await super().enqueue(*args)
 
     queue_port = InspectCommittedQueue()
@@ -106,9 +113,33 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
                 work.commands.enqueue = fail_scheduling
             with pytest.raises(RuntimeError):
                 await service.execute(source, work)
+    if ending == "admission_rejected_crash":
+        async with PostgresUnitOfWork(factory) as work:
+            async def fail_rejection(*args, **kwargs):
+                raise RuntimeError("rejection settlement crash")
+            work.runs.intervene = fail_rejection
+            with pytest.raises(RuntimeError, match="rejection settlement crash"):
+                await service.execute(source, work)
     for _ in range(2):
         async with PostgresUnitOfWork(factory) as work:
             await service.execute(source, work)
+    if ending.startswith("admission_rejected"):
+        async with PostgresUnitOfWork(factory) as work:
+            current_run = await work.runs.get(case.run_id)
+            assert current_run.state is RunState.AWAITING_HUMAN_INTERVENTION
+            assert current_run.version == source.expected_run_version + 1
+            assert (await work.auth.get_approval(approval_id=approval_id)).invalidated_at is not None
+            rejected = await work.operations.get(enqueue_attempts[0])
+            assert rejected.status is OperationStatus.FAILED
+            assert rejected.error == "queue_remote_rejected"
+            rejections = [e for e in await work.events.list_after(case.run_id, 0)
+                          if e.event_type == "run.merge_queue_admission_rejected"]
+            assert len(rejections) == 1
+            assert await work.commands.get_by_idempotency_key(
+                f"{case.run_id}:observe-merge-queue:{rejected.id}:1"
+            ) is None
+        assert len(enqueue_attempts) == 1 and queue_port.writes == 0
+        return
     async with PostgresUnitOfWork(factory) as work:
         run = await work.runs.get(case.run_id)
         assert run.state is RunState.MERGING
