@@ -38,6 +38,8 @@ class ProjectSection(ProjectionModel):
 
 
 class ResourceSection(ProjectionModel):
+    teardown_confirmation: str
+    database_role: str | None
     worktree_path: str | None
     branch_name: str | None
     database_state: ResourceState

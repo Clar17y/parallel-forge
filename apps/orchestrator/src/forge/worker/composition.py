@@ -30,6 +30,7 @@ from forge.application.handlers.run_controls import (
     PauseRunHandler,
     ResumeRunHandler,
 )
+from forge.application.handlers.teardown import TeardownRunResourcesHandler
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.base_adoption import BaseAdoptionPort
@@ -501,6 +502,7 @@ def compose_worker_handlers(
             ),
             "cancel": CancelRunHandler(),
             "request_candidate_changes": candidate_revision.execute,
+            "teardown_run_resources": TeardownRunResourcesHandler(delivery_dependencies.teardown),
         }
     )
     release_commands = (
@@ -515,7 +517,9 @@ def compose_worker_handlers(
     handlers.tool_recovery = ToolRecoveryService(
         uow_factory, artifact_store, redactor=shared_redactor
     )
-    handlers.recovery_adapters.update(resource_recovery_adapters(session_factory, delivery_dependencies))
+    handlers.recovery_adapters.update(
+        resource_recovery_adapters(session_factory, delivery_dependencies)
+    )
 
     handlers.recovery_adapters.update(
         local_recovery_adapters(
@@ -561,10 +565,16 @@ def compose_worker_handlers(
     )
     merge_controller = MergeController(release_dependencies.read, release_dependencies.writes)
     if release_dependencies.adoption is not None:
-        handlers.recovery_adapters.update(base_recovery_adapters(
-            session_factory, artifact_store, pr_evidence, release_dependencies.read,
-            release_dependencies.writes, release_dependencies.adoption,
-        ))
+        handlers.recovery_adapters.update(
+            base_recovery_adapters(
+                session_factory,
+                artifact_store,
+                pr_evidence,
+                release_dependencies.read,
+                release_dependencies.writes,
+                release_dependencies.adoption,
+            )
+        )
     merge_evidence = MergeEvidenceValidator(artifact_store, pr_evidence, merge_controller)
     handlers.recovery_adapters.update(
         merge_recovery_adapters(session_factory, merge_evidence, merge_controller)

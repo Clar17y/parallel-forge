@@ -24,6 +24,7 @@ from forge.application.services.auth import AuthenticatedActor
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
+from forge.domain.teardown import teardown_confirmation
 from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.runs import (
     ConcurrencyConflict,
@@ -100,6 +101,7 @@ class RunCommandRequest(BaseModel):
     command_type: str
     expected_run_version: int = Field(ge=0)
     feedback: str | None = None
+    confirm_resource_identity: str | None = Field(default=None, min_length=1, max_length=128)
     delete_branch: bool = False
     confirm_branch_name: str | None = Field(default=None, max_length=512)
 
@@ -129,6 +131,11 @@ class RunCommandRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_command_shape(self) -> RunCommandRequest:
+        if (
+            self.confirm_resource_identity is not None
+            and self.command_type != RunCommandType.TEARDOWN_RUN_RESOURCES
+        ):
+            raise ValueError("resource confirmation is only accepted for teardown")
         feedback_commands = {
             RunCommandType.REQUEST_PLAN_REVISION,
             RunCommandType.REQUEST_CANDIDATE_CHANGES,
@@ -324,6 +331,12 @@ class RunCommandService:
                     raise RunCommandValidationError(reason)
             _validate_state(run.state, request.command_type)
             payload = _command_payload(request, run)
+            if request.command_type == RunCommandType.TEARDOWN_RUN_RESOURCES:
+                quiescence = await work.runs.prove_quiescent(run_id)
+                if not quiescence.is_quiescent:
+                    raise RunCommandValidationError(
+                        "resource teardown is blocked by unsettled work"
+                    )
             command = await work.commands.enqueue(
                 run_id=run_id,
                 command_type=request.command_type,
@@ -407,14 +420,13 @@ def _command_payload(request: RunCommandRequest, run: RunSnapshot) -> dict[str, 
             raise RunCommandValidationError("feedback is required for this command")
         return {"feedback": request.feedback}
     if request.command_type == RunCommandType.TEARDOWN_RUN_RESOURCES:
-        if request.delete_branch:
-            if run.branch_name is None or request.confirm_branch_name != run.branch_name:
-                raise RunCommandValidationError("branch confirmation does not match the run")
-            return {
-                "delete_branch": True,
-                "confirm_branch_name": request.confirm_branch_name,
-            }
-        return {"delete_branch": False}
+        if request.delete_branch and (
+            run.branch_name is None or request.confirm_branch_name != run.branch_name
+        ):
+            raise RunCommandValidationError("branch confirmation does not match the run")
+        if request.confirm_resource_identity != teardown_confirmation(run):
+            raise RunCommandValidationError("resource confirmation does not match the run")
+        return _request_payload(request)
     return {}
 
 
@@ -448,12 +460,18 @@ def _request_payload(request: RunCommandRequest) -> dict[str, object]:
     }:
         return {"feedback": request.feedback}
     if request.command_type == RunCommandType.TEARDOWN_RUN_RESOURCES:
+        confirmation = (
+            {"confirm_resource_identity": request.confirm_resource_identity}
+            if request.confirm_resource_identity is not None
+            else {}
+        )
         if request.delete_branch:
             return {
+                **confirmation,
                 "delete_branch": True,
                 "confirm_branch_name": request.confirm_branch_name,
             }
-        return {"delete_branch": False}
+        return {**confirmation, "delete_branch": False}
     return {}
 
 

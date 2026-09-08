@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from forge.domain.agent import ReviewDecision
 
@@ -64,6 +64,28 @@ class ReviewerDiffResponse(BaseModel):
     text: str
     original_byte_count: int
     truncated: bool
+
+
+class ProtectionSnapshotResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    strict_required_checks: bool
+    merge_queue_enabled: bool
+    actor_can_bypass: bool
+    evidence_source: str = Field(min_length=1, max_length=4096)
+    verified: bool
+    required_check_names: list[str] = Field(max_length=100)
+
+
+class MergeProtectionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    digest: str
+    protection_digest: str
+    protection: ProtectionSnapshotResponse
+    repository: str
+    pull_request_number: int = Field(ge=1)
+    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    base_ref: str
+    observed_base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 __all__ = ["ArtifactLineageResponse", "ArtifactResponse", "ArtifactTextResponse"]

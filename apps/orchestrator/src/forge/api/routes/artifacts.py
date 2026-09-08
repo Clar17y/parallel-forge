@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -14,6 +15,8 @@ from forge.api.schemas.artifacts import (
     ArtifactLineageResponse,
     ArtifactResponse,
     ArtifactTextResponse,
+    MergeProtectionResponse,
+    ProtectionSnapshotResponse,
     ReviewArtifactResponse,
     ReviewerDiffResponse,
 )
@@ -35,6 +38,36 @@ from forge.persistence.repositories.artifacts import ArtifactNotFound
 
 def router_for() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/artifacts/{digest}/merge-protection", response_model=MergeProtectionResponse)
+    async def merge_protection(
+        digest: str,
+        request: Request,
+        _actor: AuthenticatedActor = Depends(require_operator),  # noqa: B008
+    ) -> MergeProtectionResponse:
+        try:
+            descriptor, data = await _service(request).content(digest, max_bytes=1_048_576)
+            if descriptor.media_type != "application/json" or descriptor.truncated:
+                raise ArtifactNotRepresentable("observation is not complete JSON")
+            raw = json.loads(data)
+            if not isinstance(raw, dict) or not isinstance(raw.get("protection"), dict):
+                raise ArtifactNotRepresentable("protection evidence missing")
+            protection = ProtectionSnapshotResponse.model_validate(raw["protection"])
+            wire = json.dumps(
+                raw["protection"], sort_keys=True, ensure_ascii=False, separators=(",", ":")
+            ).encode()
+            return MergeProtectionResponse(
+                digest=digest,
+                protection_digest=hashlib.sha256(wire).hexdigest(),
+                protection=protection,
+                repository=raw["pull_request"]["base_repository"],
+                pull_request_number=raw["pull_request"]["number"],
+                head_sha=raw["pull_request"]["head_sha"],
+                base_ref=raw["pull_request"]["base_ref"],
+                observed_base_sha=raw.get("target_base_sha", raw["pull_request"]["base_sha"]),
+            )
+        except Exception as error:  # noqa: BLE001 - bounded immutable observation errors
+            raise _read_error(error) from None
 
     @router.get("/artifacts/{digest}/reviewer-diff", response_model=ReviewerDiffResponse)
     async def reviewer_diff(

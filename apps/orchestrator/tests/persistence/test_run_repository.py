@@ -515,3 +515,26 @@ async def test_event_sequences_are_per_run_and_list_after_is_strict(uow, persist
         assert [item.sequence for item in await uow.events.list_after(second.id, 0)] == [1]
         with pytest.raises(InvalidEventCursor):
             await uow.events.list_after(persisted_run.id, -1)
+
+
+@pytest.mark.integration
+async def test_quiescence_counts_all_commands_unless_exact_owner_is_excluded(
+    persisted_run, uow
+) -> None:
+    async with uow:
+        await uow.runs.get_for_update(persisted_run.id)
+        assert (await uow.runs.prove_quiescent(persisted_run.id)).is_quiescent
+        command = await uow.commands.enqueue(
+            run_id=persisted_run.id,
+            command_type="start_planning",
+            idempotency_key="quiescence-owner",
+            payload={},
+            expected_run_version=persisted_run.version,
+        )
+        assert (await uow.runs.prove_quiescent(persisted_run.id)).pending_or_leased_commands == 1
+        assert (
+            await uow.runs.prove_quiescent(persisted_run.id, exclude_command_id=command.id)
+        ).is_quiescent
+        assert not (
+            await uow.runs.prove_quiescent(persisted_run.id, exclude_command_id=uuid4())
+        ).is_quiescent

@@ -15,6 +15,7 @@ from forge.application.ports.projects import (
     ProjectRecord,
     RepositoryInspection,
 )
+from forge.application.ports.runs import RunQuiescence
 from forge.application.ports.tasks import TaskRecord
 from forge.application.services.auth import AuthenticatedActor
 from forge.domain.approval import ApprovalGate
@@ -137,6 +138,15 @@ class FakeTasks:
 
 @dataclass
 class FakeRuns:
+    quiescence: RunQuiescence = field(default_factory=lambda: RunQuiescence(0, 0, 0, 0, 0))
+
+    async def prove_quiescent(
+        self, run_id: UUID, *, exclude_command_id: UUID | None = None
+    ) -> RunQuiescence:
+        assert run_id in self.records
+        assert exclude_command_id is None
+        return self.quiescence
+
     records: dict[UUID, RunSnapshot] = field(default_factory=dict)
 
     async def get(self, run_id: UUID) -> RunSnapshot:
@@ -417,8 +427,13 @@ async def test_run_commands_accept_only_the_closed_state_matrix(
     work, _, _ = _uow(state=state, branch_name="forge/main")
     run_id = next(iter(work.runs.records))
     service = RunCommandService(lambda: work)
+    from forge.domain.teardown import teardown_confirmation
+
     request = RunCommandRequest(
         command_type=command_type,
+        confirm_resource_identity=teardown_confirmation(work.runs.records[run_id])
+        if command_type == "teardown_run_resources"
+        else None,
         expected_run_version=4,
         feedback=feedback,
         delete_branch=delete_branch,
@@ -438,6 +453,8 @@ async def test_run_commands_accept_only_the_closed_state_matrix(
         expected_payload = {"delete_branch": False}
     else:
         expected_payload = {}
+    if command_type == "teardown_run_resources":
+        expected_payload["confirm_resource_identity"] = request.confirm_resource_identity
     assert dict(command.payload) == expected_payload
 
 
@@ -560,3 +577,93 @@ async def test_run_command_feedback_and_teardown_confirmation_are_closed() -> No
                 confirm_branch_name="forge/main",
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_teardown_requires_exact_resource_confirmation_before_enqueue() -> None:
+    from forge.application.services.runs import (
+        RunCommandRequest,
+        RunCommandService,
+        RunCommandValidationError,
+    )
+
+    work, _, _ = _uow(state=RunState.COMPLETED, branch_name="forge/main")
+    run_id = next(iter(work.runs.records))
+    service = RunCommandService(lambda: work)
+    with pytest.raises(RunCommandValidationError, match="resource confirmation"):
+        await service.enqueue(
+            actor=ACTOR,
+            run_id=run_id,
+            idempotency_key="missing-confirmation",
+            request=RunCommandRequest(
+                command_type="teardown_run_resources", expected_run_version=4
+            ),
+        )
+    from forge.domain.teardown import teardown_confirmation
+    from forge.persistence.repositories.commands import IdempotencyConflict
+
+    run = work.runs.records[run_id]
+    confirmation = teardown_confirmation(run)
+    for change in (
+        {"worktree_path": "C:/different/worktree"},
+        {"branch_name": "forge/other"},
+        {"version": 5},
+    ):
+        assert teardown_confirmation(replace(run, **change)) != confirmation
+    request = RunCommandRequest(
+        command_type="teardown_run_resources",
+        expected_run_version=4,
+        confirm_resource_identity=confirmation,
+    )
+    command = await service.enqueue(
+        actor=ACTOR, run_id=run_id, idempotency_key="confirmed", request=request
+    )
+    assert command.payload == {"delete_branch": False, "confirm_resource_identity": confirmation}
+    work.runs.quiescence = replace(work.runs.quiescence, pending_or_leased_commands=1)
+    repeated = await service.enqueue(
+        actor=ACTOR, run_id=run_id, idempotency_key="confirmed", request=request
+    )
+    assert repeated.id == command.id
+    with pytest.raises(IdempotencyConflict):
+        await service.enqueue(
+            actor=ACTOR,
+            run_id=run_id,
+            idempotency_key="confirmed",
+            request=request.model_copy(update={"confirm_resource_identity": "different"}),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        "pending_or_leased_commands",
+        "running_steps",
+        "running_executions",
+        "running_tools",
+        "unresolved_operations",
+    ],
+)
+async def test_teardown_rejects_each_kind_of_unsettled_work(blocker: str) -> None:
+    from forge.application.services.runs import (
+        RunCommandRequest,
+        RunCommandService,
+        RunCommandValidationError,
+    )
+    from forge.domain.teardown import teardown_confirmation
+
+    work, _, _ = _uow(state=RunState.COMPLETED, branch_name="forge/main")
+    run = next(iter(work.runs.records.values()))
+    work.runs.quiescence = replace(work.runs.quiescence, **{blocker: 1})
+    with pytest.raises(RunCommandValidationError, match="unsettled work"):
+        await RunCommandService(lambda: work).enqueue(
+            actor=ACTOR,
+            run_id=run.id,
+            idempotency_key="busy-teardown",
+            request=RunCommandRequest(
+                command_type="teardown_run_resources",
+                expected_run_version=run.version,
+                confirm_resource_identity=teardown_confirmation(run),
+            ),
+        )
+    assert not work.committed

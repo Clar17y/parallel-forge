@@ -11,6 +11,7 @@ from forge.application.services.public_data import public_payload
 from forge.domain.actor import AgentRole
 from forge.domain.agent import _ALLOWED_ROLE_TOOLS
 from forge.domain.policy import ProjectPolicy
+from forge.domain.teardown import teardown_confirmation
 from forge.observability.redaction import redact_value
 from forge.persistence.models import (
     AgentExecution,
@@ -160,6 +161,8 @@ class DashboardQuery:
                     "policy_digest": policy_row.policy_digest,
                 },
                 "resource": {
+                    "teardown_confirmation": teardown_confirmation(_snapshot_from_record(run)),
+                    "database_role": run.database_role,
                     "worktree_path": run.worktree_path,
                     "branch_name": run.branch_name,
                     "database_state": run.database_state,

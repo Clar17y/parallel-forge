@@ -161,6 +161,58 @@ async def test_active_media_is_never_rendered_and_json_scalars_are_allowed() -> 
 
 
 @pytest.mark.asyncio
+async def test_markdown_pr_body_is_returned_as_literal_text() -> None:
+    data = b"# Exact PR body\n<script>untrusted</script>"
+    descriptor = _descriptor(data, "text/markdown")
+    app = _app(ArtifactReadService(_Query([descriptor]), _Store(data)))
+    response = await _get(app, f"/api/artifacts/{descriptor.digest}/text")
+    assert response.status_code == 200
+    assert response.json()["text"] == data.decode()
+    assert response.headers["content-type"] == "application/json"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("override", [{}, {"verified": "true"}, {"actor_can_bypass": 0}, {"extra": 1}])
+async def test_merge_protection_representation_hashes_the_exact_recorded_source(override) -> None:
+    import hashlib
+    import json
+
+    protection = {
+        "strict_required_checks": True,
+        "merge_queue_enabled": False,
+        "actor_can_bypass": False,
+        "evidence_source": "branch-protection+rulesets",
+        "verified": True,
+        "required_check_names": ["ci"],
+    }
+    protection.update(override)
+    wire = json.dumps(
+        protection, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode()
+    data = json.dumps(
+        {
+            "protection": protection,
+            "pull_request": {
+                "base_repository": "owner/repo",
+                "number": 12,
+                "head_sha": "a" * 40,
+                "base_ref": "main",
+                "base_sha": "b" * 40,
+            },
+        }
+    ).encode()
+    descriptor = _descriptor(data, "application/json")
+    app = _app(ArtifactReadService(_Query([descriptor]), _Store(data)))
+    response = await _get(app, f"/api/artifacts/{descriptor.digest}/merge-protection")
+    if override:
+        assert response.status_code == 422
+        return
+    assert response.status_code == 200, response.text
+    assert response.json()["protection_digest"] == hashlib.sha256(wire).hexdigest()
+    assert response.json()["protection"] == protection
+
+
+@pytest.mark.asyncio
 async def test_artifact_corruption_utf8_oversize_and_empty_records_fail_closed() -> None:
     data = b"trusted"
     descriptor = _descriptor(data)

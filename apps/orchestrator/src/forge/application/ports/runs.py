@@ -61,7 +61,9 @@ class RunRepository(Protocol):
         payload_schema_version: int = 1,
     ) -> RunSnapshot: ...
 
-    async def prove_quiescent(self, run_id: UUID, *, exclude_command_id: UUID) -> RunQuiescence: ...
+    async def prove_quiescent(
+        self, run_id: UUID, *, exclude_command_id: UUID | None = None
+    ) -> RunQuiescence: ...
 
     async def list(
         self, *, project_id: UUID | None = None, task_id: UUID | None = None

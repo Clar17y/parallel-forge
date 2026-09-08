@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/artifacts/{digest}/merge-protection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Merge Protection */
+        get: operations["merge_protection_api_artifacts__digest__merge_protection_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/artifacts/{digest}/review": {
         parameters: {
             query?: never;
@@ -1442,6 +1459,24 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** MergeProtectionResponse */
+        MergeProtectionResponse: {
+            /** Base Ref */
+            base_ref: string;
+            /** Digest */
+            digest: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Observed Base Sha */
+            observed_base_sha: string;
+            protection: components["schemas"]["ProtectionSnapshotResponse"];
+            /** Protection Digest */
+            protection_digest: string;
+            /** Pull Request Number */
+            pull_request_number: number;
+            /** Repository */
+            repository: string;
+        };
         /** PermissionItem */
         PermissionItem: {
             /** Role */
@@ -1680,6 +1715,21 @@ export interface components {
             /** Version */
             version: string;
         };
+        /** ProtectionSnapshotResponse */
+        ProtectionSnapshotResponse: {
+            /** Actor Can Bypass */
+            actor_can_bypass: boolean;
+            /** Evidence Source */
+            evidence_source: string;
+            /** Merge Queue Enabled */
+            merge_queue_enabled: boolean;
+            /** Required Check Names */
+            required_check_names: string[];
+            /** Strict Required Checks */
+            strict_required_checks: boolean;
+            /** Verified */
+            verified: boolean;
+        };
         /** PullRequestSection */
         PullRequestSection: {
             /** Base Ref */
@@ -1750,7 +1800,11 @@ export interface components {
             branch_name: string | null;
             /** Database Name */
             database_name: string | null;
+            /** Database Role */
+            database_role: string | null;
             database_state: components["schemas"]["ResourceState"];
+            /** Teardown Confirmation */
+            teardown_confirmation: string;
             /** Worktree Path */
             worktree_path: string | null;
         };
@@ -1844,6 +1898,8 @@ export interface components {
             command_type: string;
             /** Confirm Branch Name */
             confirm_branch_name?: string | null;
+            /** Confirm Resource Identity */
+            confirm_resource_identity?: string | null;
             /**
              * Delete Branch
              * @default false
@@ -2407,6 +2463,37 @@ export interface operations {
                 };
                 content: {
                     "application/octet-stream": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    merge_protection_api_artifacts__digest__merge_protection_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                digest: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MergeProtectionResponse"];
                 };
             };
             /** @description Validation Error */

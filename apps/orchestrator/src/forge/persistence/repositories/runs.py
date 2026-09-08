@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import func, null, select
+from sqlalchemy import func, null, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.ports.runs import RunQuiescence
@@ -160,8 +160,10 @@ class PostgresRunRepository:
             raise RunNotFound(run_id)
         return _snapshot_from_record(record)
 
-    async def prove_quiescent(self, run_id: UUID, *, exclude_command_id: UUID) -> RunQuiescence:
-        """Count all durable work which could race a paused-run restoration.
+    async def prove_quiescent(
+        self, run_id: UUID, *, exclude_command_id: UUID | None = None
+    ) -> RunQuiescence:
+        """Count all durable work which could race a run restoration or resource teardown.
 
         The caller holds the run row lock.  Leased rows are blockers regardless
         of expiry: an expired lease still represents unsettled work until its
@@ -173,7 +175,7 @@ class PostgresRunRepository:
             .select_from(RunCommand)
             .where(
                 RunCommand.run_id == run_id,
-                RunCommand.id != exclude_command_id,
+                RunCommand.id != exclude_command_id if exclude_command_id is not None else true(),
                 RunCommand.status.in_(("PENDING", "LEASED")),
             )
         )

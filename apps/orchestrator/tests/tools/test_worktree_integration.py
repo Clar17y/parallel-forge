@@ -432,3 +432,109 @@ async def test_postgres_concurrent_enabled_prepares_share_effects_and_converge(
         or event.event_type == "resource.database_active"
     ]
     assert [event.run_version for event in resource_events] == [1, 2, 3]
+
+
+class _TeardownGitEffect(_GitEffect):
+    def __init__(self) -> None:
+        super().__init__()
+        self.remove_calls = 0
+
+    def prune(self) -> None:
+        assert self.handle is None
+
+    def remove_worktree(self, worktree: ManagedWorktree) -> None:
+        assert self.handle == worktree
+        self.remove_calls += 1
+        self.handle = None
+
+    def verify_worktree_absent(self, worktree: ManagedWorktree) -> None:
+        assert self.handle is None
+        assert worktree == self.expected_worktree(worktree.identity, worktree.base_sha)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("interrupt_after_removal", [False, True])
+async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipts(
+    session_factory,
+    operation_repository,
+    persisted_run,
+    command_repository,
+    interrupt_after_removal,
+) -> None:
+    from dataclasses import replace
+    from uuid import uuid4
+
+    from forge.application.handlers.teardown import TeardownRunResourcesHandler
+    from forge.application.ports.commands import CommandRecoveryRequired
+    from forge.application.services.auth import AuthenticatedActor
+    from forge.application.services.runs import RunCommandRequest, RunCommandService
+    from forge.domain.teardown import teardown_confirmation
+
+    persisted_run = replace(persisted_run, id=uuid4(), policy_version=2)
+    git = _TeardownGitEffect()
+    policy = _policy(persisted_run, git, enabled=False)
+    document = policy.model_dump(mode="json")
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.projects.append_policy(
+            project_id=persisted_run.project_id,
+            expected_policy_version=1,
+            policy_document=document,
+            policy_digest=canonical_digest(document),
+        )
+        await work.runs.create(persisted_run)
+        await work.commit()
+    await _seed_preparing_run(session_factory, persisted_run, branch="forge/teardown-integration")
+    provisioner = WorktreeProvisioner(
+        lambda: PostgresUnitOfWork(session_factory),
+        operations=operation_repository,
+        git=git,
+        database=_DisabledDatabase(),
+    )
+    await provisioner.prepare(persisted_run.id, policy)
+    async with PostgresUnitOfWork(session_factory) as work:
+        run = await work.runs.get_for_update(persisted_run.id)
+        run = await work.runs.transition(
+            run.id, run.version, RunState.CANCELLED, "test.cancelled", {}
+        )
+        await work.commit()
+    enqueued = await RunCommandService(lambda: PostgresUnitOfWork(session_factory)).enqueue(
+        actor=AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4()),
+        run_id=run.id,
+        idempotency_key="confirmed-resource-removal",
+        request=RunCommandRequest(
+            command_type="teardown_run_resources",
+            expected_run_version=run.version,
+            confirm_resource_identity=teardown_confirmation(run),
+        ),
+    )
+    command = await command_repository.claim_next(worker_id="teardown-worker", lease_seconds=60)
+    assert command is not None and command.id == enqueued.id
+
+    async def remove(run_id, supplied_policy):
+        result = await provisioner.teardown(run_id, supplied_policy)
+        if interrupt_after_removal:
+            raise RuntimeError("simulated interruption after resource checkpoint")
+        return result
+
+    handler = TeardownRunResourcesHandler(remove)
+    async with PostgresUnitOfWork(session_factory) as work:
+        if interrupt_after_removal:
+            with pytest.raises(CommandRecoveryRequired, match="requires recovery"):
+                await handler(command, work)
+        else:
+            await handler(command, work)
+    # Resume through the same frozen source even though the resource checkpoint advanced the version.
+    handler = TeardownRunResourcesHandler(provisioner.teardown)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await handler(command, work)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await handler(command, work)
+        final = await work.runs.get(run.id)
+        events = await work.events.list_after(run.id, 0)
+    assert final.worktree_path is None
+    assert final.branch_name == run.branch_name
+    assert final.database_state is ResourceState.DISABLED
+    assert git.remove_calls == 1
+    assert sum(event.event_type == "resource.teardown_admitted" for event in events) == 1
+    assert sum(event.event_type == "resource.teardown_completed" for event in events) == 1
+    assert sum(event.event_type == "resource.worktree_removed" for event in events) == 1

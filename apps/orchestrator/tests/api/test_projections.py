@@ -223,6 +223,14 @@ async def test_disabled_database_projection_is_complete_and_has_server_commands(
     ]
     assert projection["resource"]["database_state"] == "DISABLED"
     assert projection["resource"]["database_name"] is None
+    assert projection["resource"]["database_role"] is None
+    from forge.domain.teardown import teardown_confirmation
+
+    async with PostgresUnitOfWork(session_factory) as work:
+        current_resource_run = await work.runs.get(persisted_run.id)
+    assert projection["resource"]["teardown_confirmation"] == teardown_confirmation(
+        current_resource_run
+    )
     assert "secret_id" not in response.text and "secret_reference" not in response.text
     assert projection["recovery_hold"] is recovery_hold
     expected = {"cancel"} if recovery_hold else {"pause", "cancel"}

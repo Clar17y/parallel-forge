@@ -276,6 +276,7 @@ async def test_compose_worker_handlers_production_construction(tmp_path: Path) -
         "cancel",
         "resume",
         "request_candidate_changes",
+        "teardown_run_resources",
         "approve_pr",
         "publish_pr",
         "monitor_pr",

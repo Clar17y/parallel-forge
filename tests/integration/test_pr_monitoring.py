@@ -198,7 +198,10 @@ async def test_monitor_persists_observation_and_replays_without_duplicate_delive
         by_id = {check["id"]: check for check in history}
         for check in cockpit["checks"]:
             assert by_id[check["id"]]["head_sha"] == check["head_sha"]
-            assert by_id[check["id"]]["evidence_digest"] == cockpit["candidate"]["validation_evidence_digest"]
+            assert (
+                by_id[check["id"]]["evidence_digest"]
+                == cockpit["candidate"]["validation_evidence_digest"]
+            )
             assert by_id[check["id"]]["attempt"] is not None
         remote = cockpit["remote_observation"]
         assert remote["observation_digest"] == descriptor.digest
@@ -207,6 +210,37 @@ async def test_monitor_persists_observation_and_replays_without_duplicate_delive
             item["name"] for item in wire.get("checks", [])
         ]
         if observation == "ready":
+            from fastapi import FastAPI
+            from forge.api.dependencies import require_operator
+            from forge.api.routes.artifacts import router_for
+            from forge.application.services.artifact_reads import ArtifactReadService
+            from forge.persistence.queries.artifacts import PostgresArtifactReadQuery
+            from httpx import ASGITransport, AsyncClient
+
+            app = FastAPI()
+            app.state.artifact_read_service = ArtifactReadService(
+                PostgresArtifactReadQuery(factory), case.artifact_store
+            )
+            app.dependency_overrides[require_operator] = lambda: object()
+            app.include_router(router_for(), prefix="/api")
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                protection_response = await client.get(
+                    f"/api/artifacts/{descriptor.digest}/merge-protection"
+                )
+            assert protection_response.status_code == 200, protection_response.text
+            protection_view = protection_response.json()
+            merge_wire = json.loads(
+                await case.artifact_store.open_bytes(run.pending_evidence_digest)
+            )
+            assert protection_view["protection_digest"] == merge_wire["protection_digest"]
+            assert protection_view["head_sha"] == merge_wire["head_sha"]
+            assert protection_view["observed_base_sha"] == merge_wire["base_sha"]
+            assert (
+                protection_view["protection"]["evidence_source"]
+                == wire["protection"]["evidence_source"]
+            )
             assert remote["reviews"][0]["comment_count"] == 1
             assert remote["reviews"][0]["requested_changes"] is False
             assert remote["reviews"][0]["body"] == "<script>remote text remains evidence</script>"

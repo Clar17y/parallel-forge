@@ -2199,6 +2199,57 @@
         "title": "ListPage[UsageItem]",
         "type": "object"
       },
+      "MergeProtectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "base_ref": {
+            "title": "Base Ref",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "head_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "observed_base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Observed Base Sha",
+            "type": "string"
+          },
+          "protection": {
+            "$ref": "#/components/schemas/ProtectionSnapshotResponse"
+          },
+          "protection_digest": {
+            "title": "Protection Digest",
+            "type": "string"
+          },
+          "pull_request_number": {
+            "minimum": 1.0,
+            "title": "Pull Request Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "protection_digest",
+          "protection",
+          "repository",
+          "pull_request_number",
+          "head_sha",
+          "base_ref",
+          "observed_base_sha"
+        ],
+        "title": "MergeProtectionResponse",
+        "type": "object"
+      },
       "PermissionItem": {
         "additionalProperties": false,
         "properties": {
@@ -2858,6 +2909,51 @@
         "title": "PromptMetadata",
         "type": "object"
       },
+      "ProtectionSnapshotResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_can_bypass": {
+            "title": "Actor Can Bypass",
+            "type": "boolean"
+          },
+          "evidence_source": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Evidence Source",
+            "type": "string"
+          },
+          "merge_queue_enabled": {
+            "title": "Merge Queue Enabled",
+            "type": "boolean"
+          },
+          "required_check_names": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Required Check Names",
+            "type": "array"
+          },
+          "strict_required_checks": {
+            "title": "Strict Required Checks",
+            "type": "boolean"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "strict_required_checks",
+          "merge_queue_enabled",
+          "actor_can_bypass",
+          "evidence_source",
+          "verified",
+          "required_check_names"
+        ],
+        "title": "ProtectionSnapshotResponse",
+        "type": "object"
+      },
       "PullRequestSection": {
         "additionalProperties": false,
         "properties": {
@@ -3115,8 +3211,23 @@
             ],
             "title": "Database Name"
           },
+          "database_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database Role"
+          },
           "database_state": {
             "$ref": "#/components/schemas/ResourceState"
+          },
+          "teardown_confirmation": {
+            "title": "Teardown Confirmation",
+            "type": "string"
           },
           "worktree_path": {
             "anyOf": [
@@ -3131,6 +3242,8 @@
           }
         },
         "required": [
+          "teardown_confirmation",
+          "database_role",
           "worktree_path",
           "branch_name",
           "database_state",
@@ -3357,6 +3470,19 @@
               }
             ],
             "title": "Confirm Branch Name"
+          },
+          "confirm_resource_identity": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirm Resource Identity"
           },
           "delete_branch": {
             "default": false,
@@ -4748,6 +4874,50 @@
           }
         ],
         "summary": "Download"
+      }
+    },
+    "/api/artifacts/{digest}/merge-protection": {
+      "get": {
+        "operationId": "merge_protection_api_artifacts__digest__merge_protection_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeProtectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Merge Protection"
       }
     },
     "/api/artifacts/{digest}/review": {

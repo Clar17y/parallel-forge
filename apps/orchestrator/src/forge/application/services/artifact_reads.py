@@ -13,6 +13,7 @@ from forge.domain.artifact import ArtifactDescriptor, validate_artifact_digest
 TEXT_MEDIA_TYPES = frozenset(
     {
         "text/plain",
+        "text/markdown",
         "text/x-diff",
         "text/x-patch",
         "text/x-log",
