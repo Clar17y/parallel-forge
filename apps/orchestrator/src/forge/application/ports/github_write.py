@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from forge.domain.merge_queue import MergeQueueReceipt
 from forge.domain.release import GitHubPullRequest
 
 
@@ -41,4 +42,22 @@ class GitHubWritePort(Protocol):
     ) -> GitHubPullRequest: ...
 
 
-__all__ = ["GitHubWritePort"]
+class GitHubMergeQueuePort(Protocol):
+    """Queue submission and observation; neither implies merge completion."""
+
+    async def enqueue(
+        self,
+        repository: str,
+        number: int,
+        node_id: str,
+        head_sha: str,
+        merge_method: str,
+        correlation_id: str,
+    ) -> MergeQueueReceipt: ...
+
+    async def observe(
+        self, repository: str, number: int, node_id: str, head_sha: str
+    ) -> MergeQueueReceipt | None: ...
+
+
+__all__ = ["GitHubMergeQueuePort", "GitHubWritePort"]
