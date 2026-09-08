@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -344,6 +344,69 @@ class PostgresCommandRepository:
             .limit(1)
         )
         return pending is not None
+
+    async def list_outstanding_normal(
+        self, *, run_id: UUID, exclude_command_id: UUID
+    ) -> list[CommandEnvelope]:
+        """Load paused-run blockers under its already-held run-row lock."""
+
+        if self._session is None:
+            raise CommandError("outstanding command inspection requires an active unit of work")
+        records = (
+            (
+                await self._session.execute(
+                    select(RunCommand)
+                    .where(
+                        RunCommand.run_id == run_id,
+                        RunCommand.id != exclude_command_id,
+                        RunCommand.command_type.not_in(_CONTROL_COMMAND_TYPES),
+                        RunCommand.status.in_(("PENDING", "LEASED")),
+                    )
+                    .order_by(RunCommand.created_at, RunCommand.id)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_command_from_record(record) for record in records]
+
+    async def cancel_expired_observed_lease(
+        self, command: CommandEnvelope, *, reason: str
+    ) -> CommandEnvelope | None:
+        """Settle exactly one expired observed normal lease without reclaiming it."""
+
+        if self._session is None:
+            raise CommandError("recovery settlement requires an active unit of work")
+        if (
+            command.status is not CommandStatus.LEASED
+            or command.lease_owner is None
+            or command.lease_expires_at is None
+        ):
+            raise CommandLeaseError("recovery settlement requires an observed leased command")
+        result = await self._session.execute(
+            update(RunCommand)
+            .where(
+                RunCommand.id == command.id,
+                RunCommand.run_id == command.run_id,
+                RunCommand.status == "LEASED",
+                RunCommand.lease_owner == command.lease_owner,
+                RunCommand.attempt_count == command.attempt,
+                RunCommand.lease_expires_at == command.lease_expires_at,
+                RunCommand.lease_expires_at <= func.now(),
+                RunCommand.command_type.not_in(_CONTROL_COMMAND_TYPES),
+            )
+            .values(
+                status="CANCELLED",
+                lease_owner=None,
+                lease_expires_at=None,
+                completed_at=func.now(),
+                error_summary=_bounded_error(reason),
+            )
+            .returning(RunCommand)
+        )
+        record = result.scalar_one_or_none()
+        return None if record is None else _command_from_record(record)
 
     async def complete(
         self,

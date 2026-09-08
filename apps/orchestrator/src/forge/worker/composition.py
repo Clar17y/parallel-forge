@@ -21,7 +21,11 @@ from forge.application.handlers.approvals import (
 )
 from forge.application.handlers.delivery import ReviewHandler
 from forge.application.handlers.planning import PlanningHandler
-from forge.application.handlers.run_controls import CancelRunHandler, PauseRunHandler
+from forge.application.handlers.run_controls import (
+    CancelRunHandler,
+    PauseRunHandler,
+    ResumeRunHandler,
+)
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.clock import Clock
@@ -429,6 +433,7 @@ def compose_worker_handlers(
         "validate": delivery.validate,
         "review": ReviewHandler(review, review_decision),
         "pause": PauseRunHandler(),
+        "resume": ResumeRunHandler(),
         "cancel": CancelRunHandler(),
         "request_candidate_changes": candidate_revision.execute,
     }

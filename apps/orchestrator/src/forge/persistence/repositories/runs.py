@@ -9,16 +9,27 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import null, select
+from sqlalchemy import func, null, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.application.ports.runs import RunQuiescence
 from forge.application.services.state_engine import LEGAL, StateEngine
 from forge.domain.approval import ApprovalGate
 from forge.domain.errors import InvalidTransition
 from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState, SuspensionContext, SuspensionKind
-from forge.persistence.models import Project, ProjectPolicyVersion, Run, Task
+from forge.persistence.models import (
+    AgentExecution,
+    OperationIntent,
+    Project,
+    ProjectPolicyVersion,
+    Run,
+    RunCommand,
+    Step,
+    Task,
+    ToolCall,
+)
 
 if TYPE_CHECKING:
     from forge.persistence.repositories.events import PostgresEventRepository
@@ -99,6 +110,54 @@ class PostgresRunRepository:
         if record is None:
             raise RunNotFound(run_id)
         return _snapshot_from_record(record)
+
+    async def prove_quiescent(self, run_id: UUID, *, exclude_command_id: UUID) -> RunQuiescence:
+        """Count all durable work which could race a paused-run restoration.
+
+        The caller holds the run row lock.  Leased rows are blockers regardless
+        of expiry: an expired lease still represents unsettled work until its
+        owner is explicitly recovered.
+        """
+
+        command_count = await self._session.scalar(
+            select(func.count())
+            .select_from(RunCommand)
+            .where(
+                RunCommand.run_id == run_id,
+                RunCommand.id != exclude_command_id,
+                RunCommand.status.in_(("PENDING", "LEASED")),
+            )
+        )
+        step_count = await self._session.scalar(
+            select(func.count())
+            .select_from(Step)
+            .where(Step.run_id == run_id, Step.status == "RUNNING")
+        )
+        execution_count = await self._session.scalar(
+            select(func.count())
+            .select_from(AgentExecution)
+            .where(AgentExecution.run_id == run_id, AgentExecution.status == "RUNNING")
+        )
+        tool_count = await self._session.scalar(
+            select(func.count())
+            .select_from(ToolCall)
+            .where(ToolCall.run_id == run_id, ToolCall.status == "RUNNING")
+        )
+        operation_count = await self._session.scalar(
+            select(func.count())
+            .select_from(OperationIntent)
+            .where(
+                OperationIntent.run_id == run_id,
+                OperationIntent.status.in_(("PENDING", "NEEDS_RECONCILIATION")),
+            )
+        )
+        return RunQuiescence(
+            pending_or_leased_commands=int(command_count or 0),
+            running_steps=int(step_count or 0),
+            running_executions=int(execution_count or 0),
+            running_tools=int(tool_count or 0),
+            unresolved_operations=int(operation_count or 0),
+        )
 
     async def list(
         self, *, project_id: UUID | None = None, task_id: UUID | None = None

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
@@ -69,6 +69,20 @@ class CommandRepository(Protocol):
         Callers hold the run row lock for ``expected_run_version``.  That lock
         serializes this check with control admission, preventing a finalizer
         from advancing a run after a stop was accepted for its current version.
+        """
+
+    async def list_outstanding_normal(
+        self, *, run_id: UUID, exclude_command_id: UUID
+    ) -> Sequence[CommandEnvelope]:
+        """List pending or leased normal work while the caller holds the run lock."""
+
+    async def cancel_expired_observed_lease(
+        self, command: CommandEnvelope, *, reason: str
+    ) -> CommandEnvelope | None:
+        """Cancel only the exact expired lease observed by paused-run recovery.
+
+        This caller-transaction-bound operation never claims work. ``None``
+        means another delivery changed the observed lease before settlement.
         """
 
     async def complete(

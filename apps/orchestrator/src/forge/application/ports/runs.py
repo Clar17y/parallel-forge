@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -12,12 +13,37 @@ from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState
 
 
+@dataclass(frozen=True, slots=True)
+class RunQuiescence:
+    """Durable proof that a run has no work which can race a resume."""
+
+    pending_or_leased_commands: int
+    running_steps: int
+    running_executions: int
+    running_tools: int
+    unresolved_operations: int
+
+    @property
+    def is_quiescent(self) -> bool:
+        return not any(
+            (
+                self.pending_or_leased_commands,
+                self.running_steps,
+                self.running_executions,
+                self.running_tools,
+                self.unresolved_operations,
+            )
+        )
+
+
 class RunRepository(Protocol):
     """Persistence operations for the authoritative run snapshot."""
 
     async def get(self, run_id: UUID) -> RunSnapshot: ...
 
     async def get_for_update(self, run_id: UUID) -> RunSnapshot: ...
+
+    async def prove_quiescent(self, run_id: UUID, *, exclude_command_id: UUID) -> RunQuiescence: ...
 
     async def list(
         self, *, project_id: UUID | None = None, task_id: UUID | None = None
@@ -156,4 +182,4 @@ class RunRepository(Protocol):
     ) -> RunSnapshot: ...
 
 
-__all__ = ["RunRepository"]
+__all__ = ["RunQuiescence", "RunRepository"]
