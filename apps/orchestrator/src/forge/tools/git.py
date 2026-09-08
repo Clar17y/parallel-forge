@@ -1198,11 +1198,12 @@ class ControlledGit:
         """Reconcile absence, repairing a checked-out missing ref without retrying deletion."""
         _validate_sha(expected_head)
         with self._retained_branch_access(worktree, require_unchecked_out=False) as ref:
+            # Any direct ref proves deletion is not complete, including a moved
+            # or checked-out branch. Preserve it and settle the operation failed.
+            if self._direct_branch_head(ref) is not None:
+                return False
             self._reject_checkout_and_restore_missing_ref(ref, expected_head)
-            current = self._direct_branch_head(ref)
-            if current is not None and current != expected_head:
-                raise ControlledGitError()
-            return current is None
+            return self._direct_branch_head(ref) is None
 
     def _reject_checkout_and_restore_missing_ref(self, ref: str, expected_head: str) -> None:
         if not self._branch_is_checked_out(ref):

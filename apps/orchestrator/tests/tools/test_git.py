@@ -2768,3 +2768,17 @@ def test_retained_branch_deletion_inspection_never_retries_effect(
         handle.base_sha,
     )
     assert controlled.inspect_retained_branch_deletion(handle, handle.base_sha) is True
+
+
+@pytest.mark.parametrize("checked_out", [False, True])
+def test_retained_branch_recovery_reports_conclusive_moved_ref(tmp_path: Path, checked_out):
+    repository, identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    _git(repository, "commit", "--allow-empty", "-m", "advanced tip")
+    moved = controlled.resolve_default_base_sha()
+    _git(repository, "update-ref", f"refs/heads/{identity.branch}", moved)
+    if checked_out:
+        _git(repository, "switch", identity.branch)
+    assert controlled.inspect_retained_branch_deletion(handle, handle.base_sha) is False
+    assert controlled._parse_base_sha(identity.branch) == moved
