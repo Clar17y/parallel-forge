@@ -304,7 +304,9 @@ class GitHubClient:
                 required_check_names=tuple(sorted(required_names)),
                 merge_queue_method=queue_method,
             )
-        except GitHubClientError:
+        except GitHubClientError as error:
+            if error.category in {"unavailable", "rate_limited"}:
+                raise
             return _unverified()
 
     async def _rulesets(
@@ -502,7 +504,7 @@ async def _bounded_body(response: httpx.Response) -> bytes:
 
 
 def _retry_delay(response: httpx.Response, now: float) -> float | None:
-    if response.status_code != 403:
+    if response.status_code not in {403, 429}:
         return None
     try:
         if response.headers.get("Retry-After") is not None:
@@ -511,9 +513,9 @@ def _retry_delay(response: httpx.Response, now: float) -> float | None:
             return min(
                 _MAX_BACKOFF_SECONDS, max(0.0, float(response.headers["X-RateLimit-Reset"]) - now)
             )
-    except ValueError:
-        return None
-    return None
+    except ValueError, KeyError:
+        pass
+    return 0.25 if response.status_code == 429 else None
 
 
 def _cache_key(method: str, url: str, params: object, token: str) -> str:

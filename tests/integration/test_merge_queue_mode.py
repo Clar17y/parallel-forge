@@ -79,6 +79,7 @@ async def composed_queue_handlers(tmp_path):
     (True, None, "merged_admission_ack_renewed"),
     (True, None, "routing_history_unavailable"), (True, None, "routing_mode_unavailable"),
     (True, None, "merged_completion_unavailable"),
+    (True, None, "merged_protection_unavailable"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, composed_queue_handlers, queue, crash, ending
@@ -396,9 +397,20 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         first_poll = await resumed_release(case, first_poll, factory)
         if ending == "merged_poll_resume_twice":
             first_poll = await resumed_release(case, first_poll, factory)
+    if ending == "merged_protection_unavailable":
+        from forge.release.github_client import GitHubClientError
+
+        original_protection_read = read.get_merge_protection
+
+        async def unavailable_protection(*args):
+            raise GitHubClientError("unavailable")
+
+        read.get_merge_protection = unavailable_protection
     for _ in range(2):
         async with PostgresUnitOfWork(factory) as work:
             await handlers["observe_merge_queue"](first_poll, work)
+    if ending == "merged_protection_unavailable":
+        read.get_merge_protection = original_protection_read
     async with PostgresUnitOfWork(factory) as work:
         assert (await work.runs.get(case.run_id)).state is RunState.MERGING
     await commands.complete(first_poll.id, worker_id=first_poll.lease_owner)

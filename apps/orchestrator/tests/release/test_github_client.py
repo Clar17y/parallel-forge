@@ -529,3 +529,15 @@ async def test_merge_protection_unions_classic_and_effective_ruleset_check_names
 
     protection = await _client(handler).get_merge_protection("owner/repo", "main")
     assert protection.required_check_names == ("a", "classic", "z")
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,category", [(500, "unavailable"), (429, "rate_limited")])
+async def test_protection_transport_failure_stays_retryable(status, category):
+    client = _client(lambda _: httpx.Response(status, json={"message": "untrusted details"}))
+    try:
+        with pytest.raises(GitHubClientError) as caught:
+            await client.get_merge_protection("owner/repo", "main")
+        assert caught.value.category == category
+        assert "untrusted details" not in str(caught.value)
+    finally:
+        await client.aclose()
