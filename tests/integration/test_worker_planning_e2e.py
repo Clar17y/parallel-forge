@@ -138,6 +138,7 @@ async def workflow_session_factory(migrated_database_url):
         "approve",
         "revision",
         "revision_twice",
+        "revision_resume",
         "revision_crash",
         "revision_crash_tamper",
         "revision_crash_removed_feedback",
@@ -222,11 +223,13 @@ async def test_http_plan_requires_exact_approval_before_preparation(
             handlers=handlers(settings, session_factory, gateway),
             worker_id="planning-e2e",
         )
-        if scenario in {"pause", "cancel"}:
+        if scenario in {"pause", "cancel", "revision_resume"}:
             original_execute = gateway.execute
 
             async def controlled_planner(request):
                 result = await original_execute(request)
+                if scenario == "revision_resume" and len(gateway.requests) != 2:
+                    return result
                 async with session_factory() as session:
                     current = await session.get(Run, run_id)
                     control_version = current.version
@@ -234,7 +237,7 @@ async def test_http_plan_requires_exact_approval_before_preparation(
                     client,
                     f"/api/runs/{run_id}/commands",
                     {
-                        "command_type": scenario,
+                        "command_type": "pause" if scenario == "revision_resume" else scenario,
                         "expected_run_version": control_version,
                     },
                     202,
@@ -358,6 +361,28 @@ async def test_http_plan_requires_exact_approval_before_preparation(
             stale = await client.post(f"/api/runs/{run_id}/approvals", json=body)
             assert stale.status_code == 409
             await tick_success(worker, session_factory, run_id)
+            if scenario == "revision_resume":
+                async with session_factory() as session:
+                    paused = await session.get(Run, run_id)
+                    assert paused.state == "PAUSED"
+                    paused_version = paused.version
+                await post(
+                    client,
+                    f"/api/runs/{run_id}/commands",
+                    {"command_type": "resume", "expected_run_version": paused_version},
+                    202,
+                )
+                await tick_success(worker, session_factory, run_id)
+                await tick_success(worker, session_factory, run_id)
+                assert len(gateway.requests) == 3
+                assert feedback in gateway.requests[2].context.model_dump_json()
+                assert gateway.requests[2].context == gateway.requests[1].context
+                assert gateway.requests[2].execution_id != gateway.requests[1].execution_id
+                async with session_factory() as session:
+                    resumed = await session.get(Run, run_id)
+                    assert resumed.state == "AWAITING_PLAN_APPROVAL"
+                    assert resumed.local_remediation_count == 0
+                return
             assert len(gateway.requests) == 2
             assert feedback in gateway.requests[1].context.model_dump_json()
             assert feedback not in gateway.requests[1].system_instruction

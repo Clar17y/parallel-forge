@@ -160,6 +160,22 @@ class BoundDeliveryGateway:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
+        # Older admissions contain the canonical context directly. Fresh
+        # admissions bind that context to an execution, allowing identical
+        # inputs to retain distinct immutable producer lineage on resume.
+        if len(artifacts) == 1:
+            retained = await self._store.open_bytes(artifacts[0].digest)
+            if retained != wire:
+                wire = json.dumps(
+                    {
+                        "schema_version": 1,
+                        "execution_id": str(request.execution_id),
+                        "context": request.context.model_dump(mode="json"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
         if (
             len(artifacts) != 1
             or artifacts[0].artifact_id != admission.input_artifact_id

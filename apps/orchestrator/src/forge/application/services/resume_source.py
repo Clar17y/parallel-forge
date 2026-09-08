@@ -51,6 +51,25 @@ async def resume_source(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnv
     Return the original stopped command for its existing phase-specific causal
     checks. A continuation preserves every phase input except semantic attempt.
     """
+    return await _resume_source(work, queued, historical=False)
+
+
+async def resume_origin(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnvelope | None:
+    """Follow verified, strictly older resume links to the original stage authority."""
+    source = await resume_source(work, queued)
+    if source is None:
+        return None
+    while resume_command_ids(source.payload) is not None:
+        previous = await _resume_source(work, source, historical=True)
+        if previous is None:
+            raise CommandRecoveryRequired("resume origin is unavailable")
+        source = previous
+    return source
+
+
+async def _resume_source(
+    work: UnitOfWork, queued: CommandEnvelope, *, historical: bool
+) -> CommandEnvelope | None:
     identities = resume_command_ids(queued.payload)
     if identities is None:
         return None
@@ -64,7 +83,12 @@ async def resume_source(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnv
     previous_attempt = source.payload.get("semantic_attempt", 1)
     if (
         queued.payload_schema_version != 1
-        or queued.status is not CommandStatus.LEASED
+        or queued.status
+        not in (
+            {CommandStatus.CANCELLED, CommandStatus.COMPLETED}
+            if historical
+            else {CommandStatus.LEASED}
+        )
         or resume.run_id != queued.run_id
         or resume.command_type != "resume"
         or resume.status is not CommandStatus.COMPLETED
@@ -139,4 +163,10 @@ async def resume_source(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnv
     return source
 
 
-__all__ = ["RESUME_FIELDS", "continuation_binding", "resume_command_ids", "resume_source"]
+__all__ = [
+    "RESUME_FIELDS",
+    "continuation_binding",
+    "resume_command_ids",
+    "resume_origin",
+    "resume_source",
+]

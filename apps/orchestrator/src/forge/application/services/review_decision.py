@@ -20,7 +20,8 @@ from forge.application.services.approved_plan import (
     ApprovedPlanError,
     ApprovedPlanLoader,
 )
-from forge.application.services.review import _EXECUTION_NAMESPACE, _STEP_NAMESPACE
+from forge.application.services.resume_source import resume_origin
+from forge.application.services.review import _EXECUTION_NAMESPACE, _STEP_NAMESPACE, ReviewService
 from forge.domain.actor import AgentRole
 from forge.domain.agent import AgentFinishStatus
 from forge.domain.approval import ApprovalGate, PrApprovalEvidence, canonical_digest
@@ -62,7 +63,9 @@ class ReviewDecisionService:
         self._approved = approved_plans or ApprovedPlanLoader(artifact_store)
 
     async def decide(self, command: CommandEnvelope, work: UnitOfWork) -> ReviewDecision:
-        attempt, validation_id, prior_id = self._command(command)
+        attempt, validation_id, prior_id = self._command(
+            command, await resume_origin(work, command)
+        )
         await self._fence(command, work)
         try:
             approved = await self._approved.load(work, command.run_id)
@@ -458,7 +461,7 @@ class ReviewDecisionService:
         current = await self._approved.load(work, command.run_id)
         if current.run != approved.run or current.approval_id != approved.approval_id:
             raise ReviewDecisionRecoveryRequired("review decision authority changed")
-        _, validation_id, prior_id = self._command(command)
+        _, validation_id, prior_id = self._command(command, await resume_origin(work, command))
         _, _, refreshed = await self._evidence(
             work, current, candidate[0].evidence_set_id, validation_id, prior_id
         )
@@ -564,33 +567,14 @@ class ReviewDecisionService:
             raise ReviewDecisionRecoveryRequired("review decision lease differs")
 
     @staticmethod
-    def _command(command: CommandEnvelope) -> tuple[int, UUID, UUID | None]:
-        payload = command.payload
-        attempt = payload.get("semantic_attempt")
+    def _command(
+        command: CommandEnvelope, origin: CommandEnvelope | None = None
+    ) -> tuple[int, UUID, UUID | None]:
         try:
-            validation = UUID(str(payload["validation_evidence_set_id"]))
-            prior = (
-                None
-                if "prior_review_evidence_set_id" not in payload
-                else UUID(str(payload["prior_review_evidence_set_id"]))
-            )
-        except KeyError, TypeError, ValueError:
+            attempt, validation, prior = ReviewService._validate(command, origin)
+        except CommandRecoveryRequired:
             raise ReviewDecisionRecoveryRequired("review decision command is invalid") from None
-        expected = {"semantic_attempt": attempt, "validation_evidence_set_id": str(validation)}
-        if prior is not None:
-            expected["prior_review_evidence_set_id"] = str(prior)
-        if (
-            type(command) is not CommandEnvelope
-            or command.command_type != "review"
-            or command.status is not CommandStatus.LEASED
-            or command.payload_schema_version != 1
-            or type(attempt) is not int
-            or attempt < 1
-            or command.idempotency_key != f"{command.run_id}:review:{attempt}"
-            or payload != expected
-            or not validation.int
-            or (prior is not None and not prior.int)
-        ):
+        if not validation.int or (prior is not None and not prior.int):
             raise ReviewDecisionRecoveryRequired("review decision command is invalid")
         return attempt, validation, prior
 

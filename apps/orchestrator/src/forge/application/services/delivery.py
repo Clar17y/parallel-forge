@@ -14,6 +14,7 @@ from forge.application.ports.evidence import EvidenceKind, EvidenceSetDescriptor
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.resume_source import resume_origin
 from forge.application.services.validation import (
     ValidationService,
     _fence_command,
@@ -56,7 +57,9 @@ class DeliveryService:
     async def validate(self, command: CommandEnvelope, work: UnitOfWork) -> DeliveryDecision:
         """Run checks, then atomically choose review, remediation, or intervention."""
         await _fence_command(command, work)
-        _attempt, prior_review_id = validation_command_binding(command)
+        _attempt, prior_review_id = validation_command_binding(
+            command, await resume_origin(work, command)
+        )
         approved = await self._approved_plans.load(work, command.run_id)
         if command.actor_id != approved.approval_actor_id:
             raise CommandRecoveryRequired("validation decision actor differs")

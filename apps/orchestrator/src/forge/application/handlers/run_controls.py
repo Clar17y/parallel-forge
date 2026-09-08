@@ -10,10 +10,23 @@ from uuid import UUID
 
 from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.resume_continuation import enqueue_resumed_stage
+from forge.application.services.resume_reconciliation import ResumeReconciler
+from forge.application.services.resume_source import continuation_binding, resume_command_ids
 from forge.application.services.state_engine import StateEngine
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.commands import CommandNotFound
+
+_ACTIVE_RESUME_STATES = frozenset(
+    {
+        RunState.PLANNING,
+        RunState.IMPLEMENTING,
+        RunState.REMEDIATING,
+        RunState.VALIDATING,
+        RunState.REVIEWING,
+    }
+)
 
 
 class ControlCommandRejected(RuntimeError):
@@ -35,7 +48,7 @@ class CancelRunHandler:
 
 
 class ResumeRunHandler:
-    """Restore a paused approval/intervention run after proving quiescence."""
+    """Restore a reconciled run and atomically queue its local continuation."""
 
     async def __call__(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         _validate_resume_command(command)
@@ -67,7 +80,13 @@ class ResumeRunHandler:
                     command,
                     run.version,
                     "run.resumed",
-                    _resume_payload(command, expected_state, pause_authority.id, run=run),
+                    await _resume_replay_payload(
+                        work,
+                        command,
+                        run,
+                        pause_authority.id,
+                        resumed[2] if resumed is not None else None,
+                    ),
                 )
             ):
                 raise CommandRecoveryRequired("resume replay requires recovery")
@@ -77,7 +96,7 @@ class ResumeRunHandler:
         if run.version != command.expected_run_version:
             raise ControlCommandRejected("resume command version is stale")
         target = _restored_state(run)
-        if target not in {
+        if target not in _ACTIVE_RESUME_STATES | {
             RunState.AWAITING_PLAN_APPROVAL,
             RunState.AWAITING_PR_APPROVAL,
             RunState.AWAITING_MERGE_APPROVAL,
@@ -86,15 +105,21 @@ class ResumeRunHandler:
             raise CommandRecoveryRequired("paused active phase requires recovery")
 
         pause_command = await _validate_pause_authority(work, run)
-        proof = await work.runs.prove_quiescent(run.id, exclude_command_id=command.id)
-        if not proof.is_quiescent:
-            raise CommandRecoveryRequired("paused run has unsettled durable work")
+        payload = _resume_payload(command, target, pause_command.id, run=run)
+        if target in _ACTIVE_RESUME_STATES:
+            sources = await ResumeReconciler().reconcile(work, command)
+            queued = await enqueue_resumed_stage(work, command, run, sources)
+            payload["continuation"] = continuation_binding(queued, sources[0].id)
+        else:
+            proof = await work.runs.prove_quiescent(run.id, exclude_command_id=command.id)
+            if not proof.is_quiescent:
+                raise CommandRecoveryRequired("paused run has unsettled durable work")
 
         await work.runs.resume(
             run.id,
             run.version,
             "run.resumed",
-            _resume_payload(command, target, pause_command.id, run=run),
+            payload,
             actor_class="operator",
             actor_id=command.actor_id,
         )
@@ -270,7 +295,7 @@ def _resume_payload(
 
 async def _load_resume_event(
     work: UnitOfWork, command: CommandEnvelope
-) -> tuple[RunState, UUID] | None:
+) -> tuple[RunState, UUID, object] | None:
     events = [
         event
         for event in await work.events.list_for_version(
@@ -288,9 +313,45 @@ async def _load_resume_event(
     raw = payload.get("restored_state")
     pause_id = payload.get("pause_command_id")
     try:
-        return RunState(raw), UUID(str(pause_id))  # type: ignore[arg-type]
+        return RunState(raw), UUID(str(pause_id)), payload.get("continuation")  # type: ignore[arg-type]
     except TypeError, ValueError:
         return None
+
+
+async def _resume_replay_payload(
+    work: UnitOfWork,
+    command: CommandEnvelope,
+    run: RunSnapshot,
+    pause_id: UUID,
+    continuation: object,
+) -> dict[str, object]:
+    payload = _resume_payload(command, run.state, pause_id, run=run)
+    if run.state not in _ACTIVE_RESUME_STATES:
+        if continuation is not None:
+            raise CommandRecoveryRequired("quiescent resume has unexpected continuation")
+        return payload
+    if not isinstance(continuation, Mapping):
+        raise CommandRecoveryRequired("resumed stage continuation is missing")
+    try:
+        queued = await work.commands.get(UUID(str(continuation.get("command_id"))))
+        identities = resume_command_ids(queued.payload)
+        if identities is None or identities[0] != command.id:
+            raise ValueError
+        source = await work.commands.get(identities[1])
+    except CommandNotFound, ValueError, TypeError:
+        raise CommandRecoveryRequired("resumed stage continuation is invalid") from None
+    if (
+        queued.run_id != run.id
+        or source.run_id != run.id
+        or queued.status is not CommandStatus.PENDING
+        or queued.expected_run_version != run.version
+        or queued.actor_id != source.actor_id
+        or queued.command_type != source.command_type
+        or source.status not in {CommandStatus.COMPLETED, CommandStatus.CANCELLED}
+    ):
+        raise CommandRecoveryRequired("resumed stage continuation changed")
+    payload["continuation"] = continuation_binding(queued, source.id)
+    return payload
 
 
 async def _replayed(

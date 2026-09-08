@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid5
@@ -50,6 +51,11 @@ from forge.application.services.control_settlement import (
     pending_current_control_stop,
 )
 from forge.application.services.developer_result import verify_developer_output
+from forge.application.services.resume_source import (
+    RESUME_FIELDS,
+    resume_command_ids,
+    resume_origin,
+)
 from forge.application.services.suspended_delivery import record_suspended_delivery
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
@@ -119,7 +125,8 @@ class DevelopmentService:
         )
 
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> ExecutionOutcome:
-        attempt, validation_id, prior_review_id = self._validate(command)
+        origin = await resume_origin(work, command)
+        attempt, validation_id, prior_review_id = self._validate(command, origin)
         step_id, execution_id = (
             uuid5(_STEP_NAMESPACE, str(command.id)),
             uuid5(_EXECUTION_NAMESPACE, str(command.id)),
@@ -129,7 +136,7 @@ class DevelopmentService:
         )
         if replay is not None:
             return replay
-        approved = await self._load_current(command, work)
+        approved = await self._load_current(command, work, origin)
         worktree, git = self._worktree(approved)
         # Do not retain database locks while reading untrusted repository files.
         await work.commit()
@@ -159,7 +166,15 @@ class DevelopmentService:
             allowed_tools=_TOOLS,
             budget=AgentBudget.from_model_policy(approved.policy.developer_model),
         )
-        input_descriptor = await self._put(self._json(context.model_dump(mode="json")))
+        input_descriptor = await self._put(
+            self._json(
+                {
+                    "schema_version": 1,
+                    "execution_id": str(execution_id),
+                    "context": context.model_dump(mode="json"),
+                }
+            )
+        )
         try:
             await self._admit(
                 command,
@@ -396,7 +411,11 @@ class DevelopmentService:
         await work.commit()
         return outcome
 
-    async def _load_current(self, command: CommandEnvelope, work: UnitOfWork) -> ApprovedPlan:
+    async def _load_current(
+        self, command: CommandEnvelope, work: UnitOfWork, origin: CommandEnvelope | None = None
+    ) -> ApprovedPlan:
+        if origin is None:
+            origin = await resume_origin(work, command)
         await self._fence(command, work)
         try:
             approved = await self._approved.load(work, command.run_id)
@@ -420,36 +439,39 @@ class DevelopmentService:
         ):
             raise DevelopmentRecoveryRequired("implementation actor is invalid")
         if command.command_type == "remediate":
-            _attempt, validation_id, _prior_review_id = self._validate(command)
-            if command.payload.get("automatic") is False:
+            authority = origin or command
+            _attempt, validation_id, _prior_review_id = self._validate(command, origin)
+            if authority.payload.get("automatic") is False:
                 events = [
                     event
                     for event in await work.events.list_after(command.run_id, 0)
                     if event.event_type == "run.candidate_revision_requested"
-                    and event.payload.get("queued_command_id") == str(command.id)
+                    and event.payload.get("queued_command_id") == str(authority.id)
                 ]
                 if (
                     len(events) != 1
                     or events[0].actor_class != "operator"
                     or events[0].actor_id != command.actor_id
-                    or events[0].run_version != approved.run.version
-                    or events[0].payload.get("queued_payload") != command.payload
-                    or events[0].payload.get("queued_key") != command.idempotency_key
+                    or events[0].run_version != authority.expected_run_version
+                    or events[0].payload.get("queued_payload") != authority.payload
+                    or events[0].payload.get("queued_key") != authority.idempotency_key
                     or events[0].payload.get("local_remediation_count")
                     != approved.run.local_remediation_count
                     or events[0].payload.get("approval_id") != str(approved.approval_id)
                     or events[0].payload.get("source_command_id")
-                    != command.payload["feedback_command_id"]
+                    != authority.payload["feedback_command_id"]
                 ):
                     raise DevelopmentRecoveryRequired("human remediation authority differs")
-                source = await work.commands.get(UUID(str(command.payload["feedback_command_id"])))
+                source = await work.commands.get(
+                    UUID(str(authority.payload["feedback_command_id"]))
+                )
                 if (
                     source.run_id != command.run_id
                     or source.command_type != "request_candidate_changes"
                     or source.status is not CommandStatus.COMPLETED
                     or source.actor_id != command.actor_id
                     or source.payload_schema_version != 1
-                    or source.expected_run_version + 1 != approved.run.version
+                    or source.expected_run_version + 1 != authority.expected_run_version
                     or set(source.payload) != {"feedback"}
                 ):
                     raise DevelopmentRecoveryRequired("human feedback command authority differs")
@@ -458,8 +480,8 @@ class DevelopmentService:
                 event
                 for event in await work.events.list_after(command.run_id, 0)
                 if event.event_type in {"run.validation_decided", "run.review_decided"}
-                and event.run_version == approved.run.version
-                and event.payload.get("queued_command_id") == str(command.id)
+                and event.run_version == authority.expected_run_version
+                and event.payload.get("queued_command_id") == str(authority.id)
             ]
             event = events[0] if len(events) == 1 else None
             expected_payload = None if event is None else event.payload.get("queued_payload")
@@ -477,8 +499,8 @@ class DevelopmentService:
                 or event.actor_id is not None
                 or event.payload.get("approval_id") != str(approved.approval_id)
                 or event.payload.get("validation_evidence_set_id") != str(validation_id)
-                or expected_payload != command.payload
-                or event.payload.get("queued_key") != command.idempotency_key
+                or expected_payload != authority.payload
+                or event.payload.get("queued_key") != authority.idempotency_key
                 or event.payload.get("target") != RunState.REMEDIATING.value
                 or event.payload.get("local_remediation_count")
                 != approved.run.local_remediation_count
@@ -877,10 +899,25 @@ class DevelopmentService:
                 raise DevelopmentRecoveryRequired("implementation late usage cannot be bound")
             output_id = None
             if output is not None:
+                # A late observation belongs to this execution even when its
+                # developer result bytes match a later accepted execution.
+                # Keep it in an execution-bound receipt so immutable artifact
+                # lineage cannot alias the successful result.
+                late_output = await self._put(
+                    self._json(
+                        {
+                            "schema_version": 1,
+                            "command_id": str(command.id),
+                            "execution_id": str(request.execution_id),
+                            "output_digest": output.digest,
+                            "output": json.loads(await self._store.open_bytes(output.digest)),
+                        }
+                    )
+                )
                 persisted_output = await work.artifacts.record(
-                    output,
+                    late_output,
                     run_id=command.run_id,
-                    producer_type="developer_result",
+                    producer_type="developer_late_result",
                     producer_id=request.execution_id,
                 )
                 output_id = persisted_output.artifact_id
@@ -1043,7 +1080,46 @@ class DevelopmentService:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
     @staticmethod
-    def _validate(command: CommandEnvelope) -> tuple[int, UUID | None, UUID | None]:
+    def _validate(
+        command: CommandEnvelope, origin: CommandEnvelope | None = None
+    ) -> tuple[int, UUID | None, UUID | None]:
+        resumed = origin is not None
+        if origin is not None:
+            resume = resume_command_ids(command.payload)
+            if resume is None:
+                raise DevelopmentRecoveryRequired("resume implementation authority is invalid")
+            resume_id, _source_id = resume
+            payload = {
+                key: value for key, value in command.payload.items() if key not in RESUME_FIELDS
+            }
+            if command.idempotency_key != (
+                f"{command.run_id}:resume:{resume_id}:{command.command_type}:{payload.get('semantic_attempt')}"
+            ):
+                raise DevelopmentRecoveryRequired("resume implementation authority is invalid")
+            DevelopmentService._validate(
+                replace(
+                    origin,
+                    status=CommandStatus.LEASED,
+                    lease_owner=command.lease_owner,
+                    lease_expires_at=command.lease_expires_at,
+                    completed_at=None,
+                )
+            )
+            if {key: value for key, value in payload.items() if key != "semantic_attempt"} != {
+                key: value for key, value in origin.payload.items() if key != "semantic_attempt"
+            }:
+                raise DevelopmentRecoveryRequired("resume implementation authority differs")
+            command = replace(
+                command,
+                payload=payload,
+                idempotency_key=(
+                    f"{command.run_id}:human-remediate:{payload['semantic_attempt']}"
+                    if payload.get("automatic") is False
+                    else f"{command.run_id}:{command.command_type}:{payload['semantic_attempt']}"
+                ),
+            )
+        elif resume_command_ids(command.payload) is not None:
+            raise DevelopmentRecoveryRequired("resume implementation authority is invalid")
         attempt = command.payload.get("semantic_attempt")
         validation_value = command.payload.get("validation_evidence_set_id")
         prior_value = command.payload.get("prior_review_evidence_set_id")
@@ -1064,7 +1140,7 @@ class DevelopmentService:
         ):
             raise DevelopmentRecoveryRequired("implementation command authority is invalid")
         if not remediation:
-            if command.payload != {"semantic_attempt": 1}:
+            if command.payload != {"semantic_attempt": attempt} or (attempt != 1 and not resumed):
                 raise DevelopmentRecoveryRequired("implementation command authority is invalid")
             return attempt, None, None
         if command.payload.get("automatic") is False:

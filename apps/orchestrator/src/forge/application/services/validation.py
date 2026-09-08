@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -37,6 +38,11 @@ from forge.application.services.control_settlement import (
     pending_current_control_stop,
 )
 from forge.application.services.recovery import OperationExecutor
+from forge.application.services.resume_source import (
+    RESUME_FIELDS,
+    resume_command_ids,
+    resume_origin,
+)
 from forge.application.services.suspended_delivery import record_suspended_delivery
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
@@ -72,8 +78,32 @@ async def _fence_command(command: CommandEnvelope, work: UnitOfWork) -> None:
         raise CommandRecoveryRequired("validation delivery does not match its lease")
 
 
-def validation_command_binding(command: CommandEnvelope) -> tuple[int, UUID | None]:
+def validation_command_binding(
+    command: CommandEnvelope, origin: CommandEnvelope | None = None
+) -> tuple[int, UUID | None]:
     """Decode the closed validation payload shared by execution and decisions."""
+    if origin is not None:
+        resume = resume_command_ids(command.payload)
+        if resume is None:
+            raise CommandRecoveryRequired("resume validation authority is invalid")
+        resume_id, _source_id = resume
+        payload = {key: value for key, value in command.payload.items() if key not in RESUME_FIELDS}
+        if command.idempotency_key != (
+            f"{command.run_id}:resume:{resume_id}:validate:{payload.get('semantic_attempt')}"
+        ):
+            raise CommandRecoveryRequired("resume validation authority is invalid")
+        validation_command_binding(origin)
+        if {key: value for key, value in payload.items() if key != "semantic_attempt"} != {
+            key: value for key, value in origin.payload.items() if key != "semantic_attempt"
+        }:
+            raise CommandRecoveryRequired("resume validation authority differs")
+        command = replace(
+            command,
+            payload=payload,
+            idempotency_key=f"{command.run_id}:validate:{payload['semantic_attempt']}",
+        )
+    elif resume_command_ids(command.payload) is not None:
+        raise CommandRecoveryRequired("resume validation authority is invalid")
     attempt = command.payload.get("semantic_attempt")
     prior = command.payload.get("prior_review_evidence_set_id")
     if (
@@ -131,7 +161,8 @@ class ValidationService:
         ):
             raise ValidationError("validation execution is not configured")
         await _fence_command(command, work)
-        attempt, prior_review_id = validation_command_binding(command)
+        origin = await resume_origin(work, command)
+        attempt, prior_review_id = validation_command_binding(command, origin)
         approved = await self._approved_plans.load(work, command.run_id)
         if command.actor_id != approved.approval_actor_id:
             raise CommandRecoveryRequired("validation command actor is not approved")

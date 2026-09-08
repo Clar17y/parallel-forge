@@ -55,6 +55,11 @@ from forge.application.services.control_settlement import (
     pending_current_control_stop,
 )
 from forge.application.services.plan_restart import restart_source
+from forge.application.services.resume_source import (
+    RESUME_FIELDS,
+    resume_command_ids,
+    resume_origin,
+)
 from forge.application.services.suspended_delivery import record_suspended_delivery
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
@@ -592,11 +597,13 @@ class PlanningService:
         ):
             raise PlanningValidationError
         revision = await work.commands.get(descriptor.producer_id)
+        origin = await resume_origin(work, command)
+        authority = origin if origin is not None else command
         if (
             revision.run_id != run_id
             or revision.command_type != "request_plan_revision"
             or revision.actor_id != command.actor_id
-            or revision.expected_run_version + 1 != command.expected_run_version
+            or revision.expected_run_version + 1 != authority.expected_run_version
             or revision.status is not CommandStatus.COMPLETED
         ):
             raise PlanningValidationError
@@ -1031,8 +1038,24 @@ class PlanningService:
             )
             output_id = None
             if output is not None:
+                # A late observation belongs to this execution, even when its
+                # plan bytes match a later accepted plan. Keep it in a receipt
+                # envelope so immutable content lineage cannot alias publication.
+                late_output = await self._store_json(
+                    _canonical_json_bytes(
+                        {
+                            "schema_version": 1,
+                            "command_id": str(command.id),
+                            "execution_id": str(request.execution_id),
+                            "output_digest": output.digest,
+                            "output": json.loads(
+                                await self._artifact_store.open_bytes(output.digest)
+                            ),
+                        }
+                    )
+                )
                 retained = await work.artifacts.record(
-                    output,
+                    late_output,
                     run_id=run.id,
                     producer_type="planning_late_result",
                     producer_id=request.execution_id,
@@ -1085,6 +1108,8 @@ class PlanningService:
         if _semantic_attempt(command) != expected:
             await work.rollback()
             raise PlanningValidationError
+        if await resume_origin(work, command) is not None:
+            return
         if await restart_source(work, command) is None:
             await work.rollback()
             raise PlanningValidationError
@@ -1148,6 +1173,11 @@ class PlanningService:
             or command.status is not CommandStatus.LEASED
             or command.expected_run_version < 0
             or command.run_id.int == 0
+        ):
+            raise PlanningValidationError
+        identities = resume_command_ids(command.payload)
+        if identities is not None and command.idempotency_key != (
+            f"{command.run_id}:resume:{identities[0]}:start_planning:{_semantic_attempt(command)}"
         ):
             raise PlanningValidationError
 
@@ -1383,7 +1413,11 @@ def _semantic_attempt(command: CommandEnvelope) -> int:
 def _valid_planning_payload(payload: Mapping[str, object]) -> bool:
     if payload == {}:
         return True
-    if set(payload) not in ({"semantic_attempt"}, {"semantic_attempt", "feedback_digest"}):
+    resume_command_ids(payload)
+    if set(payload) - RESUME_FIELDS not in (
+        {"semantic_attempt"},
+        {"semantic_attempt", "feedback_digest"},
+    ):
         return False
     value = payload.get("semantic_attempt")
     digest = payload.get("feedback_digest")

@@ -250,8 +250,13 @@ async def test_suspended_after_gateway_preserves_terminal_evidence_without_dispa
             )
         ).all()
     produced = dict(artifacts)
-    assert "developer_result" in produced
+    assert "developer_late_result" in produced
     assert "developer_late_usage" in produced
+    late_result = json.loads(
+        await case.artifact_store.open_bytes(produced["developer_late_result"])
+    )
+    assert late_result["execution_id"] == str(gateway.requests[0].execution_id)
+    assert late_result["output"]["summary"] == "done"
     usage = json.loads(await case.artifact_store.open_bytes(produced["developer_late_usage"]))
     assert usage["usage"][0]["input_tokens"] == 3
     assert usage["usage"][0]["output_tokens"] == 2

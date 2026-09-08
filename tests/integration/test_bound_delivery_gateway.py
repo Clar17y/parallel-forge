@@ -1,5 +1,7 @@
 """Production delivery gateway derives tools from committed execution authority."""
 
+import json
+
 import pytest
 from forge.agents.errors import AgentGatewayError
 from forge.application.services.tools import ControlledToolService
@@ -19,7 +21,7 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 
 
 @pytest.mark.parametrize("role", ["developer", "reviewer"])
-@pytest.mark.parametrize("tamper", [False, True, "resumed"])
+@pytest.mark.parametrize("tamper", [False, True, "resumed", "legacy"])
 async def test_delivery_gateway_binds_only_the_durable_role_context(
     tmp_path, workflow_session_factory, role, tamper
 ):
@@ -28,6 +30,18 @@ async def test_delivery_gateway_binds_only_the_durable_role_context(
         case, command, service, gateway, git = await _service_case(tmp_path, factory)
     else:
         case, command, service, gateway, git, _ = await _review_case(tmp_path, factory)
+    if tamper == "legacy":
+        original_put = service._put
+
+        async def legacy_context(data):
+            value = json.loads(data)
+            if set(value) == {"schema_version", "execution_id", "context"}:
+                data = json.dumps(
+                    value["context"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode()
+            return await original_put(data)
+
+        service._put = legacy_context
     built = []
 
     async def tools_for(request, approved, worktree):
@@ -72,7 +86,7 @@ async def test_delivery_gateway_binds_only_the_durable_role_context(
                     await bound.execute(request)
                 assert not built and not gateway.requests
                 raise RuntimeError("test stopped after refused stale admission")
-            if tamper:
+            if tamper is True:
                 changed = request.context.model_copy(
                     update={
                         "original_task": UntrustedContent.from_text(

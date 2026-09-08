@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID, uuid5
 
@@ -52,6 +53,11 @@ from forge.application.services.approved_plan import (
 from forge.application.services.control_settlement import (
     controlled_stop,
     pending_current_control_stop,
+)
+from forge.application.services.resume_source import (
+    RESUME_FIELDS,
+    resume_command_ids,
+    resume_origin,
 )
 from forge.application.services.suspended_delivery import record_suspended_delivery
 from forge.domain.actor import AgentRole
@@ -120,7 +126,8 @@ class ReviewService:
         )
 
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> EvidenceSetDescriptor:
-        attempt, validation_id, prior_id = self._validate(command)
+        origin = await resume_origin(work, command)
+        attempt, validation_id, prior_id = self._validate(command, origin)
         step_id, execution_id = (
             uuid5(_STEP_NAMESPACE, str(command.id)),
             uuid5(_EXECUTION_NAMESPACE, str(command.id)),
@@ -182,7 +189,15 @@ class ReviewService:
             allowed_tools=_TOOLS,
             budget=AgentBudget.from_model_policy(approved.policy.reviewer_model),
         )
-        input_descriptor = await self._put(self._json(context.model_dump(mode="json")))
+        input_descriptor = await self._put(
+            self._json(
+                {
+                    "schema_version": 1,
+                    "execution_id": str(execution_id),
+                    "context": context.model_dump(mode="json"),
+                }
+            )
+        )
         await self._admit(
             command,
             work,
@@ -675,8 +690,42 @@ class ReviewService:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
     @staticmethod
-    def _validate(command: CommandEnvelope) -> tuple[int, UUID, UUID | None]:
-        payload = command.payload
+    def _validate(
+        command: CommandEnvelope, origin: CommandEnvelope | None = None
+    ) -> tuple[int, UUID, UUID | None]:
+        if origin is not None:
+            resume = resume_command_ids(command.payload)
+            if resume is None:
+                raise ReviewRecoveryRequired("resume review authority is invalid")
+            resume_id, _source_id = resume
+            payload = {
+                key: value for key, value in command.payload.items() if key not in RESUME_FIELDS
+            }
+            if command.idempotency_key != (
+                f"{command.run_id}:resume:{resume_id}:review:{payload.get('semantic_attempt')}"
+            ):
+                raise ReviewRecoveryRequired("resume review authority is invalid")
+            ReviewService._validate(
+                replace(
+                    origin,
+                    status=CommandStatus.LEASED,
+                    lease_owner=command.lease_owner,
+                    lease_expires_at=command.lease_expires_at,
+                    completed_at=None,
+                )
+            )
+            if {key: value for key, value in payload.items() if key != "semantic_attempt"} != {
+                key: value for key, value in origin.payload.items() if key != "semantic_attempt"
+            }:
+                raise ReviewRecoveryRequired("resume review authority differs")
+            command = replace(
+                command,
+                payload=payload,
+                idempotency_key=f"{command.run_id}:review:{payload['semantic_attempt']}",
+            )
+        elif resume_command_ids(command.payload) is not None:
+            raise ReviewRecoveryRequired("resume review authority is invalid")
+        payload = dict(command.payload)
         attempt = payload.get("semantic_attempt")
         if (
             type(command) is not CommandEnvelope
