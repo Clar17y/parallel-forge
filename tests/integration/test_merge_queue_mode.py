@@ -48,6 +48,8 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, "before_scheduling", "merged_admission_resume_after_receipt"),
     (True, None, "merged_admission_resume_twice"),
     (True, None, "merged_poll_resume"), (True, None, "merged_poll_resume_twice"),
+    (True, None, "merged_admission_ack"),
+    (True, None, "merged_admission_ack_renewed"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -281,13 +283,35 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
     assert queue_port.writes == 1
     from forge.application.services.queue_observation import QueueObservationService
 
-    await commands.complete(source.id, worker_id=source.lease_owner)
+    continued_observer = None
+    if ending.startswith("merged_admission_ack"):
+        from test_release_publication_resume import resumed_release
+        if ending.endswith("renewed"):
+            from forge.application.ports.commands import CommandRecoveryRequired
+
+            with pytest.raises(CommandRecoveryRequired, match="lease is active or changed"):
+                await resumed_release(
+                    case, source, factory, continued_type="observe_merge_queue", renewed=True
+                )
+            async with PostgresUnitOfWork(factory) as work:
+                assert (await work.commands.get(source.id)).status.value == "leased"
+                assert (await work.commands.get(observer.id)).status.value == "pending"
+                assert not [e for e in await work.events.list_after(case.run_id, 0)
+                            if e.event_type == "queue_admission.acknowledged_on_resume"]
+            return
+        continued_observer = await resumed_release(
+            case, source, factory, continued_type="observe_merge_queue"
+        )
+        async with PostgresUnitOfWork(factory) as work:
+            assert (await work.commands.get(source.id)).status.value == "completed"
+    else:
+        await commands.complete(source.id, worker_id=source.lease_owner)
     observation_service = QueueObservationService(
         validator, MergeController(read, writes), queue_port,
         OperationExecutor(PostgresOperationRepository(factory)),
     )
     with patch("forge.persistence.repositories.commands._utc_now", return_value=datetime.now(UTC) + timedelta(seconds=20)):
-        first_poll = await commands.claim_next(worker_id="queue-observer", lease_seconds=120)
+        first_poll = continued_observer or await commands.claim_next(worker_id="queue-observer", lease_seconds=120)
     if ending == "merged_poll_resume":
         from forge.application.ports.commands import CommandRecoveryRequired
         from forge.application.services.queue_resume import verify_queue_resume

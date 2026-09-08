@@ -149,6 +149,9 @@ class ResumeRunHandler:
         await settle_reviewed_push_deliveries(work, command, run, self._store)
         await settle_base_updates(work, command, run, self._store)
         await settle_observed_monitors(work, command, run, self._store)
+        from forge.application.services.queue_resume import settle_queue_admission_deliveries
+
+        await settle_queue_admission_deliveries(work, command, run)
         payload = _resume_payload(command, target, pause_command.id, run=run)
         if target in {RunState.PUBLISHING_PR, RunState.MERGING}:
             source, queued = await resume_release(work, command, run, pause_command)
