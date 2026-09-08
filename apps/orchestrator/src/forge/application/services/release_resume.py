@@ -16,6 +16,7 @@ from forge.application.services.resume_source import (
 from forge.application.services.reviewed_push_replay import verify_reviewed_push_replay
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
+from forge.domain.merge_queue import QUEUE_OBSERVATION_FIELDS
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.models import Approval
 from forge.persistence.repositories.commands import CommandNotFound
@@ -25,6 +26,7 @@ _PHASES = {
     "publish_pr": RunState.PUBLISHING_PR,
     "push_reviewed_pr": RunState.MONITORING_PR,
     "merge_pr": RunState.MERGING,
+    "observe_merge_queue": RunState.MERGING,
     "update_base": RunState.REMEDIATING,
 }
 
@@ -176,6 +178,10 @@ def _approval_id(command: CommandEnvelope) -> UUID:
         if command.command_type == "push_reviewed_pr"
         else {"approval_id"}
     )
+    if command.command_type == "observe_merge_queue":
+        expected = set(QUEUE_OBSERVATION_FIELDS)
+        if type(payload.get("poll")) is not int or int(str(payload["poll"])) < 1:
+            raise CommandRecoveryRequired("queue resume poll differs")
     if (
         command.command_type not in _PHASES
         or command.payload_schema_version != 1
@@ -321,6 +327,7 @@ async def resume_release(
     origin = await resumed_release_origin(work, source)
     is_base = source.command_type == "update_base"
     is_reviewed_push = source.command_type == "push_reviewed_pr"
+    is_queue = source.command_type == "observe_merge_queue"
     if is_reviewed_push:
         await _reviewed_push_authority(work, store, paused, source, origin)
     if is_base:
@@ -355,11 +362,16 @@ async def resume_release(
         or (
             not is_base
             and not is_reviewed_push
+            and not is_queue
             and origin.expected_run_version != approval.run_version + 1
         )
         or source.expected_run_version != pause.expected_run_version
     ):
         raise CommandRecoveryRequired("release resume approval differs")
+    if is_queue:
+        from forge.application.services.queue_resume import verify_queue_resume
+
+        await verify_queue_resume(work, origin, approval)
     cancelled = (
         await work.commands.cancel_pending_unstarted(source)
         if source.status is CommandStatus.PENDING

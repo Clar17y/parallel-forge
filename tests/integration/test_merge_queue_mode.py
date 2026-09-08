@@ -47,6 +47,7 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, None, "merged_admission_resume"),
     (True, "before_scheduling", "merged_admission_resume_after_receipt"),
     (True, None, "merged_admission_resume_twice"),
+    (True, None, "merged_poll_resume"), (True, None, "merged_poll_resume_twice"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -287,6 +288,29 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
     )
     with patch("forge.persistence.repositories.commands._utc_now", return_value=datetime.now(UTC) + timedelta(seconds=20)):
         first_poll = await commands.claim_next(worker_id="queue-observer", lease_seconds=120)
+    if ending == "merged_poll_resume":
+        from forge.application.ports.commands import CommandRecoveryRequired
+        from forge.application.services.queue_resume import verify_queue_resume
+
+        substitutions = {
+            "merge_command_id": str(command.id),
+            "enqueue_intent_id": str(record.publication_intent_id),
+            "receipt_digest": "0" * 64,
+            "deadline": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            "poll": 2,
+        }
+        for field, value in substitutions.items():
+            async with PostgresUnitOfWork(factory) as work:
+                approval = await work.auth.get_approval(approval_id=approval_id)
+                changed = replace(first_poll, payload={**dict(first_poll.payload), field: value})
+                with pytest.raises(CommandRecoveryRequired):
+                    await verify_queue_resume(work, changed, approval)
+                assert (await work.commands.get(first_poll.id)).status == first_poll.status
+    if ending.startswith("merged_poll_resume"):
+        from test_release_publication_resume import resumed_release
+        first_poll = await resumed_release(case, first_poll, factory)
+        if ending == "merged_poll_resume_twice":
+            first_poll = await resumed_release(case, first_poll, factory)
     for _ in range(2):
         async with PostgresUnitOfWork(factory) as work:
             await observation_service.execute(first_poll, work)

@@ -4,6 +4,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+QUEUE_OBSERVATION_FIELDS = frozenset({
+    "merge_command_id", "approval_id", "enqueue_intent_id", "receipt_digest", "deadline", "poll",
+})
+
 
 class MergeQueueReceipt(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)

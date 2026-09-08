@@ -17,7 +17,7 @@ from forge.application.services.validation import _fence_command
 from forge.domain.approval import MergeApprovalEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
-from forge.domain.merge_queue import MergeQueueReceipt
+from forge.domain.merge_queue import QUEUE_OBSERVATION_FIELDS, MergeQueueReceipt
 from forge.domain.operation import (
     OperationStatus,
     canonical_digest,
@@ -31,7 +31,7 @@ from forge.release.github_write import GitHubWriteError
 from forge.release.merge import MergeController, ObservedMergeOperation, StaleMergeEvidence
 from forge.release.queue import EnqueueOperation
 
-_FIELDS = {"merge_command_id", "approval_id", "enqueue_intent_id", "receipt_digest", "deadline", "poll"}
+_FIELDS = QUEUE_OBSERVATION_FIELDS
 
 
 class QueueObservationService:
@@ -46,7 +46,7 @@ class QueueObservationService:
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         if (
             command.command_type != "observe_merge_queue" or command.status is not CommandStatus.LEASED
-            or command.payload_schema_version != 1 or set(command.payload) != _FIELDS
+            or command.payload_schema_version != 1 or set(command.payload) - RESUME_FIELDS != _FIELDS
             or type(command.payload["poll"]) is not int or command.payload["poll"] < 1
         ):
             raise CommandRecoveryRequired("queue observation command differs")
@@ -58,6 +58,8 @@ class QueueObservationService:
         except ValueError:
             raise CommandRecoveryRequired("queue observation identity differs") from None
         await _fence_command(command, work)
+        origin = await resumed_release_origin(work, command)
+        core_payload = {key: value for key, value in command.payload.items() if key not in RESUME_FIELDS}
         run = await work.runs.get_for_update(command.run_id)
         source = await work.commands.get(source_id)
         merge_origin = await resumed_release_origin(work, source)
@@ -68,7 +70,7 @@ class QueueObservationService:
             or {key: value for key, value in source.payload.items() if key not in RESUME_FIELDS}
             != {"approval_id": str(approval_id)}
             or source.actor_id != command.actor_id or approval.authenticated_actor_id != command.actor_id
-            or source.expected_run_version != command.expected_run_version
+            or source.expected_run_version > origin.expected_run_version
             or approval.run_version + 1 != merge_origin.expected_run_version
         ):
             raise CommandRecoveryRequired("queue observation source differs")
@@ -76,21 +78,21 @@ class QueueObservationService:
         deadline = await work.runs.duration_deadline(run.id)
         if (
             command.payload["deadline"] != deadline.isoformat()
-            or command.idempotency_key != f"{run.id}:observe-merge-queue:{enqueue_id}:{poll}"
+            or origin.idempotency_key != f"{run.id}:observe-merge-queue:{enqueue_id}:{poll}"
         ):
             raise CommandRecoveryRequired("queue observation deadline or key differs")
         events = await work.events.list_after(run.id, 0)
         parents = [e for e in events
                    if e.event_type in {"run.merge_queue_enqueued", "run.merge_queue_observed"}
-                   and e.payload.get("queued_command_id") == str(command.id)]
+                   and e.payload.get("queued_command_id") == str(origin.id)]
         if len(parents) != 1:
             raise CommandRecoveryRequired("queue observation has no causal scheduling event")
         parent = parents[0]
         if (
             parent.actor_class != "worker" or parent.actor_id != command.actor_id
-            or parent.run_version != command.expected_run_version
-            or parent.payload.get("queued_key") != command.idempotency_key
-            or {key: parent.payload.get(key) for key in _FIELDS} != dict(command.payload)
+            or parent.run_version != origin.expected_run_version
+            or parent.payload.get("queued_key") != origin.idempotency_key
+            or {key: parent.payload.get(key) for key in _FIELDS} != core_payload
             or (poll == 1) != (parent.event_type == "run.merge_queue_enqueued")
         ):
             raise CommandRecoveryRequired("queue observation scheduling binding differs")
@@ -206,7 +208,7 @@ class QueueObservationService:
                 actor_class="worker", actor_id=command.actor_id, occurred_at=self._clock.now(),
             )
         else:
-            payload = {**dict(command.payload), "poll": poll + 1}
+            payload = {**core_payload, "poll": poll + 1}
             key = f"{run.id}:observe-merge-queue:{enqueue_id}:{poll + 1}"
             queued = await work.commands.enqueue(
                 run_id=run.id, command_type="observe_merge_queue", idempotency_key=key, payload=payload,
