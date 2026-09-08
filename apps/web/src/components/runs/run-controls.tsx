@@ -2,14 +2,15 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, ApiError, mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
+import { ResourceTeardown } from './resource-teardown';
 import { parseMergeEvidence, MergeApprovalEvidence, type MergeEvidence } from './merge-approval-evidence';
 import { parsePrEvidence, PrPublicationEvidence, type PrEvidence } from './pr-publication-evidence';
 
 type Projection = components['schemas']['RunProjection'];
 type Command = components['schemas']['AvailableCommand'];
-type Binding = { command: Command; key: string; evidence?: Record<string, unknown>;
+type Binding = { resource?: Projection['resource']; command: Command; key: string; evidence?: Record<string, unknown>;
   merge?: MergeEvidence; protection?: components['schemas']['ProtectionSnapshotResponse']; pr?: PrEvidence; body?: string; challenge?: components['schemas']['ApprovalChallengeResponse']; payload?: Record<string, unknown> };
-const labels: Record<string, string> = { pause: 'Pause', resume: 'Resume', cancel: 'Cancel run',
+const labels: Record<string, string> = { teardown_run_resources: 'Remove run resources', pause: 'Pause', resume: 'Resume', cancel: 'Cancel run',
   request_plan_revision: 'Request revision', approve_plan: 'Approve plan', approve_pr: 'Approve PR publication', approve_merge: 'Approve merge' };
 
 export function RunControls({ projection, onRefresh, disabled = false }: {
@@ -23,7 +24,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
   const lifecycle = useRef<AbortController | null>(null);
   useEffect(() => { const owner = new AbortController(); lifecycle.current = owner; return () => owner.abort(); }, []);
   const current = binding && projection.available_commands.find(item => item.name === binding.command.name);
-  const stale = !!binding && (!current || projection.run.version !== binding.command.expected_run_version || current.expected_run_version !== binding.command.expected_run_version || current.evidence_digest !== binding.command.evidence_digest || current.policy_version !== binding.command.policy_version);
+  const stale = !!binding && (!current || projection.run.version !== binding.command.expected_run_version || current.expected_run_version !== binding.command.expected_run_version || current.evidence_digest !== binding.command.evidence_digest || current.policy_version !== binding.command.policy_version || (!!binding.resource && projection.resource.teardown_confirmation !== binding.resource.teardown_confirmation));
 
   async function report(error: unknown, signal: AbortSignal) {
     if (signal.aborted) return;
@@ -86,6 +87,12 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
         });
         if (!next.challenge?.token) throw new Error('Challenge unavailable');
       }
+      if (name === 'teardown_run_resources') {
+        const prefix = `teardown:${fresh.run.id}:`;
+        if (!fresh.resource.teardown_confirmation.startsWith(prefix) || !/^[a-f0-9]{64}$/.test(fresh.resource.teardown_confirmation.slice(prefix.length))) throw new ApiError(409, 'invalid-resource-confirmation');
+        next.resource = { ...fresh.resource };
+        next.payload = { command_type: name, delete_branch: false, confirm_resource_identity: fresh.resource.teardown_confirmation };
+      }
       if (!signal.aborted) setBinding(next);
     } catch (error) { await report(error, signal); }
     finally { busy.current = false; if (!signal.aborted) setPending(false); }
@@ -134,8 +141,9 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
         <p>Challenge expires {binding.challenge?.expires_at}</p></>}
       {binding.command.requires_feedback && <label>Revision feedback<textarea required maxLength={8000} rows={5}
         value={feedback} readOnly={!!binding.payload} onChange={event => setFeedback(event.target.value)} /></label>}
-      <button disabled={pending || disabled || (binding.command.requires_feedback && !feedback.trim())}
-        onClick={() => void confirm()}>Confirm {labels[binding.command.name].toLowerCase()}</button>
+      {binding.resource ? <ResourceTeardown key={binding.resource.teardown_confirmation} resource={binding.resource}
+        disabled={pending || disabled} onConfirm={() => void confirm()} /> : <button disabled={pending || disabled || (binding.command.requires_feedback && !feedback.trim())}
+        onClick={() => void confirm()}>Confirm {labels[binding.command.name].toLowerCase()}</button>}
     </ConfirmationDialog>}
   </section>;
 }

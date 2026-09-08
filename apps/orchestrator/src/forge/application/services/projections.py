@@ -31,8 +31,11 @@ class ProjectionService:
         if not isinstance(run, dict) or type(run.get("version")) is not int:
             raise ValueError("invalid run projection")
         state = RunState(run["state"])
+        teardown_eligible = result.pop("teardown_eligible", False) is True
         commands: list[dict[str, object]] = []
         for command in RunCommandType:
+            if command == RunCommandType.TEARDOWN_RUN_RESOURCES and not teardown_eligible:
+                continue
             try:
                 _validate_state(state, command.value)
             except RunCommandValidationError:

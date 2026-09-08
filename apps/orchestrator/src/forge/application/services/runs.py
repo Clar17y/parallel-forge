@@ -24,7 +24,7 @@ from forge.application.services.auth import AuthenticatedActor
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
-from forge.domain.teardown import teardown_confirmation
+from forge.domain.teardown import has_removable_resources, teardown_confirmation
 from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.runs import (
     ConcurrencyConflict,
@@ -426,6 +426,8 @@ def _command_payload(request: RunCommandRequest, run: RunSnapshot) -> dict[str, 
             raise RunCommandValidationError("branch confirmation does not match the run")
         if request.confirm_resource_identity != teardown_confirmation(run):
             raise RunCommandValidationError("resource confirmation does not match the run")
+        if not request.delete_branch and not has_removable_resources(run):
+            raise RunCommandValidationError("run has no recorded resources to remove")
         return _request_payload(request)
     return {}
 

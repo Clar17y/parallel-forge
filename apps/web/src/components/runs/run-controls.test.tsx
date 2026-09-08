@@ -174,3 +174,69 @@ test('changed evidence invalidates an open approval before any submission', asyn
   expect(screen.getByRole('alert')).toHaveTextContent('changed');
   expect(api).toHaveBeenCalledTimes(2);
 });
+
+
+test('teardown requires exact identity and a second confirmation, retaining the branch', async () => {
+  const value = projection({ available_commands: [{ name: 'teardown_run_resources', expected_run_version: 7, requires_feedback: false }] });
+  value.resource.teardown_confirmation = `teardown:${value.run.id}:${'a'.repeat(64)}`;
+  value.resource.worktree_path = 'C:/managed/exact-run';
+  value.resource.branch_name = 'forge/exact-run';
+  vi.mocked(mutate).mockResolvedValue({ id: 'teardown-command' });
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Remove run resources' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('C:/managed/exact-run');
+  expect(dialog).toHaveTextContent('Keep branch forge/exact-run');
+  expect(dialog).toHaveTextContent('Database: Not configured');
+  const next = screen.getByRole('button', { name: 'Review resource removal' });
+  expect(next).toBeDisabled();
+  await userEvent.type(screen.getByLabelText('Resource identity confirmation'), 'wrong');
+  expect(next).toBeDisabled();
+  await userEvent.clear(screen.getByLabelText('Resource identity confirmation'));
+  await userEvent.type(screen.getByLabelText('Resource identity confirmation'), value.resource.teardown_confirmation);
+  await userEvent.click(next);
+  expect(mutate).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm remove resources' }));
+  await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(mutate).mock.calls[0][1]).toEqual({ command_type: 'teardown_run_resources', delete_branch: false,
+    confirm_resource_identity: value.resource.teardown_confirmation });
+  expect(vi.mocked(mutate).mock.calls[0][2]).toMatchObject({ expectedVersion: 7 });
+});
+
+
+test.each(['resource changed', '409', 'retry'])('teardown handles %s without changing its confirmed request', async scenario => {
+  const value = projection({ available_commands: [{ name: 'teardown_run_resources', expected_run_version: 7, requires_feedback: false }] });
+  value.resource.teardown_confirmation = `teardown:${value.run.id}:${'a'.repeat(64)}`;
+  value.resource.worktree_path = 'C:/managed/exact-run';
+  const refresh = vi.fn().mockResolvedValue(value);
+  const view = render(<RunControls projection={value} onRefresh={refresh} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Remove run resources' }));
+  await userEvent.click(await screen.findByLabelText('Resource identity confirmation'));
+  await userEvent.paste(value.resource.teardown_confirmation);
+  await userEvent.click(screen.getByRole('button', { name: 'Review resource removal' }));
+  if (scenario === 'resource changed') {
+    view.rerender(<RunControls projection={{ ...value, resource: { ...value.resource, teardown_confirmation: `teardown:${value.run.id}:${'b'.repeat(64)}` } }} onRefresh={refresh} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('changed');
+    expect(screen.queryByRole('button', { name: 'Confirm remove resources' })).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled(); return;
+  }
+  vi.mocked(mutate).mockRejectedValueOnce(scenario === '409' ? new ApiError(409, 'stale') : new Error('connection lost'));
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm remove resources' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(scenario === '409' ? 'changed' : 'could not be confirmed');
+  if (scenario === '409') {
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); return;
+  }
+  vi.mocked(mutate).mockResolvedValueOnce({ id: 'teardown-command' });
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm remove resources' }));
+  await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
+  const calls = vi.mocked(mutate).mock.calls;
+  expect(calls[1][1]).toEqual(calls[0][1]);
+  expect(calls[1][2]?.idempotencyKey).toBe(calls[0][2]?.idempotencyKey);
+});
+
+test('terminal state does not invent a teardown control', () => {
+  const value = projection({ available_commands: [] }); value.run.state = 'COMPLETED';
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  expect(screen.queryByRole('button', { name: 'Remove run resources' })).not.toBeInTheDocument();
+});

@@ -497,8 +497,15 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
             run.id, run.version, RunState.CANCELLED, "test.cancelled", {}
         )
         await work.commit()
+    from forge.application.services.projections import ProjectionService
+    from forge.persistence.queries.dashboard import DashboardQuery
+
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    projections = ProjectionService(DashboardQuery(session_factory))
+    ready = await projections.run_projection(run.id, actor)
+    assert [item["name"] for item in ready["available_commands"]] == ["teardown_run_resources"]
     enqueued = await RunCommandService(lambda: PostgresUnitOfWork(session_factory)).enqueue(
-        actor=AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4()),
+        actor=actor,
         run_id=run.id,
         idempotency_key="confirmed-resource-removal",
         request=RunCommandRequest(
@@ -507,6 +514,8 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
             confirm_resource_identity=teardown_confirmation(run),
         ),
     )
+    queued = await projections.run_projection(run.id, actor)
+    assert queued["available_commands"] == []
     command = await command_repository.claim_next(worker_id="teardown-worker", lease_seconds=60)
     assert command is not None and command.id == enqueued.id
 
@@ -538,3 +547,7 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     assert sum(event.event_type == "resource.teardown_admitted" for event in events) == 1
     assert sum(event.event_type == "resource.teardown_completed" for event in events) == 1
     assert sum(event.event_type == "resource.worktree_removed" for event in events) == 1
+
+    await command_repository.complete(command.id, worker_id="teardown-worker")
+    settled = await projections.run_projection(run.id, actor)
+    assert settled["available_commands"] == []

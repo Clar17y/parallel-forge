@@ -602,7 +602,8 @@ async def test_teardown_requires_exact_resource_confirmation_before_enqueue() ->
     from forge.domain.teardown import teardown_confirmation
     from forge.persistence.repositories.commands import IdempotencyConflict
 
-    run = work.runs.records[run_id]
+    run = replace(work.runs.records[run_id], worktree_path="C:/managed/run")
+    work.runs.records[run_id] = run
     confirmation = teardown_confirmation(run)
     for change in (
         {"worktree_path": "C:/different/worktree"},
@@ -653,13 +654,39 @@ async def test_teardown_rejects_each_kind_of_unsettled_work(blocker: str) -> Non
     from forge.domain.teardown import teardown_confirmation
 
     work, _, _ = _uow(state=RunState.COMPLETED, branch_name="forge/main")
-    run = next(iter(work.runs.records.values()))
+    run = replace(next(iter(work.runs.records.values())), worktree_path="C:/managed/run")
+    work.runs.records[run.id] = run
     work.runs.quiescence = replace(work.runs.quiescence, **{blocker: 1})
     with pytest.raises(RunCommandValidationError, match="unsettled work"):
         await RunCommandService(lambda: work).enqueue(
             actor=ACTOR,
             run_id=run.id,
             idempotency_key="busy-teardown",
+            request=RunCommandRequest(
+                command_type="teardown_run_resources",
+                expected_run_version=run.version,
+                confirm_resource_identity=teardown_confirmation(run),
+            ),
+        )
+    assert not work.committed
+
+
+@pytest.mark.asyncio
+async def test_completed_run_without_resources_cannot_enqueue_teardown() -> None:
+    from forge.application.services.runs import (
+        RunCommandRequest,
+        RunCommandService,
+        RunCommandValidationError,
+    )
+    from forge.domain.teardown import teardown_confirmation
+
+    work, _, _ = _uow(state=RunState.COMPLETED, branch_name="forge/main")
+    run = next(iter(work.runs.records.values()))
+    with pytest.raises(RunCommandValidationError, match="no recorded resources"):
+        await RunCommandService(lambda: work).enqueue(
+            actor=ACTOR,
+            run_id=run.id,
+            idempotency_key="empty-teardown",
             request=RunCommandRequest(
                 command_type="teardown_run_resources",
                 expected_run_version=run.version,

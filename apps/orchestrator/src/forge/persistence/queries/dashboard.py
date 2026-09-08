@@ -11,7 +11,8 @@ from forge.application.services.public_data import public_payload
 from forge.domain.actor import AgentRole
 from forge.domain.agent import _ALLOWED_ROLE_TOOLS
 from forge.domain.policy import ProjectPolicy
-from forge.domain.teardown import teardown_confirmation
+from forge.domain.run import RunState
+from forge.domain.teardown import has_removable_resources, teardown_confirmation
 from forge.observability.redaction import redact_value
 from forge.persistence.models import (
     AgentExecution,
@@ -30,7 +31,11 @@ from forge.persistence.models import (
     ValidationResult,
 )
 from forge.persistence.queries.recovery import startup_intervention_hold
-from forge.persistence.repositories.runs import PersistenceDataError, _snapshot_from_record
+from forge.persistence.repositories.runs import (
+    PersistenceDataError,
+    PostgresRunRepository,
+    _snapshot_from_record,
+)
 
 
 class DashboardQuery:
@@ -264,6 +269,11 @@ class DashboardQuery:
                 ],
                 "recovery_hold": bool(
                     await session.scalar(select(startup_intervention_hold(run_id)))
+                ),
+                "teardown_eligible": (
+                    snapshot.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
+                    and has_removable_resources(snapshot)
+                    and (await PostgresRunRepository(session).prove_quiescent(run_id)).is_quiescent
                 ),
                 "available_commands": [],
                 "next_gate": run.pending_gate,

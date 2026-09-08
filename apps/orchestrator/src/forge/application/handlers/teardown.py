@@ -15,7 +15,7 @@ from forge.domain.operation import canonical_digest
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState
-from forge.domain.teardown import teardown_confirmation, teardown_identity
+from forge.domain.teardown import has_removable_resources, teardown_confirmation, teardown_identity
 
 _ADMITTED = "resource.teardown_admitted"
 _COMPLETED = "resource.teardown_completed"
@@ -88,6 +88,8 @@ class TeardownRunResourcesHandler:
                 or teardown_confirmation(run) != command.payload["confirm_resource_identity"]
             ):
                 raise TeardownCommandRejected("resource confirmation is stale")
+            if not has_removable_resources(run):
+                raise TeardownCommandRejected("run has no recorded resources to remove")
             identity = teardown_identity(run)
         quiescence = await work.runs.prove_quiescent(run.id, exclude_command_id=command.id)
         if not quiescence.is_quiescent:
