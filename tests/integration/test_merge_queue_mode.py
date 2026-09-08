@@ -42,6 +42,8 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, "before_scheduling", "merged_admission_race"),
     (True, "after_acceptance", "merged_before_entry_receipt"),
     (True, "after_acceptance", "merged_before_entry_receipt_commit_crash"),
+    (True, None, "admission_uncertain"), (True, None, "admission_uncertain_crash"),
+    (True, None, "admission_uncertain_startup"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -99,6 +101,9 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             assert admitted.request_payload["approval_id"] == str(approval_id)
             assert admitted.request_payload["head_sha"] == git.head
             enqueue_attempts.append(admitted.id)
+            if ending.startswith("admission_uncertain"):
+                from forge.release.github_write import GitHubWriteError
+                raise GitHubWriteError("uncertain")
             if ending.startswith("admission_rejected"):
                 from forge.release.github_write import GitHubWriteError
                 raise GitHubWriteError("rejected")
@@ -130,7 +135,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
                 work.commands.enqueue = fail_scheduling
             with pytest.raises(RuntimeError):
                 await service.execute(source, work)
-    if ending == "admission_rejected_crash":
+    if ending in {"admission_rejected_crash", "admission_uncertain_crash"}:
         async with PostgresUnitOfWork(factory) as work:
             async def fail_rejection(*args, **kwargs):
                 raise RuntimeError("rejection settlement crash")
@@ -200,20 +205,49 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             assert current_run.state is RunState.AWAITING_HUMAN_INTERVENTION
             assert current_run.version == source.expected_run_version + 1
             assert (await work.auth.get_approval(approval_id=approval_id)).invalidated_at is not None
+            uncertain = ending.startswith("admission_uncertain")
             rejections = [e for e in await work.events.list_after(case.run_id, 0)
-                          if e.event_type == "run.merge_queue_admission_rejected"]
+                          if e.event_type == (
+                              "run.merge_queue_admission_uncertain" if uncertain
+                              else "run.merge_queue_admission_rejected"
+                          )]
             assert len(rejections) == 1
             rejected = await work.operations.get(UUID(rejections[0].payload["enqueue_intent_id"]))
-            assert rejected.status is OperationStatus.FAILED
-            assert rejected.error == (
-                "queue_remote_rejected" if ending.startswith("admission_rejected")
-                else "queue_preflight_rejected"
+            assert rejected.status is (
+                OperationStatus.NEEDS_RECONCILIATION if uncertain else OperationStatus.FAILED
             )
+            if not uncertain:
+                assert rejected.error == (
+                    "queue_remote_rejected" if ending.startswith("admission_rejected")
+                    else "queue_preflight_rejected"
+                )
             assert await work.commands.get_by_idempotency_key(
                 f"{case.run_id}:observe-merge-queue:{rejected.id}:1"
             ) is None
-        assert len(enqueue_attempts) == int(ending.startswith("admission_rejected"))
+        assert len(enqueue_attempts) == int(ending.startswith(("admission_rejected", "admission_uncertain")))
         assert queue_port.writes == 0
+        if ending == "admission_uncertain_startup":
+            from forge.application.services.recovery import RecoveryError, RecoveryService
+            from forge.domain.merge_queue import MergeQueueReceipt
+            from forge.worker.release_recovery import merge_recovery_adapters
+
+            queue_port.receipt = MergeQueueReceipt(
+                repository=approved.repository, pull_request_number=approved.pull_request_number,
+                pull_request_node_id="PR_1", head_sha=approved.head_sha,
+                merge_method=approved.merge_method, entry_id="late-entry",
+            )
+            recovery_adapter = merge_recovery_adapters(
+                factory, validator, MergeController(read, writes), queue_port
+            )["enqueue_pr"]
+            with pytest.raises(RecoveryError):
+                await recovery_adapter.invoke(rejected)
+            await RecoveryService(PostgresOperationRepository(factory)).reconcile(rejected.id, recovery_adapter)
+            async with PostgresUnitOfWork(factory) as work:
+                await service.execute(source, work)
+            async with PostgresUnitOfWork(factory) as work:
+                assert (await work.operations.get(rejected.id)).status is OperationStatus.SUCCEEDED
+                assert (await work.runs.get(case.run_id)).state is RunState.AWAITING_HUMAN_INTERVENTION
+            assert len(enqueue_attempts) == 1 and queue_port.writes == 0
         return
     async with PostgresUnitOfWork(factory) as work:
         run = await work.runs.get(case.run_id)

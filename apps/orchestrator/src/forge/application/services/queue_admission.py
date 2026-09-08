@@ -19,7 +19,7 @@ from forge.domain.merge_queue import MergeQueueReceipt
 from forge.domain.operation import OperationIntent, OperationStatus, canonical_digest
 from forge.domain.run import RunState
 from forge.persistence.models import Approval
-from forge.release.controller import _validate_intent
+from forge.release.controller import ReleaseReconciliationRequired, _validate_intent
 from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
 from forge.release.merge import MergeController, ObservedMergeOperation, StaleMergeEvidence
@@ -56,21 +56,23 @@ class QueueAdmissionService:
             raise CommandRecoveryRequired("queue admission authority differs")
         await verify_merge_delivery(command, work, approval)
         events = await work.events.list_after(run.id, 0)
-        rejections = [
+        interventions = [
             event for event in events
-            if event.event_type == "run.merge_queue_admission_rejected"
+            if event.event_type in {
+                "run.merge_queue_admission_rejected", "run.merge_queue_admission_uncertain"
+            }
             and event.payload.get("source_command_id") == str(command.id)
         ]
         completions = [event for event in events if event.event_type == "run.merge_completed"
                        and event.payload.get("source_command_id") == str(command.id)]
-        if not (rejections or completions) and (
+        if not (interventions or completions) and (
             run.state is not RunState.MERGING or run.version != command.expected_run_version
             or await pending_current_control_stop(work, run)
         ):
             raise CommandRecoveryRequired("queue admission awaits control settlement")
         approved = (
             await self._evidence.for_recovery(work, run.id, approval_id)
-            if rejections or completions
+            if interventions or completions
             else await self._evidence.consumed(work, run.id, approval_id, recheck=False)
         )
         if not await self._evidence.queue_required(work, run.id, approval_id, approved):
@@ -101,7 +103,7 @@ class QueueAdmissionService:
                 raise CommandRecoveryRequired("resolved enqueue intent is absent")
             _validate_intent(existing, request)
             if (
-                len(completions) != 1 or rejections or existing.status is not OperationStatus.SUCCEEDED
+                len(completions) != 1 or interventions or existing.status is not OperationStatus.SUCCEEDED
                 or adapter.merged_pull(existing.to_outcome()) != record.pull_request
                 or run.state is not RunState.COMPLETED or run.version != command.expected_run_version + 1
                 or record.merge_intent_id is None or completions[0].run_version != run.version
@@ -116,18 +118,24 @@ class QueueAdmissionService:
             await work.releases.record_merge(run.id, record.pull_request, record.merge_intent_id)
             await work.commit()
             return
-        if rejections:
+        if interventions:
             if existing is None:
                 raise CommandRecoveryRequired("queue rejection receipt is absent")
             _validate_intent(existing, request)
-            event = rejections[0]
+            event = interventions[0]
+            uncertain = event.event_type == "run.merge_queue_admission_uncertain"
             if (
-                len(rejections) != 1 or not _conclusive_rejection(existing)
+                len(interventions) != 1
+                or (not uncertain and not _conclusive_rejection(existing))
+                or (uncertain and (
+                    existing.status not in {OperationStatus.NEEDS_RECONCILIATION, OperationStatus.SUCCEEDED}
+                    or existing.execution_owner is not None
+                ))
                 or run.state is not RunState.AWAITING_HUMAN_INTERVENTION
                 or run.version != command.expected_run_version + 1
                 or approval.invalidated_at is None or event.run_version != run.version
                 or event.actor_class != "worker" or event.actor_id != command.actor_id
-                or event.payload != _rejection_payload(command, approval, existing)
+                or event.payload != _intervention_payload(command, approval, existing, uncertain=uncertain)
             ):
                 raise CommandRecoveryRequired("queue rejection replay differs")
             await work.commit()
@@ -141,7 +149,7 @@ class QueueAdmissionService:
         else:
             _validate_intent(existing, request)
             if existing.status is OperationStatus.FAILED:
-                await self._settle_rejection(command, work, approval, adapter)
+                await self._settle_intervention(command, work, approval, adapter)
                 return
         await _fence_command(command, work)
         latest = await work.runs.get_for_update(run.id)
@@ -159,15 +167,19 @@ class QueueAdmissionService:
                 intent.id, error="queue_preflight_rejected", owner_id=intent.execution_owner
             )
             await work.commit()
-            await self._settle_rejection(command, work, approval, adapter)
+            await self._settle_intervention(command, work, approval, adapter)
             return
         await work.commit()
         if intent.status is OperationStatus.FAILED:
-            await self._settle_rejection(command, work, approval, adapter)
+            await self._settle_intervention(command, work, approval, adapter)
             return
-        outcome = await self._executor.execute_admitted(intent, adapter)
+        try:
+            outcome = await self._executor.execute_admitted(intent, adapter)
+        except ReleaseReconciliationRequired, GitHubWriteError, GitHubClientError:
+            await self._settle_intervention(command, work, approval, adapter, uncertain=True)
+            return
         if outcome.status is OperationStatus.FAILED:
-            await self._settle_rejection(command, work, approval, adapter)
+            await self._settle_intervention(command, work, approval, adapter)
             return
         if outcome.status is not OperationStatus.SUCCEEDED:
             raise CommandRecoveryRequired("queue admission requires settlement")
@@ -251,8 +263,9 @@ class QueueAdmissionService:
         ))
         await work.commit()
 
-    async def _settle_rejection(
-        self, command: CommandEnvelope, work: UnitOfWork, approval: Approval, adapter: EnqueueOperation
+    async def _settle_intervention(
+        self, command: CommandEnvelope, work: UnitOfWork, approval: Approval, adapter: EnqueueOperation,
+        *, uncertain: bool = False,
     ) -> None:
         await _fence_command(command, work)
         run = await work.runs.get_for_update(command.run_id)
@@ -260,8 +273,12 @@ class QueueAdmissionService:
         if intent is None:
             raise CommandRecoveryRequired("queue rejection operation is absent")
         _validate_intent(intent, adapter.request)
+        matches = (
+            intent.status is OperationStatus.NEEDS_RECONCILIATION and intent.execution_owner is None
+            if uncertain else _conclusive_rejection(intent)
+        )
         if (
-            not _conclusive_rejection(intent) or run.state is not RunState.MERGING
+            not matches or run.state is not RunState.MERGING
             or run.version != command.expected_run_version or approval.invalidated_at is not None
             or await pending_current_control_stop(work, run)
         ):
@@ -271,8 +288,9 @@ class QueueAdmissionService:
             run_id=run.id, run_version=approval.run_version, at=self._clock.now()
         )
         await work.runs.intervene(
-            run.id, run.version, "run.merge_queue_admission_rejected",
-            _rejection_payload(command, approval, intent),
+            run.id, run.version,
+            "run.merge_queue_admission_uncertain" if uncertain else "run.merge_queue_admission_rejected",
+            _intervention_payload(command, approval, intent, uncertain=uncertain),
             actor_class="worker", actor_id=command.actor_id, occurred_at=self._clock.now(),
         )
         await work.commit()
@@ -286,11 +304,12 @@ def _conclusive_rejection(intent: OperationIntent) -> bool:
     )
 
 
-def _rejection_payload(
-    command: CommandEnvelope, approval: Approval, intent: OperationIntent
+def _intervention_payload(
+    command: CommandEnvelope, approval: Approval, intent: OperationIntent, *, uncertain: bool = False,
 ) -> dict[str, object]:
     return {
         "source_command_id": str(command.id), "approval_id": str(approval.id),
         "evidence_digest": approval.evidence_digest, "enqueue_intent_id": str(intent.id),
-        "operation_key": intent.idempotency_key, "reason": intent.error,
+        "operation_key": intent.idempotency_key,
+        "reason": "queue_outcome_unresolved" if uncertain else intent.error,
     }
