@@ -1,0 +1,76 @@
+name: Python and runtime contracts
+
+on:
+  push:
+    branches: [forge/v0-1]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.20.0'
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.12.10'
+          python-version: '3.14.5'
+          enable-cache: false
+      - run: uv sync --frozen --extra dev
+      - run: uv run --frozen ruff check apps/orchestrator/src apps/orchestrator/tests tests
+      - run: uv run --frozen mypy
+      - name: Unit and host wrapper contracts
+        run: >-
+          uv run --frozen python -m pytest
+          apps/orchestrator/tests/domain apps/orchestrator/tests/agents
+          apps/orchestrator/tests/observability apps/orchestrator/tests/artifacts
+          tests/integration/test_worktree_scripts.py
+          -q -m "not live_provider and not live_github and not docker"
+
+  postgres-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: forge
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U forge -d forge"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.20.0'
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.12.10'
+          python-version: '3.14.5'
+          enable-cache: false
+      - run: uv sync --frozen --extra dev
+      - name: Deterministic backend, evaluations and migration round trips
+        run: uv run --frozen python -m pytest -q -m "not live_provider and not live_github and not docker"
+      - name: Docker runner contract
+        run: uv run --frozen python -m pytest tests/integration/test_runner_container.py -q

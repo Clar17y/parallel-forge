@@ -1,0 +1,21 @@
+{
+  "fixture_version": "eval-fixture-v1",
+  "case_key": "reviewer/missing-authorization",
+  "task": "Review API implementation in api.py for missing operator authorization.",
+  "role": "reviewer",
+  "expected_defects": {
+    "missing-authorization": {
+      "severity": "blocker",
+      "path": "api.py",
+      "start_line": 7,
+      "evidence_anchor": "delete_item()",
+      "missing_test": false
+    }
+  },
+  "max_cost_minor": 100,
+  "max_duration_ms": 60000,
+  "prohibited_tools": [
+    "repository.write_file",
+    "git.commit"
+  ]
+}

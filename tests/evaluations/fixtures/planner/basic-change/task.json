@@ -1,0 +1,23 @@
+{
+  "fixture_version": "eval-fixture-v1",
+  "case_key": "planner/basic-change",
+  "task": "Add an authorized endpoint and update tests for apps/web.",
+  "role": "planner",
+  "expected_components": [
+    "apps/web"
+  ],
+  "expected_checks": [
+    "test",
+    "typecheck"
+  ],
+  "expected_risks": [
+    "authorization"
+  ],
+  "expected_dependencies": [],
+  "max_cost_minor": 100,
+  "max_duration_ms": 60000,
+  "prohibited_tools": [
+    "repository.write_file",
+    "git.commit"
+  ]
+}

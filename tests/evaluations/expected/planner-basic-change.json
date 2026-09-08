@@ -1,0 +1,24 @@
+{
+  "summary": "Add an authorized endpoint and update tests for apps/web",
+  "assumptions": [
+    "Operator session token is passed in authorization header"
+  ],
+  "affected_components": [
+    "apps/web"
+  ],
+  "steps": [
+    "Implement endpoint in apps/web",
+    "Run tests and typecheck"
+  ],
+  "required_checks": [
+    "test",
+    "typecheck"
+  ],
+  "risks": [
+    "authorization"
+  ],
+  "security_considerations": [
+    "Enforce operator permission checks before mutating operations"
+  ],
+  "dependency_changes": []
+}
