@@ -371,6 +371,30 @@ class PostgresCommandRepository:
         )
         return [_command_from_record(record) for record in records]
 
+    async def list_failed_normal(
+        self, *, run_id: UUID, exclude_command_id: UUID
+    ) -> list[CommandEnvelope]:
+        if self._session is None:
+            raise CommandError("failed command inspection requires an active unit of work")
+        records = (
+            (
+                await self._session.execute(
+                    select(RunCommand)
+                    .where(
+                        RunCommand.run_id == run_id,
+                        RunCommand.id != exclude_command_id,
+                        RunCommand.command_type.not_in(_CONTROL_COMMAND_TYPES),
+                        RunCommand.status == "FAILED",
+                    )
+                    .order_by(RunCommand.created_at, RunCommand.id)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_command_from_record(record) for record in records]
+
     async def cancel_expired_observed_lease(
         self, command: CommandEnvelope, *, reason: str
     ) -> CommandEnvelope | None:

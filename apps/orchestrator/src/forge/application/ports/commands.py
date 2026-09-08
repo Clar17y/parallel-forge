@@ -76,6 +76,11 @@ class CommandRepository(Protocol):
     ) -> Sequence[CommandEnvelope]:
         """List pending or leased normal work while the caller holds the run lock."""
 
+    async def list_failed_normal(
+        self, *, run_id: UUID, exclude_command_id: UUID
+    ) -> Sequence[CommandEnvelope]:
+        """List terminal failed normal commands under the caller's run-row lock."""
+
     async def cancel_expired_observed_lease(
         self, command: CommandEnvelope, *, reason: str
     ) -> CommandEnvelope | None:

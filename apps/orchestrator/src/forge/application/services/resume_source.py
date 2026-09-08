@@ -7,7 +7,9 @@ from uuid import UUID
 
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.failed_resume import validate_failed_receipt
 from forge.domain.command import CommandEnvelope, CommandStatus
+from forge.domain.run import RunState
 
 RESUME_FIELDS = frozenset({"resume_command_id", "source_command_id"})
 
@@ -92,7 +94,7 @@ async def _resume_source(
         queued.payload_schema_version != 1
         or queued.status
         not in (
-            {CommandStatus.CANCELLED, CommandStatus.COMPLETED}
+            {CommandStatus.CANCELLED, CommandStatus.COMPLETED, CommandStatus.FAILED}
             if historical
             else {CommandStatus.LEASED}
         )
@@ -107,7 +109,8 @@ async def _resume_source(
         or source.run_id != queued.run_id
         or source.expected_run_version >= resume.expected_run_version
         or source.command_type != queued.command_type
-        or source.status not in {CommandStatus.CANCELLED, CommandStatus.COMPLETED}
+        or source.status
+        not in {CommandStatus.CANCELLED, CommandStatus.COMPLETED, CommandStatus.FAILED}
         or source.payload_schema_version != 1
         or source.actor_id != queued.actor_id
         or type(attempt) is not int
@@ -136,7 +139,8 @@ async def _resume_source(
         event
         for event in events
         if event.run_version == resume.expected_run_version
-        and event.event_type in {"delivery.suspended", "delivery.deferred"}
+        and event.event_type
+        in {"delivery.suspended", "delivery.deferred", "delivery.failed_before_admission"}
         and event.payload.get("command_id") == str(source.id)
     ]
     if len(resumed) != 1 or len(stopped) != 1:
@@ -144,6 +148,21 @@ async def _resume_source(
     event, receipt = resumed[0], stopped[0]
     payload = event.payload
     deferred = receipt.event_type == "delivery.deferred"
+    failed_unadmitted = receipt.event_type == "delivery.failed_before_admission"
+    if (source.status is CommandStatus.FAILED) != failed_unadmitted:
+        raise CommandRecoveryRequired("failed continuation receipt type differs")
+    if failed_unadmitted:
+        try:
+            pause_id = UUID(str(payload.get("pause_command_id")))
+            raw_state = payload.get("restored_state")
+            if not isinstance(raw_state, str):
+                raise TypeError
+            state = RunState(raw_state)
+        except ValueError, TypeError:
+            raise CommandRecoveryRequired("failed continuation control differs") from None
+        await validate_failed_receipt(
+            work, source, paused_version=resume.expected_run_version, pause_id=pause_id, state=state
+        )
     if deferred and (
         source.status is not CommandStatus.CANCELLED
         or source.attempt != 0
@@ -154,7 +173,7 @@ async def _resume_source(
     ):
         raise CommandRecoveryRequired("deferred continuation authority differs")
     if (
-        attempt != previous_attempt + (0 if deferred else 1)
+        attempt != previous_attempt + (0 if deferred or failed_unadmitted else 1)
         or event.actor_class != "operator"
         or event.actor_id != resume.actor_id
         or event.payload_schema_version != 1
@@ -167,9 +186,13 @@ async def _resume_source(
         or receipt.actor_class != "worker"
         or receipt.actor_id is not None
         or receipt.payload_schema_version != 1
-        or receipt.payload.get("pause_command_id" if deferred else "control_command_id")
+        or receipt.payload.get(
+            "pause_command_id" if deferred or failed_unadmitted else "control_command_id"
+        )
         != payload.get("pause_command_id")
-        or receipt.payload.get("deferred_state" if deferred else "admitted_state")
+        or receipt.payload.get(
+            "deferred_state" if deferred or failed_unadmitted else "admitted_state"
+        )
         != payload.get("restored_state")
         or receipt.payload.get("command_type") != source.command_type
         or receipt.payload.get("command_payload") != source.payload

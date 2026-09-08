@@ -13,6 +13,7 @@ from forge.application.ports.commands import CommandLeaseLost, CommandRecoveryRe
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import PreparedWorktreeInspector
 from forge.application.services.approved_plan import ApprovedPlanLoader
+from forge.application.services.failed_resume import settle_failed_delivery, validate_failed_receipt
 from forge.application.services.preparation_resume import PreparationResumeService
 from forge.application.services.resume_continuation import enqueue_resumed_stage
 from forge.application.services.resume_reconciliation import ResumeReconciler
@@ -135,6 +136,8 @@ class ResumeRunHandler:
             payload["continuation"] = continuation_binding(prepared.queued, prepared.source.id)
         elif target in _ACTIVE_RESUME_STATES:
             sources = await self._reconciler.reconcile(work, command)
+            if not sources:
+                sources = await settle_failed_delivery(work, command, run)
             queued = await enqueue_resumed_stage(work, command, run, sources)
             payload["continuation"] = continuation_binding(queued, sources[0].id)
         else:
@@ -374,9 +377,18 @@ async def _resume_replay_payload(
         or queued.expected_run_version != run.version
         or queued.actor_id != source.actor_id
         or queued.command_type != source.command_type
-        or source.status not in {CommandStatus.COMPLETED, CommandStatus.CANCELLED}
+        or source.status
+        not in {CommandStatus.COMPLETED, CommandStatus.CANCELLED, CommandStatus.FAILED}
     ):
         raise CommandRecoveryRequired("resumed stage continuation changed")
+    if source.status is CommandStatus.FAILED:
+        await validate_failed_receipt(
+            work,
+            source,
+            paused_version=command.expected_run_version,
+            pause_id=pause_id,
+            state=run.state,
+        )
     payload["continuation"] = continuation_binding(queued, source.id)
     return payload
 
