@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 import subprocess
 import threading
@@ -361,9 +362,22 @@ def test_bound_docker_cleanup_refuses_foreign_replacement(
 @pytest.mark.asyncio
 async def test_bound_terminal_defers_cancellation_until_process_and_capability_release(
     managed_case: tuple[ControlledGit, ManagedWorktree, ProjectPolicy, _Process],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     controlled, worktree, policy, _ = managed_case
     process = _BlockingProcess()
+    capability_released = threading.Event()
+    open_capability = controlled.open_worktree_capability
+
+    @contextlib.contextmanager
+    def observed_capability(*args: Any, **kwargs: Any) -> Any:
+        try:
+            with open_capability(*args, **kwargs) as capability:
+                yield capability
+        finally:
+            capability_released.set()
+
+    monkeypatch.setattr(controlled, "open_worktree_capability", observed_capability)
     runner = WorktreeRunnerFactory(
         controlled,
         process_runner=process,
@@ -374,15 +388,14 @@ async def test_bound_terminal_defers_cancellation_until_process_and_capability_r
         runner.run_terminal(RunCommandRequest(command_name="bound-test", kind=StepKind.TEST))
     )
     assert await asyncio.to_thread(process.started.wait, 1)
-    status_task = asyncio.create_task(asyncio.to_thread(controlled.status, worktree))
     task.cancel()
     task.cancel()
     await asyncio.sleep(0.05)
     assert not task.done()
-    assert not status_task.done()
+    assert not capability_released.is_set()
 
     process.release.set()
     terminal = await task
-    await status_task
     assert process.finished.is_set()
+    assert capability_released.is_set()
     assert terminal.caller_cancelled is True

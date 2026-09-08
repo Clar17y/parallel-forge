@@ -1,8 +1,9 @@
 # Parallel Forge
 
 > **Status: active v0.1 development.** The durable backend and local execution
-> foundations are under active construction; the agent workflow, dashboard,
-> GitHub publication controller, and final operator experience remain roadmap work.
+> foundations, agent workflow, dashboard and Release Controller have substantial
+> implementation and component coverage. Full process acceptance and required
+> review gates remain open; see the [evidence ledger](docs/v0.1-progress.md).
 
 Parallel Forge is a local-first control plane for durable, reviewable
 agent-assisted software delivery. It began as the engineering system for
@@ -31,20 +32,18 @@ The FastAPI control API and separate orchestrator worker communicate through
 PostgreSQL-backed commands, leases, state, events, and operation intents. A local
 content-addressed store retains bounded evidence, while Forge-owned adapters bind
 repository, Git, worktree, database, secret, and runner effects to controlled
-interfaces. The planned Next.js dashboard and deterministic Release Controller
-are architectural targets, not completed user-facing features.
+interfaces. The Next.js dashboard exposes evidence and state-aware controls;
+the deterministic Release Controller owns approved GitHub effects. Their full
+acceptance gate remains open.
 
 ## Development status and roadmap
 
-Tasks 1-12 of the v0.1 plan are complete and independently reviewed. Task 13 has
-delivered controlled Git, isolated worktrees and databases, protected secrets,
-durable resource preparation, environment staging, and worktree-bound runners;
-durable ordered setup orchestration and lifecycle completion remain in progress.
-
-Later roadmap stages add controlled agent tools and contracts, planning and
-delivery workflows, REST/SSE projections, the dashboard, GitHub inspection,
-human-approved PR publication and merge control, evaluation, restart recovery,
-cross-platform CI, and final acceptance testing.
+Tasks 1–23 have an accepted checkpoint. Tasks 24–29 include release and queue
+recovery, dashboard/resource controls, evaluation fixtures and metrics, and
+cross-platform CI. Remaining work includes evaluation execution integration,
+scoped correctness gates and complete deterministic dashboard acceptance.
+The [progress ledger](docs/v0.1-progress.md) distinguishes current evidence from
+historical test results and is the authoritative continuation record.
 
 ## Prerequisites and verification
 
@@ -60,11 +59,14 @@ cross-platform CI, and final acceptance testing.
   `.venv/Scripts/python.exe -m mypy apps/orchestrator/src` on Windows, with the
   equivalent `.venv/bin/python` commands on POSIX
 
-The final one-command development environment and dashboard are not available
-yet.
+The final one-command development supervisor is not available yet. Manual process
+startup, configuration, approvals and recovery are described in the
+[operator runbook](docs/operator-runbook.md).
 
 ## Documentation
 
+- [Operator runbook](docs/operator-runbook.md)
+- [Verified progress](docs/v0.1-progress.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)
 - [Full v0.1 design](docs/superpowers/specs/2026-08-21-forge-v0-1-design.md)

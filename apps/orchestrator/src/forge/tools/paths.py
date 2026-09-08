@@ -47,17 +47,19 @@ _LINUX_STATX_BUFFER_SIZE = 256
 _LINUX_STATX_MASK_OFFSET = 0
 _LINUX_STATX_MNT_ID_OFFSET = 144
 
+_LINUX_STATX: Callable[[int, bytes, int, int, object], int] | None = None
 if sys.platform == "linux":
     try:
-        _LINUX_STATX = ctypes.CDLL(None, use_errno=True).statx
-        _LINUX_STATX.argtypes = [
+        _linux_statx = ctypes.CDLL(None, use_errno=True).statx
+        _linux_statx.argtypes = [
             ctypes.c_int,
             ctypes.c_char_p,
             ctypes.c_int,
             ctypes.c_uint,
             ctypes.c_void_p,
         ]
-        _LINUX_STATX.restype = ctypes.c_int
+        _linux_statx.restype = ctypes.c_int
+        _LINUX_STATX = _linux_statx
     except AttributeError, OSError:
         _LINUX_STATX = None
 else:
@@ -511,6 +513,37 @@ if os.name == "nt":
     )
 
 
+if sys.platform == "win32":
+    import msvcrt
+
+    _win_dll = ctypes.WinDLL
+    _win_error = ctypes.WinError
+    _get_last_error = ctypes.get_last_error
+    _set_last_error = ctypes.set_last_error
+    _open_osfhandle = msvcrt.open_osfhandle
+else:
+    def _win_dll(
+        name: str,
+        mode: int = 0,
+        handle: int | None = None,
+        use_errno: bool = False,
+        use_last_error: bool = False,
+    ) -> ctypes.CDLL:
+        raise RuntimeError("Windows path API is unavailable on this platform")
+
+    def _win_error(code: int | None = None, descr: str | None = None) -> OSError:
+        raise RuntimeError("Windows path API is unavailable on this platform")
+
+    def _get_last_error() -> int:
+        raise RuntimeError("Windows path API is unavailable on this platform")
+
+    def _set_last_error(code: int) -> None:
+        raise RuntimeError("Windows path API is unavailable on this platform")
+
+    def _open_osfhandle(handle: int, flags: int) -> int:
+        raise RuntimeError("Windows path API is unavailable on this platform")
+
+
 class _WindowsPathApi:
     """Small handle-only Windows API surface used while a path is inspected."""
 
@@ -518,7 +551,7 @@ class _WindowsPathApi:
         if os.name != "nt":
             raise RuntimeError("Windows path API is unavailable on this platform")
         _require_windows_native_pointer_size()
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = _win_dll("kernel32", use_last_error=True)
         self._create_file = kernel32.CreateFileW
         self._create_file.argtypes = (
             ctypes.c_wchar_p,
@@ -587,7 +620,7 @@ class _WindowsPathApi:
         self._get_current_process = kernel32.GetCurrentProcess
         self._get_current_process.argtypes = ()
         self._get_current_process.restype = ctypes.c_void_p
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        advapi32 = _win_dll("advapi32", use_last_error=True)
         self._open_process_token = advapi32.OpenProcessToken
         self._open_process_token.argtypes = (
             ctypes.c_void_p,
@@ -673,7 +706,7 @@ class _WindowsPathApi:
             ctypes.POINTER(ctypes.c_void_p),
         )
         self._get_ace.restype = ctypes.c_int
-        ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+        ntdll = _win_dll("ntdll", use_last_error=True)
         self._nt_set_file_information = ntdll.NtSetInformationFile
         self._nt_set_file_information.argtypes = (
             ctypes.c_void_p,
@@ -729,7 +762,7 @@ class _WindowsPathApi:
     def _value(handle: ctypes.c_void_p | int) -> int:
         value = handle if isinstance(handle, int) else handle.value
         if value is None or value == _INVALID_HANDLE_VALUE:
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _win_error(_get_last_error())
         return int(value)
 
     def open_directory(self, path: Path) -> int:
@@ -905,7 +938,7 @@ class _WindowsPathApi:
     def _open_mutation_lock(self, path: Path, disposition: int) -> int:
         """Open one exact lock with the caller-selected create policy."""
 
-        ctypes.set_last_error(0)
+        _set_last_error(0)
         raw = self._create_file(
             str(path),
             _GENERIC_READ | _GENERIC_WRITE,
@@ -937,12 +970,12 @@ class _WindowsPathApi:
             attributes = _SecurityAttributes(
                 ctypes.sizeof(_SecurityAttributes), ctypes.c_void_p(descriptor), False
             )
-            ctypes.set_last_error(0)
+            _set_last_error(0)
             if self._create_directory(str(path), ctypes.byref(attributes)):
                 return True
-            if ctypes.get_last_error() == _ERROR_ALREADY_EXISTS:
+            if _get_last_error() == _ERROR_ALREADY_EXISTS:
                 return False
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _win_error(_get_last_error())
         finally:
             if descriptor is not None:
                 self._local_free(ctypes.c_void_p(descriptor))
@@ -1407,7 +1440,7 @@ class _WindowsPathApi:
         attributes = _SecurityAttributes(
             ctypes.sizeof(_SecurityAttributes), ctypes.c_void_p(descriptor), False
         )
-        ctypes.set_last_error(0)
+        _set_last_error(0)
         try:
             raw = self._create_file(
                 str(path),
@@ -1467,10 +1500,10 @@ class _WindowsPathApi:
     def link_secret(self, source: Path, target: Path) -> None:
         """Publish one same-directory temp file as an exclusive hard link."""
 
-        ctypes.set_last_error(0)
+        _set_last_error(0)
         if self._create_hard_link(str(target), str(source), None):
             return
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         if error in {_ERROR_FILE_EXISTS, _ERROR_ALREADY_EXISTS}:
             raise FileExistsError(error, "secret target already exists")
         raise OSError(error, "secret hard-link publication failed")
@@ -1478,10 +1511,10 @@ class _WindowsPathApi:
     def flush_secret_directory(self, handle: int) -> None:
         """Flush the secret namespace when the Windows filesystem supports it."""
 
-        ctypes.set_last_error(0)
+        _set_last_error(0)
         if self._flush_file_buffers(handle):
             return
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         if error in {_ERROR_INVALID_FUNCTION, _ERROR_ACCESS_DENIED, _ERROR_NOT_SUPPORTED}:
             return
         raise OSError(error or 1, "secret directory flush failed")
@@ -1574,7 +1607,7 @@ class _WindowsPathApi:
         if setter is None:
             raise RepositoryAccessDenied("native file disposition is unavailable")
         info = _FileDispositionInfoEx(_FILE_DISPOSITION_FLAGS)
-        ctypes.set_last_error(0)
+        _set_last_error(0)
         if not setter(
             handle,
             _FILE_DISPOSITION_INFORMATION_EX_CLASS,
@@ -1592,7 +1625,7 @@ class _WindowsPathApi:
         info = _FileDispositionInfoEx(
             _FILE_DISPOSITION_DELETE | _FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE
         )
-        ctypes.set_last_error(0)
+        _set_last_error(0)
         if not setter(
             handle,
             _FILE_DISPOSITION_INFORMATION_EX_CLASS,
@@ -1617,7 +1650,7 @@ class _WindowsPathApi:
     ) -> int:
         if share is None:
             share = _FILE_SHARE_READ | _FILE_SHARE_WRITE
-        ctypes.set_last_error(0)
+        _set_last_error(0)
         raw = self._create_file(
             str(path),
             access,
@@ -1679,9 +1712,7 @@ class _WindowsPathApi:
             raise OSError("Windows handle close failed")
 
     def as_stream(self, handle: int) -> BinaryIO:
-        import msvcrt
-
-        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        descriptor = _open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
         return os.fdopen(descriptor, "rb", closefd=True)
 
 

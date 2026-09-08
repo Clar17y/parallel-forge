@@ -22,6 +22,26 @@ if sys.platform != "win32":
             del root
             raise ArtifactStoreError("Windows artifact I/O is unavailable on this platform")
 
+        def put(
+            self,
+            digest: str,
+            data: bytes,
+            *,
+            before_publish: Callable[[Path], None],
+        ) -> Path:
+            del digest, data, before_publish
+            raise ArtifactStoreError("Windows artifact I/O is unavailable on this platform")
+
+        def read(
+            self,
+            digest: str,
+            *,
+            before_open: Callable[[Path], None],
+            max_bytes: int | None = None,
+        ) -> bytes:
+            del digest, before_open, max_bytes
+            raise ArtifactStoreError("Windows artifact I/O is unavailable on this platform")
+
 else:
     import ctypes
     from ctypes import wintypes

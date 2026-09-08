@@ -39,7 +39,7 @@ jobs:
           apps/orchestrator/tests/domain apps/orchestrator/tests/agents
           apps/orchestrator/tests/observability apps/orchestrator/tests/artifacts
           tests/integration/test_worktree_scripts.py
-          -q -m "not live_provider and not live_github and not docker"
+          -q -m "not integration and not live_provider and not live_github and not docker"
 
   postgres-contract:
     runs-on: ubuntu-24.04
