@@ -11,6 +11,8 @@ from forge.application.services.control_settlement import pending_current_contro
 from forge.application.services.merge_authority import verify_merge_delivery
 from forge.application.services.merge_evidence import MergeEvidenceValidator
 from forge.application.services.recovery import OperationExecutor
+from forge.application.services.release_resume import resumed_release_origin
+from forge.application.services.resume_source import RESUME_FIELDS
 from forge.application.services.validation import _fence_command
 from forge.domain.approval import MergeApprovalEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
@@ -38,7 +40,7 @@ class QueueAdmissionService:
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         if (
             command.command_type != "merge_pr" or command.status is not CommandStatus.LEASED
-            or command.payload_schema_version != 1 or set(command.payload) != {"approval_id"}
+            or command.payload_schema_version != 1 or set(command.payload) - RESUME_FIELDS != {"approval_id"}
         ):
             raise CommandRecoveryRequired("queue source command differs")
         try:
@@ -46,12 +48,13 @@ class QueueAdmissionService:
         except ValueError:
             raise CommandRecoveryRequired("queue approval identifier differs") from None
         await _fence_command(command, work)
+        origin = await resumed_release_origin(work, command)
         run = await work.runs.get_for_update(command.run_id)
         approval = await work.auth.get_approval(approval_id=approval_id, for_update=True)
         if (
             not isinstance(approval, Approval) or approval.run_id != run.id
             or approval.gate != "merge" or approval.authenticated_actor_id != command.actor_id
-            or approval.run_version + 1 != command.expected_run_version
+            or approval.run_version + 1 != origin.expected_run_version
         ):
             raise CommandRecoveryRequired("queue admission authority differs")
         await verify_merge_delivery(command, work, approval)
@@ -226,7 +229,7 @@ class QueueAdmissionService:
         if latest != run or await pending_current_control_stop(work, latest):
             raise CommandRecoveryRequired("queue receipt awaits control settlement")
         payload = {
-            "source_command_id": str(command.id), "approval_id": str(approval_id),
+            "merge_command_id": str(command.id), "approval_id": str(approval_id),
             "enqueue_intent_id": str(intent.id), "receipt_digest": canonical_digest(receipt.model_dump()),
             "deadline": deadline.isoformat(), "poll": 1,
         }
@@ -244,7 +247,8 @@ class QueueAdmissionService:
                 or queued.actor_id != command.actor_id or queued.expected_run_version != run.version
                 or previous[0].run_version != run.version or previous[0].actor_class != "worker"
                 or previous[0].actor_id != command.actor_id
-                or previous[0].payload != {**payload, "queued_command_id": str(queued.id), "queued_key": key}
+                or previous[0].payload != {**payload, "source_command_id": str(command.id),
+                                          "queued_command_id": str(queued.id), "queued_key": key}
             ):
                 raise CommandRecoveryRequired("queue scheduling replay differs")
             await work.commit()
@@ -259,7 +263,8 @@ class QueueAdmissionService:
         await work.events.append(RunEvent(
             run_id=run.id, run_version=run.version, event_type="run.merge_queue_enqueued",
             actor_class="worker", actor_id=command.actor_id, occurred_at=self._clock.now(),
-            payload={**payload, "queued_command_id": str(queued.id), "queued_key": key},
+            payload={**payload, "source_command_id": str(command.id),
+                     "queued_command_id": str(queued.id), "queued_key": key},
         ))
         await work.commit()
 

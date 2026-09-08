@@ -50,6 +50,11 @@ necessary or authorized for deterministic development checks.
    Review current MERGING control restrictions before adding any queue control;
    no implicit authority to cancel or remove a remotely queued merge.
 
+Queue observation commands use `merge_command_id` for the approved merge delivery.
+The separate `source_command_id` and `resume_command_id` fields are reserved for
+the existing stopped-delivery/resume chain. Admission events retain their own
+`source_command_id` audit binding; resuming must never overwrite the merge reference.
+
 ## Test evidence required
 
 - Offline HTTP/GraphQL tests: exact expected head, PR node and method/configuration,

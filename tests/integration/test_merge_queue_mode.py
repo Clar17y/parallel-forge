@@ -44,6 +44,9 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, "after_acceptance", "merged_before_entry_receipt_commit_crash"),
     (True, None, "admission_uncertain"), (True, None, "admission_uncertain_crash"),
     (True, None, "admission_uncertain_startup"),
+    (True, None, "merged_admission_resume"),
+    (True, "before_scheduling", "merged_admission_resume_after_receipt"),
+    (True, None, "merged_admission_resume_twice"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -91,6 +94,11 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
     read.merge_protections[key, "main"] = original_protection
     await commands.complete(command.id, worker_id=command.lease_owner)
     source = await commands.claim_next(worker_id="queue-admission", lease_seconds=120)
+    if ending in {"merged_admission_resume", "merged_admission_resume_twice"}:
+        from test_release_publication_resume import resumed_release
+        source = await resumed_release(case, source, factory)
+        if ending == "merged_admission_resume_twice":
+            source = await resumed_release(case, source, factory)
     enqueue_attempts = []
     class InspectCommittedQueue(Queue):
         async def enqueue(self, *args):
@@ -148,6 +156,9 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             merge_sha="d" * 40,
         )
         queue_port.receipt = None
+    if ending == "merged_admission_resume_after_receipt":
+        from test_release_publication_resume import resumed_release
+        source = await resumed_release(case, source, factory)
     saved_pull_read = writes.get_pull_request
     if ending == "merged_before_entry_receipt_commit_crash":
         async with PostgresUnitOfWork(factory) as work:

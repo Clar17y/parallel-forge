@@ -11,6 +11,8 @@ from forge.application.services.control_settlement import pending_current_contro
 from forge.application.services.merge_authority import verify_merge_delivery
 from forge.application.services.merge_evidence import MergeEvidenceValidator
 from forge.application.services.recovery import OperationExecutor
+from forge.application.services.release_resume import resumed_release_origin
+from forge.application.services.resume_source import RESUME_FIELDS
 from forge.application.services.validation import _fence_command
 from forge.domain.approval import MergeApprovalEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
@@ -29,7 +31,7 @@ from forge.release.github_write import GitHubWriteError
 from forge.release.merge import MergeController, ObservedMergeOperation, StaleMergeEvidence
 from forge.release.queue import EnqueueOperation
 
-_FIELDS = {"source_command_id", "approval_id", "enqueue_intent_id", "receipt_digest", "deadline", "poll"}
+_FIELDS = {"merge_command_id", "approval_id", "enqueue_intent_id", "receipt_digest", "deadline", "poll"}
 
 
 class QueueObservationService:
@@ -50,7 +52,7 @@ class QueueObservationService:
             raise CommandRecoveryRequired("queue observation command differs")
         poll = int(str(command.payload["poll"]))
         try:
-            source_id = UUID(str(command.payload["source_command_id"]))
+            source_id = UUID(str(command.payload["merge_command_id"]))
             approval_id = UUID(str(command.payload["approval_id"]))
             enqueue_id = UUID(str(command.payload["enqueue_intent_id"]))
         except ValueError:
@@ -58,14 +60,16 @@ class QueueObservationService:
         await _fence_command(command, work)
         run = await work.runs.get_for_update(command.run_id)
         source = await work.commands.get(source_id)
+        merge_origin = await resumed_release_origin(work, source)
         approval = await work.auth.get_approval(approval_id=approval_id, for_update=True)
         if (
             not isinstance(approval, Approval) or approval.run_id != run.id or approval.gate != "merge"
             or source.run_id != run.id or source.command_type != "merge_pr"
-            or source.payload != {"approval_id": str(approval_id)}
+            or {key: value for key, value in source.payload.items() if key not in RESUME_FIELDS}
+            != {"approval_id": str(approval_id)}
             or source.actor_id != command.actor_id or approval.authenticated_actor_id != command.actor_id
             or source.expected_run_version != command.expected_run_version
-            or approval.run_version + 1 != source.expected_run_version
+            or approval.run_version + 1 != merge_origin.expected_run_version
         ):
             raise CommandRecoveryRequired("queue observation source differs")
         await verify_merge_delivery(source, work, approval)
