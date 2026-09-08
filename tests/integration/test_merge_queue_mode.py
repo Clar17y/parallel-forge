@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -32,6 +33,8 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (False, None, "merged"), (True, None, "merged"),
     (True, "after_acceptance", "merged"), (True, "before_scheduling", "merged"),
     (True, None, "evicted"), (True, None, "closed"), (True, None, "protection"),
+    (True, None, "merged_receipt_crash"), (True, None, "merged_transaction_crash"),
+    (True, None, "deadline"), (True, None, "deadline_unavailable"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -139,7 +142,7 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
     async with PostgresUnitOfWork(factory) as work:
         assert (await work.runs.get(case.run_id)).state is RunState.MERGING
     await commands.complete(first_poll.id, worker_id=first_poll.lease_owner)
-    if ending == "merged":
+    if ending.startswith("merged"):
         writes.pull_requests[policy.github_repository, 1] = replace(
             writes.pull_requests[policy.github_repository, 1], state="closed", merged=True,
             merge_sha="d" * 40,
@@ -151,19 +154,44 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         writes.pull_requests[policy.github_repository, 1] = replace(
             writes.pull_requests[policy.github_repository, 1], state="closed",
         )
-    else:
+    elif ending == "protection":
         read.merge_protections[key, "main"] = replace(original_protection, merge_queue_enabled=False)
     with patch("forge.persistence.repositories.commands._utc_now", return_value=datetime.now(UTC) + timedelta(seconds=40)):
         final_poll = await commands.claim_next(worker_id="queue-final", lease_seconds=120)
+    if ending.startswith("deadline"):
+        observation_service._clock = SimpleNamespace(
+            now=lambda: datetime.fromisoformat(final_poll.payload["deadline"])
+        )
+        if ending == "deadline_unavailable":
+            from forge.release.github_write import GitHubWriteError
+
+            async def timed_out(*args, **kwargs):
+                raise GitHubWriteError("unavailable")
+            writes.get_pull_request = timed_out
+    if ending in {"merged_receipt_crash", "merged_transaction_crash"}:
+        async with PostgresUnitOfWork(factory) as work:
+            async def fail_completion(*args, **kwargs):
+                raise RuntimeError("completion transaction crash")
+            if ending == "merged_receipt_crash":
+                work.releases.record_merge = fail_completion
+            else:
+                work.runs.transition = fail_completion
+            with pytest.raises(RuntimeError, match="completion transaction crash"):
+                await observation_service.execute(final_poll, work)
+        from forge.release.github_write import GitHubWriteError
+
+        async def remote_unavailable(*args, **kwargs):
+            raise AssertionError("persisted successful receipt must not require another remote read")
+        writes.get_pull_request = remote_unavailable
     for _ in range(2):
         async with PostgresUnitOfWork(factory) as work:
             await observation_service.execute(final_poll, work)
     async with PostgresUnitOfWork(factory) as work:
         assert (await work.runs.get(case.run_id)).state is (
-            RunState.COMPLETED if ending == "merged" else RunState.AWAITING_HUMAN_INTERVENTION
+            RunState.COMPLETED if ending.startswith("merged") else RunState.AWAITING_HUMAN_INTERVENTION
         )
         record = await work.releases.get_for_run(case.run_id)
-        if ending == "merged":
+        if ending.startswith("merged"):
             final_intent = await work.operations.get(record.merge_intent_id)
             assert final_intent.kind == "merge_pr" and final_intent.status is OperationStatus.SUCCEEDED
             assert final_intent.outcome["merge_sha"] == "d" * 40

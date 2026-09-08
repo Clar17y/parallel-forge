@@ -137,11 +137,26 @@ class QueueObservationService:
             or approval.invalidated_at is not None or await pending_current_control_stop(work, run)
         ):
             raise CommandRecoveryRequired("queue observation awaits control settlement")
+        completion = _ObserveCompletedMerge(self._controller, record, approval_id, approved, no_new_authority)
+        request = completion.request
+        completed_intent = await work.operations.get_by_idempotency_key(request.idempotency_key)
+        completed_pull = None
+        if completed_intent is not None:
+            _validate_intent(completed_intent, request)
+            if completed_intent.status is OperationStatus.SUCCEEDED:
+                completed_pull = GitHubPullRequest(**dict(completed_intent.outcome or {}))  # type: ignore[arg-type]
+                canonical = self._controller.outcome(record, approved, completed_pull)
+                if (
+                    canonical.payload != completed_intent.outcome
+                    or canonical.remote_resource_id != completed_intent.remote_resource_id
+                ):
+                    raise CommandRecoveryRequired("completed queue merge receipt differs")
         await work.commit()
         pull = None
         reason = None
         try:
-            pull = await self._controller.observe_pull(record, approved)
+            # A canonical persisted completion survives GitHub outages after a crash.
+            pull = completed_pull or await self._controller.observe_pull(record, approved)
             if not pull.merged:
                 if pull.state != "open":
                     reason = "queue_pull_request_closed"
@@ -168,8 +183,6 @@ class QueueObservationService:
         if latest != run or await pending_current_control_stop(work, latest):
             raise CommandRecoveryRequired("queue observation settlement fence changed")
         if pull is not None and pull.merged:
-            completion = _ObserveCompletedMerge(self._controller, record, approval_id, approved, no_new_authority)
-            request = completion.request
             merged_intent = await work.operations.begin(
                 run_id=run.id, operation_type=request.kind, idempotency_key=request.idempotency_key,
                 request_digest=request.request_digest, request_payload=request.request_payload,
