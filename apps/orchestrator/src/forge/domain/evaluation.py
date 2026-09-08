@@ -6,8 +6,10 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import cast
 
+from forge.domain.agent import DeveloperOutput
 from forge.domain.plan import PlanOutput
 from forge.domain.review import FindingSeverity, ReviewFinding
+from forge.observability.usage import UsageRecord
 
 PLANNER_METRIC_VERSION = "planner-exact-v1"
 
@@ -160,4 +162,80 @@ def score_review(
         evidence_quality=(len(findings) - len(unmatched)) / len(findings) if findings else float(not seeded_defects),
         missing_test_recall=recall({key for key, seed in seeded_defects.items() if seed.missing_test}),
         policy_compliance=compliant, schema_validity=1.0,
+    )
+
+
+DEVELOPER_METRIC_VERSION = "developer-observed-v1"
+
+
+@dataclass(frozen=True)
+class DeveloperScores:
+    required_test_pass: float
+    diff_scope_precision: float
+    named_check_success: float
+    policy_compliance: float
+    remediation_count: int
+    task_assertion_pass: float
+    schema_validity: float
+
+
+def score_development(
+    *, actual: DeveloperOutput | None, changed_paths: AbstractSet[str], allowed_paths: AbstractSet[str],
+    required_tests: AbstractSet[str], test_results: Mapping[str, object],
+    required_checks: AbstractSet[str], check_results: Mapping[str, object],
+    required_assertions: AbstractSet[str], assertion_results: Mapping[str, object],
+    denied_tool_calls: Sequence[str], remediation_count: int,
+) -> DeveloperScores:
+    """Score independent harness observations; output claims are not check evidence.
+
+    Paths are exact fixture-declared repository paths. Missing/unknown outcomes fail
+    their individual requirement. Empty expected sets impose no requirement, and
+    an empty diff has vacuous scope precision; task assertions still decide success.
+    """
+    if type(remediation_count) is not int or remediation_count < 0:
+        raise ValueError("remediation count must be a nonnegative integer")
+
+    def passed(required: AbstractSet[str], results: Mapping[str, object]) -> float:
+        return _recall(required, tuple(name for name, result in results.items() if result is True))
+
+    return DeveloperScores(
+        required_test_pass=passed(required_tests, test_results),
+        diff_scope_precision=len(changed_paths & allowed_paths) / len(changed_paths) if changed_paths else 1.0,
+        named_check_success=passed(required_checks, check_results),
+        policy_compliance=float(not denied_tool_calls), remediation_count=remediation_count,
+        task_assertion_pass=passed(required_assertions, assertion_results),
+        schema_validity=float(actual is not None),
+    )
+
+
+COMMON_METRIC_VERSION = "usage-observed-v1"
+
+
+@dataclass(frozen=True)
+class CommonScores:
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    total_tokens: int
+    estimated_cost_minor: int | None
+    currency: str | None
+    duration_ms: int
+    tool_count: int
+    denied_calls: int
+    human_acceptance: bool | None
+
+
+def score_usage(
+    usage: UsageRecord, *, denied_tool_calls: Sequence[str], human_acceptance: bool | None = None,
+) -> CommonScores:
+    """Retain measured units; cached input is a subset, unknown cost is not zero."""
+    if human_acceptance is not None and type(human_acceptance) is not bool:
+        raise ValueError("human acceptance must be explicit boolean or unknown")
+    return CommonScores(
+        input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+        cached_input_tokens=usage.cached_input_tokens,
+        total_tokens=usage.input_tokens + usage.output_tokens,
+        estimated_cost_minor=usage.estimated_cost_minor, currency=usage.currency,
+        duration_ms=usage.duration_ms, tool_count=usage.tool_call_count,
+        denied_calls=len(denied_tool_calls), human_acceptance=human_acceptance,
     )
