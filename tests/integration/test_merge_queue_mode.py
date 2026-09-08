@@ -1,3 +1,6 @@
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -25,10 +28,13 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 
 
-@pytest.mark.parametrize("queue", [False, True])
-@pytest.mark.parametrize("crash", [None, "after_acceptance", "before_scheduling"])
+@pytest.mark.parametrize("queue,crash,ending", [
+    (False, None, "merged"), (True, None, "merged"),
+    (True, "after_acceptance", "merged"), (True, "before_scheduling", "merged"),
+    (True, None, "evicted"), (True, None, "closed"), (True, None, "protection"),
+])
 async def test_consumed_merge_mode_comes_from_approved_observation(
-    tmp_path, workflow_session_factory, queue, crash
+    tmp_path, workflow_session_factory, queue, crash, ending
 ):
     factory = workflow_session_factory
     case, git, read, writes, publication, poll, policy, _ = await published(tmp_path, factory)
@@ -117,4 +123,52 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         assert observer.command_type == "observe_merge_queue"
         assert observer.payload["receipt_digest"] == event.payload["receipt_digest"]
         assert observer.payload["deadline"] == (await work.runs.duration_deadline(run.id)).isoformat()
+    assert queue_port.writes == 1
+    from forge.application.services.queue_observation import QueueObservationService
+
+    await commands.complete(source.id, worker_id=source.lease_owner)
+    observation_service = QueueObservationService(
+        validator, MergeController(read, writes), queue_port,
+        OperationExecutor(PostgresOperationRepository(factory)),
+    )
+    with patch("forge.persistence.repositories.commands._utc_now", return_value=datetime.now(UTC) + timedelta(seconds=20)):
+        first_poll = await commands.claim_next(worker_id="queue-observer", lease_seconds=120)
+    for _ in range(2):
+        async with PostgresUnitOfWork(factory) as work:
+            await observation_service.execute(first_poll, work)
+    async with PostgresUnitOfWork(factory) as work:
+        assert (await work.runs.get(case.run_id)).state is RunState.MERGING
+    await commands.complete(first_poll.id, worker_id=first_poll.lease_owner)
+    if ending == "merged":
+        writes.pull_requests[policy.github_repository, 1] = replace(
+            writes.pull_requests[policy.github_repository, 1], state="closed", merged=True,
+            merge_sha="d" * 40,
+        )
+        queue_port.receipt = None
+    elif ending == "evicted":
+        queue_port.receipt = None
+    elif ending == "closed":
+        writes.pull_requests[policy.github_repository, 1] = replace(
+            writes.pull_requests[policy.github_repository, 1], state="closed",
+        )
+    else:
+        read.merge_protections[key, "main"] = replace(original_protection, merge_queue_enabled=False)
+    with patch("forge.persistence.repositories.commands._utc_now", return_value=datetime.now(UTC) + timedelta(seconds=40)):
+        final_poll = await commands.claim_next(worker_id="queue-final", lease_seconds=120)
+    for _ in range(2):
+        async with PostgresUnitOfWork(factory) as work:
+            await observation_service.execute(final_poll, work)
+    async with PostgresUnitOfWork(factory) as work:
+        assert (await work.runs.get(case.run_id)).state is (
+            RunState.COMPLETED if ending == "merged" else RunState.AWAITING_HUMAN_INTERVENTION
+        )
+        record = await work.releases.get_for_run(case.run_id)
+        if ending == "merged":
+            final_intent = await work.operations.get(record.merge_intent_id)
+            assert final_intent.kind == "merge_pr" and final_intent.status is OperationStatus.SUCCEEDED
+            assert final_intent.outcome["merge_sha"] == "d" * 40
+            assert final_intent.id != intent.id
+        else:
+            assert record.merge_intent_id is None
+            assert (await work.auth.get_approval(approval_id=approval_id)).invalidated_at is not None
     assert queue_port.writes == 1

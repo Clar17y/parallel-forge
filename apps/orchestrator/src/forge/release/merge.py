@@ -104,10 +104,17 @@ class MergeController:
     async def reconcile(
         self, record: ReleaseRecord, approved: MergeApprovalEvidence
     ) -> OperationOutcome:
+        pull = await self.observe_pull(record, approved)
+        return self.outcome(record, approved, pull)
+
+    async def observe_pull(
+        self, record: ReleaseRecord, approved: MergeApprovalEvidence
+    ) -> GitHubPullRequest:
         pull = await self._writes.get_pull_request(
             approved.repository, approved.pull_request_number
         )
-        return self.outcome(record, approved, pull)
+        self._identity(record, approved, pull)
+        return pull
 
     def outcome(
         self, record: ReleaseRecord, approved: MergeApprovalEvidence, pull: GitHubPullRequest
