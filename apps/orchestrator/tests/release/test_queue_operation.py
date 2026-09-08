@@ -97,6 +97,22 @@ async def test_strict_only_protection_rejects_enqueue_without_effect():
     assert queue.writes == 0
 
 
+async def test_admitted_preflight_read_failure_is_conclusive_before_queue_call():
+    from forge.release.github_client import GitHubClientError
+
+    read, write, evidence, record = queued()
+    queue = Queue()
+
+    async def current():
+        raise GitHubClientError("unavailable")
+
+    operation = EnqueueOperation(MergeController(read, write), queue, record, uuid4(), evidence, current)
+    result = await operation.invoke(intent(operation.request))
+    assert result.status is OperationStatus.FAILED
+    assert result.error == "queue_preflight_rejected"
+    assert queue.writes == 0
+
+
 @pytest.mark.parametrize("field,value", [
     ("repository", "other/repo"), ("pull_request_number", 99),
     ("pull_request_node_id", "PR_other"), ("head_sha", "c" * 40),

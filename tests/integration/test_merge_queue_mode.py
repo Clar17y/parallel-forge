@@ -37,6 +37,9 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
     (True, None, "deadline"), (True, None, "deadline_unavailable"),
     (True, None, "admission_rejected"),
     (True, None, "admission_rejected_crash"),
+    (True, None, "admission_preflight_unavailable"),
+    (True, None, "admission_preflight_drift"), (True, None, "admission_expired"),
+    (True, "before_scheduling", "merged_admission_race"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, queue, crash, ending
@@ -105,6 +108,18 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
         validator, MergeController(read, writes), queue_port,
         OperationExecutor(PostgresOperationRepository(factory)),
     )
+    if ending == "admission_preflight_unavailable":
+        from forge.release.github_write import GitHubWriteError
+
+        async def unavailable_preflight(*args, **kwargs):
+            raise GitHubWriteError("unavailable")
+        writes.get_pull_request = unavailable_preflight
+    elif ending == "admission_preflight_drift":
+        read.merge_protections[key, "main"] = replace(original_protection, merge_queue_enabled=False)
+    elif ending == "admission_expired":
+        async with PostgresUnitOfWork(factory) as work:
+            expired_at = await work.runs.duration_deadline(case.run_id)
+        service._clock = SimpleNamespace(now=lambda: expired_at)
     if crash:
         async with PostgresUnitOfWork(factory) as work:
             if crash == "before_scheduling":
@@ -120,25 +135,49 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             work.runs.intervene = fail_rejection
             with pytest.raises(RuntimeError, match="rejection settlement crash"):
                 await service.execute(source, work)
+    saved_pull_read = writes.get_pull_request
+    if ending == "merged_admission_race":
+        from forge.release.github_write import GitHubWriteError
+
+        async def changed_preflight(*args, **kwargs):
+            raise GitHubWriteError("unavailable")
+        writes.get_pull_request = changed_preflight
     for _ in range(2):
         async with PostgresUnitOfWork(factory) as work:
+            if ending == "merged_admission_race":
+                actual_lookup = work.operations.get_by_idempotency_key
+                first_lookup = True
+
+                async def stale_initial_lookup(key, actual_lookup=actual_lookup):
+                    nonlocal first_lookup
+                    if first_lookup:
+                        first_lookup = False
+                        return None
+                    return await actual_lookup(key)
+                work.operations.get_by_idempotency_key = stale_initial_lookup
             await service.execute(source, work)
-    if ending.startswith("admission_rejected"):
+    if ending == "merged_admission_race":
+        writes.get_pull_request = saved_pull_read
+    if ending.startswith("admission_"):
         async with PostgresUnitOfWork(factory) as work:
             current_run = await work.runs.get(case.run_id)
             assert current_run.state is RunState.AWAITING_HUMAN_INTERVENTION
             assert current_run.version == source.expected_run_version + 1
             assert (await work.auth.get_approval(approval_id=approval_id)).invalidated_at is not None
-            rejected = await work.operations.get(enqueue_attempts[0])
-            assert rejected.status is OperationStatus.FAILED
-            assert rejected.error == "queue_remote_rejected"
             rejections = [e for e in await work.events.list_after(case.run_id, 0)
                           if e.event_type == "run.merge_queue_admission_rejected"]
             assert len(rejections) == 1
+            rejected = await work.operations.get(UUID(rejections[0].payload["enqueue_intent_id"]))
+            assert rejected.status is OperationStatus.FAILED
+            assert rejected.error == (
+                "queue_remote_rejected" if ending.startswith("admission_rejected")
+                else "queue_preflight_rejected"
+            )
             assert await work.commands.get_by_idempotency_key(
                 f"{case.run_id}:observe-merge-queue:{rejected.id}:1"
             ) is None
-        assert len(enqueue_attempts) == 1 and queue_port.writes == 0
+        assert len(enqueue_attempts) == int(ending.startswith("admission_rejected"))
+        assert queue_port.writes == 0
         return
     async with PostgresUnitOfWork(factory) as work:
         run = await work.runs.get(case.run_id)

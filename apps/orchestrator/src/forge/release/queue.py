@@ -10,6 +10,7 @@ from forge.domain.approval import MergeApprovalEvidence
 from forge.domain.merge_queue import MergeQueueReceipt
 from forge.domain.operation import OperationIntent, OperationOutcome, OperationStatus
 from forge.release.controller import ReleaseReconciliationRequired, _validate_intent
+from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
 from forge.release.merge import MergeController, MergeOperation, StaleMergeEvidence
 
@@ -35,7 +36,7 @@ class EnqueueOperation:
             await self._controller.preflight(self._record, self._approved, await self._current())
             if not await self._controller.queue_required(self._approved):
                 raise StaleMergeEvidence()
-        except StaleMergeEvidence:
+        except StaleMergeEvidence, GitHubClientError, GitHubWriteError:
             return OperationOutcome(status=OperationStatus.FAILED, error="queue_preflight_rejected")
         approved = self._approved
         try:

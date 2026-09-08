@@ -20,7 +20,9 @@ from forge.domain.operation import OperationIntent, OperationStatus, canonical_d
 from forge.domain.run import RunState
 from forge.persistence.models import Approval
 from forge.release.controller import _validate_intent
-from forge.release.merge import MergeController
+from forge.release.github_client import GitHubClientError
+from forge.release.github_write import GitHubWriteError
+from forge.release.merge import MergeController, StaleMergeEvidence
 from forge.release.queue import EnqueueOperation
 
 
@@ -79,9 +81,10 @@ class QueueAdmissionService:
             latest = await work.runs.get_for_update(run.id)
             if (
                 latest != run or await pending_current_control_stop(work, latest)
-                or self._clock.now() >= deadline
             ):
-                raise CommandRecoveryRequired("queue admission awaits control or deadline settlement")
+                raise CommandRecoveryRequired("queue admission awaits control settlement")
+            if self._clock.now() >= deadline:
+                raise StaleMergeEvidence()
             result = await self._evidence.consumed(work, run.id, approval_id, recheck=True)
             await work.commit()
             return result
@@ -105,8 +108,12 @@ class QueueAdmissionService:
                 raise CommandRecoveryRequired("queue rejection replay differs")
             await work.commit()
             return
+        preflight_rejected = False
         if existing is None:
-            await current()
+            try:
+                await current()
+            except StaleMergeEvidence, GitHubClientError, GitHubWriteError:
+                preflight_rejected = True
         else:
             _validate_intent(existing, request)
             if existing.status is OperationStatus.FAILED:
@@ -121,7 +128,19 @@ class QueueAdmissionService:
             request_digest=request.request_digest, request_payload=request.request_payload,
             execution_owner=f"forge-enqueue-{uuid4().hex}", execution_lease_seconds=30,
         )
+        if preflight_rejected and intent.is_new:
+            # This delivery has made no queue call. Never overwrite a pre-existing
+            # intent: it may represent a durable effect from a competing delivery.
+            await work.operations.fail(
+                intent.id, error="queue_preflight_rejected", owner_id=intent.execution_owner
+            )
+            await work.commit()
+            await self._settle_rejection(command, work, approval, adapter)
+            return
         await work.commit()
+        if intent.status is OperationStatus.FAILED:
+            await self._settle_rejection(command, work, approval, adapter)
+            return
         outcome = await self._executor.execute_admitted(intent, adapter)
         if outcome.status is OperationStatus.FAILED:
             await self._settle_rejection(command, work, approval, adapter)
