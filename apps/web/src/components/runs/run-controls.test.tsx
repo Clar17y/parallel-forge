@@ -273,3 +273,13 @@ test('terminal state does not invent a teardown control', () => {
   render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
   expect(screen.queryByRole('button', { name: 'Remove run resources' })).not.toBeInTheDocument();
 });
+
+test('recorded branch removal does not offer another deletion choice', async () => {
+  const value = projection({ available_commands: [{ name: 'teardown_run_resources', expected_run_version: 7, requires_feedback: false }] });
+  value.resource.teardown_confirmation = `teardown:${value.run.id}:${'a'.repeat(64)}`;
+  value.resource.branch_name = 'forge/exact'; value.resource.branch_removed = true;
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Remove run resources' }));
+  expect(await screen.findByRole('dialog')).toHaveTextContent('Removal recorded for branch forge/exact');
+  expect(screen.queryByRole('checkbox', { name: 'Also delete the branch' })).not.toBeInTheDocument();
+});

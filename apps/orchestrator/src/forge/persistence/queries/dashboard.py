@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from forge.application.services.public_data import public_payload
 from forge.domain.actor import AgentRole
 from forge.domain.agent import _ALLOWED_ROLE_TOOLS
+from forge.domain.branch_removal import branch_removal_recorded
 from forge.domain.policy import ProjectPolicy
-from forge.domain.run import RunState
+from forge.domain.run import RunSnapshot, RunState
 from forge.domain.teardown import has_removable_resources, teardown_confirmation
 from forge.observability.redaction import redact_value
 from forge.persistence.models import (
@@ -21,6 +22,7 @@ from forge.persistence.models import (
     Artifact,
     EvidenceSet,
     ModelUsage,
+    OperationIntent,
     Project,
     ProjectPolicyVersion,
     PullRequest,
@@ -31,6 +33,8 @@ from forge.persistence.models import (
     ValidationResult,
 )
 from forge.persistence.queries.recovery import startup_intervention_hold
+from forge.persistence.repositories.events import _event_from_record
+from forge.persistence.repositories.operations import _intent_from_record
 from forge.persistence.repositories.runs import (
     PersistenceDataError,
     PostgresRunRepository,
@@ -166,6 +170,7 @@ class DashboardQuery:
                     "policy_digest": policy_row.policy_digest,
                 },
                 "resource": {
+                    "branch_removed": await _branch_removed(session, snapshot),
                     "teardown_confirmation": teardown_confirmation(_snapshot_from_record(run)),
                     "database_role": run.database_role,
                     "worktree_path": run.worktree_path,
@@ -278,6 +283,26 @@ class DashboardQuery:
                 "available_commands": [],
                 "next_gate": run.pending_gate,
             }
+
+
+async def _branch_removed(session: AsyncSession, run: RunSnapshot) -> bool:
+    events = list(
+        await session.scalars(
+            select(RunEvent)
+            .where(RunEvent.run_id == run.id, RunEvent.event_type == "resource.branch_removed")
+            .limit(2)
+        )
+    )
+    if len(events) != 1:
+        return False
+    try:
+        intent_id = UUID(str(events[0].payload.get("operation_intent_id")))
+        intent = await session.get(OperationIntent, intent_id)
+        return intent is not None and branch_removal_recorded(
+            run, _event_from_record(events[0]), _intent_from_record(intent)
+        )
+    except ValueError, TypeError, PersistenceDataError:
+        return False
 
 
 async def _digest(session: AsyncSession, artifact_id: UUID | None) -> str | None:

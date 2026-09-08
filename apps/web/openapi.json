@@ -3200,6 +3200,11 @@
             ],
             "title": "Branch Name"
           },
+          "branch_removed": {
+            "default": false,
+            "title": "Branch Removed",
+            "type": "boolean"
+          },
           "database_name": {
             "anyOf": [
               {

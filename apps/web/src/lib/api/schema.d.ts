@@ -1798,6 +1798,11 @@ export interface components {
         ResourceSection: {
             /** Branch Name */
             branch_name: string | null;
+            /**
+             * Branch Removed
+             * @default false
+             */
+            branch_removed: boolean;
             /** Database Name */
             database_name: string | null;
             /** Database Role */

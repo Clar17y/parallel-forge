@@ -6,9 +6,12 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
+from forge.domain.branch_removal import (
+    BRANCH_REMOVAL_KIND,
+    BranchRemovalBinding,
+    BranchRemovalError,
+)
 from forge.domain.operation import (
     OperationIntent,
     OperationOutcome,
@@ -16,37 +19,15 @@ from forge.domain.operation import (
     OperationStatus,
     canonical_digest,
 )
-from forge.domain.resource import WorktreeIdentity
 from forge.tools.runner import await_deferred_cancellation
 
-BRANCH_REMOVAL_KIND = "git.branch_delete"
-
-
-class BranchRemovalError(RuntimeError):
-    """An immutable branch-removal operation requires reconciliation."""
-
-
-class BranchRemovalBinding(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    run_id: UUID
-    project_id: UUID
-    source_command_id: UUID
-    policy_version: int = Field(strict=True, ge=1)
-    branch: str = Field(strict=True, min_length=1, max_length=255)
-    database_enabled: bool = Field(strict=True)
-    worktree_name: str = Field(strict=True, min_length=1, max_length=128)
-    base_sha: str = Field(strict=True, min_length=40, max_length=40, pattern=r"^[a-f0-9]{40}$")
-    expected_head: str | None = Field(
-        strict=True, min_length=40, max_length=40, pattern=r"^[a-f0-9]{40}$"
-    )
-
-    def identity(self) -> WorktreeIdentity:
-        identity = WorktreeIdentity.for_run(
-            self.project_id, self.run_id, self.branch, self.database_enabled
-        )
-        if identity.worktree_name != self.worktree_name:
-            raise BranchRemovalError("branch removal identity is invalid")
-        return identity
+__all__ = [
+    "BRANCH_REMOVAL_KIND",
+    "BranchRemovalAdapter",
+    "BranchRemovalBinding",
+    "BranchRemovalError",
+    "branch_removal_request",
+]
 
 
 def branch_removal_request(

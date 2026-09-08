@@ -652,4 +652,5 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
 
     await command_repository.complete(command.id, worker_id="teardown-worker")
     settled = await projections.run_projection(run.id, actor)
+    assert settled["resource"]["branch_removed"] is delete_branch
     assert settled["available_commands"] == []

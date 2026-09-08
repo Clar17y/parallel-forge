@@ -38,6 +38,7 @@ class ProjectSection(ProjectionModel):
 
 
 class ResourceSection(ProjectionModel):
+    branch_removed: bool = False
     teardown_confirmation: str
     database_role: str | None
     worktree_path: str | None

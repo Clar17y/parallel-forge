@@ -60,7 +60,7 @@ export function RunCockpit({ initial }: { initial: Projection }) {
     {failed && <p role="alert">Current run state could not be refreshed. Actions are disabled until a successful refresh.</p>}
     {value.recovery_hold && <p role="alert">Recovery needs attention: an earlier operation has an unresolved outcome. Resume and resource teardown are held until its evidence is reconciled. Review the activity before taking further action.</p>}
     <button onClick={() => void refresh().catch(() => {})} disabled={reading}>Refresh run</button>
-    <dl><dt>Branch</dt><dd>{value.resource.branch_name ?? 'Not yet created'}</dd>
+    <dl><dt>Branch</dt><dd>{value.resource.branch_name ?? 'Not yet created'}{value.resource.branch_removed && ' — removal recorded'}</dd>
       <dt>Worktree</dt><dd>{value.resource.worktree_path ?? 'Not yet created'}</dd>
       <dt>Database</dt><dd>{value.resource.database_state === 'DISABLED' ? 'Not configured' : value.resource.database_state}</dd>
       <dt>Head</dt><dd>{value.candidate.commit ?? 'No candidate yet'}</dd>
