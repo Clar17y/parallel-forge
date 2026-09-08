@@ -33,6 +33,7 @@ from forge.release.base_adoption import BaseAdoptionOperation
 from forge.release.base_update import BaseUpdateOperation
 from forge.release.controller import ReleaseReconciliationRequired, _validate_intent
 from forge.release.git_adoption import ManagedAdoptionError
+from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
 
 
@@ -183,7 +184,7 @@ class BaseUpdateService:
                 command, work, run, approval, record.id, "base_update_duration_exhausted"
             )
             return
-        except ReleaseReconciliationRequired, GitHubWriteError, ManagedAdoptionError:
+        except ReleaseReconciliationRequired, GitHubWriteError, GitHubClientError, ManagedAdoptionError:
             await self._intervene_unresolved(command, work, run, approval, remote.request)
             return
         if not run.worktree_path or not run.branch_name or not run.base_sha:
@@ -205,7 +206,7 @@ class BaseUpdateService:
                 command, work, run, approval, record.id, "base_update_duration_exhausted"
             )
             return
-        except ReleaseReconciliationRequired, GitHubWriteError, ManagedAdoptionError:
+        except ReleaseReconciliationRequired, GitHubWriteError, GitHubClientError, ManagedAdoptionError:
             await self._intervene_unresolved(command, work, run, approval, local.request)
             return
         await self._current(command, work, run, check_deadline=False)

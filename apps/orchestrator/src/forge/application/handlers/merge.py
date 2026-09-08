@@ -13,6 +13,8 @@ from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.run import RunState
 from forge.persistence.models import Approval
+from forge.release.github_client import GitHubClientError
+from forge.release.github_write import GitHubWriteError
 from forge.release.merge import StaleMergeEvidence
 
 
@@ -88,7 +90,7 @@ class ApproveMergeHandler:
         stale = False
         try:
             await self._evidence.validate(work, run.id)
-        except StaleMergeEvidence:
+        except (StaleMergeEvidence, GitHubClientError, GitHubWriteError):
             stale = True
         await _fence_command(command, work)
         current = await work.runs.get_for_update(run.id)

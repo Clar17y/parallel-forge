@@ -40,6 +40,8 @@ pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
         "preflight_unavailable",
         "consumed_artifact",
         "consumed_missing",
+        "approval_read_unavailable",
+        "approval_base_unavailable",
     ],
 )
 async def test_merge_approval_consumes_exact_gate_or_invalidates_without_merge(
@@ -93,7 +95,19 @@ async def test_merge_approval_consumes_exact_gate_or_invalidates_without_merge(
         )
         await work.commit()
     command = await commands.claim_next(worker_id="merge-approval", lease_seconds=120)
-    if drift == "head":
+    if drift in {"approval_read_unavailable", "approval_base_unavailable"}:
+        from forge.release.github_client import GitHubClientError
+        from forge.release.github_write import GitHubWriteError
+
+        async def unavailable(*args):
+            raise (GitHubWriteError("unavailable") if drift == "approval_read_unavailable"
+                   else GitHubClientError("unavailable"))
+
+        if drift == "approval_read_unavailable":
+            writes.get_pull_request = unavailable
+        else:
+            read.get_base = unavailable
+    elif drift == "head":
         writes.pull_requests[policy.github_repository, 1] = replace(
             writes.pull_requests[policy.github_repository, 1], head_sha="f" * 40
         )

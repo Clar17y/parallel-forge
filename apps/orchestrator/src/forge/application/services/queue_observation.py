@@ -25,7 +25,7 @@ from forge.domain.operation import (
 from forge.domain.release import GitHubPullRequest
 from forge.domain.run import RunState
 from forge.persistence.models import Approval
-from forge.release.controller import _validate_intent
+from forge.release.controller import ReleaseReconciliationRequired, _validate_intent
 from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
 from forge.release.merge import MergeController, ObservedMergeOperation, StaleMergeEvidence
@@ -187,27 +187,39 @@ class QueueObservationService:
                 execution_owner=f"forge-queue-completion-{uuid4().hex}", execution_lease_seconds=30,
             )
             await work.commit()
-            outcome = await self._executor.execute_admitted(merged_intent, completion)
-            await _fence_command(command, work)
-            if await work.runs.get_for_update(run.id) != run or await pending_current_control_stop(work, run):
-                raise CommandRecoveryRequired("queue completion fence changed")
-            merged = GitHubPullRequest(**dict(outcome.payload))  # type: ignore[arg-type]
-            await work.releases.record_merge(run.id, merged, merged_intent.id)
-            latest = await work.runs.transition(
-                run.id, run.version, RunState.COMPLETED, "run.merge_completed",
-                {"source_command_id": str(source.id), "approval_id": str(approval_id),
-                 "pull_request_id": str(record.id), "merge_intent_id": str(merged_intent.id),
-                 "merge_sha": merged.merge_sha},
-                actor_class="worker", actor_id=command.actor_id, occurred_at=self._clock.now(),
-            )
-        elif reason is not None:
+            try:
+                outcome = await self._executor.execute_admitted(merged_intent, completion)
+            except (GitHubWriteError, GitHubClientError, StaleMergeEvidence, ReleaseReconciliationRequired):
+                await _fence_command(command, work)
+                if await work.runs.get_for_update(run.id) != run or await pending_current_control_stop(work, run):
+                    raise CommandRecoveryRequired("queue completion failure fence changed") from None
+                unresolved = await work.operations.get(merged_intent.id)
+                _validate_intent(unresolved, request)
+                if unresolved.status is not OperationStatus.NEEDS_RECONCILIATION or unresolved.execution_owner is not None:
+                    raise CommandRecoveryRequired("queue completion failure receipt differs") from None
+                reason = "queue_completion_unresolved"
+            else:
+                await _fence_command(command, work)
+                if await work.runs.get_for_update(run.id) != run or await pending_current_control_stop(work, run):
+                    raise CommandRecoveryRequired("queue completion fence changed")
+                merged = GitHubPullRequest(**dict(outcome.payload))  # type: ignore[arg-type]
+                await work.releases.record_merge(run.id, merged, merged_intent.id)
+                latest = await work.runs.transition(
+                    run.id, run.version, RunState.COMPLETED, "run.merge_completed",
+                    {"source_command_id": str(source.id), "approval_id": str(approval_id),
+                     "pull_request_id": str(record.id), "merge_intent_id": str(merged_intent.id),
+                     "merge_sha": merged.merge_sha},
+                    actor_class="worker", actor_id=command.actor_id, occurred_at=self._clock.now(),
+                )
+        if reason is not None:
             await work.auth.invalidate_merge_gate(run_id=run.id, run_version=approval.run_version, at=self._clock.now())
             latest = await work.runs.intervene(
                 run.id, run.version, "run.merge_queue_intervention",
-                {"observation_command_id": str(command.id), "enqueue_intent_id": str(enqueue_id), "reason": reason},
+                {"observation_command_id": str(command.id), "enqueue_intent_id": str(enqueue_id), "reason": reason,
+                 **({"merge_intent_id": str(merged_intent.id)} if reason == "queue_completion_unresolved" else {})},
                 actor_class="worker", actor_id=command.actor_id, occurred_at=self._clock.now(),
             )
-        else:
+        elif latest.state is not RunState.COMPLETED:
             payload = {**core_payload, "poll": poll + 1}
             key = f"{run.id}:observe-merge-queue:{enqueue_id}:{poll + 1}"
             queued = await work.commands.enqueue(

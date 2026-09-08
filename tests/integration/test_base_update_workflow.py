@@ -55,6 +55,7 @@ async def test_base_update_admission_preserves_original_evidence_and_checks_cand
         ("unsafe", None),
         ("head", None),
         ("uncertain", None),
+        ("read_unavailable", None),
         ("uncertain_deadline", None),
         ("adoption_uncertain", None),
         ("evidence_invalid", None),
@@ -224,7 +225,20 @@ async def test_monitor_base_advance_queues_one_budgeted_update(
             )
         assert calls == [] and adoption.count == 0
         return
-    if blocker in {"uncertain", "uncertain_deadline", "adoption_uncertain"}:
+    if blocker == "read_unavailable":
+        from unittest.mock import patch
+
+        from forge.release.base_update import BaseUpdateOperation
+        from forge.release.github_client import GitHubClientError
+
+        invoke = BaseUpdateOperation.invoke
+
+        async def unavailable_read(adapter, intent):
+            with patch.object(read, "get_base", side_effect=GitHubClientError("unavailable")):
+                return await invoke(adapter, intent)
+
+        monkeypatch.setattr(BaseUpdateOperation, "invoke", unavailable_read)
+    if blocker in {"uncertain", "uncertain_deadline", "adoption_uncertain", "read_unavailable"}:
         from forge.domain.operation import OperationStatus
 
         for _ in range(2):
@@ -246,7 +260,7 @@ async def test_monitor_base_advance_queues_one_budgeted_update(
             assert (
                 await work.auth.get_approval(approval_id=approval_id)
             ).invalidated_at is not None
-        assert calls == [original_head]
+        assert calls == ([] if blocker == "read_unavailable" else [original_head])
         assert adoption.count == int(blocker == "adoption_uncertain")
         return
     from forge.application.ports.commands import CommandRecoveryRequired

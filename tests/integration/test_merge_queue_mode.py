@@ -78,6 +78,7 @@ async def composed_queue_handlers(tmp_path):
     (True, None, "merged_admission_ack"),
     (True, None, "merged_admission_ack_renewed"),
     (True, None, "routing_history_unavailable"), (True, None, "routing_mode_unavailable"),
+    (True, None, "merged_completion_unavailable"),
 ])
 async def test_consumed_merge_mode_comes_from_approved_observation(
     tmp_path, workflow_session_factory, composed_queue_handlers, queue, crash, ending
@@ -427,6 +428,37 @@ async def test_consumed_merge_mode_comes_from_approved_observation(
             async def timed_out(*args, **kwargs):
                 raise GitHubWriteError("unavailable")
             writes.get_pull_request = timed_out
+    if ending == "merged_completion_unavailable":
+        from forge.release.github_write import GitHubWriteError
+
+        actual_read = writes.get_pull_request
+        completion_reads = 0
+
+        async def completion_unavailable(*args):
+            nonlocal completion_reads
+            completion_reads += 1
+            if completion_reads == 2:
+                raise GitHubWriteError("unavailable")
+            return await actual_read(*args)
+
+        writes.get_pull_request = completion_unavailable
+        for _ in range(2):
+            async with PostgresUnitOfWork(factory) as work:
+                await handlers["observe_merge_queue"](final_poll, work)
+        async with PostgresUnitOfWork(factory) as work:
+            assert (await work.runs.get(case.run_id)).state is RunState.AWAITING_HUMAN_INTERVENTION
+            assert (await work.auth.get_approval(approval_id=approval_id)).invalidated_at is not None
+            events = await work.events.list_after(case.run_id, 0)
+            interventions = [e for e in events if e.event_type == "run.merge_queue_intervention"]
+            assert len(interventions) == 1
+            assert interventions[0].payload["reason"] == "queue_completion_unresolved"
+            unresolved = await work.operations.get(UUID(interventions[0].payload["merge_intent_id"]))
+            assert unresolved.kind == "merge_pr"
+            assert unresolved.status is OperationStatus.NEEDS_RECONCILIATION
+            assert unresolved.execution_owner is None
+            assert (await work.releases.get_for_run(case.run_id)).merge_intent_id is None
+        assert completion_reads == 2 and queue_port.writes == 1
+        return
     if ending in {"merged_receipt_crash", "merged_transaction_crash"}:
         async with PostgresUnitOfWork(factory) as work:
             async def fail_completion(*args, **kwargs):
