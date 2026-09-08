@@ -118,6 +118,10 @@ class TeardownRunResourcesHandler:
                     raise CommandRecoveryRequired("branch head admission is invalid")
                 branch_head = recorded_head
         else:
+            if delete_branch and any(
+                event.event_type == "resource.branch_removed" for event in events
+            ):
+                raise TeardownCommandRejected("branch removal is already recorded")
             if (
                 run.version != command.expected_run_version
                 or teardown_confirmation(run) != command.payload["confirm_resource_identity"]
@@ -149,7 +153,7 @@ class TeardownRunResourcesHandler:
         policy = await _policy(run, work)
         if not admissions:
             if delete_branch and self._branches is not None:
-                branch_head = await self._branches.observe_head(run, policy)
+                branch_head = await self._branches.observe_head(run, policy, work)
                 if branch_head is not None and (
                     not isinstance(branch_head, str)
                     or re.fullmatch(r"[a-f0-9]{40}", branch_head) is None

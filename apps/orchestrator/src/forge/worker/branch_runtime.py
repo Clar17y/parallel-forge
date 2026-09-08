@@ -89,7 +89,35 @@ class BranchRemovalRuntime:
         )
         return self._git(policy).expected_worktree(identity, run.base_sha)
 
-    async def observe_head(self, run: RunSnapshot, policy: ProjectPolicy) -> str | None:
+    async def observe_head(
+        self, run: RunSnapshot, policy: ProjectPolicy, work: UnitOfWork
+    ) -> str | None:
+        # The handler holds the run lock. Prove creation authority before it
+        # admits teardown or removes the worktree and database.
+        try:
+            if (
+                run.branch_name is None
+                or run.project_id != policy.id
+                or run.policy_version != policy.version
+            ):
+                raise TeardownCommandRejected("branch resource ownership is unproven")
+            identity = WorktreeIdentity.for_run(
+                run.project_id, run.id, run.branch_name, policy.database.enabled
+            )
+            request = _request(run, identity, policy)
+            intent = await work.operations.get_by_idempotency_key(request.idempotency_key)
+            if intent is None:
+                raise TeardownCommandRejected("branch resource ownership is unproven")
+            _validate_succeeded_intent(intent, request, identity)
+        except WorktreeProvisionerError, ValueError, TypeError:
+            raise TeardownCommandRejected("branch resource ownership is unproven") from None
+        project = await work.projects.get(run.project_id, for_update=True)
+        if (
+            project.canonical_path != policy.repository_path
+            or project.github_repository != policy.github_repository
+            or project.default_branch != policy.default_branch
+        ):
+            raise TeardownCommandRejected("branch frozen project policy differs")
         handle = self._handle(run, policy)
         if run.branch_name in {
             policy.default_branch.removeprefix("refs/heads/"),

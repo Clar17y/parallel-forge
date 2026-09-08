@@ -121,6 +121,42 @@ async def test_completion_replay_does_not_repeat_resource_effect(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fresh_branch_removal_after_recorded_removal_has_no_effect(tmp_path):
+    from forge.application.handlers.teardown import (
+        TeardownCommandRejected,
+        TeardownRunResourcesHandler,
+    )
+    from forge.domain.event import RunEvent
+
+    run, command, work, teardown, events = fixture(tmp_path)
+    command = replace(
+        command,
+        payload={
+            **command.payload,
+            "delete_branch": True,
+            "confirm_branch_name": run.branch_name,
+        },
+    )
+    work.commands.assert_current_lease.return_value = command
+    events.append(
+        RunEvent(
+            run_id=run.id,
+            run_version=run.version,
+            event_type="resource.branch_removed",
+            actor_class="worker",
+            payload={"source_command_id": str(uuid4())},
+        )
+    )
+    branches = SimpleNamespace(observe_head=AsyncMock(return_value="b" * 40), remove=AsyncMock())
+    with pytest.raises(TeardownCommandRejected, match="already recorded"):
+        await TeardownRunResourcesHandler(teardown, branches=branches)(command, work)
+    teardown.assert_not_awaited()
+    branches.observe_head.assert_not_awaited()
+    branches.remove.assert_not_awaited()
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
 async def test_crash_after_resource_checkpoint_replays_original_admission(tmp_path):
     from forge.application.handlers.teardown import TeardownRunResourcesHandler
 
@@ -269,7 +305,8 @@ async def test_branch_confirmation_freezes_head_before_resource_effect_and_reuse
     work.commands.assert_current_lease.return_value = command
     observed = []
 
-    async def head(source, policy):
+    async def head(source, policy, supplied_work):
+        assert supplied_work is work
         assert source == run and events == []
         observed.append("head")
         return "b" * 40

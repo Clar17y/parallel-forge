@@ -9,7 +9,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 from uuid import UUID
 
 from forge.domain.command import CommandEnvelope
@@ -17,6 +17,9 @@ from forge.domain.operation import OperationIntent
 from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity, validate_resource_shape
 from forge.domain.run import RunSnapshot
+
+if TYPE_CHECKING:
+    from forge.application.ports.unit_of_work import UnitOfWork
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -587,7 +590,9 @@ __all__ = [
 class BranchTeardownPort(Protocol):
     """Operator-authorized branch deletion bound to the original admission."""
 
-    async def observe_head(self, run: RunSnapshot, policy: ProjectPolicy) -> str | None: ...
+    async def observe_head(
+        self, run: RunSnapshot, policy: ProjectPolicy, work: UnitOfWork
+    ) -> str | None: ...
 
     async def remove(
         self, command: CommandEnvelope, policy: ProjectPolicy, expected_head: str | None

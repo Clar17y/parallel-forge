@@ -93,6 +93,42 @@ def ownership_fixture(tmp_path, *, enabled=False):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("proof", ["missing", "pending", "foreign"])
+async def test_branch_preflight_rejects_unowned_branch_before_git(tmp_path, proof):
+    from forge.application.handlers.teardown import TeardownCommandRejected
+    from forge.worker.branch_runtime import BranchRemovalRuntime
+
+    run, policy, identity, receipts, _, work = ownership_fixture(tmp_path)
+    key = _request(run, identity, policy).idempotency_key
+    if proof == "missing":
+        del receipts[key]
+    elif proof == "pending":
+        receipts[key] = replace(
+            receipts[key],
+            status=OperationStatus.PENDING,
+            outcome=None,
+            completed_at=None,
+            remote_resource_id=None,
+            outcome_schema_version=None,
+        )
+    else:
+        receipts[key] = replace(receipts[key], request_digest="f" * 64)
+    work.projects = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                canonical_path=policy.repository_path,
+                github_repository=policy.github_repository,
+                default_branch=policy.default_branch,
+            )
+        )
+    )
+    git = Mock()
+    with pytest.raises(TeardownCommandRejected, match="ownership"):
+        await BranchRemovalRuntime(Mock(), git, Mock()).observe_head(run, policy, work)
+    git.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "proof", ["valid", "missing_receipt", "missing_checkpoint", "foreign_database"]
 )
