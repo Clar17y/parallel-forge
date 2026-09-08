@@ -1,0 +1,25 @@
+{
+  "name": "parallel-forge",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=24.0.0 <25.0.0"
+  },
+  "scripts": {
+    "dev:web": "npm run dev --workspace apps/web",
+    "build:web": "npm run build --workspace apps/web",
+    "lint:web": "npm run lint --workspace apps/web",
+    "typecheck:web": "npm run typecheck --workspace apps/web",
+    "test:web": "npm run test --workspace apps/web --",
+    "api:generate": "npm run api:generate --workspace apps/web",
+    "api:check": "npm run api:check --workspace apps/web"
+  },
+  "overrides": {
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "devDependencies": {
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}

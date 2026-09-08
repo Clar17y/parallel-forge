@@ -954,6 +954,19 @@
         "title": "CommandSpec",
         "type": "object"
       },
+      "CsrfResponse": {
+        "properties": {
+          "csrf_token": {
+            "title": "Csrf Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "csrf_token"
+        ],
+        "title": "CsrfResponse",
+        "type": "object"
+      },
       "CurrencyUsage": {
         "additionalProperties": false,
         "properties": {
@@ -3432,6 +3445,29 @@
         "security": [],
         "summary": "Bootstrap",
         "x-forge-bootstrap-exchange": true
+      }
+    },
+    "/api/auth/csrf": {
+      "get": {
+        "operationId": "recover_csrf_api_auth_csrf_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CsrfResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Recover Csrf"
       }
     },
     "/api/auth/logout": {

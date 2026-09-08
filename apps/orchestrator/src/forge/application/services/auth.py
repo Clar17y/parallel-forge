@@ -184,7 +184,7 @@ class AuthService:
             raise AuthenticationError("invalid or expired bootstrap token")
         now = _aware_now(self._clock)
         session_token = _new_token()
-        csrf_token = _new_token()
+        csrf_token = _session_csrf_token(session_token)
         actor_id = uuid4()
         session_id = uuid4()
         absolute_expires_at = now + SESSION_ABSOLUTE_LIFETIME
@@ -300,6 +300,29 @@ class AuthService:
             absolute_expires_at=absolute_expires_at,
         )
 
+    async def recover_csrf(self, actor: AuthenticatedActor, session_token: str) -> str:
+        """Recover a current session's CSRF token without rotating or persisting it."""
+        if (
+            not isinstance(actor, AuthenticatedActor)
+            or not isinstance(session_token, str)
+            or not session_token
+        ):
+            raise AuthenticationError("invalid or expired session")
+        token = _session_csrf_token(session_token)
+        async with self._unit_of_work_factory() as work:
+            row = await work.auth.get_valid_session(
+                token_hash=hash_token(session_token), now=_aware_now(self._clock), for_update=False
+            )
+            if (
+                row is None
+                or _uuid_value(row, "id") != actor.session_id
+                or _uuid_value(row, "actor_id") != actor.actor_id
+                or not hmac.compare_digest(_string_value(row, "csrf_hash") or "", hash_token(token))
+            ):
+                raise AuthenticationError("session requires a new bootstrap")
+            await work.rollback()
+        return token
+
     async def logout(self, actor: AuthenticatedActor) -> None:
         """Revoke one session without exposing any credential material."""
 
@@ -317,6 +340,11 @@ def hash_token(token: str) -> str:
 
 def _new_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def _session_csrf_token(session_token: str) -> str:
+    """Domain-separated token derived from the random, HttpOnly session secret."""
+    return hmac.new(session_token.encode("utf-8"), b"forge:csrf:v1", hashlib.sha256).hexdigest()
 
 
 def _aware_now(clock: Clock) -> datetime:

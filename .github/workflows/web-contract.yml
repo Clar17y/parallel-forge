@@ -1,0 +1,41 @@
+name: Web contract
+
+on:
+  push:
+    branches: [forge/v0-1]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.20.0'
+          package-manager-cache: false
+      - run: npm install --global npm@12.0.2
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.12.10'
+          python-version: '3.14.5'
+          enable-cache: false
+      - run: uv sync --frozen --extra dev
+      - name: Verify backend OpenAPI contract
+        run: uv run --frozen python scripts/export-openapi.py
+      - run: npm ci
+      - name: Verify generated API types
+        run: npm run api:check
+      - run: npm run test:web -- --run
+      - run: npm run typecheck:web
+      - run: npm run lint:web
+      - run: npm run build:web

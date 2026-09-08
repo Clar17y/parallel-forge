@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from forge.api.dependencies import require_operator, require_operator_mutation
 from forge.api.security import (
+    SESSION_COOKIE,
     RequestSecurityError,
     clear_session_cookie,
     require_same_origin,
@@ -45,8 +46,38 @@ class SessionResponse(BaseModel):
     absolute_expires_at: str
 
 
+class CsrfResponse(BaseModel):
+    csrf_token: str
+
+
 def router_for() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/auth/csrf", response_model=CsrfResponse)
+    async def recover_csrf(
+        request: Request,
+        response: Response,
+        actor: AuthenticatedActor = Depends(require_operator),  # noqa: B008
+    ) -> CsrfResponse:
+        try:
+            require_same_origin(
+                request,
+                request.app.state.settings,
+                require_origin=request.headers.get("origin") is not None,
+            )
+        except RequestSecurityError:
+            raise HTTPException(403, "request not allowed") from None
+        try:
+            token = await cast(Any, request.app.state.auth_service).recover_csrf(
+                actor, request.cookies.get(SESSION_COOKIE, "")
+            )
+        except AuthenticationError:
+            raise HTTPException(401, "authentication required") from None
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Vary"] = "Cookie"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return CsrfResponse(csrf_token=token)
 
     @router.post("/auth/bootstrap", response_model=BootstrapResponse)
     async def bootstrap(
