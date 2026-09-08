@@ -79,12 +79,14 @@ async def test_branch_removal_persists_original_head_and_never_repeats_effect(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("startup", [False, True])
 async def test_uncertain_present_branch_is_terminal_without_blind_deletion(
     operation_repository,
     persisted_run,
     tmp_path,
+    startup,
 ):
-    from forge.application.services.recovery import RecoveryError
+    from forge.application.services.recovery import RecoveryError, RecoveryService
 
     identity = WorktreeIdentity.for_run(
         persisted_run.project_id, persisted_run.id, "forge/exact", False
@@ -109,7 +111,11 @@ async def test_uncertain_present_branch_is_terminal_without_blind_deletion(
 
     adapter = BranchRemovalAdapter(request, git, validate)
     executor = OperationExecutor(operation_repository)
-    result = await executor.execute(request, adapter)
+    result = (
+        await RecoveryService(operation_repository).reconcile(intent.id, adapter)
+        if startup
+        else await executor.execute(request, adapter)
+    )
     assert result.status is OperationStatus.FAILED
     assert git.calls == [("inspect", "b" * 40)]
     assert (await operation_repository.get(intent.id)).status is OperationStatus.FAILED

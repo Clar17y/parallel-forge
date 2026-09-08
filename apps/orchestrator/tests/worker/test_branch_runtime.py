@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -19,6 +19,20 @@ from forge.tools.worktree import (
     _teardown_request,
     _worktree_outcome,
 )
+
+
+@pytest.mark.asyncio
+async def test_startup_branch_adapter_cannot_invoke_effects():
+    from forge.application.services.recovery import RecoveryError
+    from forge.worker.branch_runtime import BranchRemovalRuntime
+
+    factory, git, executor = Mock(), Mock(), Mock()
+    adapter = BranchRemovalRuntime(factory, git, executor).recovery_adapter()
+    with pytest.raises(RecoveryError, match="cannot invoke"):
+        await adapter.invoke(None)
+    factory.assert_not_called()
+    git.assert_not_called()
+    executor.execute.assert_not_called()
 
 
 def ownership_fixture(tmp_path):

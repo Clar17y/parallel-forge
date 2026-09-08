@@ -95,6 +95,7 @@ from forge.tools.secrets import LocalSecretStore, SecretStoreError
 from forge.worker.agent_tools import PerRequestToolProvider as _PerRequestToolProvider
 from forge.worker.base_recovery import base_recovery_adapters
 from forge.worker.bound_delivery import BoundDeliveryGateway
+from forge.worker.branch_runtime import BranchRemovalRuntime
 from forge.worker.delivery_runtime import DeliveryRuntime
 from forge.worker.publication_recovery import publication_recovery_adapters
 from forge.worker.recovery_adapters import local_recovery_adapters
@@ -520,6 +521,9 @@ def compose_worker_handlers(
     handlers.recovery_adapters.update(
         resource_recovery_adapters(session_factory, delivery_dependencies)
     )
+    handlers.recovery_adapters["git.branch_delete"] = BranchRemovalRuntime(
+        uow_factory, delivery_dependencies.git, delivery_dependencies.operation_executor
+    ).recovery_adapter()
 
     handlers.recovery_adapters.update(
         local_recovery_adapters(

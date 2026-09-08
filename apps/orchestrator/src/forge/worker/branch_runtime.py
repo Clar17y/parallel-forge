@@ -14,13 +14,15 @@ from forge.application.handlers.teardown import (
     _validate_progress,
 )
 from forge.application.ports.commands import CommandRecoveryRequired
+from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
-from forge.application.services.recovery import OperationExecutor
+from forge.application.services.recovery import OperationExecutor, RecoveryError
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.operation import (
     OperationIntent,
+    OperationOutcome,
     OperationRequest,
     OperationStatus,
     canonical_digest,
@@ -56,6 +58,24 @@ class BranchRemovalRuntime:
         executor: OperationExecutor,
     ) -> None:
         self._factory, self._git, self._executor = factory, git, executor
+
+    def recovery_adapter(self) -> OperationAdapter:
+        return _BranchRecovery(self)
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        async with self._factory() as work:
+            run = await work.runs.get_for_update(intent.run_id)
+            policy = await _policy(run, work)
+            await work.commit()
+        request = OperationRequest(
+            run_id=intent.run_id,
+            kind=intent.kind,
+            idempotency_key=intent.idempotency_key,
+            request_digest=intent.request_digest,
+            request_payload=intent.request_payload,
+            request_schema_version=intent.request_schema_version,
+        )
+        return await self.adapter(request, policy).reconcile(intent)
 
     def _handle(self, run: RunSnapshot, policy: ProjectPolicy) -> ManagedWorktree:
         if run.branch_name is None or run.base_sha is None:
@@ -244,6 +264,17 @@ class BranchRemovalRuntime:
                 )
             await work.commit()
             return current
+
+
+class _BranchRecovery:
+    def __init__(self, runtime: BranchRemovalRuntime) -> None:
+        self._runtime = runtime
+
+    async def invoke(self, intent: OperationIntent) -> OperationOutcome:
+        raise RecoveryError("startup branch recovery cannot invoke deletion")
+
+    async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
+        return await self._runtime.reconcile(intent)
 
 
 async def require_branch_admission(

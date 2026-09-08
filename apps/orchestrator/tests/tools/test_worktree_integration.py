@@ -440,6 +440,7 @@ class _TeardownGitEffect(_GitEffect):
         self.remove_calls = 0
         self.branch_head: str | None = "b" * 40
         self.branch_delete_calls = 0
+        self.interrupt_branch = False
 
     def head_sha(self, worktree):
         assert self.handle == worktree
@@ -454,6 +455,8 @@ class _TeardownGitEffect(_GitEffect):
         assert expected_head == self.branch_head
         self.branch_delete_calls += 1
         self.branch_head = None
+        if self.interrupt_branch:
+            raise RuntimeError("interrupted after branch effect")
 
     def inspect_retained_branch_deletion(self, worktree, expected_head):
         self.verify_worktree_absent(worktree)
@@ -473,7 +476,7 @@ class _TeardownGitEffect(_GitEffect):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("interrupt_after_removal", [False, True])
+@pytest.mark.parametrize("interrupt_after_removal", [False, True, "branch"])
 @pytest.mark.parametrize("delete_branch", [False, True])
 async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipts(
     session_factory,
@@ -498,6 +501,7 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
         persisted_run, id=uuid4(), project_id=uuid4(), task_id=uuid4(), policy_version=1
     )
     git = _TeardownGitEffect()
+    git.interrupt_branch = interrupt_after_removal == "branch" and delete_branch
     policy = _policy(persisted_run, git, enabled=False)
     policy = policy.model_copy(update={"github_repository": policy.github_repository.lower()})
     document = policy.model_dump(mode="json")
@@ -573,7 +577,7 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
 
     async def remove(run_id, supplied_policy):
         result = await provisioner.teardown(run_id, supplied_policy)
-        if interrupt_after_removal:
+        if interrupt_after_removal is True:
             raise RuntimeError("simulated interruption after resource checkpoint")
         return result
 
@@ -588,11 +592,23 @@ async def test_operator_teardown_uses_postgres_admission_and_provisioner_receipt
     )
     handler = TeardownRunResourcesHandler(remove, branches=branches)
     async with PostgresUnitOfWork(session_factory) as work:
-        if interrupt_after_removal:
+        if interrupt_after_removal is True or (
+            interrupt_after_removal == "branch" and delete_branch
+        ):
             with pytest.raises(CommandRecoveryRequired, match="requires recovery"):
                 await handler(command, work)
         else:
             await handler(command, work)
+    if interrupt_after_removal == "branch" and delete_branch:
+        from forge.application.services.recovery import RecoveryService
+
+        unresolved = await operation_repository.list_unresolved()
+        assert len(unresolved) == 1 and unresolved[0].kind == "git.branch_delete"
+        assert git.branch_delete_calls == 1 and git.branch_head is None
+        recovered = await RecoveryService(operation_repository).reconcile(
+            unresolved[0].id, branches.recovery_adapter()
+        )
+        assert recovered.status is OperationStatus.SUCCEEDED
     # Resume through the same frozen source even though the resource checkpoint advanced the version.
     handler = TeardownRunResourcesHandler(provisioner.teardown, branches=branches)
     async with PostgresUnitOfWork(session_factory) as work:

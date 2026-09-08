@@ -280,7 +280,7 @@ class RecoveryService:
         return await self._operations.fail(
             claim.intent.id,
             error=outcome.error or "operation could not be reconciled",
-            needs_reconciliation=True,
+            needs_reconciliation=outcome.status is OperationStatus.NEEDS_RECONCILIATION,
             owner_id=owner_id,
         )
 
