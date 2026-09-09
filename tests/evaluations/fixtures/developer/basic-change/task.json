@@ -25,6 +25,8 @@
       "name": "pytest",
       "argv": [
         "python",
+        "-I",
+        "-B",
         "run_checks.py"
       ],
       "timeout_seconds": 60

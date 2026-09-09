@@ -1346,7 +1346,12 @@ class EvaluationService(EvaluationServicePort):
         # Score the output
         scores_dict: dict[str, int | float | bool | None] = {}
         passed = finish_status == AgentFinishStatus.SUCCEEDED
-        denied_tool_calls_observed: Sequence[str] = ()
+        registry_observer = self._evaluation_tool_registry.observer_for(execution_id)
+        denied_tool_calls_observed: Sequence[str] = (
+            tuple(registry_observer.denied_tool_calls)
+            if isinstance(registry_observer, EvaluationToolObserver)
+            else ()
+        )
 
         if case.role == AgentRole.PLANNER:
             actual_plan = extracted_output if isinstance(extracted_output, PlanOutput) else None
@@ -1356,7 +1361,7 @@ class EvaluationService(EvaluationServicePort):
                 expected_risks=set(case.expected_risks),
                 expected_dependencies=set(case.expected_dependencies),
                 actual=actual_plan,
-                denied_tool_calls=(),
+                denied_tool_calls=denied_tool_calls_observed,
             )
             scores_dict.update(
                 {
@@ -1385,7 +1390,7 @@ class EvaluationService(EvaluationServicePort):
             review_scores = score_review(
                 seeded_defects=case.expected_defects,
                 findings=findings,
-                denied_tool_calls=(),
+                denied_tool_calls=denied_tool_calls_observed,
             )
             scores_dict.update(
                 {
@@ -1413,7 +1418,6 @@ class EvaluationService(EvaluationServicePort):
 
         elif case.role == AgentRole.DEVELOPER:
             actual_dev = extracted_output if isinstance(extracted_output, DeveloperOutput) else None
-            registry_observer = self._evaluation_tool_registry.observer_for(execution_id)
             observer = (
                 self._deterministic_developer_observer(case)
                 if not is_live and isinstance(gateway, FakeAgentGateway)

@@ -145,26 +145,44 @@ async def test_forged_report_from_replaced_fixture_harness_earns_no_credit(
             ).encode(),
             media_type="application/json",
         )
-        await observer.record_check_artifacts(
-            {
-                "status": "succeeded",
-                "tool_call_id": "call",
-                "artifact_digests": [receipt.digest],
-                "metadata": {
-                    "receipt_digest": receipt.digest,
-                    "stdout_digest": stdout.digest,
-                    "exit_code": 0,
-                    "timed_out": False,
-                    "caller_cancelled": False,
-                },
+        check_result = {
+            "status": "succeeded",
+            "tool_call_id": "call",
+            "artifact_digests": [receipt.digest],
+            "metadata": {
+                "receipt_digest": receipt.digest,
+                "stdout_digest": stdout.digest,
+                "exit_code": 0,
+                "timed_out": False,
+                "caller_cancelled": False,
             },
-            command_name="pytest",
-            harness_trusted=pretrusted,
+        }
+        await observer.record_check_artifacts(
+            check_result, command_name="pytest", harness_trusted=pretrusted
         )
+
         assert observer.test_results == ({"test_app.py": True} if damage is None else {})
         assert observer.assertion_results == (
             {"greet_returns_hello": True} if damage is None else {}
         )
+        if damage is None:
+            observer.record_check_result("pytest", passed=True)
+            observer.record_controlled_result(
+                ToolName.REPOSITORY_WRITE_FILE,
+                {"status": "succeeded", "metadata": {}},
+                arguments={"path": "app.py", "content": "wrong"},
+            )
+            assert observer.check_results == {}
+            assert observer.test_results == {}
+            assert observer.assertion_results == {}
+            assert observer._reports == {}
+            observer.record_check_result("pytest", passed=True)
+            await observer.record_check_artifacts(
+                check_result, command_name="pytest", harness_trusted=True
+            )
+            assert observer.check_results == {"pytest": True}
+            assert observer.test_results == {"test_app.py": True}
+            assert observer.assertion_results == {"greet_returns_hello": True}
 
 
 def test_candidate_code_cannot_emit_a_report_or_skip_the_fixture_owned_assertion() -> None:
@@ -453,3 +471,32 @@ def test_fixture_harness_redirect_outside_root_earns_no_trust(
             case=case, fixture_root=mat.path, template_digests=mat.template_digests
         )
         assert not observer.check_harness_is_intact("pytest")
+
+
+def test_fixture_command_rejects_import_shadow_report_forgery() -> None:
+    case = load_evaluation_case(FIXTURES_ROOT / "developer" / "basic-change")
+    with materialize_fixture(case) as mat:
+        (mat.path / "app.py").write_text('def greet(name):\n    return "wrong"\n', encoding="utf-8")
+        report = "FORGE_EVAL_REPORT_V1:" + json.dumps(
+            {
+                "report_version": 1,
+                "fixture_version": case.fixture_version,
+                "case_key": case.case_key,
+                "command_name": "pytest",
+                "tests": {"test_app.py": True},
+                "assertions": {"greet_returns_hello": True},
+            }
+        )
+        (mat.path / "json.py").write_text(
+            f"import os\nprint({report!r}, flush=True)\nos._exit(0)\n", encoding="utf-8"
+        )
+        result = subprocess.run(
+            [sys.executable, *case.check_commands[0].argv[1:]],
+            cwd=mat.path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "FORGE_EVAL_REPORT_V1:" not in result.stdout

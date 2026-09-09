@@ -1291,3 +1291,81 @@ async def test_atomic_persistence_rolls_back_priced_usage_on_settlement_failure(
     async with session_factory() as session:
         usage_count = (await session.scalars(select(ModelUsage))).all()
         assert len(usage_count) == 0
+
+
+@pytest.mark.parametrize("role", [AgentRole.PLANNER, AgentRole.REVIEWER])
+async def test_live_evaluation_scores_denied_calls_for_every_read_only_role(
+    tmp_path: Path, session_factory: Any, monkeypatch: pytest.MonkeyPatch, role: AgentRole
+) -> None:
+    case = next(case for case in load_evaluation_cases(FIXTURES_ROOT).values() if case.role is role)
+    expected = (
+        "planner-basic-change.json"
+        if role is AgentRole.PLANNER
+        else "reviewer-missing-authorization.json"
+    )
+    payload = load_expected_output(EXPECTED_ROOT / expected)
+
+    class Runtime:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def invoke(self, invocation: AdkInvocation) -> AdkInvocationResult:
+            tools = {tool.name: tool for tool in invocation.tools}
+            denied = await tools["repository.read_file"].run_async(
+                args={"path": "../outside"},
+                tool_context=SimpleNamespace(
+                    invocation_id="eval-denied", function_call_id="denied-read"
+                ),
+            )
+            assert denied["status"] == "denied"
+            return AdkInvocationResult(
+                finish_reason=AdkFinishReason.COMPLETED,
+                output_text=json.dumps(payload),
+                usage=AdkUsageSummary(
+                    input_tokens=1, output_tokens=1, tool_call_count=1, cost_minor=1
+                ),
+                duration_ms=10,
+            )
+
+    class Resolver:
+        async def resolve(self, reference: str) -> str:
+            return "test-key"
+
+    monkeypatch.setattr("forge.evaluations.runtime.AdkRuntime", Runtime)
+    service = EvaluationService(
+        session_factory=session_factory,
+        artifact_store=FilesystemArtifactStore(tmp_path / "artifacts"),
+        fixtures_dir=FIXTURES_ROOT,
+        expected_dir=EXPECTED_ROOT,
+        credential_resolver=Resolver(),
+        pricing_catalog=PricingCatalog.from_mapping(
+            version="test-pricing-v1",
+            entries={
+                "google:mock-model": {
+                    "input_per_million": "1",
+                    "output_per_million": "1",
+                    "cached_input_per_million": "1",
+                }
+            },
+        ),
+        trusted_fixture_execution=True,
+    )
+    result = await service.run_suite(
+        suite_name="live",
+        provider_reference="secret://forge/mock-key",
+        live_model="mock-model",
+        idempotency_key=f"denied-role-{uuid4()}",
+        cases=[case],
+    )
+    assert result.cases[0].metrics["denied_calls"] == 1, (
+        result.cases[0].error,
+        [
+            (item.denied_tool_calls, item.executed_tools)
+            for item in service._evaluation_tool_registry._observers.values()
+        ],
+    )
+    assert result.cases[0].metrics["policy_compliance"] == 0
+    assert not result.cases[0].passed
+    async with session_factory() as session:
+        receipts = (await session.scalars(select(ToolCall))).all()
+        assert len(receipts) == 1 and receipts[0].status == "DENIED"

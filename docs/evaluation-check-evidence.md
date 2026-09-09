@@ -10,7 +10,8 @@ A developer fixture may declare `check_commands`, using the same exact named
 `CommandSpec` schema as project policy. Its names must exactly match
 `required_checks`; agents still request names, never argv. Fixtures without this
 field retain the pytest command convention. The basic-change fixture runs its
-standard-library assertion script, so it needs no pytest package inside the runner.
+standard-library assertion script with `python -I -B`, so repository modules
+cannot shadow grader imports and no pytest package is needed inside the runner.
 
 A check that supplies individual test/assertion evidence prints one line beginning
 `FORGE_EVAL_REPORT_V1:` followed by this JSON shape:
@@ -38,6 +39,10 @@ output cannot supply these scores. Failed, cancelled, truncated, malformed,
 duplicate or missing reports earn no test/assertion credit. Missing individual
 results remain failures. A subsequent failed check invalidates its prior report;
 all required check reports must be present before combined credit is awarded.
+A subsequent controlled repository write invalidates all check/test/assertion
+credit, including failed or cancelled writes with uncertain effects. Fresh checks
+can restore credit. Observed tool denials contribute to policy and usage scores
+for planner, developer and reviewer roles.
 
 The receipt and output artifacts remain available through the evaluation's run
 and tool-call records. Inspect them when a command passes but required-test or

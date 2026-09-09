@@ -154,6 +154,12 @@ class EvaluationToolObserver:
         }:
             return
         self.executed_tools.append(tool_name.value)
+        if tool_name is ToolName.REPOSITORY_WRITE_FILE:
+            # Even failed/cancelled writes may have crossed the filesystem boundary.
+            self.check_results.clear()
+            self.test_results.clear()
+            self.assertion_results.clear()
+            self._reports.clear()
         metadata = result.get("metadata")
         if not isinstance(metadata, Mapping):
             return
