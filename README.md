@@ -1,9 +1,9 @@
 # Parallel Forge
 
-> **Status: active v0.1 development.** The durable backend and local execution
-> foundations, agent workflow, dashboard and Release Controller have substantial
-> implementation and component coverage. Process/browser acceptance and independent reviews have passed;
-> final integrated backend CI remains pending; see the [evidence ledger](docs/v0.1-progress.md).
+> **Status: v0.1 deterministic acceptance passed.** Tasks 1–29 and required
+> independent review repairs are complete. Full backend, Docker and cross-platform
+> checks passed; see the [acceptance evidence](docs/acceptance-v0.1.md).
+> Merging, live-provider/GitHub checks and deployment require separate authorization.
 
 Parallel Forge is a local-first control plane for durable, reviewable
 agent-assisted software delivery. It began as the engineering system for
@@ -57,7 +57,7 @@ and keyboard/accessibility behavior.
 
 Tasks 1–29 are implemented, including release/queue recovery, dashboard/resource
 controls, evaluations, process acceptance and cross-platform CI. Independent
-review findings are closed. Final integrated backend verification remains pending.
+review findings are closed. Final integrated backend verification passed on `4d42e0d`.
 The [progress ledger](docs/v0.1-progress.md) distinguishes current evidence from
 historical test results and is the authoritative continuation record.
 

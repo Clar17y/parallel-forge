@@ -1,7 +1,8 @@
 # Forge operator runbook
 
 This describes the implemented v0.1 controls. Process/browser acceptance and
-independent reviews have passed; final integrated backend CI is pending; consult [the evidence ledger](v0.1-progress.md) for current checkpoints
+independent reviews have passed; final integrated backend and Docker CI passed on
+`4d42e0d`; consult [the evidence ledger](v0.1-progress.md) for current checkpoints
 and open gates.
 
 ## Instance and startup
@@ -174,5 +175,5 @@ may retain resources for intervention, and is not a successful baseline.
 Default tests and CI exclude live model and GitHub writes. Evaluation service/CLI
 integration and its independent review/correctness repairs have passing evidence.
 Hosted Windows/Linux contract checks, web builds, process recovery and Playwright
-accessibility checks have passed. The final integrated backend CI run is pending;
+accessibility checks have passed. Full backend and Docker run34410330735 passed;
 consult the ledger and acceptance map for exact candidates and reusable evidence.
