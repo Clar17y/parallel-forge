@@ -7,9 +7,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static int rejected(void) {
-    static const char message[] = "Forge runner mount identity rejected\n";
+static int rejected(const char *stage) {
+    static const char message[] = "Forge runner mount identity rejected: ";
     (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    (void)write(STDERR_FILENO, stage, strlen(stage));
+    (void)write(STDERR_FILENO, "\n", 1);
     return 126;
 }
 
@@ -26,24 +28,27 @@ static int identity_number(const char *text, uintmax_t *value) {
 int main(int argc, char **argv) {
     uintmax_t device, inode;
     if (argc < 5 || strlen(argv[1]) != 36 || !identity_number(argv[2], &device) ||
-        !identity_number(argv[3], &inode)) return rejected();
+        !identity_number(argv[3], &inode)) return rejected("arguments");
     char boot_id[38];
     int kernel = open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (kernel < 0) return rejected();
+    if (kernel < 0) return rejected("kernel-open");
     ssize_t count = read(kernel, boot_id, sizeof(boot_id));
     close(kernel);
     if (count != 37 || boot_id[36] != '\n' || memcmp(boot_id, argv[1], 36) != 0)
-        return rejected();
+        return rejected("kernel-identity");
     int directory = open("/workspace", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (directory < 0) return rejected();
+    if (directory < 0) return rejected("directory-open");
     struct stat actual;
     if (fstat(directory, &actual) != 0 || !S_ISDIR(actual.st_mode) ||
-        (uintmax_t)actual.st_dev != device || (uintmax_t)actual.st_ino != inode ||
-        fchdir(directory) != 0) {
+        (uintmax_t)actual.st_dev != device || (uintmax_t)actual.st_ino != inode) {
         close(directory);
-        return rejected();
+        return rejected("directory-identity");
+    }
+    if (fchdir(directory) != 0) {
+        close(directory);
+        return rejected("directory-enter");
     }
     close(directory);
     execvp(argv[4], &argv[4]);
-    return rejected();
+    return rejected("command-exec");
 }

@@ -450,7 +450,7 @@ class ControlledGit:
             raise ControlledGitError() from None
 
     def verify_worktree_absent(self, worktree: ManagedWorktree) -> None:
-        """Prove the exact target and registration are absent while retaining its branch."""
+        """Prove absence, restoring a pruned metadata parent, while retaining the branch."""
 
         try:
             identity, expected_path = self._validate_handle_shape(worktree)

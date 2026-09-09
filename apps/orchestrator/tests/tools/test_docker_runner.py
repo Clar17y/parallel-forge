@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import threading
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -19,7 +19,7 @@ from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.domain.validation import UnknownNamedCommand
 from forge.tools.docker import DockerRunner, RunnerExecutionError
-from forge.tools.paths import CanonicalRoot
+from forge.tools.paths import CanonicalRoot, RepositoryAccessDenied
 
 
 def _policy(command: CommandSpec) -> ProjectPolicy:
@@ -371,6 +371,33 @@ def test_docker_runner_resolves_name_and_kind_before_execution(tmp_path: Path) -
             )
         )
     assert process.calls == []
+
+
+@pytest.mark.parametrize("failure_phase", ["entry", "exit"])
+def test_root_identity_failure_uses_redacted_runner_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_phase: str,
+) -> None:
+    root = CanonicalRoot(tmp_path)
+    process = _FakeProcess()
+    artifacts = _FakeArtifacts()
+    command = _command()
+    runner = DockerRunner(
+        policy=_policy(command), root=root, image_digest="sha256:" + "4" * 64,
+        process_runner=process, artifact_store=artifacts,
+    )
+
+    @contextmanager
+    def unavailable_root():
+        if failure_phase == "entry":
+            raise RepositoryAccessDenied("private root diagnostic")
+        yield tmp_path
+        raise RepositoryAccessDenied("private root diagnostic")
+
+    monkeypatch.setattr(root, "open_directory", unavailable_root)
+    with pytest.raises(RunnerExecutionError, match="^runner execution failed$"):
+        asyncio.run(runner.run_terminal(RunCommandRequest(command_name=command.name, kind=command.kind)))
+    assert len(process.calls) == (0 if failure_phase == "entry" else 1)
+    assert len(artifacts.values) == (0 if failure_phase == "entry" else 2)
 
 
 def test_docker_runner_persists_deterministic_redacted_output(tmp_path: Path) -> None:

@@ -26,6 +26,13 @@ information and mismatches fail without running the command. Image builders are
 trusted; an immutable digest identifies their reviewed image and is not an
 attestation that an arbitrary image implements this contract.
 
+The guard uses the trusted image's `PATH` to resolve the registered executable.
+Image builders must exclude empty and relative PATH entries; project policy
+cannot override PATH. Rejection diagnostics contain only fixed stage names,
+never repository paths, identity values or command arguments. Exit 126 alone is
+not an authenticated boundary-failure signal: a repository command can also
+return that code or print the same text.
+
 The focused Linux Docker smoke runs independently of the backend suite:
 
 ```text

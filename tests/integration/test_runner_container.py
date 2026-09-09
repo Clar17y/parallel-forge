@@ -133,6 +133,7 @@ def test_mount_guard_rejects_wrong_inode_before_loader_or_command_execution(tmp_
         environment=("LD_PRELOAD=/workspace/preload.so", "PYTHONPATH=/workspace"),
     )
     assert rejected.returncode == 126, rejected.stderr
+    assert rejected.stderr == "Forge runner mount identity rejected: directory-identity\n"
     assert not (substituted / "command-ran").exists()
     assert not (substituted / "loader-ran").exists()
     (expected / "command-ran").unlink()
@@ -140,7 +141,11 @@ def test_mount_guard_rejects_wrong_inode_before_loader_or_command_execution(tmp_
         expected, "00000000-0000-0000-0000-000000000000", device, inode, *command, entrypoint=guard
     )
     assert foreign_kernel.returncode == 126
+    assert foreign_kernel.stderr == "Forge runner mount identity rejected: kernel-identity\n"
     assert not (expected / "command-ran").exists()
+    missing_command = run(expected, boot_id, device, inode, "forge-missing-command", entrypoint=guard)
+    assert missing_command.returncode == 126
+    assert missing_command.stderr == "Forge runner mount identity rejected: command-exec\n"
     headers = run(expected, "readelf", "-l", guard)
     assert headers.returncode == 0, headers.stderr
     assert "INTERP" not in headers.stdout
@@ -358,7 +363,7 @@ def test_bound_runner_reads_e2a_staged_file_as_fixed_container_user(tmp_path: Pa
     stderr_bytes = asyncio.run(artifacts.open_bytes(terminal.result.stderr_digest))
     stdout = json.loads(stdout_bytes)
     stderr = json.loads(stderr_bytes)
-    assert terminal.result.exit_code == 0
+    assert terminal.result.exit_code == 0, stderr["text"]
     assert terminal.result.runner_mode is RunnerMode.DOCKER
     assert terminal.result.unsandboxed is False
     assert stdout["text"].strip() == "FORGE_E2B_OK"

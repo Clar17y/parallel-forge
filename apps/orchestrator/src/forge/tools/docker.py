@@ -23,7 +23,7 @@ from forge.application.ports.runner import (
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode
 from forge.domain.validation import command_spec_digest, validate_runner_image_reference
 from forge.observability.telemetry import Telemetry
-from forge.tools.paths import CanonicalRoot
+from forge.tools.paths import CanonicalRoot, RepositoryAccessDenied
 from forge.tools.process import ProcessRunner
 from forge.tools.runner import (
     DeferredCancellationState,
@@ -207,8 +207,11 @@ class DockerRunner:
 
         # Direct root runners also retain their identity until terminal cleanup.
         # Managed runners enter through _run_terminal_at with their own capability.
-        with self._root.open_directory():
-            return await self._run_terminal_at(request, self._root.path)
+        try:
+            with self._root.open_directory():
+                return await self._run_terminal_at(request, self._root.path)
+        except RepositoryAccessDenied:
+            raise RunnerExecutionError() from None
 
     async def _run_terminal_at(
         self,
