@@ -7,6 +7,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
+    "test:e2e": "playwright test",
     "api:generate": "openapi-typescript openapi.json -o src/lib/api/schema.d.ts",
     "start": "next start --hostname 127.0.0.1",
     "api:check": "node scripts/check-api.mjs"

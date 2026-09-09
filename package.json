@@ -16,6 +16,7 @@
     "test:integration": "python -m pytest -m \"integration and not live_provider and not live_github\" -q",
     "verify": "npm run lint && npm run typecheck && python -m pytest -m \"not live_provider and not live_github\" -q && npm run test:web -- --run && npm run build",
     "dev:web": "npm run dev --workspace apps/web",
+    "test:e2e": "npm run test:e2e --workspace apps/web",
     "build:web": "npm run build --workspace apps/web",
     "lint:web": "npm run lint --workspace apps/web",
     "typecheck:web": "npm run typecheck --workspace apps/web",
