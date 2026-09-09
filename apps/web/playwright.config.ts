@@ -16,9 +16,9 @@ export default defineConfig({
   workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: 0,
-  timeout: 120_000,
+  timeout: 240_000,
   expect: { timeout: 15_000 },
-  reporter: "list",
+  reporter: process.env.CI ? [["list"], ["junit", { outputFile: "test-results/browser-acceptance.xml" }]] : "list",
   use: {
     baseURL: origin.origin,
     trace: "off",

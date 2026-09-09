@@ -76,8 +76,8 @@ historical test results and is the authoritative continuation record.
   `.venv/Scripts/python.exe -m mypy apps/orchestrator/src` on Windows, with the
   equivalent `.venv/bin/python` commands on POSIX
 
-The final one-command development supervisor is not available yet. Manual process
-startup, configuration, approvals and recovery are described in the
+The one-command development supervisor is implemented; full startup acceptance
+is still pending. Manual process startup, configuration, approvals and recovery are described in the
 [operator runbook](docs/operator-runbook.md).
 
 ## Documentation
