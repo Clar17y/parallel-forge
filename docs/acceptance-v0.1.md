@@ -39,8 +39,9 @@ across restart, retained resources and explicit teardown. Three browser-free
 bridge contracts passed in the same job. Supervisor startup/recovery/shutdown
 passed at `140fb43` (run34365654124/job102513567026); Linux Docker smoke and its
 cancellation gate passed at `a978454`. These close the corresponding focused
-proofs above; full integrated backend/web CI, recovery matrix and final independent
-review still determine acceptance.
+proofs above. Both-platform web CI passed at1f43755; the complete22-case recovery
+matrix passed at9d272d8; final independent review and scoped cancellation repairs
+are closed at03c3ba3. Full integrated backend CI34380288870 remains pending.
 
 ## Final verification record
 
@@ -67,3 +68,19 @@ Checkpoint pushes preserve work without rerunning those suites. The separate
 Linux Docker smoke workflow has no full-backend prerequisite and supports manual
 dispatch and narrowly filtered Docker-related pushes. Run full required CI on
 the integrated candidate; repeat it only for relevant changes or failures.
+
+## Current candidate review and evidence reuse
+
+Implementation candidate: `03c3ba3b24429a4743aa95f1e9c29f8bf9304344`.
+Claude Opus5medium was attempted but returned a quota error before reviewing;
+the authorized independent Astra-low fallback reviewed the integrated candidate
+using prior accepted task reviews. FCR001–003 repair findings closed at9797b7f.
+The distinct Sol-high cancellation gate closed ECAN001 at03c3ba3. Final local
+service tests passed33/33 in129.35s; repository Ruff and strict mypy290sources pass.
+Review is not substituted for executable evidence.
+
+Scoped Git comparisons to03c3ba3 show no changed web/API schema inputs since
+1f43755 and no changed runner/Docker inputs sincea978454. Browser/recovery worker
+scope differs only in evaluation_tools.py, used by EvaluationService rather than
+the delivery/recovery scenarios. Their matched passing evidence is retained.
+The ongoing full backend run covers the changed evaluation integration.

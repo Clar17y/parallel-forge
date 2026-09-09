@@ -6,6 +6,9 @@ from forge.worker import main
 
 
 def test_worker_entrypoint_emits_its_readiness_log(monkeypatch, caplog):
+    # In-process Alembic tests disable existing loggers through fileConfig.
+    # A standalone worker starts with an enabled logger; recreate that precondition.
+    monkeypatch.setattr(main.logger, "disabled", False)
     monkeypatch.setattr(main.logger, "level", logging.WARNING)
 
     async def worker():

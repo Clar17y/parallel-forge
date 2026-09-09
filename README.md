@@ -2,8 +2,8 @@
 
 > **Status: active v0.1 development.** The durable backend and local execution
 > foundations, agent workflow, dashboard and Release Controller have substantial
-> implementation and component coverage. Full process acceptance and required
-> review gates remain open; see the [evidence ledger](docs/v0.1-progress.md).
+> implementation and component coverage. Process/browser acceptance and independent reviews have passed;
+> final integrated backend CI remains pending; see the [evidence ledger](docs/v0.1-progress.md).
 
 Parallel Forge is a local-first control plane for durable, reviewable
 agent-assisted software delivery. It began as the engineering system for
@@ -33,8 +33,7 @@ PostgreSQL-backed commands, leases, state, events, and operation intents. A loca
 content-addressed store retains bounded evidence, while Forge-owned adapters bind
 repository, Git, worktree, database, secret, and runner effects to controlled
 interfaces. The Next.js dashboard exposes evidence and state-aware controls;
-the deterministic Release Controller owns approved GitHub effects. Their full
-acceptance gate remains open.
+the deterministic Release Controller owns approved GitHub effects. Candidate-specific acceptance results are recorded in the evidence ledger.
 
 ## Local development
 
@@ -46,19 +45,19 @@ provider secret reference and pricing catalog as described in the
 Run `npm run dev` (or `scripts/dev.ps1` / `bash scripts/dev.sh`) to install the
 frozen dependencies, migrate, build the runner and supervise the API, worker and
 web app. This command rotates the operator session and prints a fresh bootstrap
-URL. Full startup acceptance is still pending.
+URL. Hosted startup, recovery and shutdown acceptance has passed.
 
 Use `npm run test`, `npm run lint`, `npm run typecheck` and `npm run build` for
 focused development checks. `npm run verify` includes the deterministic backend
 and web checks; PostgreSQL and Docker must be available. Browser acceptance is a
-separate `npm run test:e2e` command whose workflow specs are still in development.
+separate `npm run test:e2e` command covering the approval flow, restart/cancellation
+and keyboard/accessibility behavior.
 
 ## Development status and roadmap
 
-Tasks 1–23 have an accepted checkpoint. Tasks 24–29 include release and queue
-recovery, dashboard/resource controls, evaluation fixtures and metrics, and
-cross-platform CI. Remaining work includes evaluation execution integration,
-scoped correctness gates and complete deterministic dashboard acceptance.
+Tasks 1–29 are implemented, including release/queue recovery, dashboard/resource
+controls, evaluations, process acceptance and cross-platform CI. Independent
+review findings are closed. Final integrated backend verification remains pending.
 The [progress ledger](docs/v0.1-progress.md) distinguishes current evidence from
 historical test results and is the authoritative continuation record.
 
@@ -76,8 +75,8 @@ historical test results and is the authoritative continuation record.
   `.venv/Scripts/python.exe -m mypy apps/orchestrator/src` on Windows, with the
   equivalent `.venv/bin/python` commands on POSIX
 
-The one-command development supervisor is implemented; full startup acceptance
-is still pending. Manual process startup, configuration, approvals and recovery are described in the
+The one-command development supervisor has passed hosted startup acceptance.
+Manual process startup, configuration, approvals and recovery are described in the
 [operator runbook](docs/operator-runbook.md).
 
 ## Documentation

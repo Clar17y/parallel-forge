@@ -54,6 +54,7 @@ EXPECTED_TABLES = {
     "agent_execution_evidence_inputs",
     "evaluation_suites",
     "evaluation_cases",
+    "evaluation_baselines",
 }
 
 
@@ -269,7 +270,7 @@ def test_task10_downgrade_refuses_cross_project_external_identity_duplicates(
         assert isinstance(value, str)
         return value
 
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0007"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260909_0006"
 
     def duplicate_count(connection: Any) -> int:
         value = connection.execute(
@@ -333,6 +334,7 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
         "agent_execution_evidence_inputs",
         "evaluation_suites",
         "evaluation_cases",
+        "evaluation_baselines",
     }
 
     def task_constraints(connection: Any) -> set[str]:
@@ -344,7 +346,7 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
 
     command.upgrade(config, "head")
     assert _table_names(test_database_url) == EXPECTED_TABLES
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260908_0007"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260909_0006"
 
     def reupgraded_task(connection: Any) -> tuple[str, str, bool, str, str]:
         row = connection.execute(
@@ -576,6 +578,7 @@ def test_every_execution_and_evidence_table_is_linked_to_a_run(
         "artifacts",
         "evaluation_suites",
         "evaluation_cases",
+        "evaluation_baselines",
     }
 
     def run_foreign_keys(connection: Any) -> dict[str, set[str]]:
@@ -625,7 +628,7 @@ def test_migration_has_one_exact_reviewable_head(
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
     config = alembic_config_factory("postgresql+asyncpg://unused:unused@127.0.0.1/unused")
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260908_0007"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260909_0006"]
 
 
 def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
@@ -645,6 +648,9 @@ def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
         ("operation_intents", "outcome_payload"): "outcome_schema_version",
         ("operator_audit_events", "payload"): "schema_version",
         ("evaluation_cases", "metrics"): "metrics_schema_version",
+        ("evaluation_baselines", "cases"): "snapshot_schema_version",
+        ("evaluation_baselines", "floors"): "snapshot_schema_version",
+        ("evaluation_baselines", "ceilings"): "snapshot_schema_version",
     }
 
     observed_json: set[tuple[str, str]] = set()

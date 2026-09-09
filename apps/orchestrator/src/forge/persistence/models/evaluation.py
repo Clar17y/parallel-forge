@@ -13,6 +13,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -114,6 +115,10 @@ class EvaluationBaseline(Base):
             "btrim(fixture_version) <> '' AND btrim(metric_version) <> ''",
             name="evaluation_baseline_versions_nonempty",
         ),
+        CheckConstraint(
+            "snapshot_schema_version = 1",
+            name="evaluation_baseline_snapshot_version",
+        ),
         ForeignKeyConstraint(
             ["suite_id", "fixture_version", "metric_version"],
             [
@@ -130,6 +135,9 @@ class EvaluationBaseline(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     fixture_version: Mapped[str] = mapped_column(String(64), nullable=False)
     metric_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_schema_version: Mapped[int] = mapped_column(
+        nullable=False, default=1, server_default=text("1")
+    )
     cases: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     floors: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     ceilings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

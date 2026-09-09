@@ -1,7 +1,7 @@
 # Forge operator runbook
 
-This describes the implemented v0.1 controls. End-to-end acceptance remains in
-progress; consult [the evidence ledger](v0.1-progress.md) for current checkpoints
+This describes the implemented v0.1 controls. Process/browser acceptance and
+independent reviews have passed; final integrated backend CI is pending; consult [the evidence ledger](v0.1-progress.md) for current checkpoints
 and open gates.
 
 ## Instance and startup
@@ -172,7 +172,7 @@ may retain resources for intervention, and is not a successful baseline.
 ## Verification limits
 
 Default tests and CI exclude live model and GitHub writes. Evaluation service/CLI
-integration has focused passing evidence; independent acceptance remains open.
-Consult the ledger for the exact candidate. Hosted Windows/Linux checks, complete
-process acceptance, Playwright accessibility coverage and final acceptance mapping
-remain required before v0.1 can be declared complete.
+integration and its independent review/correctness repairs have passing evidence.
+Hosted Windows/Linux contract checks, web builds, process recovery and Playwright
+accessibility checks have passed. The final integrated backend CI run is pending;
+consult the ledger and acceptance map for exact candidates and reusable evidence.

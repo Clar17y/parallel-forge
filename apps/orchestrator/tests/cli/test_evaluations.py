@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from click import unstyle
 from forge.cli.main import app
 from typer.testing import CliRunner
 
@@ -20,11 +21,12 @@ def test_cli_eval_help() -> None:
 
     result_run = runner.invoke(app, ["eval", "run", "--help"])
     assert result_run.exit_code == 0
-    assert "--suite" in result_run.stdout
-    assert "--provider-reference" in result_run.stdout
-    assert "--fixtures-dir" in result_run.stdout
-    assert "--expected-dir" in result_run.stdout
-    assert "--idempotency-key" in result_run.stdout
+    help_text = unstyle(result_run.stdout)
+    assert "--suite" in help_text
+    assert "--provider-reference" in help_text
+    assert "--fixtures-dir" in help_text
+    assert "--expected-dir" in help_text
+    assert "--idempotency-key" in help_text
 
 
 def test_cli_eval_run_live_without_provider_reference_exits_2(
@@ -129,11 +131,12 @@ def test_cli_eval_promote_help() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["eval", "promote", "--help"])
     assert result.exit_code == 0
-    assert "--suite-id" in result.stdout
-    assert "--name" in result.stdout
-    assert "--floor" in result.stdout
-    assert "--ceiling" in result.stdout
-    assert "--promoted-by" in result.stdout
+    help_text = unstyle(result.stdout)
+    assert "--suite-id" in help_text
+    assert "--name" in help_text
+    assert "--floor" in help_text
+    assert "--ceiling" in help_text
+    assert "--promoted-by" in help_text
 
 
 def test_cli_eval_promote_and_compare_lifecycle(
