@@ -25,7 +25,7 @@ from forge.application.ports.worktrees import (
     PublishedGitCommit,
 )
 from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS, normalize_policy_path
-from forge.domain.policy import ProjectPolicy
+from forge.domain.policy import ProjectPolicy, RunnerMode
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.paths import CanonicalRoot
 from forge.tools.process import ProcessRunner
@@ -586,6 +586,41 @@ class ControlledGit:
         self._scan_local_config(self._repository.path)
         self._run(self._repository.path, ("worktree", "prune", "--expire=now"))
 
+    def changed_paths(self, worktree: ManagedWorktree, policy: ProjectPolicy) -> tuple[str, ...]:
+        """Observe tracked and untracked changes against the retained fixture base."""
+        try:
+            with self.open_worktree_capability(
+                worktree, policy, allow_committed_changes=True
+            ) as capability:
+                names: set[str] = set()
+                for arguments in (
+                    (
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--no-renames",
+                        "--name-only",
+                        "-z",
+                        worktree.base_sha,
+                        "--",
+                    ),
+                    ("ls-files", "--others", "--exclude-standard", "-z", "--"),
+                ):
+                    result = self._run(worktree.path, arguments)
+                    _require_complete_result(result)
+                    if result.stdout and not result.stdout.endswith("\x00"):
+                        raise ControlledGitError()
+                    for name in result.stdout.split("\x00")[:-1]:
+                        if not name or "\ufffd" in name or normalize_policy_path(name) != name:
+                            raise ControlledGitError()
+                        names.add(name)
+                capability.revalidate()
+                return tuple(sorted(names))
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
     def status(self, worktree: ManagedWorktree) -> GitStatus:
         """Return bounded deterministic porcelain-v1 status output."""
 
@@ -989,6 +1024,9 @@ class ControlledGit:
                 registration.name,
                 create_lock=not read_only,
             ) as access:
+                object.__setattr__(
+                    access, "docker_policy_bound", policy.runner_mode is RunnerMode.DOCKER
+                )
                 if not self._repository._directory_access_matches_path(access):
                     raise ControlledGitError()
                 capability = WorktreeCapability(

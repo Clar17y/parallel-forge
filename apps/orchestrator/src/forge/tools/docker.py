@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import secrets
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, cast
 from uuid import uuid4
@@ -73,6 +74,13 @@ _ABSENT_CONTAINER_ERROR = re.compile(
     r"no such (?:container|object):\s*([^\r\n]+)\Z",
     re.IGNORECASE,
 )
+
+
+def _current_posix_uid() -> int:
+    getter = getattr(os, "getuid", None)
+    if getter is None:
+        raise RunnerExecutionError()
+    return int(getter())
 
 
 class _ProcessResultLike(Protocol):
@@ -213,6 +221,11 @@ class DockerRunner:
         except RepositoryAccessDenied:
             raise RunnerExecutionError() from None
 
+    @contextlib.contextmanager
+    def managed_access_lease(self, cwd: str | os.PathLike[str]) -> Iterator[None]:
+        with self._root.docker_access_lease(cwd):
+            yield
+
     async def _run_terminal_at(
         self,
         request: RunCommandRequest,
@@ -286,6 +299,8 @@ class DockerRunner:
                     cwd=cwd,
                     environment=client_environment,
                 )
+                if managed:
+                    await self._repair_for_terminal(cwd, environment=client_environment)
                 raise
             except Exception:  # noqa: BLE001 - adapter failures must cross as one safe error
                 cleanup_cancelled = await self._cleanup_for_terminal(
@@ -294,10 +309,16 @@ class DockerRunner:
                     cwd=cwd,
                     environment=client_environment,
                 )
+                if managed:
+                    cleanup_cancelled = (
+                        await self._repair_for_terminal(cwd, environment=client_environment)
+                        or cleanup_cancelled
+                    )
                 if launch_cancellation.requested or cleanup_cancelled:
                     raise _CancelledWithoutTerminal() from None
                 raise RunnerExecutionError() from None
-            if caller_cancelled or process_result.timed_out or process_result.return_code == 125:
+            launch_failed = process_result.return_code == 125
+            if caller_cancelled or process_result.timed_out or launch_failed:
                 cleanup_cancelled = await self._cleanup_for_terminal(
                     container_name,
                     owner_token=owner_token,
@@ -305,8 +326,16 @@ class DockerRunner:
                     environment=client_environment,
                 )
                 caller_cancelled = caller_cancelled or cleanup_cancelled
-                if process_result.return_code == 125:
-                    raise RunnerExecutionError()
+            if managed:
+                # The command container is terminal (and, on forced paths, its
+                # exact owned instance was removed) before a second constrained
+                # container repairs entries created by UID 10001.
+                caller_cancelled = (
+                    await self._repair_for_terminal(cwd, environment=client_environment)
+                    or caller_cancelled
+                )
+            if launch_failed:
+                raise RunnerExecutionError()
             (stdout_digest, stderr_digest), caller_cancelled = await await_deferred_cancellation(
                 persist_output_artifacts(
                     self._artifact_store,
@@ -361,6 +390,78 @@ class DockerRunner:
             else self._cleanup(container_name)
         )
         _, caller_cancelled = await await_deferred_cancellation(operation)
+        return caller_cancelled
+
+    async def _repair_managed_access(
+        self, cwd: str | os.PathLike[str], *, environment: Mapping[str, str]
+    ) -> None:
+        """Run the trusted static post-terminal access repair on Linux only."""
+
+        mount_source, identity = _canonical_mount_binding(self._root, cwd)
+        if identity is None:
+            return
+        container_name = f"forge-repair-{uuid4().hex}"
+        owner_token = secrets.token_urlsafe(32)
+        await self._assert_managed_name_absent(container_name, cwd=cwd, environment=environment)
+        argv = (
+            "docker",
+            "run",
+            "--rm",
+            "--name",
+            container_name,
+            "--label",
+            f"{_OWNER_LABEL}={owner_token}",
+            "--pull=never",
+            "--network=none",
+            "--user",
+            "10001:10001",
+            "--security-opt=no-new-privileges",
+            "--cap-drop=ALL",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,nodev,size=64m",
+            "--tmpfs",
+            "/home/forge:rw,nosuid,nodev,size=64m",
+            "--mount",
+            f"type=bind,src={mount_source},dst=/workspace,bind-recursive=disabled",
+            "--workdir=/",
+            "--entrypoint",
+            "/usr/local/bin/forge-mount-guard",
+            self._image_reference,
+            *(str(value) for value in identity),
+            "--repair",
+            str(_current_posix_uid()),
+        )
+        try:
+            result = await asyncio.to_thread(
+                self._process_runner.run_argv,
+                argv,
+                cwd=cwd,
+                environment=environment,
+                timeout_seconds=_CLEANUP_TIMEOUT_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 - a failed repair must settle its exact container
+            try:
+                await self._cleanup_managed(
+                    container_name, owner_token=owner_token, cwd=cwd, environment=environment
+                )
+            except RunnerExecutionError:
+                pass
+            raise RunnerExecutionError()
+        await self._cleanup_managed(
+            container_name, owner_token=owner_token, cwd=cwd, environment=environment
+        )
+        if result.timed_out or result.return_code != 0:
+            raise RunnerExecutionError()
+
+    async def _repair_for_terminal(
+        self, cwd: str | os.PathLike[str], *, environment: Mapping[str, str]
+    ) -> bool:
+        """Keep repair non-interruptible once a managed launch is terminal."""
+
+        _, caller_cancelled = await await_deferred_cancellation(
+            self._repair_managed_access(cwd, environment=environment)
+        )
         return caller_cancelled
 
     async def _cleanup(self, container_name: str) -> None:

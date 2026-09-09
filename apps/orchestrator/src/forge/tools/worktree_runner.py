@@ -76,12 +76,14 @@ class WorktreeBoundRunner(RunnerPort, TerminalRunnerPort):
             ) as capability:
                 capability.revalidate()
                 if self._policy.runner_mode is RunnerMode.DOCKER:
-                    terminal = await cast(DockerRunner, self._delegate)._run_terminal_at(
-                        request,
-                        self._worktree.path,
-                        managed=True,
-                        before_launch=capability.revalidate,
-                    )
+                    docker = cast(DockerRunner, self._delegate)
+                    with docker.managed_access_lease(self._worktree.path):
+                        terminal = await docker._run_terminal_at(
+                            request,
+                            self._worktree.path,
+                            managed=True,
+                            before_launch=capability.revalidate,
+                        )
                 else:
                     terminal = await cast(TrustedHostRunner, self._delegate)._run_terminal_at(
                         request,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
@@ -101,15 +102,128 @@ def test_mount_guard_rejects_wrong_inode_before_loader_or_command_execution(tmp_
         "-S",
         "-c",
         "import os; s=os.stat('/workspace'); "
-        "print(open('/proc/sys/kernel/random/boot_id').read().strip(), s.st_dev, s.st_ino)",
+        "print(open('/proc/sys/kernel/random/boot_id').read().strip(), s.st_dev, s.st_ino, s.st_uid)",
     )
     assert identity.returncode == 0, identity.stderr
-    boot_id, device, inode = identity.stdout.split()
+    boot_id, device, inode, host_uid = identity.stdout.split()
     guard = "/usr/local/bin/forge-mount-guard"
     command = ("python", "-I", "-S", "-c", "open('command-ran', 'w').write('allowed')")
     accepted = run(expected, boot_id, device, inode, *command, entrypoint=guard)
     assert accepted.returncode == 0, accepted.stderr
     assert (expected / "command-ran").read_text() == "allowed"
+
+    if os.name != "nt":
+        damaged = run(
+            expected,
+            boot_id,
+            device,
+            inode,
+            "sh",
+            "-c",
+            "mkdir -p damaged/nested && touch damaged/nested/output && chmod 000 damaged/nested damaged",
+            entrypoint=guard,
+        )
+        assert damaged.returncode == 0, damaged.stderr
+        repaired = run(expected, boot_id, device, inode, "--repair", host_uid, entrypoint=guard)
+        assert repaired.returncode == 0, repaired.stderr
+        readable = run(
+            expected,
+            boot_id,
+            device,
+            inode,
+            "sh",
+            "-c",
+            "test -r damaged/nested/output",
+            entrypoint=guard,
+        )
+        assert readable.returncode == 0, readable.stderr
+
+    # Exercise actual Linux inode ownership and ACL syscalls even on Docker
+    # Desktop, whose Windows bind mounts do not preserve POSIX ownership.
+    native_repair = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            "--network=none",
+            "--user=0:0",
+            image_id,
+            "python",
+            "-I",
+            "-S",
+            "-c",
+            """
+import os, subprocess
+os.makedirs('/workspace', mode=0o777, exist_ok=True)
+os.chmod('/workspace', 0o777)
+os.chown('/workspace', 1000, 1000)
+s = os.stat('/workspace')
+identity = [open('/proc/sys/kernel/random/boot_id').read().strip(), str(s.st_dev), str(s.st_ino)]
+create = subprocess.run(['python', '-I', '-S', '-c',
+    "import os; os.makedirs('/workspace/damaged/nested'); open('/workspace/damaged/nested/output','w').write('proof'); os.chmod('/workspace/damaged/nested/output',0); os.chmod('/workspace/damaged/nested',0); os.chmod('/workspace/damaged',0)"],
+    user=10001, group=10001, check=True)
+subprocess.run(['/usr/local/bin/forge-mount-guard', *identity, '--repair', '1000'],
+    user=10001, group=10001, check=True)
+subprocess.run(['python', '-I', '-S', '-c',
+    "assert open('/workspace/damaged/nested/output').read() == 'proof'"],
+    user=1000, group=1000, check=True)
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert native_repair.returncode == 0, native_repair.stderr
+
+    # Execute the exact ACL helper source against the Linux kernel, with only
+    # its exception type supplied so this stdlib-only runner needs no app install.
+    source = (repository / "apps/orchestrator/src/forge/tools/paths.py").read_text()
+    acl_source = "\n\n".join(
+        ast.get_source_segment(source, node) or ""
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+        and node.name in {"_DockerAcl", "_read_posix_acl", "_write_posix_acl"}
+    )
+    acl_probe = (
+        "import os, stat, struct, errno\nfrom collections.abc import Callable\n"
+        "from typing import cast\nRepositoryAccessDenied = RuntimeError\n"
+        + acl_source
+        + """
+os.mkdir('/tmp/acl-probe', 0o700)
+fd = os.open('/tmp/acl-probe', os.O_RDONLY | os.O_DIRECTORY)
+acl = _DockerAcl()
+before = acl.snapshot(fd)
+granted = acl.grant(fd, 7)
+assert os.getxattr(fd, 'system.posix_acl_access') == granted
+os.setxattr(fd, 'system.posix_acl_default', granted)
+assert acl.grant(fd, 7) == granted
+acl.restore(fd, before)
+assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o700
+os.close(fd)
+"""
+    )
+    native_acl = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            "--interactive",
+            "--network=none",
+            "--user=0:0",
+            image_id,
+            "python",
+            "-I",
+            "-S",
+            "-",
+        ],
+        input=acl_probe,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert native_acl.returncode == 0, native_acl.stderr
 
     # A dynamic launcher would load this constructor before reaching its guard.
     (substituted / "preload.c").write_text(
@@ -143,7 +257,9 @@ def test_mount_guard_rejects_wrong_inode_before_loader_or_command_execution(tmp_
     assert foreign_kernel.returncode == 126
     assert foreign_kernel.stderr == "Forge runner mount identity rejected: kernel-identity\n"
     assert not (expected / "command-ran").exists()
-    missing_command = run(expected, boot_id, device, inode, "forge-missing-command", entrypoint=guard)
+    missing_command = run(
+        expected, boot_id, device, inode, "forge-missing-command", entrypoint=guard
+    )
     assert missing_command.returncode == 126
     assert missing_command.stderr == "Forge runner mount identity rejected: command-exec\n"
     headers = run(expected, "readelf", "-l", guard)

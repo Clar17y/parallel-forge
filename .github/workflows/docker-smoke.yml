@@ -12,6 +12,7 @@ on:
       - 'apps/orchestrator/src/forge/tools/worktree_runner.py'
       - 'apps/orchestrator/src/forge/tools/environment.py'
       - 'apps/orchestrator/tests/tools/test_docker_runner.py'
+      - 'apps/orchestrator/tests/tools/test_paths.py'
       - 'apps/orchestrator/tests/tools/test_worktree_runner.py'
       - 'tests/integration/test_runner_container.py'
   workflow_dispatch:
@@ -38,4 +39,4 @@ jobs:
           enable-cache: false
       - run: uv sync --frozen --extra dev
       - name: Docker image and managed-worktree mount contracts
-        run: uv run --frozen python -m pytest apps/orchestrator/tests/tools/test_docker_runner.py apps/orchestrator/tests/tools/test_worktree_runner.py tests/integration/test_runner_container.py -q
+        run: uv run --frozen python -m pytest apps/orchestrator/tests/tools/test_paths.py apps/orchestrator/tests/tools/test_docker_runner.py apps/orchestrator/tests/tools/test_worktree_runner.py tests/integration/test_runner_container.py -q

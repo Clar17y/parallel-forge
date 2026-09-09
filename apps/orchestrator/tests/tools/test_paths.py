@@ -3162,3 +3162,56 @@ def test_absolute_path_objects_are_not_accepted_as_relative_inputs(tmp_path: Pat
 
     with pytest.raises(PathEscape):
         root.normalize(Path(os.fspath(root.path)) / "src" / "main.py")
+
+
+def test_repaired_docker_file_acl_requires_the_exact_host_and_runner_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import struct
+    from types import SimpleNamespace
+
+    host_uid = 5327
+    raw = struct.pack("=I", 2) + b"".join(
+        struct.pack("=HHI", *entry)
+        for entry in (
+            (1, 6, 0xFFFFFFFF),
+            (2, 6, host_uid),
+            (2, 6, 10001),
+            (4, 0, 0xFFFFFFFF),
+            (16, 6, 0xFFFFFFFF),
+            (32, 0, 0xFFFFFFFF),
+        )
+    )
+    monkeypatch.setattr(os, "getxattr", lambda *_args: raw, raising=False)
+    monkeypatch.setattr(os, "fstat", lambda *_args: SimpleNamespace(st_mode=0o660))
+    assert paths._has_repaired_docker_file_acl(11, host_uid)
+    assert not paths._has_repaired_docker_file_acl(11, host_uid + 1)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires Linux POSIX ACLs")
+def test_docker_access_lease_restores_files_and_directory_defaults(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    leaf = root_path / "leaf"
+    leaf.mkdir(mode=0o700)
+    for number in range(140):
+        (leaf / f"file-{number}").write_text("content")
+    root = CanonicalRoot(root_path)
+    before = {path.name: stat.S_IMODE(path.stat().st_mode) for path in leaf.iterdir()}
+    with root.docker_access_lease(leaf):
+        assert os.getxattr(leaf, "system.posix_acl_default")
+        assert os.getxattr(leaf / "file-0", "system.posix_acl_access")
+    assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
+    assert {path.name: stat.S_IMODE(path.stat().st_mode) for path in leaf.iterdir()} == before
+    with pytest.raises(OSError):
+        os.getxattr(leaf, "system.posix_acl_default")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires Linux POSIX ACLs")
+def test_docker_access_lease_rejects_fifo_and_restores_grants(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    leaf = root_path / "leaf"
+    leaf.mkdir(mode=0o700)
+    os.mkfifo(leaf / "unsafe")
+    with pytest.raises(RepositoryAccessDenied), CanonicalRoot(root_path).docker_access_lease(leaf):
+        pytest.fail("FIFO must be rejected before launch")
+    assert stat.S_IMODE(leaf.stat().st_mode) == 0o700

@@ -5,11 +5,13 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import ctypes
+import errno
 import hashlib
 import os
 import re
 import secrets
 import stat
+import struct
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -28,6 +30,16 @@ _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 def _current_posix_uid() -> int:
     getter = cast(Callable[[], int], getattr(os, "getuid"))  # noqa: B009
     return int(getter())
+
+
+def _read_posix_acl(descriptor: int, name: str) -> bytes:
+    getter = cast(Callable[[int, str], bytes], getattr(os, "getxattr"))  # noqa: B009
+    return getter(descriptor, name)
+
+
+def _write_posix_acl(descriptor: int, name: str, data: bytes) -> None:
+    setter = cast(Callable[[int, str, bytes], None], getattr(os, "setxattr"))  # noqa: B009
+    setter(descriptor, name, data)
 
 
 _TARGET_QUARANTINE_NAME = ".forge-quarantine"
@@ -259,6 +271,7 @@ class _DirectoryAccess:
         "_owner",
         "_sealed",
         "capability",
+        "docker_policy_bound",
         "git_capability",
         "git_identity",
         "git_path",
@@ -296,6 +309,7 @@ class _DirectoryAccess:
         owner: object,
         path: Path,
         capability: int,
+        docker_policy_bound: bool = False,
         root_path: Path,
         root_identity: tuple[int, ...],
         identity: tuple[int, ...],
@@ -329,6 +343,7 @@ class _DirectoryAccess:
         self._owner = owner
         self.path = path
         self.capability = capability
+        self.docker_policy_bound = docker_policy_bound
         self.root_path = root_path
         self.root_identity = root_identity
         self.identity = identity
@@ -368,6 +383,113 @@ class _DirectoryAccess:
 _ACTIVE_DIRECTORY_ACCESS: contextvars.ContextVar[_DirectoryAccess | None] = contextvars.ContextVar(
     "forge_active_directory_access", default=None
 )
+
+
+class _DockerAcl:
+    """Descriptor-only POSIX ACL operations using the kernel xattr encoding."""
+
+    _ACL_USER = 2
+    _ACL_READ = 4
+    _ACL_WRITE = 2
+    _ACL_EXECUTE = 1
+    _ACCESS = "system.posix_acl_access"
+
+    def snapshot(self, descriptor: int) -> bytes:
+        try:
+            return _read_posix_acl(descriptor, self._ACCESS)
+        except OSError as error:
+            if error.errno != errno.ENODATA:
+                raise RepositoryAccessDenied("Docker ACL inspection failed") from None
+        mode = stat.S_IMODE(os.fstat(descriptor).st_mode)
+        return struct.pack("=I", 2) + b"".join(
+            struct.pack("=HHI", tag, permission, 0xFFFFFFFF)
+            for tag, permission in ((1, (mode >> 6) & 7), (4, (mode >> 3) & 7), (32, mode & 7))
+        )
+
+    def restore(self, descriptor: int, data: bytes) -> None:
+        try:
+            _write_posix_acl(descriptor, self._ACCESS, data)
+        except OSError:
+            raise RepositoryAccessDenied("Docker ACL restoration failed") from None
+
+    def grant(self, descriptor: int, permissions: int) -> bytes:
+        raw = self.snapshot(descriptor)
+        if (
+            len(raw) < 28
+            or len(raw) > 65536
+            or (len(raw) - 4) % 8
+            or struct.unpack_from("=I", raw)[0] != 2
+        ):
+            raise RepositoryAccessDenied("Docker ACL inspection failed")
+        entries = [struct.unpack_from("=HHI", raw, offset) for offset in range(4, len(raw), 8)]
+        old_mask = next((perm for tag, perm, _ in entries if tag == 16), 7)
+        # Preserve effective rights of existing group-class entries when widening
+        # the mask for the runner. Do not activate previously masked permissions.
+        kept = [
+            (tag, perm & old_mask if tag in {2, 4, 8} else perm, ident)
+            for tag, perm, ident in entries
+            if tag != 16 and (tag, ident) != (2, 10001)
+        ]
+        kept.append((2, permissions, 10001))
+        mask = 0
+        for tag, perm, _ in kept:
+            if tag in {2, 4, 8}:
+                mask |= perm
+        kept.append((16, mask, 0xFFFFFFFF))
+        kept.sort(key=lambda entry: (entry[0], entry[2]))
+        result = struct.pack("=I", 2) + b"".join(struct.pack("=HHI", *entry) for entry in kept)
+        self.restore(descriptor, result)
+        return result
+
+
+def _has_repaired_docker_file_acl(descriptor: int, host_uid: int) -> bool:
+    """Prove the static guard's exact ACL on a UID 10001 output file."""
+
+    try:
+        raw = _read_posix_acl(descriptor, "system.posix_acl_access")
+    except OSError:
+        return False
+    if len(raw) != 52:
+        return False
+    try:
+        version = struct.unpack_from("=I", raw)[0]
+        entries = tuple(struct.unpack_from("=HHI", raw, 4 + offset * 8) for offset in range(6))
+    except struct.error:
+        return False
+    permissions = 6 | (1 if stat.S_IMODE(os.fstat(descriptor).st_mode) & stat.S_IXUSR else 0)
+    return (
+        host_uid != 10001
+        and version == 2
+        and entries
+        == (
+            (1, permissions, 0xFFFFFFFF),
+            (2, permissions, min(host_uid, 10001)),
+            (2, permissions, max(host_uid, 10001)),
+            (4, 0, 0xFFFFFFFF),
+            (16, permissions, 0xFFFFFFFF),
+            (32, 0, 0xFFFFFFFF),
+        )
+    )
+
+
+def _has_repaired_docker_directory_acl(descriptor: int, host_uid: int) -> bool:
+    try:
+        access = _read_posix_acl(descriptor, "system.posix_acl_access")
+        default = _read_posix_acl(descriptor, "system.posix_acl_default")
+    except OSError:
+        return False
+    expected = bytearray()
+    expected.extend(struct.pack("=I", 2))
+    for tag, permissions, ident in (
+        (1, 7, 0xFFFFFFFF),
+        (2, 7, min(host_uid, 10001)),
+        (2, 7, max(host_uid, 10001)),
+        (4, 0, 0xFFFFFFFF),
+        (16, 7, 0xFFFFFFFF),
+        (32, 0, 0xFFFFFFFF),
+    ):
+        expected.extend(struct.pack("=HHI", tag, permissions, ident))
+    return access == bytes(expected) and default == bytes(expected)
 
 
 if os.name == "nt":
@@ -522,6 +644,7 @@ if sys.platform == "win32":
     _set_last_error = ctypes.set_last_error
     _open_osfhandle = msvcrt.open_osfhandle
 else:
+
     def _win_dll(
         name: str,
         mode: int = 0,
@@ -1753,6 +1876,131 @@ class CanonicalRoot:
         """Return the pinned filesystem identity for diagnostics and tests."""
 
         return self._identity
+
+    @contextlib.contextmanager
+    def docker_access_lease(self, value: str | os.PathLike[str]) -> Iterator[None]:
+        """Temporarily grant the fixed Docker UID access to one managed leaf.
+
+        Linux only; the snapshot is restored even when launch or cancellation
+        fails.  The directory is opened through the existing no-follow root
+        capability, never through a helper path.
+        """
+
+        if sys.platform != "linux":
+            yield
+            return
+        try:
+            candidate = Path(value).resolve(strict=True)
+            normalized = self.normalize(candidate.relative_to(self._path), allow_root=True)
+        except OSError, RuntimeError, TypeError, ValueError:
+            raise RepositoryAccessDenied("Docker worktree access is unavailable") from None
+        acl = _DockerAcl()
+        with self._open_directory(normalized) as access:
+            snapshots: list[tuple[int, bytes, bytes | None, bool]] = []
+            descriptors: list[int] = []
+            default_name = "system.posix_acl_default"
+            seen = 0
+            host_uid = _current_posix_uid()
+
+            def retain(descriptor: int) -> int:
+                if len(descriptors) >= 4096:
+                    os.close(descriptor)
+                    raise RepositoryAccessDenied("Docker worktree descriptor limit exceeded")
+                descriptors.append(descriptor)
+                return descriptor
+
+            def grant_tree(descriptor: int, depth: int = 0) -> None:
+                nonlocal seen
+                if depth > 128:
+                    raise RepositoryAccessDenied("Docker worktree depth exceeded")
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISDIR(metadata.st_mode) or metadata.st_nlink < 1:
+                    raise RepositoryAccessDenied("Docker worktree entry is unsafe")
+                owner = int(metadata.st_uid)
+                if owner == host_uid:
+                    before = acl.snapshot(descriptor)
+                    try:
+                        default_before: bytes | None = os.getxattr(descriptor, default_name)
+                    except OSError as error:
+                        if error.errno != errno.ENODATA:
+                            raise RepositoryAccessDenied("Docker ACL inspection failed") from None
+                        default_before = None
+                    snapshots.append((descriptor, before, default_before, True))
+                    granted = acl.grant(descriptor, 7)
+                    os.setxattr(descriptor, default_name, granted)
+                elif owner != 10001 or not _has_repaired_docker_directory_acl(descriptor, host_uid):
+                    raise RepositoryAccessDenied("Docker worktree entry is unsafe")
+                with os.scandir(descriptor) as entries:
+                    for entry in entries:
+                        seen += 1
+                        if seen > 100_000:
+                            raise RepositoryAccessDenied("Docker worktree entry limit exceeded")
+                        expected = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                        child = retain(
+                            os.open(
+                                entry.name,
+                                os.O_RDONLY
+                                | _O_NOFOLLOW
+                                | _O_CLOEXEC
+                                | getattr(os, "O_NONBLOCK", 0),
+                                dir_fd=descriptor,
+                            )
+                        )
+                        metadata = os.fstat(child)
+                        if (
+                            metadata.st_dev,
+                            metadata.st_ino,
+                            metadata.st_uid,
+                            metadata.st_mode,
+                        ) != (expected.st_dev, expected.st_ino, expected.st_uid, expected.st_mode):
+                            raise RepositoryAccessDenied("Docker worktree entry changed")
+                        if stat.S_ISDIR(metadata.st_mode):
+                            grant_tree(child, depth + 1)
+                        elif (
+                            not stat.S_ISREG(metadata.st_mode)
+                            or metadata.st_nlink != 1
+                            or int(metadata.st_uid) not in {host_uid, 10001}
+                            or (
+                                int(metadata.st_uid) == 10001
+                                and not _has_repaired_docker_file_acl(child, host_uid)
+                            )
+                        ):
+                            raise RepositoryAccessDenied("Docker worktree entry is unsafe")
+                        elif int(metadata.st_uid) == host_uid and not _verify_linux_staging_acl(
+                            child
+                        ):
+                            snapshots.append((child, acl.snapshot(child), None, False))
+                            acl.grant(child, 6)
+
+            try:
+                grant_tree(retain(os.dup(access.capability)))
+                yield
+            finally:
+                restore_error = False
+                for descriptor, before, default_before, is_directory in reversed(snapshots):
+                    try:
+                        acl.restore(descriptor, before)
+                    except OSError, RepositoryAccessDenied:
+                        restore_error = True
+                    if is_directory:
+                        try:
+                            if default_before is None:
+                                try:
+                                    os.removexattr(descriptor, default_name)
+                                except OSError as error:
+                                    if error.errno != errno.ENODATA:
+                                        raise
+                            else:
+                                os.setxattr(descriptor, default_name, default_before)
+                        except OSError:
+                            restore_error = True
+                for descriptor in reversed(descriptors):
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        restore_error = True
+                if restore_error:
+                    raise RepositoryAccessDenied("Docker ACL restoration failed")
 
     def normalize(self, value: str | os.PathLike[str], *, allow_root: bool = False) -> str:
         """Validate and normalize one repository-relative path."""
@@ -5321,10 +5569,18 @@ def _inspect_repository_file(
             except FileNotFoundError:
                 return None
             before = os.fstat(descriptor)
+            owner = int(before.st_uid)
             if (
                 not stat.S_ISREG(before.st_mode)
                 or int(before.st_nlink) != 1
-                or int(before.st_uid) != _current_posix_uid()
+                or (
+                    owner != _current_posix_uid()
+                    and (
+                        owner != 10001
+                        or not access.docker_policy_bound
+                        or not _has_repaired_docker_file_acl(descriptor, _current_posix_uid())
+                    )
+                )
             ):
                 raise RepositoryAccessDenied("repository file is unsafe")
             data = _read_staging_descriptor(descriptor, maximum)

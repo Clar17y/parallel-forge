@@ -33,6 +33,16 @@ never repository paths, identity values or command arguments. Exit 126 alone is
 not an authenticated boundary-failure signal: a repository command can also
 return that code or print the same text.
 
+On native Linux, Forge grants UID 10001 a descriptor-scoped ACL lease across
+the managed worktree. After exact command-container termination, the guard
+performs a bounded, descriptor-only repair of UID 10001 output
+entries. Repaired files retain an exact named-user ACL for the host and UID
+10001; Forge verifies that proof before accepting a container-owned file.
+The lease then restores pre-existing file and directory ACLs. Existing staged
+environment files retain their exact read-only ACL. A failed
+container cleanup or repair fails closed and leaves the managed worktree for
+operator recovery.
+
 The focused Linux Docker smoke runs independently of the backend suite:
 
 ```text
