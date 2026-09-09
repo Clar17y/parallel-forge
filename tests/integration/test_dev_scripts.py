@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -14,12 +17,32 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.dev import (
+    RESOLVE_WEB_CONFIG_CODE,
     CommandResult,
+    ConfigurationError,
     DevSupervisor,
     ManagedProcess,
     PrerequisiteError,
     SupervisorError,
 )
+
+
+def _simulate_resolve_web_config(cwd: Path | None, env: dict[str, str] | None = None) -> CommandResult:
+    output = StringIO()
+    with pytest.MonkeyPatch.context() as patch:
+        if cwd:
+            patch.chdir(cwd)
+        if env is not None:
+            for key in tuple(os.environ):
+                patch.delenv(key)
+            for key, value in env.items():
+                patch.setenv(key, value)
+        try:
+            with redirect_stdout(output):
+                exec(RESOLVE_WEB_CONFIG_CODE, {})  # noqa: S102 - fixed production helper, no external code
+        except SystemExit as error:
+            return CommandResult(returncode=int(error.code or 0), stdout=output.getvalue(), stderr="")
+    return CommandResult(returncode=0, stdout=output.getvalue(), stderr="")
 
 
 class FakeCommandRunner:
@@ -50,6 +73,8 @@ class FakeCommandRunner:
         for key, res in self.responses.items():
             if key in cmd_str:
                 return res
+        if "forge.settings" in cmd_str or (len(cmd) >= 5 and "Settings" in cmd[4]):
+            return _simulate_resolve_web_config(cwd, env)
         return self.default_result
 
     def spawn(
@@ -740,3 +765,297 @@ def test_windows_npm_resolution_and_quoting() -> None:
         assert resolved[1:] == ["run", "dev:web"]
     else:
         assert resolved == ["npm", "run", "dev:web"]
+
+
+def test_web_process_receives_default_origins_and_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FORGE_WEB_ORIGIN", raising=False)
+    monkeypatch.delenv("FORGE_API_INTERNAL_ORIGIN", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    procs = supervisor.start_processes(runner_image="sha256:" + "a" * 64)
+
+    assert len(procs) == 3
+    web_proc = next(p for p in runner.spawned if p.name == "web")
+    assert web_proc.env is not None
+    assert web_proc.env["FORGE_WEB_ORIGIN"] == "http://127.0.0.1:3000"
+    assert web_proc.env["FORGE_API_INTERNAL_ORIGIN"] == "http://127.0.0.1:8000"
+    assert web_proc.env["PORT"] == "3000"
+
+
+def test_web_process_receives_root_env_custom_origins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FORGE_WEB_ORIGIN", raising=False)
+    monkeypatch.delenv("FORGE_API_INTERNAL_ORIGIN", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FORGE_WEB_ORIGIN=http://127.0.0.1:3005\n"
+        "FORGE_API_INTERNAL_ORIGIN=http://127.0.0.1:8001\n",
+        encoding="utf-8",
+    )
+
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    procs = supervisor.start_processes(runner_image="sha256:" + "a" * 64)
+
+    assert len(procs) == 3
+    web_proc = next(p for p in runner.spawned if p.name == "web")
+    assert web_proc.env is not None
+    assert web_proc.env["FORGE_WEB_ORIGIN"] == "http://127.0.0.1:3005"
+    assert web_proc.env["FORGE_API_INTERNAL_ORIGIN"] == "http://127.0.0.1:8001"
+    assert web_proc.env["PORT"] == "3005"
+
+
+def test_web_process_environment_overrides_root_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FORGE_WEB_ORIGIN=http://127.0.0.1:3005\n"
+        "FORGE_API_INTERNAL_ORIGIN=http://127.0.0.1:8001\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("FORGE_WEB_ORIGIN", "http://127.0.0.1:4000")
+    monkeypatch.setenv("FORGE_API_INTERNAL_ORIGIN", "http://127.0.0.1:9000")
+
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    procs = supervisor.start_processes(runner_image="sha256:" + "a" * 64)
+
+    assert len(procs) == 3
+    web_proc = next(p for p in runner.spawned if p.name == "web")
+    assert web_proc.env is not None
+    assert web_proc.env["FORGE_WEB_ORIGIN"] == "http://127.0.0.1:4000"
+    assert web_proc.env["FORGE_API_INTERNAL_ORIGIN"] == "http://127.0.0.1:9000"
+    assert web_proc.env["PORT"] == "4000"
+
+
+def test_web_process_custom_web_port_loopback_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FORGE_WEB_ORIGIN", raising=False)
+    monkeypatch.delenv("FORGE_API_INTERNAL_ORIGIN", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FORGE_WEB_ORIGIN=http://localhost:3002\n",
+        encoding="utf-8",
+    )
+
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    procs = supervisor.start_processes(runner_image="sha256:" + "a" * 64)
+
+    assert len(procs) == 3
+    web_proc = next(p for p in runner.spawned if p.name == "web")
+    assert web_proc.env is not None
+    assert web_proc.env["FORGE_WEB_ORIGIN"] == "http://localhost:3002"
+    assert web_proc.env["PORT"] == "3002"
+    assert web_proc.env["FORGE_API_INTERNAL_ORIGIN"] == "http://127.0.0.1:8000"
+
+
+def test_web_process_excludes_database_and_provider_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FORGE_DATABASE_URL=postgresql+asyncpg://forge:forge@127.0.0.1:5435/forge\n"
+        "FORGE_PROVIDER_SECRET_REFERENCE=secret://forge/root-provider\n"
+        "FORGE_GOOGLE_API_KEY_REFERENCE=secret://forge/root-provider\n"
+        "FORGE_GITHUB_TOKEN_REFERENCE=secret://forge/root-github\n"
+        "FORGE_DATA_ROOT=C:/tmp/forge\n"
+        "FORGE_RUNNER_IMAGE=sha256:" + "c" * 64 + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("FORGE_DATABASE_URL", "postgresql+asyncpg://os-forge:secret@127.0.0.1:5435/db")
+    monkeypatch.setenv("FORGE_PROVIDER_SECRET_REFERENCE", "secret://forge/os-provider")
+    monkeypatch.setenv("FORGE_GOOGLE_API_KEY_REFERENCE", "secret://forge/os-provider")
+    monkeypatch.setenv("FORGE_GITHUB_TOKEN_REFERENCE", "secret://forge/os-github")
+    monkeypatch.setenv("DATABASE_URL", "postgres://leak:leak@127.0.0.1:5432/leak")
+
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    procs = supervisor.start_processes(runner_image="sha256:" + "a" * 64)
+
+    assert len(procs) == 3
+    web_proc = next(p for p in runner.spawned if p.name == "web")
+    assert web_proc.env is not None
+
+    forbidden_keys = [
+        "FORGE_DATABASE_URL",
+        "FORGE_PROVIDER_SECRET_REFERENCE",
+        "FORGE_GOOGLE_API_KEY_REFERENCE",
+        "FORGE_GITHUB_TOKEN_REFERENCE",
+        "FORGE_RUNNER_IMAGE",
+        "FORGE_DATA_ROOT",
+        "DATABASE_URL",
+    ]
+    for key in forbidden_keys:
+        assert key not in web_proc.env, f"Secret key '{key}' leaked into web child process environment!"
+
+
+@pytest.mark.parametrize(
+    "invalid_origin,var_name",
+    [
+        ("http://example.com:3000", "FORGE_WEB_ORIGIN"),
+        ("https://192.168.1.5:3000", "FORGE_WEB_ORIGIN"),
+        ("ftp://127.0.0.1:3000", "FORGE_WEB_ORIGIN"),
+        ("http://127.0.0.1:3000/", "FORGE_WEB_ORIGIN"),
+        ("http://evil.com:8000", "FORGE_API_INTERNAL_ORIGIN"),
+        ("http://10.0.0.1:8000", "FORGE_API_INTERNAL_ORIGIN"),
+    ],
+)
+def test_invalid_origin_pre_spawn_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_origin: str,
+    var_name: str,
+) -> None:
+    monkeypatch.setenv(var_name, invalid_origin)
+
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+
+    with pytest.raises((SupervisorError, ValueError)):
+        supervisor.start_processes(runner_image="sha256:" + "a" * 64)
+
+    # Pre-spawn failure check: no process should have been spawned!
+    assert len(runner.spawned) == 0, f"Expected 0 spawned processes on invalid origin, but found {len(runner.spawned)}"
+
+
+def test_scripts_dev_parent_bootstrap_has_no_third_party_imports() -> None:
+    import ast
+
+    tree = ast.parse((REPO_ROOT / "scripts" / "dev.py").read_text(encoding="utf-8"))
+    imported_modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_modules.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.add(node.module.split(".")[0])
+
+    # Disallowed non-stdlib packages in parent bootstrap
+    disallowed = {"forge", "fastapi", "pydantic", "dotenv", "pydantic_settings"}
+    assert not (imported_modules & disallowed), (
+        f"Disallowed imports found in scripts/dev.py: {imported_modules & disallowed}"
+    )
+
+
+def test_lifecycle_exact_sequence_web_config_resolved_after_sync() -> None:
+    digest = "sha256:" + "d" * 64
+    token = "token-lifecycle-test"
+    url = f"http://127.0.0.1:3000/#bootstrap={token}"
+
+    responses = _default_prereq_responses()
+    responses.update(
+        {
+            "docker inspect": CommandResult(0, f"{digest}\n", ""),
+            "forge operator rotate": CommandResult(0, f"{url}\n", ""),
+        }
+    )
+    runner = FakeCommandRunner(responses=responses)
+    supervisor = DevSupervisor(repo_root=REPO_ROOT, runner=runner)
+
+    api_proc = FakeManagedProcess(name="api")
+    worker_proc = FakeManagedProcess(name="worker")
+    web_proc = FakeManagedProcess(name="web")
+    runner.spawn_plans = [api_proc, worker_proc, web_proc]
+
+    supervisor.supervise = lambda procs: 0  # type: ignore[assignment]
+    exit_code = supervisor.run()
+    assert exit_code == 0
+
+    cmd_strings = [" ".join(call[0]) for call in runner.calls]
+    uv_sync_idx = next(i for i, cmd in enumerate(cmd_strings) if "uv sync" in cmd)
+    web_config_idx = next(i for i, cmd in enumerate(cmd_strings) if "forge.settings" in cmd or "Settings" in cmd)
+    alembic_idx = next(i for i, cmd in enumerate(cmd_strings) if "alembic" in cmd)
+    rotate_idx = next(i for i, cmd in enumerate(cmd_strings) if "operator rotate" in cmd)
+
+    assert uv_sync_idx < web_config_idx, "Web config must be resolved after uv sync"
+    assert web_config_idx < alembic_idx, "Web config must be resolved before migrations and child processes"
+    assert alembic_idx < rotate_idx, "Migrations must run before operator credentials rotation"
+
+
+@pytest.mark.parametrize(
+    "sensitive_origin",
+    [
+        "http://admin:supersecretpassword@127.0.0.1:3000",
+        "http://127.0.0.1:3000?api_key=verysecrettoken123",
+        "http://127.0.0.1:3000#token=sensitivefragment",
+        "https://operator:password123@127.0.0.1:3000?query=secret",
+    ],
+)
+def test_invalid_origin_redacts_credentials_and_queries_in_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sensitive_origin: str
+) -> None:
+    monkeypatch.setenv("FORGE_WEB_ORIGIN", sensitive_origin)
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    with pytest.raises(ConfigurationError) as exc_info:
+        supervisor.resolve_web_configuration()
+
+    err_msg = str(exc_info.value)
+    assert "supersecretpassword" not in err_msg
+    assert "verysecrettoken123" not in err_msg
+    assert "sensitivefragment" not in err_msg
+    assert "password123" not in err_msg
+    assert sensitive_origin not in err_msg
+    assert err_msg == "Invalid local development web configuration."
+    assert exc_info.value.__cause__ is None
+
+
+def test_command_failure_redacts_stdout_and_exception_detail(tmp_path: Path) -> None:
+    runner = FakeCommandRunner(
+        responses={
+            "forge.settings": CommandResult(
+                1,
+                "output containing token=sensitive_internal_token",
+                "stderr with secret_db=postgres://user:pass@host/db",
+            )
+        }
+    )
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    with pytest.raises(ConfigurationError) as exc_info:
+        supervisor.resolve_web_configuration()
+
+    err_msg = str(exc_info.value)
+    assert "sensitive_internal_token" not in err_msg
+    assert "secret_db" not in err_msg
+    assert "pass" not in err_msg
+    assert err_msg == "Invalid local development web configuration."
+    assert exc_info.value.__cause__ is None
+
+
+def test_ambient_port_does_not_alter_web_origin_or_bootstrap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FORGE_WEB_ORIGIN", raising=False)
+    monkeypatch.delenv("FORGE_API_INTERNAL_ORIGIN", raising=False)
+    monkeypatch.setenv("PORT", "9999")
+
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    web_config = supervisor.resolve_web_configuration()
+
+    assert web_config.web_origin == "http://127.0.0.1:3000"
+    assert web_config.web_port == 3000
+    web_env = web_config.to_web_env()
+    assert web_env["PORT"] == "3000"
+    assert web_env["FORGE_WEB_ORIGIN"] == "http://127.0.0.1:3000"
+
+
+def test_https_web_origin_rejected_for_local_supervisor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FORGE_WEB_ORIGIN", "https://127.0.0.1:3000")
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+    with pytest.raises(ConfigurationError, match="Invalid local development web configuration."):
+        supervisor.resolve_web_configuration()
+
+
+
+
+def test_web_listener_uses_configured_ipv6_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORGE_WEB_ORIGIN", "http://[::1]:3002")
+    runner = FakeCommandRunner()
+    DevSupervisor(repo_root=tmp_path, runner=runner).start_processes("sha256:" + "a" * 64)
+    web = next(p for p in runner.spawned if p.name == "web")
+    assert web.cmd[-2:] == ["--hostname", "::1"]
+    assert web.env["PORT"] == "3002"
