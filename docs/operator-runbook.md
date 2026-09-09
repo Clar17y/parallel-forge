@@ -27,8 +27,16 @@ npm run dev:web
 
 The worker requires a provider secret reference, pricing catalog and versioned
 prompts. Wait for its recovered-and-polling message; a working API alone does not
-prove commands are being executed. A one-command development supervisor remains
-an acceptance gap.
+prove commands are being executed.
+
+The development supervisor is available as `npm run dev`, `scripts/dev.ps1`
+on Windows, or `bash scripts/dev.sh` on Linux. It requires a healthy PostgreSQL
+compose service and the provider configuration above, installs both frozen locks,
+applies migrations, builds the immutable runner image, rotates operator credentials
+and prints a fresh bootstrap URL, then supervises the three processes together.
+Ctrl+C stops its owned process trees; an unexpected child exit fails the command.
+Its lifecycle tests pass, while full startup acceptance remains pending. Use the
+separate commands above when preserving an existing operator session.
 
 The default browser origin is `http://127.0.0.1:3000`; the server-side web proxy
 uses `http://127.0.0.1:8000` internally. When changing ports, configure

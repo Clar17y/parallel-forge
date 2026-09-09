@@ -36,6 +36,23 @@ interfaces. The Next.js dashboard exposes evidence and state-aware controls;
 the deterministic Release Controller owns approved GitHub effects. Their full
 acceptance gate remains open.
 
+## Local development
+
+Use Python 3.14, Node.js 24, uv, npm, Git and Docker, with the repository's
+PostgreSQL compose service healthy. Configure the control database, data root,
+provider secret reference and pricing catalog as described in the
+[operator runbook](docs/operator-runbook.md).
+
+Run `npm run dev` (or `scripts/dev.ps1` / `bash scripts/dev.sh`) to install the
+frozen dependencies, migrate, build the runner and supervise the API, worker and
+web app. This command rotates the operator session and prints a fresh bootstrap
+URL. Full startup acceptance is still pending.
+
+Use `npm run test`, `npm run lint`, `npm run typecheck` and `npm run build` for
+focused development checks. `npm run verify` includes the deterministic backend
+and web checks; PostgreSQL and Docker must be available. Browser acceptance is a
+separate `npm run test:e2e` command whose workflow specs are still in development.
+
 ## Development status and roadmap
 
 Tasks 1–23 have an accepted checkpoint. Tasks 24–29 include release and queue
