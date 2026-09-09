@@ -46,6 +46,106 @@ def _docker_or_skip() -> str:
     return docker
 
 
+def test_mount_guard_rejects_wrong_inode_before_loader_or_command_execution(tmp_path: Path) -> None:
+    docker = _docker_or_skip()
+    repository = Path(__file__).resolve().parents[2]
+    image_id = subprocess.check_output(
+        [
+            docker,
+            "build",
+            "--platform",
+            "linux/amd64",
+            "-f",
+            "Dockerfile.runner",
+            "-q",
+            str(repository),
+        ],
+        text=True,
+        timeout=600,
+    ).strip()
+    expected, substituted = tmp_path / "expected", tmp_path / "substituted"
+    for directory in (expected, substituted):
+        directory.mkdir()
+        directory.chmod(0o777)
+
+    def run(
+        directory: Path,
+        *arguments: str,
+        entrypoint: str | None = None,
+        environment: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess[str]:
+        argv = [
+            docker,
+            "run",
+            "--rm",
+            "--network=none",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--user=10001:10001",
+            "--workdir=/",
+            "--mount",
+            f"type=bind,src={directory},dst=/workspace,bind-recursive=disabled",
+        ]
+        if entrypoint:
+            argv.extend(("--entrypoint", entrypoint))
+        for value in environment:
+            argv.extend(("--env", value))
+        return subprocess.run(
+            [*argv, image_id, *arguments], capture_output=True, text=True, timeout=30, check=False
+        )
+
+    identity = run(
+        expected,
+        "python",
+        "-I",
+        "-S",
+        "-c",
+        "import os; s=os.stat('/workspace'); "
+        "print(open('/proc/sys/kernel/random/boot_id').read().strip(), s.st_dev, s.st_ino)",
+    )
+    assert identity.returncode == 0, identity.stderr
+    boot_id, device, inode = identity.stdout.split()
+    guard = "/usr/local/bin/forge-mount-guard"
+    command = ("python", "-I", "-S", "-c", "open('command-ran', 'w').write('allowed')")
+    accepted = run(expected, boot_id, device, inode, *command, entrypoint=guard)
+    assert accepted.returncode == 0, accepted.stderr
+    assert (expected / "command-ran").read_text() == "allowed"
+
+    # A dynamic launcher would load this constructor before reaching its guard.
+    (substituted / "preload.c").write_text(
+        "#include <fcntl.h>\n#include <unistd.h>\n"
+        "__attribute__((constructor)) static void injected(void) {"
+        'int fd=open("/workspace/loader-ran",O_CREAT|O_WRONLY,0600);'
+        "if(fd>=0)close(fd);}\n",
+        encoding="utf-8",
+    )
+    compiled = run(
+        substituted, "cc", "-shared", "-fPIC", "/workspace/preload.c", "-o", "/workspace/preload.so"
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    rejected = run(
+        substituted,
+        boot_id,
+        device,
+        inode,
+        *command,
+        entrypoint=guard,
+        environment=("LD_PRELOAD=/workspace/preload.so", "PYTHONPATH=/workspace"),
+    )
+    assert rejected.returncode == 126, rejected.stderr
+    assert not (substituted / "command-ran").exists()
+    assert not (substituted / "loader-ran").exists()
+    (expected / "command-ran").unlink()
+    foreign_kernel = run(
+        expected, "00000000-0000-0000-0000-000000000000", device, inode, *command, entrypoint=guard
+    )
+    assert foreign_kernel.returncode == 126
+    assert not (expected / "command-ran").exists()
+    headers = run(expected, "readelf", "-l", guard)
+    assert headers.returncode == 0, headers.stderr
+    assert "INTERP" not in headers.stdout
+
+
 def test_runner_image_is_pinned_nonroot_and_has_required_tool_versions(tmp_path: Path) -> None:
     docker = _docker_or_skip()
     repository = Path(__file__).resolve().parents[2]
@@ -239,7 +339,10 @@ def test_bound_runner_reads_e2a_staged_file_as_fixed_container_user(tmp_path: Pa
         def run_argv(self, argv: Any, **kwargs: Any) -> Any:
             result = ProcessRunner(root).run_argv(argv, **kwargs)
             if result.return_code == 125:
-                print("Docker startup diagnostic:", Redactor(secrets=("secret-value",)).redact(result.stderr))
+                print(
+                    "Docker startup diagnostic:",
+                    Redactor(secrets=("secret-value",)).redact(result.stderr),
+                )
             return result
 
     runner = WorktreeRunnerFactory(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import shutil
 import subprocess
 import threading
@@ -327,14 +328,21 @@ def test_bound_docker_runner_uses_one_capability_mount_and_ownership_label(
     assert launch.count("--mount") == 1
     mount = launch[launch.index("--mount") + 1]
     assert "dst=/workspace" in mount
-    assert "--workdir=/workspace" in launch
+    assert ("--workdir=/workspace" if os.name == "nt" else "--workdir=/") in launch
     assert launch.count("--label") == 1
     assert sum(value.startswith("forge.owner-token=") for value in launch) == 1
-    if shutil.which("docker") and Path("/proc").is_dir():
-        assert "/proc/" in mount
-        assert str(worktree.path) not in mount
-    else:
-        assert str(worktree.path) in mount
+    assert str(worktree.path) in mount
+    if os.name != "nt":
+        metadata = worktree.path.stat()
+        image_index = launch.index("sha256:" + "e" * 64)
+        assert (
+            launch[image_index + 1] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        )
+        assert launch[image_index + 2 : image_index + 4] == (
+            str(metadata.st_dev),
+            str(metadata.st_ino),
+        )
+        assert launch[launch.index("--entrypoint") + 1] == "/usr/local/bin/forge-mount-guard"
     assert "forge.owner-token=" not in repr(terminal)
 
 

@@ -155,7 +155,7 @@ class DockerRunner:
         if registered != spec:
             raise ValueError("runner command is not in the active policy")
         selected = _docker_command_environment(registered, environment)
-        mount_source = _canonical_mount_source(self._root, worktree)
+        mount_source, mount_identity = _canonical_mount_binding(self._root, worktree)
         name = container_name or f"forge-runner-{uuid4().hex}"
         argv = [
             "docker",
@@ -179,11 +179,15 @@ class DockerRunner:
             "/home/forge:rw,nosuid,nodev,size=64m",
             "--mount",
             f"type=bind,src={mount_source},dst=/workspace,bind-recursive=disabled",
-            "--workdir=/workspace",
+            "--workdir=/" if mount_identity is not None else "--workdir=/workspace",
         ]
+        if mount_identity is not None:
+            argv.extend(("--entrypoint", "/usr/local/bin/forge-mount-guard"))
         for key in sorted(selected):
             argv.extend(("--env", key))
         argv.append(self._image_reference)
+        if mount_identity is not None:
+            argv.extend(str(value) for value in mount_identity)
         argv.extend(registered.argv)
         return argv
 
@@ -201,7 +205,10 @@ class DockerRunner:
     async def run_terminal(self, request: RunCommandRequest) -> CommandTerminalResult:
         """Finish all bounded terminal work before reporting caller cancellation."""
 
-        return await self._run_terminal_at(request, self._root.path)
+        # Direct root runners also retain their identity until terminal cleanup.
+        # Managed runners enter through _run_terminal_at with their own capability.
+        with self._root.open_directory():
+            return await self._run_terminal_at(request, self._root.path)
 
     async def _run_terminal_at(
         self,
@@ -496,12 +503,19 @@ def _docker_command_environment(
     )
 
 
-def _canonical_mount_source(root: CanonicalRoot, worktree: str | os.PathLike[str]) -> str:
+def _canonical_mount_binding(
+    root: CanonicalRoot, worktree: str | os.PathLike[str]
+) -> tuple[str, tuple[str, int, int] | None]:
     try:
         candidate = Path(worktree).resolve(strict=True)
     except OSError, RuntimeError, TypeError, ValueError:
         raise ValueError("runner worktree is unavailable") from None
-    if candidate != root.path:
+    identity: tuple[int, int] | None = None
+    if candidate == root.path:
+        root._revalidate_root()
+        if os.name != "nt":
+            identity = (root.identity[0], root.identity[1])
+    else:
         try:
             relative = candidate.relative_to(root.path)
             normalized = root.normalize(relative, allow_root=True)
@@ -509,19 +523,24 @@ def _canonical_mount_source(root: CanonicalRoot, worktree: str | os.PathLike[str
             if access is None:
                 raise ValueError("runner worktree is not capability-bound")
             access = root._verify_directory_access(normalized, access)
-            if os.name == "nt":
-                candidate = access.path
-            else:
-                proc_fd_root = Path("/proc") / str(os.getpid()) / "fd"
-                if not proc_fd_root.is_dir():
-                    raise ValueError("runner worktree capability is unavailable")
-                candidate = proc_fd_root / str(access.capability)
+            candidate = access.path
+            if os.name != "nt":
+                metadata = os.fstat(access.capability)
+                identity = (int(metadata.st_dev), int(metadata.st_ino))
         except OSError, RuntimeError, TypeError, ValueError:
             raise ValueError("runner worktree is not capability-bound") from None
     rendered = str(candidate)
     if any(character in rendered for character in ("\x00", "\r", "\n", ",")):
         raise ValueError("runner worktree cannot be represented as a Docker mount")
-    return rendered
+    if identity is None:
+        return rendered, None
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot_id) is None:
+            raise ValueError("runner kernel identity is unavailable")
+    except OSError, UnicodeError:
+        raise ValueError("runner kernel identity is unavailable") from None
+    return rendered, (boot_id, *identity)
 
 
 def _trusted_docker_environment() -> dict[str, str]:

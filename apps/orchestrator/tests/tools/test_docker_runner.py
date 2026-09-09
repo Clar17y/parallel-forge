@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from contextlib import suppress
 from dataclasses import dataclass
@@ -326,7 +327,18 @@ def test_docker_argv_has_fixed_isolation_and_one_canonical_mount(tmp_path: Path)
     assert "/var/run/docker.sock" not in " ".join(argv)
     assert "postgresql://scoped" not in argv
     assert "secret" not in argv
-    assert argv[argv.index("parallel-forge-runner@sha256:" + "a" * 64) + 1 :] == list(command.argv)
+    command_index = argv.index("parallel-forge-runner@sha256:" + "a" * 64) + 1
+    if os.name != "nt":
+        metadata = worktree.stat()
+        assert argv[command_index] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        assert argv[command_index + 1 : command_index + 3] == [
+            str(metadata.st_dev),
+            str(metadata.st_ino),
+        ]
+        command_index += 3
+        assert argv[argv.index("--entrypoint") + 1] == "/usr/local/bin/forge-mount-guard"
+        assert "--workdir=/" in argv
+    assert argv[command_index:] == list(command.argv)
     assert sum(str(worktree) in part for part in argv) == 1
     assert sum(part == "--mount" for part in argv) == 1
     mount = argv[argv.index("--mount") + 1]
@@ -928,4 +940,5 @@ async def test_docker_async_adapter_runs_registered_argv_for_every_step_kind(
     assert result.kind is kind
     run_argv = process.calls[0][0]
     image_index = run_argv.index("sha256:" + "7" * 64)
-    assert run_argv[image_index + 1 :] == command.argv
+    command_index = image_index + (4 if os.name != "nt" else 1)
+    assert run_argv[command_index:] == command.argv

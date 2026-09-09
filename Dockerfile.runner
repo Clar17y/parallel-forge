@@ -24,6 +24,14 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && npm --version \
     && ! command -v docker
 
+COPY scripts/runner-mount-guard.c /tmp/runner-mount-guard.c
+RUN cc -static -O2 -Wall -Wextra -Werror /tmp/runner-mount-guard.c \
+        -o /usr/local/bin/forge-mount-guard \
+    && chmod 0555 /usr/local/bin/forge-mount-guard \
+    && readelf -l /usr/local/bin/forge-mount-guard > /tmp/guard-headers \
+    && ! grep -q INTERP /tmp/guard-headers \
+    && rm /tmp/runner-mount-guard.c /tmp/guard-headers
+
 ENV HOME=/home/forge
 WORKDIR /workspace
 USER 10001:10001
