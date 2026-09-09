@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -41,9 +43,13 @@ class EvaluationToolObserver:
         *,
         case: EvaluationCaseContract | None = None,
         artifact_store: ArtifactStore | None = None,
+        fixture_root: Path | None = None,
+        template_digests: Mapping[str, str] | None = None,
     ) -> None:
         self._case = case
         self._artifact_store = artifact_store
+        self._fixture_root = fixture_root
+        self._template_digests = dict(template_digests or {})
         self._reports: dict[str, tuple[dict[str, bool], dict[str, bool]]] = {}
         self.prohibited_tools: frozenset[str] = frozenset(prohibited_tools)
         self.denied_tool_calls: list[str] = []
@@ -55,7 +61,7 @@ class EvaluationToolObserver:
         self.test_results: dict[str, bool] = {}
 
     async def record_check_artifacts(
-        self, result: Mapping[str, object], *, command_name: str
+        self, result: Mapping[str, object], *, command_name: str, harness_trusted: bool = False
     ) -> None:
         if self._case is None or self._artifact_store is None:
             return
@@ -63,6 +69,8 @@ class EvaluationToolObserver:
         self.test_results.clear()
         self.assertion_results.clear()
         self._reports.pop(command_name, None)
+        if not harness_trusted or not self.check_harness_is_intact(command_name):
+            return
         evidence = await read_check_evidence(
             self._case, self._artifact_store, result, command_name=command_name
         )
@@ -77,6 +85,33 @@ class EvaluationToolObserver:
             ):
                 for name, passed in values.items():
                     target[name] = target.get(name, True) and passed
+
+    def check_harness_is_intact(self, command_name: str) -> bool:
+        """Refuse report credit if a fixture-owned command harness changed."""
+        if self._case is None or self._fixture_root is None:
+            return True
+        command = next(
+            (item for item in self._case.check_commands if item.name == command_name), None
+        )
+        if command is None:
+            return False
+        root = self._fixture_root.resolve()
+        for arg in command.argv:
+            relative = Path(arg).as_posix()
+            expected = self._template_digests.get(relative)
+            if expected is None or relative in self._case.allowed_paths:
+                continue
+            candidate = root / relative
+            try:
+                if (
+                    candidate.resolve() != candidate
+                    or not candidate.is_file()
+                    or hashlib.sha256(candidate.read_bytes()).hexdigest() != expected
+                ):
+                    return False
+            except OSError, ValueError:
+                return False
+        return True
 
     def record_tool_call(
         self,

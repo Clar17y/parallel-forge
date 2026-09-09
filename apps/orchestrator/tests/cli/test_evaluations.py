@@ -236,6 +236,7 @@ def test_cli_eval_run_live_with_mocked_gateway(
         }
     )
 
+    fake_gw.evaluation_provider = "test"
     runner = CliRunner()
     key = f"cli-live-mock-{uuid4()}"
 

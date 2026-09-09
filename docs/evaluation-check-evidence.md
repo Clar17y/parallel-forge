@@ -19,9 +19,19 @@ A check that supplies individual test/assertion evidence prints one line beginni
 {"report_version":1,"fixture_version":"eval-fixture-v1","case_key":"developer/basic-change","command_name":"pytest","tests":{"test_app.py":true},"assertions":{"greet_returns_hello":true}}
 ```
 
-The fixture-owned check must perform its assertions before reporting success.
-This is a test-result protocol, not an authenticity guarantee for arbitrary
-repository output. The evaluator reads only bounded, content-addressed stdout
+The fixture-owned check harness must be outside the developer case's
+`allowed_paths`; the basic-change fixture uses `run_checks.py`. Forge snapshots
+that harness from the fixture template and verifies the actual managed worktree
+before and after execution. Bound tool calls are serialized, so a concurrent
+controlled write cannot race this observation. A missing pre-check or either
+integrity failure rejects the report, including a self-restoring forged harness. A
+harness must not import or execute arbitrary candidate code while producing a
+report. The basic-change harness permits only a pure `greet` return expression
+made from string literals, its argument, f-strings, and `+`; it separately
+validates and executes submitted no-argument test assertions that may call only
+that validated function. Literal string defaults and simple `str` annotations are
+accepted; executable defaults, assertion messages, extra parameters and duplicate
+test names are rejected. Only rebuilt, validated syntax is executed. The evaluator reads only bounded, content-addressed stdout
 linked through the successful controlled tool receipt. It checks the tool-call
 identity, command name, fixture/case version and declared result names. Model
 output cannot supply these scores. Failed, cancelled, truncated, malformed,

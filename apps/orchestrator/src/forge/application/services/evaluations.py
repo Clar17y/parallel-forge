@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import os
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -71,6 +70,7 @@ from forge.evaluations.contracts import EvaluationCaseContract
 from forge.evaluations.loader import load_evaluation_cases, load_expected_output
 from forge.evaluations.materializer import (
     MaterializedFixture,
+    extract_fixture_commit_diff,
     materialize_fixture,
 )
 from forge.evaluations.runtime import (
@@ -127,26 +127,7 @@ def _read_repository_tree(root: Path) -> str:
 
 
 def _extract_fixture_commit_diff(path: Path, commit: str) -> str:
-    res = subprocess.run(
-        ["git", "diff-tree", "-p", "--root", commit],
-        cwd=str(path),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-    diff_text = res.stdout if res.returncode == 0 and res.stdout else ""
-    if not diff_text:
-        res2 = subprocess.run(
-            ["git", "show", "-p", "--format=", commit],
-            cwd=str(path),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-        diff_text = res2.stdout if res2.returncode == 0 else ""
-    return diff_text
+    return extract_fixture_commit_diff(path, commit)
 
 
 class EvaluationService(EvaluationServicePort):
@@ -330,20 +311,6 @@ class EvaluationService(EvaluationServicePort):
         has_baseline_selection = (
             promoted_baseline or baseline_name is not None or baseline_id is not None
         )
-        if has_baseline_selection:
-            async with self._session_factory() as session:
-                repo = EvaluationRepository(session)
-                lookup_name = baseline_name or ("live" if is_live_mode else suite_name)
-                persisted_baseline = await repo.get_baseline(
-                    name=lookup_name if baseline_id is None else None,
-                    baseline_id=baseline_id,
-                )
-                if persisted_baseline is None:
-                    raise EvaluationConflict(
-                        f"no persisted baseline found for promotion comparison: "
-                        f"name={lookup_name}, id={baseline_id}"
-                    )
-
         # Discover or use supplied cases
         cases_map: dict[str, EvaluationCaseContract] = {}
         if cases is not None:
@@ -359,6 +326,8 @@ class EvaluationService(EvaluationServicePort):
             raise ValueError("no evaluation cases found to run")
 
         sorted_cases = [cases_map[k] for k in sorted(cases_map.keys())]
+        if len({case.fixture_version for case in sorted_cases}) != 1:
+            raise ValueError("evaluation suite cases must share one fixture version")
 
         eff_fixture_version = (
             fixture_version or sorted_cases[0].fixture_version
@@ -369,6 +338,22 @@ class EvaluationService(EvaluationServicePort):
         eff_idempotency_key = (
             idempotency_key or f"eval-{suite_name}-{eff_fixture_version}-{eff_metric_version}"
         )
+
+        if has_baseline_selection:
+            async with self._session_factory() as session:
+                repo = EvaluationRepository(session)
+                lookup_name = baseline_name or ("live" if is_live_mode else suite_name)
+                persisted_baseline = await repo.get_baseline(
+                    name=lookup_name if baseline_id is None else None,
+                    baseline_id=baseline_id,
+                    fixture_version=eff_fixture_version if baseline_id is None else None,
+                    metric_version=eff_metric_version if baseline_id is None else None,
+                )
+                if persisted_baseline is None:
+                    raise EvaluationConflict(
+                        f"no persisted baseline found for promotion comparison: "
+                        f"name={lookup_name}, id={baseline_id}"
+                    )
 
         eff_baseline_fixture_version = (
             persisted_baseline.fixture_version
@@ -437,7 +422,15 @@ class EvaluationService(EvaluationServicePort):
                 active_gateway = self._build_fake_gateway(sorted_cases, res_expected)
 
         if is_live_mode:
-            provider = getattr(active_gateway, "_supported_provider", "google")
+            provider = (
+                "google"
+                if bind_controlled_tools
+                else getattr(active_gateway, "evaluation_provider", None)
+            )
+            if not isinstance(provider, str) or not provider.strip():
+                raise ValueError(
+                    "injected live evaluation gateway requires explicit evaluation_provider"
+                )
             assert live_model is not None
             model = live_model
         else:
@@ -526,9 +519,7 @@ class EvaluationService(EvaluationServicePort):
                         path_key = canonical_path_key(str(materialized.path))
                         project_repo = PostgresProjectRepository(session)
                         existing_project = await session.scalar(
-                            select(Project).where(
-                                Project.canonical_path_key == path_key
-                            )
+                            select(Project).where(Project.canonical_path_key == path_key)
                         )
                         if existing_project is not None:
                             project_id = existing_project.id
@@ -843,17 +834,23 @@ class EvaluationService(EvaluationServicePort):
                         bind_controlled_tools=bind_controlled_tools,
                     )
                 except BaseException as exc:
-                    settled = await self._settle_fixture_lifecycle(
-                        run_id=admitted_run_id,
-                        execution_id=admitted_execution_id,
-                        policy=admitted_policy,
-                        finish_status=(
-                            AgentFinishStatus.CANCELLED
-                            if isinstance(exc, asyncio.CancelledError)
-                            else AgentFinishStatus.FAILED
-                        ),
-                        requires_teardown=bind_controlled_tools and case.role is not AgentRole.PLANNER,
-                    )
+                    try:
+                        settled = await self._settle_fixture_lifecycle(
+                            run_id=admitted_run_id,
+                            execution_id=admitted_execution_id,
+                            policy=admitted_policy,
+                            finish_status=(
+                                AgentFinishStatus.CANCELLED
+                                if isinstance(exc, asyncio.CancelledError)
+                                else AgentFinishStatus.FAILED
+                            ),
+                            requires_teardown=bind_controlled_tools
+                            and case.role is not AgentRole.PLANNER,
+                        )
+                    except asyncio.CancelledError:
+                        await self._mark_fixture_case_failed(suite_summary.id, case.case_key)
+                        await self._abort_fixture_suite(suite_summary.id, cancelled=True)
+                        raise
                     await self._mark_fixture_case_failed(suite_summary.id, case.case_key)
                     await self._abort_fixture_suite(
                         suite_summary.id, cancelled=isinstance(exc, asyncio.CancelledError)
@@ -871,7 +868,8 @@ class EvaluationService(EvaluationServicePort):
                             if case_result.passed
                             else AgentFinishStatus.FAILED
                         ),
-                        requires_teardown=bind_controlled_tools and case.role is not AgentRole.PLANNER,
+                        requires_teardown=bind_controlled_tools
+                        and case.role is not AgentRole.PLANNER,
                     )
                 except asyncio.CancelledError:
                     await self._mark_fixture_case_failed(suite_summary.id, case.case_key)
@@ -883,6 +881,7 @@ class EvaluationService(EvaluationServicePort):
                         case_result,
                         passed=False,
                         status="failed",
+                        metrics={**case_result.metrics, "lifecycle_failed": 1},
                         error="fixture_teardown_required",
                     )
                 else:
@@ -1022,9 +1021,13 @@ class EvaluationService(EvaluationServicePort):
             suite = await session.get(EvaluationSuite, suite_id, with_for_update=True)
             if suite is None or suite.status != "running":
                 raise EvaluationConflict("evaluation suite cannot abort")
-            cases = (await session.scalars(
-                select(EvaluationCase).where(EvaluationCase.suite_id == suite_id).with_for_update()
-            )).all()
+            cases = (
+                await session.scalars(
+                    select(EvaluationCase)
+                    .where(EvaluationCase.suite_id == suite_id)
+                    .with_for_update()
+                )
+            ).all()
             for case in cases:
                 if case.status == "pending":
                     case.status = "skipped"
@@ -1042,7 +1045,7 @@ class EvaluationService(EvaluationServicePort):
             if case is None:
                 raise EvaluationConflict("evaluation fixture case is missing")
             case.status = "failed"
-            case.metrics = {"lifecycle_failed": 1}
+            case.metrics = {**dict(case.metrics), "lifecycle_failed": 1}
             case.completed_at = datetime.now(UTC)
 
     async def _execute_admitted_case(
@@ -1222,6 +1225,7 @@ class EvaluationService(EvaluationServicePort):
                 Callable[[], UnitOfWork],
                 lambda: PostgresUnitOfWork(self._session_factory),
             )
+            fixture_root = materialized.path
             if case.role is AgentRole.PLANNER:
                 tools = ControlledToolService(
                     unit_of_work_factory=uow_factory,
@@ -1243,6 +1247,7 @@ class EvaluationService(EvaluationServicePort):
                     self._settings, self._session_factory, self._artifact_store
                 )
                 worktree = await runtime.prepare(run_id, policy)
+                fixture_root = worktree.path
                 if case.role is AgentRole.REVIEWER:
                     await self._mark_evaluation_fixture_ready_for_review(run_id)
                 async with PostgresUnitOfWork(self._session_factory) as work:
@@ -1276,7 +1281,13 @@ class EvaluationService(EvaluationServicePort):
                 request,
                 tools,
                 tool_context,
-                EvaluationToolObserver(case=case, artifact_store=self._artifact_store),
+                EvaluationToolObserver(
+                    prohibited_tools=case.prohibited_tools,
+                    case=case,
+                    artifact_store=self._artifact_store,
+                    fixture_root=fixture_root,
+                    template_digests=materialized.template_digests,
+                ),
             )
 
         # Execute Gateway and validate result (E27-P04)
@@ -1328,7 +1339,7 @@ class EvaluationService(EvaluationServicePort):
         )
 
         # Price usage if catalog is available (E27-P04)
-        if self._pricing_catalog is not None and usage_to_save.pricing_version == "unavailable-v1":
+        if self._pricing_catalog is not None and usage_to_save.estimated_cost_minor is None:
             usage_to_save = self._pricing_catalog.price(usage_to_save, currency="USD")
         usage_id = usage_to_save.id or uuid4()
 
@@ -1402,16 +1413,14 @@ class EvaluationService(EvaluationServicePort):
 
         elif case.role == AgentRole.DEVELOPER:
             actual_dev = extracted_output if isinstance(extracted_output, DeveloperOutput) else None
-            observer = getattr(getattr(gateway, "_tool_provider", None), "observer", None)
-            if not isinstance(observer, EvaluationToolObserver):
-                registry_observer = self._evaluation_tool_registry.observer_for(execution_id)
-                observer = (
-                    self._deterministic_developer_observer(case)
-                    if isinstance(gateway, FakeAgentGateway)
-                    else registry_observer
-                    if isinstance(registry_observer, EvaluationToolObserver)
-                    else None
-                )
+            registry_observer = self._evaluation_tool_registry.observer_for(execution_id)
+            observer = (
+                self._deterministic_developer_observer(case)
+                if not is_live and isinstance(gateway, FakeAgentGateway)
+                else registry_observer
+                if isinstance(registry_observer, EvaluationToolObserver)
+                else None
+            )
             if isinstance(observer, EvaluationToolObserver) and live_changed_paths is not None:
                 observer.changed_paths = set(live_changed_paths)
             observation = observe_developer_execution(materialized, case, observer=observer)

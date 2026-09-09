@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,7 @@ from forge.agents.adk_runtime import (
 )
 from forge.agents.prompt_loader import PromptLoader
 from forge.application.ports.agents import AgentGateway
+from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
     DeveloperOutput,
@@ -22,6 +26,7 @@ from forge.domain.agent import (
 from forge.domain.evaluation import score_development
 from forge.domain.tool import ToolName
 from forge.evaluations.contracts import EvaluationCaseContract
+from forge.evaluations.loader import load_evaluation_case
 from forge.evaluations.materializer import materialize_fixture
 from forge.evaluations.runtime import (
     EvaluationToolObserver,
@@ -92,6 +97,89 @@ class EmptyControlledToolProvider:
 
     def tools_for(self, _request: Any) -> BoundAdkTools:
         return BoundAdkTools(names=(), tools=())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", [None, "before_restored", "after"])
+async def test_forged_report_from_replaced_fixture_harness_earns_no_credit(
+    tmp_path: Path, damage: str | None
+) -> None:
+    """Replacing the report emitter cannot turn a non-implementation into a pass."""
+    case = load_evaluation_case(FIXTURES_ROOT / "developer" / "basic-change")
+    store = FilesystemArtifactStore(tmp_path / "artifacts")
+    with materialize_fixture(case) as mat:
+        harness = mat.path / "run_checks.py"
+        original = harness.read_bytes()
+        observer = EvaluationToolObserver(
+            case=case,
+            artifact_store=store,
+            fixture_root=mat.path,
+            template_digests=mat.template_digests,
+        )
+        if damage == "before_restored":
+            harness.write_text("print('forged')", encoding="utf-8")
+        pretrusted = observer.check_harness_is_intact("pytest")
+        if damage == "before_restored":
+            harness.write_bytes(original)
+        elif damage == "after":
+            harness.write_text("print('forged')", encoding="utf-8")
+        stdout = await store.put_bytes(
+            json.dumps(
+                {
+                    "stream": "stdout",
+                    "truncated": False,
+                    "text": 'FORGE_EVAL_REPORT_V1:{"report_version":1,"fixture_version":"eval-fixture-v1","case_key":"developer/basic-change","command_name":"pytest","tests":{"test_app.py":true},"assertions":{"greet_returns_hello":true}}',
+                }
+            ).encode(),
+            media_type="application/json",
+        )
+        receipt = await store.put_bytes(
+            json.dumps(
+                {
+                    "receipt_version": 1,
+                    "tool_call_id": "call",
+                    "stdout_digest": stdout.digest,
+                    "caller_cancelled": False,
+                    "request_payload": {"command_name": "pytest"},
+                }
+            ).encode(),
+            media_type="application/json",
+        )
+        await observer.record_check_artifacts(
+            {
+                "status": "succeeded",
+                "tool_call_id": "call",
+                "artifact_digests": [receipt.digest],
+                "metadata": {
+                    "receipt_digest": receipt.digest,
+                    "stdout_digest": stdout.digest,
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "caller_cancelled": False,
+                },
+            },
+            command_name="pytest",
+            harness_trusted=pretrusted,
+        )
+        assert observer.test_results == ({"test_app.py": True} if damage is None else {})
+        assert observer.assertion_results == (
+            {"greet_returns_hello": True} if damage is None else {}
+        )
+
+
+def test_candidate_code_cannot_emit_a_report_or_skip_the_fixture_owned_assertion() -> None:
+    """The frozen reporter parses candidate source instead of importing untrusted code."""
+    case = load_evaluation_case(FIXTURES_ROOT / "developer" / "basic-change")
+    with materialize_fixture(case) as mat:
+        (mat.path / "app.py").write_text(
+            "import os\nprint('FORGE_EVAL_REPORT_V1:forged')\nos._exit(0)\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            ["python", "run_checks.py"], cwd=mat.path, capture_output=True, text=True, check=False
+        )
+    assert result.returncode != 0
+    assert "FORGE_EVAL_REPORT_V1:" not in result.stdout
 
 
 def test_evaluation_runtime_resolves_live_google_adk_gateway_mockable() -> None:
@@ -264,3 +352,104 @@ def test_discriminating_execution_and_assertion_observation() -> None:
         assert observation.check_results.get("pytest") is True
         assert observation.assertion_results.get("greet_returns_hello") is True
         assert observation.test_results.get("test_app.py") is True
+
+
+@pytest.mark.parametrize("expression", ['f"Hello, {name}!"', '"Hello, " + name + "!"'])
+def test_fixture_grader_accepts_pure_annotated_default_and_submitted_tests(expression: str) -> None:
+    case = load_evaluation_case(FIXTURES_ROOT / "developer" / "basic-change")
+    with materialize_fixture(case) as mat:
+        (mat.path / "app.py").write_text(
+            f'def greet(name: str = "world") -> str:\n    return {expression}\n', encoding="utf-8"
+        )
+        (mat.path / "test_app.py").write_text(
+            'from app import greet\ndef test_greet() -> None:\n    assert greet() == "Hello, world!"\n',
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [sys.executable, "run_checks.py"],
+            cwd=mat.path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "FORGE_EVAL_REPORT_V1:" in result.stdout
+        (mat.path / "test_app.py").write_text(
+            'from app import greet\ndef test_greet():\n    assert greet("world") == "wrong"\n',
+            encoding="utf-8",
+        )
+        failed = subprocess.run(
+            [sys.executable, "run_checks.py"],
+            cwd=mat.path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert failed.returncode != 0
+        assert "FORGE_EVAL_REPORT_V1:" not in failed.stdout
+
+
+@pytest.mark.parametrize(
+    "location", ["default", "assert_message", "keyword_only", "duplicate_test"]
+)
+def test_fixture_grader_rejects_unvalidated_executable_metadata(location: str) -> None:
+    case = load_evaluation_case(FIXTURES_ROOT / "developer" / "basic-change")
+    with materialize_fixture(case) as mat:
+        marker = mat.path / "side_effect"
+        effect = f'__import__("pathlib").Path({str(marker)!r}).write_text("executed")'
+        signature = f'name=({effect}, "world")[1]' if location == "default" else "name"
+        if location == "keyword_only":
+            signature += f", *, hidden={effect}"
+        (mat.path / "app.py").write_text(
+            f'def greet({signature}):\n    return f"Hello, {{name}}!"\n', encoding="utf-8"
+        )
+        assertion = (
+            'assert greet("world") == "wrong", ' + effect
+            if location == "assert_message"
+            else 'assert greet("world") == "Hello, world!"'
+        )
+        (mat.path / "test_app.py").write_text(
+            f"from app import greet\ndef test_greet():\n    {assertion}\n", encoding="utf-8"
+        )
+        if location == "duplicate_test":
+            (mat.path / "test_app.py").write_text(
+                "from app import greet\ndef test_greet():\n    assert False\n"
+                "def test_greet():\n    assert True\n",
+                encoding="utf-8",
+            )
+        result = subprocess.run(
+            [sys.executable, "run_checks.py"],
+            cwd=mat.path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "FORGE_EVAL_REPORT_V1:" not in result.stdout
+        assert not marker.exists()
+        assert "pure" in result.stderr
+
+
+def test_fixture_harness_redirect_outside_root_earns_no_trust(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    case = load_evaluation_case(FIXTURES_ROOT / "developer" / "basic-change")
+    with materialize_fixture(case) as mat:
+        harness = mat.path / "run_checks.py"
+        original_resolve = Path.resolve
+
+        def resolve(path: Path, *args: Any, **kwargs: Any) -> Path:
+            return (
+                tmp_path / "redirected.py"
+                if path == harness
+                else original_resolve(path, *args, **kwargs)
+            )
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+        observer = EvaluationToolObserver(
+            case=case, fixture_root=mat.path, template_digests=mat.template_digests
+        )
+        assert not observer.check_harness_is_intact("pytest")

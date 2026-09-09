@@ -41,9 +41,15 @@ class _RecordingService(ControlledToolService):
 class _Observer:
     def __init__(self) -> None:
         self.results: list[tuple[ToolName, dict[str, object]]] = []
+        self.trust_observations: list[bool] = []
 
-    async def record_check_artifacts(self, result: dict[str, object], *, command_name: str) -> None:
-        pass
+    def check_harness_is_intact(self, command_name: str) -> bool:
+        return False
+
+    async def record_check_artifacts(
+        self, result: dict[str, object], *, command_name: str, harness_trusted: bool = True
+    ) -> None:
+        self.trust_observations.append(harness_trusted)
 
     def record_controlled_result(
         self,
@@ -156,6 +162,35 @@ def test_evaluation_provider_invokes_bound_controlled_write_and_records_receipt(
     assert observer.results[0][0] is ToolName.REPOSITORY_WRITE_FILE
 
 
+def test_evaluation_provider_removes_an_admitted_prohibited_role_tool() -> None:
+    """A case restriction changes the actual ADK-visible tool set."""
+    role = AgentRole.DEVELOPER
+    request = build_agent_request(
+        role=role,
+        provider="google",
+        model="test-model",
+        allowed_tools=tuple(
+            tool
+            for tool in ToolName
+            if tool in CapabilityMatrix().capabilities_for(role) and tool is not ToolName.GIT_COMMIT
+        ),
+    )
+    context = ToolAuthorizationContext(
+        role=role,
+        run_id=request.run_id,
+        worktree_id="forge-evaluation-tools",
+        policy_version=1,
+        agent_execution_id=request.execution_id,
+        step_id=UUID("33333333-3333-4333-8333-333333333333"),
+    )
+    tools = ControlledEvaluationToolProvider(
+        _RecordingService(), context, _Observer(), request
+    ).tools_for(request)
+
+    assert ToolName.GIT_COMMIT not in tools.names
+    assert ToolName.GIT_COMMIT.value not in {tool.name for tool in tools.tools}
+
+
 def test_evaluation_provider_preserves_adk_write_declaration_schema() -> None:
     """Observation must not erase ADK's model-visible path/content arguments."""
 
@@ -185,3 +220,65 @@ def test_evaluation_provider_preserves_adk_write_declaration_schema() -> None:
     declaration = write_tool._get_declaration()
     assert declaration.parameters_json_schema is not None
     assert set(declaration.parameters_json_schema["properties"]) == {"path", "content"}
+
+
+@pytest.mark.asyncio
+async def test_check_binds_preexecution_trust_and_excludes_concurrent_writes() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingService(_RecordingService):
+        async def invoke(
+            self, context: ToolAuthorizationContext, request: ToolRequest
+        ) -> ToolResult:
+            if request.name is ToolName.BUILD_RUN_NAMED_CHECK:
+                entered.set()
+                await release.wait()
+            return await super().invoke(context, request)
+
+    request = build_agent_request(
+        role=AgentRole.DEVELOPER,
+        provider="google",
+        model="test-model",
+        allowed_tools=tuple(
+            tool
+            for tool in ToolName
+            if tool in CapabilityMatrix().capabilities_for(AgentRole.DEVELOPER)
+        ),
+    )
+    context = ToolAuthorizationContext(
+        role=request.role,
+        run_id=request.run_id,
+        worktree_id="forge-evaluation-tools",
+        policy_version=1,
+        agent_execution_id=request.execution_id,
+        step_id=UUID("33333333-3333-4333-8333-333333333333"),
+    )
+    service = BlockingService()
+    observer = _Observer()
+    tools = {
+        tool.name: tool
+        for tool in ControlledEvaluationToolProvider(service, context, observer, request)
+        .tools_for(request)
+        .tools
+    }
+    check = asyncio.create_task(
+        tools[ToolName.BUILD_RUN_NAMED_CHECK.value].run_async(
+            args={"command_name": "pytest"},
+            tool_context=SimpleNamespace(invocation_id="eval", function_call_id="check"),
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    write = asyncio.create_task(
+        tools[ToolName.REPOSITORY_WRITE_FILE.value].run_async(
+            args={"path": "run_checks.py", "content": "forged"},
+            tool_context=SimpleNamespace(invocation_id="eval", function_call_id="write"),
+        )
+    )
+    await asyncio.sleep(0)
+    try:
+        assert service.requests == [], "write raced the check's integrity observation"
+    finally:
+        release.set()
+        await asyncio.gather(check, write)
+    assert observer.trust_observations == [False]

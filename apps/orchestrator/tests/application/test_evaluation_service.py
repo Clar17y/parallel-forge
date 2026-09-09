@@ -139,9 +139,13 @@ async def test_evaluation_service_runs_deterministic_suite_and_persists_lineage(
             assert step.status == "SUCCEEDED"
             assert run.pending_gate is None
             assert run.branch_name is None or run.branch_name.startswith("forge/evaluation/")
-            commands = (await session.scalars(select(RunCommand).where(RunCommand.run_id == run.id))).all()
+            commands = (
+                await session.scalars(select(RunCommand).where(RunCommand.run_id == run.id))
+            ).all()
             assert commands == []
-            events = (await session.scalars(select(RunEvent).where(RunEvent.run_id == run.id))).all()
+            events = (
+                await session.scalars(select(RunEvent).where(RunEvent.run_id == run.id))
+            ).all()
             assert all(not event.event_type.startswith("approval.") for event in events)
             assert all("merge" not in event.event_type for event in events)
 
@@ -405,7 +409,15 @@ async def test_live_service_resolves_adk_and_persists_a_bound_planner_tool_recei
 
 @pytest.mark.parametrize(
     ("working", "outside_scope", "teardown_outcome"),
-    [(True, False, None), (False, False, None), (True, True, None), (True, False, "failed"), (True, False, "cancelled"), (True, False, "caller"), (True, False, "caller-failed")],
+    [
+        (True, False, None),
+        (False, False, None),
+        (True, True, None),
+        (True, False, "failed"),
+        (True, False, "cancelled"),
+        (True, False, "caller"),
+        (True, False, "caller-failed"),
+    ],
 )
 async def test_live_service_binds_developer_write_check_and_reviewer_diff(
     tmp_path: Path,
@@ -455,6 +467,14 @@ async def test_live_service_binds_developer_write_check_and_reviewer_diff(
                     function_call_id="managed-read",
                 ),
             )
+            if invocation.agent_name == "developer":
+                observers = service._evaluation_tool_registry._observers.values()
+                observer = next(
+                    item for item in observers if item._case.role is AgentRole.DEVELOPER
+                )
+                assert (observer._fixture_root / "app.py").read_text(encoding="utf-8") == arguments[
+                    "content"
+                ]
             if invocation.agent_name == "developer" and outside_scope:
                 extra = await tools["repository.write_file"].run_async(
                     args={"path": "unexpected.py", "content": "outside = True\n"},
@@ -516,6 +536,7 @@ async def test_live_service_binds_developer_write_check_and_reviewer_diff(
         ),
     )  # type: ignore[arg-type]
     if teardown_outcome not in {None, "caller"}:
+
         async def fail_teardown(self: object, run_id: object, policy: object) -> None:
             del self, run_id, policy
             if teardown_outcome == "cancelled":
@@ -526,13 +547,15 @@ async def test_live_service_binds_developer_write_check_and_reviewer_diff(
         monkeypatch.setattr(
             "forge.application.services.evaluations.DeliveryRuntime.teardown", fail_teardown
         )
-    execution_task = asyncio.create_task(service.run_suite(
-        suite_name="live",
-        provider_reference="secret://forge/mock-key",
-        live_model="mock-model",
-        idempotency_key=f"live-bound-worktree-{uuid4()}",
-        cases=cases,
-    ))
+    execution_task = asyncio.create_task(
+        service.run_suite(
+            suite_name="live",
+            provider_reference="secret://forge/mock-key",
+            live_model="mock-model",
+            idempotency_key=f"live-bound-worktree-{uuid4()}",
+            cases=cases,
+        )
+    )
     if caller_cancel or teardown_outcome == "cancelled":
         try:
             await asyncio.wait_for(invocation_ready.wait(), timeout=45)
@@ -546,13 +569,20 @@ async def test_live_service_binds_developer_write_check_and_reviewer_diff(
         async with session_factory() as session:
             runs = (await session.scalars(select(Run))).all()
             assert len(runs) == 1
-            assert runs[0].state == ("CANCELLED" if teardown_outcome == "caller" else "AWAITING_HUMAN_INTERVENTION")
+            assert runs[0].state == (
+                "CANCELLED" if teardown_outcome == "caller" else "AWAITING_HUMAN_INTERVENTION"
+            )
             suite_row = (await session.scalars(select(EvaluationSuite))).one()
             assert suite_row.status == "cancelled"
             case_rows = (await session.scalars(select(EvaluationCase))).all()
             assert sorted(case.status for case in case_rows) == ["failed", "skipped"]
-            assert all(item.status != "RUNNING" for item in (await session.scalars(select(AgentExecution))).all())
-            assert all(item.status != "RUNNING" for item in (await session.scalars(select(Step))).all())
+            assert all(
+                item.status != "RUNNING"
+                for item in (await session.scalars(select(AgentExecution))).all()
+            )
+            assert all(
+                item.status != "RUNNING" for item in (await session.scalars(select(Step))).all()
+            )
             assert not (await session.scalars(select(RunCommand))).all()
             projects = (await session.scalars(select(Project))).all()
             assert len(projects) == 1
@@ -827,7 +857,9 @@ async def test_adversarial_p03_valid_policy_run_snapshot_and_real_diff(
         assert step_row is not None
         assert step_row.kind == "evaluation"
         assert step_row.status == "SUCCEEDED"
-        assert (await session.scalars(select(RunCommand).where(RunCommand.run_id == run_row.id))).all() == []
+        assert (
+            await session.scalars(select(RunCommand).where(RunCommand.run_id == run_row.id))
+        ).all() == []
 
     # Check Reviewer input artifact: current_diff must NOT be "evaluation diff"
     reviewer_case = next(c for c in result.cases if c.role == AgentRole.REVIEWER)
@@ -915,6 +947,7 @@ async def test_adversarial_p05_independent_execution_status_vs_evaluation_score(
             AgentRole.DEVELOPER: [FakeAgentStep.success(dev)],
         }
     )
+    gateway.evaluation_provider = "test"  # type: ignore[attr-defined]
     store = FilesystemArtifactStore(tmp_path / "artifacts")
     service = EvaluationService(
         session_factory=session_factory,
@@ -1133,6 +1166,7 @@ async def test_evaluation_service_live_suite_nonblocking_without_persisted_basel
             ],
         }
     )
+    gateway.evaluation_provider = "test"  # type: ignore[attr-defined]
 
     store = FilesystemArtifactStore(tmp_path / "artifacts")
     service = EvaluationService(
@@ -1144,7 +1178,8 @@ async def test_evaluation_service_live_suite_nonblocking_without_persisted_basel
         credential_resolver=MockCredResolver(),  # type: ignore[arg-type]
     )
 
-    # In live mode without baseline selection, regressions are recorded but nonblocking
+    # A fake live gateway cannot manufacture developer tool evidence. Regression
+    # thresholds are nonblocking, but the missing controlled evidence fails the case.
     result = await service.run_suite(
         suite_name="live",
         provider_reference="secret://forge/google_ai_studio_api_key",
@@ -1153,7 +1188,7 @@ async def test_evaluation_service_live_suite_nonblocking_without_persisted_basel
         ceilings={"estimated_cost_minor": 10.0},
     )
     assert len(result.regressions) > 0
-    assert result.status == "passed"
+    assert result.status == "failed"
 
 
 async def test_evaluation_service_live_suite_blocking_with_persisted_baseline(
@@ -1164,6 +1199,7 @@ async def test_evaluation_service_live_suite_blocking_with_persisted_baseline(
             return "mock-key"
 
     passing_gw = _build_passing_fake_gateway()
+    passing_gw.evaluation_provider = "test"  # type: ignore[attr-defined]
     store = FilesystemArtifactStore(tmp_path / "artifacts")
     service = EvaluationService(
         session_factory=session_factory,
@@ -1206,6 +1242,7 @@ async def test_evaluation_service_live_suite_blocking_with_persisted_baseline(
             ],
         }
     )
+    regressing_gw.evaluation_provider = "test"  # type: ignore[attr-defined]
     service._default_gateway = regressing_gw
 
     # With promoted_baseline=True, live suite regression IS blocking -> status == 'failed'

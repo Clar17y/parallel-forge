@@ -7,6 +7,7 @@ authority context; it cannot provide a path, command, or synthetic success.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from functools import wraps
 from inspect import signature
@@ -33,8 +34,10 @@ class EvaluationToolOutcomeObserver(Protocol):
         arguments: Mapping[str, object] | None = None,
     ) -> None: ...
 
+    def check_harness_is_intact(self, command_name: str) -> bool: ...
+
     async def record_check_artifacts(
-        self, result: Mapping[str, object], *, command_name: str
+        self, result: Mapping[str, object], *, command_name: str, harness_trusted: bool
     ) -> None: ...
 
 
@@ -62,19 +65,19 @@ class ControlledEvaluationToolProvider(AdkToolProvider):
         self._context = context
         self._observer = observer
         self._request = request
+        self._invocation_lock = asyncio.Lock()
 
     def tools_for(self, request: AgentRequest) -> BoundAdkTools:
         if type(request) is not AgentRequest or request != self._request:
             raise AgentGatewayError("evaluation tool request differs")
         original = build_adk_tools(self._service, self._context)
-        names = tuple(ToolName(tool.name) for tool in original)
-        if names != request.allowed_tools:
+        available = {ToolName(tool.name): tool for tool in original}
+        if not set(request.allowed_tools).issubset(available):
             raise AgentGatewayError("evaluation tools differ from admitted request")
+        names = request.allowed_tools
         return BoundAdkTools(
             names=names,
-            tools=tuple(
-                self._observe(name, tool) for name, tool in zip(names, original, strict=True)
-            ),
+            tools=tuple(self._observe(name, available[name]) for name in names),
         )
 
     def _observe(self, name: ToolName, tool: FunctionTool) -> FunctionTool:
@@ -84,14 +87,28 @@ class ControlledEvaluationToolProvider(AdkToolProvider):
         # the controlled receipt.
         @wraps(tool.func)
         async def invoke(*args: object, **kwargs: object) -> dict[str, object]:
-            result = await tool.func(*args, **kwargs)
-            if isinstance(result, Mapping):
-                self._observer.record_controlled_result(name, result, arguments=kwargs)
+            # One fixture execution must not race writes against its check harness.
+            async with self._invocation_lock:
                 command_name = kwargs.get("command_name")
-                if name is ToolName.BUILD_RUN_NAMED_CHECK and isinstance(command_name, str):
-                    await self._observer.record_check_artifacts(result, command_name=command_name)
-                return dict(result)
-            raise AgentGatewayError("controlled evaluation tool response is malformed")
+                check_name = (
+                    command_name
+                    if name is ToolName.BUILD_RUN_NAMED_CHECK and isinstance(command_name, str)
+                    else None
+                )
+                harness_trusted = (
+                    self._observer.check_harness_is_intact(check_name)
+                    if check_name is not None
+                    else False
+                )
+                result = await tool.func(*args, **kwargs)
+                if isinstance(result, Mapping):
+                    self._observer.record_controlled_result(name, result, arguments=kwargs)
+                    if check_name is not None:
+                        await self._observer.record_check_artifacts(
+                            result, command_name=check_name, harness_trusted=harness_trusted
+                        )
+                    return dict(result)
+                raise AgentGatewayError("controlled evaluation tool response is malformed")
 
         invoke.__dict__["__signature__"] = signature(tool.func)
         return FunctionTool(invoke)

@@ -1,7 +1,7 @@
 {
   "fixture_version": "eval-fixture-v1",
   "case_key": "developer/basic-change",
-  "task": "Implement greeting function in app.py and tests in test_app.py.",
+  "task": "Implement a pure greet function and a pure test. The fixture accepts string literals, the argument, f-strings, and string concatenation in greet; tests may import only app.greet and use no-argument assertions over greet calls.",
   "role": "developer",
   "allowed_paths": [
     "app.py",
@@ -25,7 +25,7 @@
       "name": "pytest",
       "argv": [
         "python",
-        "test_app.py"
+        "run_checks.py"
       ],
       "timeout_seconds": 60
     }

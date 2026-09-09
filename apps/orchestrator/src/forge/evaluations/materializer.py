@@ -86,6 +86,7 @@ class MaterializedFixture:
     base_commit: str
     fixture_identity: str
     case: EvaluationCaseContract
+    template_digests: dict[str, str]
     _preserve: bool = False
 
     def preserve(self) -> None:
@@ -347,6 +348,16 @@ def _run_git_command(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[
     return result
 
 
+def extract_fixture_commit_diff(path: Path, commit: str) -> str:
+    """Return a fixture diff under the same isolated Git policy as materialization."""
+    result = _run_git_command(["git", "diff-tree", "--no-ext-diff", "-p", "--root", commit], path)
+    if result.stdout:
+        return result.stdout
+    return _run_git_command(
+        ["git", "show", "--no-ext-diff", "-p", "--format=", commit], path
+    ).stdout
+
+
 def _resolve_and_confine_template_dir(case: EvaluationCaseContract) -> Path:
     """Safely validate, confine, and resolve repository template within case base directory."""
     if case.base_directory is None:
@@ -496,17 +507,14 @@ def materialize_fixture(
             base_commit=base_commit,
             fixture_identity=fixture_identity,
             case=case,
+            template_digests={snap.rel_path: snap.sha256 for snap in files},
         )
         yield fixture
     finally:
         # A failed durable teardown leaves the exact fixture available for the
         # intervention recorded by the evaluation service.  Caller-owned paths
         # are never removed.
-        if (
-            temp_dir_created
-            and (fixture is None or not fixture._preserve)
-            and target_path.exists()
-        ):
+        if temp_dir_created and (fixture is None or not fixture._preserve) and target_path.exists():
             shutil.rmtree(str(target_path), onerror=_remove_readonly)
 
 
@@ -514,6 +522,7 @@ __all__ = [
     "MaterializedFixture",
     "TemplateSnapshotFile",
     "calculate_fixture_identity",
+    "extract_fixture_commit_diff",
     "materialize_fixture",
     "validate_repository_template",
 ]
