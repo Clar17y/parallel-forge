@@ -1,8 +1,15 @@
 name: Python and runtime contracts
+run-name: Python and runtime contracts (${{ inputs.verification_scope || 'full' }})
 
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Full verification or focused recovery regression
+        type: choice
+        options: [full, recovery]
+        default: full
 
 permissions:
   contents: read
@@ -13,6 +20,7 @@ concurrency:
 
 jobs:
   secret-patterns:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -30,6 +38,7 @@ jobs:
           "$RUNNER_TEMP/gitleaks" dir --redact=100 --no-banner --ignore-gitleaks-allow "$RUNNER_TEMP/forge-secret-scan"
 
   python-contract:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
     strategy:
       fail-fast: false
       matrix:
@@ -90,6 +99,15 @@ jobs:
           enable-cache: false
       - run: uv sync --frozen --extra dev
       - name: Deterministic backend, evaluations and migration round trips
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
         run: uv run --frozen python -m pytest -q -ra -m "not live_provider and not live_github and not docker"
+      - name: Focused recovery crash boundary
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'recovery'
+        run: >-
+          uv run --frozen python -m pytest
+          tests/recovery_process/test_harness_waits.py
+          tests/integration/test_worker_restart.py::test_worker_crash_and_restart_during_development
+          -q -ra
       - name: Docker runner contract
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
         run: uv run --frozen python -m pytest tests/integration/test_runner_container.py -q -ra

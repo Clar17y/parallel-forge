@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
+from forge.observability.redaction import Redactor
 from forge.persistence.models import RunCommand
 from sqlalchemy import update
 
@@ -60,8 +61,12 @@ class RecoveryProcessHarness(ForgeProcessHarness):
                 f"worker process exited early ({process.returncode}): {output[-2000:]}"
             )
 
-    async def wait_for_worker_crash(self, *, expected_code: int = CRASH_EXIT_CODE, timeout: float = 30) -> int:
-        """Wait for the current worker process to terminate at its crash point."""
+    async def wait_for_worker_crash(self, *, expected_code: int = CRASH_EXIT_CODE, timeout: float = 90) -> int:
+        """Allow owner expiry and startup before observing the exact crash exit.
+
+        Production command/owner leases last 30 seconds. A restarted worker may
+        need that entire interval before it can prepare and execute the fixture.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._worker_process is not None:
@@ -72,8 +77,13 @@ class RecoveryProcessHarness(ForgeProcessHarness):
                     )
                     return code
             await asyncio.sleep(0.05)
+        worker_log = self._data_root / "worker.log"
+        worker_tail = ""
+        if worker_log.exists():
+            worker_tail = str(Redactor().redact(worker_log.read_text(encoding="utf-8")[-2500:]))
         raise AssertionError(
-            f"Worker did not terminate at crash point '{self._last_crash_point}' within {timeout}s"
+            f"Worker did not terminate at crash point '{self._last_crash_point}' within {timeout}s; "
+            f"worker_log={worker_tail!r}"
         )
 
     def restart_worker(self, *, crash_point: str | None = None) -> int:
