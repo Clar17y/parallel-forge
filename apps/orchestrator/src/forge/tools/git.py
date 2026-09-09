@@ -1023,10 +1023,8 @@ class ControlledGit:
                 worktree.identity.worktree_name,
                 registration.name,
                 create_lock=not read_only,
+                docker_policy_bound=policy.runner_mode is RunnerMode.DOCKER,
             ) as access:
-                object.__setattr__(
-                    access, "docker_policy_bound", policy.runner_mode is RunnerMode.DOCKER
-                )
                 if not self._repository._directory_access_matches_path(access):
                     raise ControlledGitError()
                 capability = WorktreeCapability(

@@ -375,15 +375,20 @@ def test_docker_runner_resolves_name_and_kind_before_execution(tmp_path: Path) -
 
 @pytest.mark.parametrize("failure_phase", ["entry", "exit"])
 def test_root_identity_failure_uses_redacted_runner_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_phase: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_phase: str,
 ) -> None:
     root = CanonicalRoot(tmp_path)
     process = _FakeProcess()
     artifacts = _FakeArtifacts()
     command = _command()
     runner = DockerRunner(
-        policy=_policy(command), root=root, image_digest="sha256:" + "4" * 64,
-        process_runner=process, artifact_store=artifacts,
+        policy=_policy(command),
+        root=root,
+        image_digest="sha256:" + "4" * 64,
+        process_runner=process,
+        artifact_store=artifacts,
     )
 
     @contextmanager
@@ -395,7 +400,9 @@ def test_root_identity_failure_uses_redacted_runner_error(
 
     monkeypatch.setattr(root, "open_directory", unavailable_root)
     with pytest.raises(RunnerExecutionError, match="^runner execution failed$"):
-        asyncio.run(runner.run_terminal(RunCommandRequest(command_name=command.name, kind=command.kind)))
+        asyncio.run(
+            runner.run_terminal(RunCommandRequest(command_name=command.name, kind=command.kind))
+        )
     assert len(process.calls) == (0 if failure_phase == "entry" else 1)
     assert len(artifacts.values) == (0 if failure_phase == "entry" else 2)
 
@@ -969,3 +976,42 @@ async def test_docker_async_adapter_runs_registered_argv_for_every_step_kind(
     image_index = run_argv.index("sha256:" + "7" * 64)
     command_index = image_index + (4 if os.name != "nt" else 1)
     assert run_argv[command_index:] == command.argv
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_managed_cancellation_survives_access_repair_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_fails: bool
+) -> None:
+    command = _command()
+    root = CanonicalRoot(tmp_path)
+    runner = DockerRunner(
+        policy=_policy(command),
+        root=root,
+        image_digest="sha256:" + "4" * 64,
+        process_runner=_FakeProcess(error=asyncio.CancelledError()),
+        artifact_store=_FakeArtifacts(),
+    )
+    calls = []
+
+    async def absent(*args, **kwargs):
+        return None
+
+    async def cleanup(*args, **kwargs):
+        calls.append("cleanup")
+        if cleanup_fails:
+            raise RunnerExecutionError()
+        return False
+
+    async def repair(*args, **kwargs):
+        calls.append("repair")
+        raise RunnerExecutionError()
+
+    monkeypatch.setattr(runner, "_assert_managed_name_absent", absent)
+    monkeypatch.setattr(runner, "_cleanup_for_terminal", cleanup)
+    monkeypatch.setattr(runner, "_repair_for_terminal", repair)
+    with root.open_directory(), pytest.raises(asyncio.CancelledError):
+        await runner._run_terminal_at(
+            RunCommandRequest(command_name=command.name, kind=command.kind), root.path, managed=True
+        )
+    assert calls == (["cleanup"] if cleanup_fails else ["cleanup", "repair"])

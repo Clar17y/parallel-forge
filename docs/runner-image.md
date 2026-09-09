@@ -37,11 +37,32 @@ On native Linux, Forge grants UID 10001 a descriptor-scoped ACL lease across
 the managed worktree. After exact command-container termination, the guard
 performs a bounded, descriptor-only repair of UID 10001 output
 entries. Repaired files retain an exact named-user ACL for the host and UID
-10001; Forge verifies that proof before accepting a container-owned file.
+10001; Forge checks this access precondition before reading a container-owned
+file under a Docker project capability. It is not provenance or authenticity:
+the owning UID can create the same ACL itself.
 The lease then restores pre-existing file and directory ACLs. Existing staged
 environment files retain their exact read-only ACL. A failed
 container cleanup or repair fails closed and leaves the managed worktree for
 operator recovery.
+
+Native Linux recovery requires a kernel implementing `fchmodat2` with
+`AT_EMPTY_PATH` (Linux 6.6 or newer) and a Docker seccomp profile permitting it.
+The static guard probes that operation in its private temporary directory before
+executing repository code; unsupported hosts fail with the fixed diagnostic
+`access-repair-unsupported`. Normal accessible entries do not need that syscall
+during traversal. Recovery removes special set-ID/sticky bits from runner-owned
+outputs and preserves executable permissions.
+
+Symlinks are skipped without following their targets during ACL preparation and
+repair. Generated output trees do not retain one host descriptor per file.
+Traversal remains bounded to 100000 entries and 128 directory levels, with at most
+4096 retained descriptors for entries whose original host ACLs need restoration.
+Lower operating-system descriptor limits can reject a lease safely; Forge does
+not raise host process limits or discard restoration identity to bypass them.
+If an interrupted repair or an external chmod invalidates a runner-owned ACL,
+Forge fails closed. Recovery may require a host administrator to restore access
+to the retained resources; Forge does not silently accept a noncanonical ACL or
+gain privileges for recovery.
 
 The focused Linux Docker smoke runs independently of the backend suite:
 

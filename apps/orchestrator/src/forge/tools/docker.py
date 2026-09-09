@@ -292,15 +292,18 @@ class DockerRunner:
                 )
             except LaunchOwnershipRejected:
                 raise
-            except asyncio.CancelledError:
-                await self._cleanup_for_terminal(
-                    container_name,
-                    owner_token=owner_token,
-                    cwd=cwd,
-                    environment=client_environment,
-                )
-                if managed:
-                    await self._repair_for_terminal(cwd, environment=client_environment)
+            except asyncio.CancelledError as cancellation:
+                try:
+                    await self._cleanup_for_terminal(
+                        container_name,
+                        owner_token=owner_token,
+                        cwd=cwd,
+                        environment=client_environment,
+                    )
+                    if managed:
+                        await self._repair_for_terminal(cwd, environment=client_environment)
+                except RunnerExecutionError:
+                    cancellation.add_note("Docker cleanup or access repair requires recovery")
                 raise
             except Exception:  # noqa: BLE001 - adapter failures must cross as one safe error
                 cleanup_cancelled = await self._cleanup_for_terminal(
@@ -397,12 +400,20 @@ class DockerRunner:
     ) -> None:
         """Run the trusted static post-terminal access repair on Linux only."""
 
-        mount_source, identity = _canonical_mount_binding(self._root, cwd)
+        try:
+            mount_source, identity = _canonical_mount_binding(self._root, cwd)
+        except (ValueError, OSError, RepositoryAccessDenied):
+            raise RunnerExecutionError() from None
         if identity is None:
             return
         container_name = f"forge-repair-{uuid4().hex}"
         owner_token = secrets.token_urlsafe(32)
-        await self._assert_managed_name_absent(container_name, cwd=cwd, environment=environment)
+        try:
+            await self._assert_managed_name_absent(container_name, cwd=cwd, environment=environment)
+        except RunnerExecutionError:
+            raise
+        except Exception:  # noqa: BLE001 - failed ownership proof has one redacted category
+            raise RunnerExecutionError() from None
         argv = (
             "docker",
             "run",

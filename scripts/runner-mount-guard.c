@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <dirent.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -54,6 +55,21 @@ static int chmod_owned_descriptor(int descriptor, mode_t mode) {
     return syscall(SYS_fchmodat2, descriptor, "", mode, AT_EMPTY_PATH) == 0;
 }
 
+/* Prove recovery is available before any repository command can remove its
+ * own access bits. The probe lives only in the image's private /tmp mount. */
+static int recovery_supported(void) {
+    char name[] = "/tmp/forge-access-probe-XXXXXX";
+    int writable = mkstemp(name);
+    if (writable < 0) return 0;
+    int descriptor = open(name, O_PATH | O_NOFOLLOW | O_CLOEXEC);
+    int ok = descriptor >= 0 && fchmod(writable, 0) == 0;
+    unlink(name);
+    if (ok) ok = chmod_owned_descriptor(descriptor, S_IRUSR | S_IWUSR);
+    if (descriptor >= 0) close(descriptor);
+    close(writable);
+    return ok;
+}
+
 static int repair_acl(int descriptor, uint32_t host_uid, int directory, mode_t original_mode) {
     unsigned char bytes[sizeof(struct acl_xattr_header) + 6 * sizeof(struct acl_xattr_entry)];
     struct acl_xattr_header *header = (struct acl_xattr_header *)bytes;
@@ -83,7 +99,9 @@ static int repair_tree(int directory, uint32_t host_uid, unsigned depth, unsigne
     if (depth > 128 || ++*entries > 100000 || fstat(directory, &metadata) != 0 ||
         !S_ISDIR(metadata.st_mode) || metadata.st_nlink < 1 ||
         (metadata.st_uid != 10001 && metadata.st_uid != host_uid)) return 0;
-    if (metadata.st_uid == 10001 && chmod_owned_descriptor(directory, metadata.st_mode | S_IRWXU) == 0)
+    mode_t safe_directory_mode = (metadata.st_mode | S_IRWXU) & ~(S_ISUID | S_ISGID | S_ISVTX);
+    if (metadata.st_uid == 10001 && metadata.st_mode != safe_directory_mode &&
+        chmod_owned_descriptor(directory, safe_directory_mode) == 0)
         return 0;
     int readable = openat(directory, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (readable < 0) return 0;
@@ -108,8 +126,10 @@ static int repair_tree(int directory, uint32_t host_uid, unsigned depth, unsigne
         if (!entry) { if (errno != 0) ok = 0; break; }
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
         if (++*entries > 100000) { ok = 0; break; }
-        if (fstatat(readable, entry->d_name, &metadata, AT_SYMLINK_NOFOLLOW) != 0 ||
-            S_ISLNK(metadata.st_mode) ||
+        if (fstatat(readable, entry->d_name, &metadata, AT_SYMLINK_NOFOLLOW) != 0) { ok = 0; break; }
+        /* Symlink permissions confer no access; never open their targets. */
+        if (S_ISLNK(metadata.st_mode)) continue;
+        if (
             (metadata.st_uid != host_uid && metadata.st_uid != 10001)) { ok = 0; break; }
         if (S_ISDIR(metadata.st_mode)) {
             int child = openat(readable, entry->d_name, O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -118,13 +138,15 @@ static int repair_tree(int directory, uint32_t host_uid, unsigned depth, unsigne
                 !repair_tree(child, host_uid, depth + 1, entries)) ok = 0;
             if (child >= 0) close(child);
         } else if (S_ISREG(metadata.st_mode)) {
+            mode_t safe_mode = (metadata.st_mode | S_IRUSR | S_IWUSR) & ~(S_ISUID | S_ISGID | S_ISVTX);
             int child = openat(readable, entry->d_name,
                 O_PATH | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
             struct stat opened;
             if (child < 0 || fstat(child, &opened) != 0 || !S_ISREG(opened.st_mode) ||
                 opened.st_nlink != 1 || opened.st_dev != metadata.st_dev ||
                 opened.st_ino != metadata.st_ino || opened.st_uid != metadata.st_uid ||
-                (opened.st_uid == 10001 && chmod_owned_descriptor(child, opened.st_mode | S_IRUSR | S_IWUSR) == 0)) ok = 0;
+                (opened.st_uid == 10001 && opened.st_mode != safe_mode &&
+                    chmod_owned_descriptor(child, safe_mode) == 0)) ok = 0;
             if (ok && opened.st_uid == 10001) {
                 close(child);
                 child = openat(readable, entry->d_name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
@@ -162,6 +184,10 @@ int main(int argc, char **argv) {
     if (fchdir(directory) != 0) {
         close(directory);
         return rejected("directory-enter");
+    }
+    if (!recovery_supported()) {
+        close(directory);
+        return rejected("access-repair-unsupported");
     }
     if (!strcmp(argv[4], "--repair")) {
         uintmax_t host_uid;

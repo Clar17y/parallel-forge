@@ -74,6 +74,7 @@ def test_mount_guard_rejects_wrong_inode_before_loader_or_command_execution(tmp_
         *arguments: str,
         entrypoint: str | None = None,
         environment: tuple[str, ...] = (),
+        seccomp: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         argv = [
             docker,
@@ -89,6 +90,8 @@ def test_mount_guard_rejects_wrong_inode_before_loader_or_command_execution(tmp_
         ]
         if entrypoint:
             argv.extend(("--entrypoint", entrypoint))
+        if seccomp is not None:
+            argv.extend(("--security-opt", f"seccomp={seccomp}"))
         for value in environment:
             argv.extend(("--env", value))
         return subprocess.run(
@@ -111,6 +114,33 @@ def test_mount_guard_rejects_wrong_inode_before_loader_or_command_execution(tmp_
     accepted = run(expected, boot_id, device, inode, *command, entrypoint=guard)
     assert accepted.returncode == 0, accepted.stderr
     assert (expected / "command-ran").read_text() == "allowed"
+
+    denied_syscall = tmp_path / "deny-recovery.json"
+    denied_syscall.write_text(
+        json.dumps(
+            {
+                "defaultAction": "SCMP_ACT_ALLOW",
+                "syscalls": [{"names": ["fchmodat2"], "action": "SCMP_ACT_ERRNO", "errnoRet": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    unsupported = run(
+        expected,
+        boot_id,
+        device,
+        inode,
+        "python",
+        "-I",
+        "-S",
+        "-c",
+        "open('unsupported-ran', 'w').write('unsafe')",
+        entrypoint=guard,
+        seccomp=denied_syscall,
+    )
+    assert unsupported.returncode == 126, unsupported.stderr
+    assert "access-repair-unsupported" in unsupported.stderr
+    assert not (expected / "unsupported-ran").exists()
 
     if os.name != "nt":
         damaged = run(
@@ -160,7 +190,7 @@ os.chown('/workspace', 1000, 1000)
 s = os.stat('/workspace')
 identity = [open('/proc/sys/kernel/random/boot_id').read().strip(), str(s.st_dev), str(s.st_ino)]
 create = subprocess.run(['python', '-I', '-S', '-c',
-    "import os; os.makedirs('/workspace/damaged/nested'); open('/workspace/damaged/nested/output','w').write('proof'); os.chmod('/workspace/damaged/nested/output',0); os.chmod('/workspace/damaged/nested',0); os.chmod('/workspace/damaged',0)"],
+    "import os; os.makedirs('/workspace/damaged/nested'); os.symlink('/outside-never-opened', '/workspace/tool-link'); open('/workspace/damaged/nested/output','w').write('proof'); os.chmod('/workspace/damaged/nested/output',0); os.chmod('/workspace/damaged/nested',0); os.chmod('/workspace/damaged',0)"],
     user=10001, group=10001, check=True)
 subprocess.run(['/usr/local/bin/forge-mount-guard', *identity, '--repair', '1000'],
     user=10001, group=10001, check=True)
@@ -200,6 +230,7 @@ os.setxattr(fd, 'system.posix_acl_default', granted)
 assert acl.grant(fd, 7) == granted
 acl.restore(fd, before)
 assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o700
+assert 'system.posix_acl_access' not in os.listxattr(fd)
 os.close(fd)
 """
     )
@@ -374,6 +405,9 @@ def test_bound_runner_reads_e2a_staged_file_as_fixed_container_user(tmp_path: Pa
     (repository / ".gitignore").write_text(".worktrees/\nconfig/*.env\n", encoding="utf-8")
     (repository / "config").mkdir()
     (repository / "config" / ".keep").write_text("\n", encoding="utf-8")
+    if os.name != "nt":
+        (repository / "tool").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (repository / "tool").chmod(0o755)
     (repository / "tests").mkdir()
     (repository / "tests" / "e2b_reader.py").write_text(
         "import os\n"
@@ -382,7 +416,15 @@ def test_bound_runner_reads_e2a_staged_file_as_fixed_container_user(tmp_path: Pa
         "assert os.getuid() == 10001\n"
         "assert Path('/workspace/.git').is_file()\n"
         "assert Path('config/local.env').read_text(encoding='utf-8').strip() == 'FORGE_SECRET=secret-value'\n"
-        "print('FORGE_E2B_OK')\n",
+        + (
+            "import subprocess\nsubprocess.run(['./tool'], check=True)\n"
+            "Path('outputs').mkdir(exist_ok=True)\n"
+            "for number in range(4200):\n"
+            "    Path('outputs', str(number)).write_text('output')\n"
+            if os.name != "nt"
+            else ""
+        )
+        + "print('FORGE_E2B_OK')\n",
         encoding="utf-8",
     )
     git = shutil.which("git") or "git"
@@ -486,3 +528,11 @@ def test_bound_runner_reads_e2a_staged_file_as_fixed_container_user(tmp_path: Pa
     assert stderr["text"] == ""
     assert "secret-value" not in repr(terminal)
     assert b"secret-value" not in stdout_bytes
+
+    if os.name != "nt":
+        # Existing container-owned output trees must not consume one retained
+        # host descriptor per entry on the next command.
+        repeated = asyncio.run(
+            runner.run_terminal(RunCommandRequest(command_name="e2b-reader", kind=StepKind.TEST))
+        )
+        assert repeated.result.exit_code == 0

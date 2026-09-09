@@ -1897,7 +1897,7 @@ class CanonicalRoot:
         acl = _DockerAcl()
         with self._open_directory(normalized) as access:
             snapshots: list[tuple[int, bytes, bytes | None, bool]] = []
-            descriptors: list[int] = []
+            descriptors: set[int] = set()
             default_name = "system.posix_acl_default"
             seen = 0
             host_uid = _current_posix_uid()
@@ -1906,8 +1906,12 @@ class CanonicalRoot:
                 if len(descriptors) >= 4096:
                     os.close(descriptor)
                     raise RepositoryAccessDenied("Docker worktree descriptor limit exceeded")
-                descriptors.append(descriptor)
+                descriptors.add(descriptor)
                 return descriptor
+
+            def release(descriptor: int) -> None:
+                os.close(descriptor)
+                descriptors.remove(descriptor)
 
             def grant_tree(descriptor: int, depth: int = 0) -> None:
                 nonlocal seen
@@ -1936,6 +1940,8 @@ class CanonicalRoot:
                         if seen > 100_000:
                             raise RepositoryAccessDenied("Docker worktree entry limit exceeded")
                         expected = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                        if stat.S_ISLNK(expected.st_mode):
+                            continue
                         child = retain(
                             os.open(
                                 entry.name,
@@ -1970,12 +1976,20 @@ class CanonicalRoot:
                             child
                         ):
                             snapshots.append((child, acl.snapshot(child), None, False))
-                            acl.grant(child, 6)
+                            acl.grant(child, 6 | (1 if metadata.st_mode & stat.S_IXUSR else 0))
+                        else:
+                            release(child)
+                if owner != host_uid:
+                    release(descriptor)
 
             try:
-                grant_tree(retain(os.dup(access.capability)))
+                try:
+                    grant_tree(retain(os.dup(access.capability)))
+                except OSError:
+                    raise RepositoryAccessDenied("Docker worktree access is unavailable") from None
                 yield
             finally:
+                propagating = sys.exception()
                 restore_error = False
                 for descriptor, before, default_before, is_directory in reversed(snapshots):
                     try:
@@ -1994,13 +2008,17 @@ class CanonicalRoot:
                                 os.setxattr(descriptor, default_name, default_before)
                         except OSError:
                             restore_error = True
-                for descriptor in reversed(descriptors):
+                for descriptor in sorted(descriptors, reverse=True):
                     try:
                         os.close(descriptor)
                     except OSError:
                         restore_error = True
                 if restore_error:
-                    raise RepositoryAccessDenied("Docker ACL restoration failed")
+                    if propagating is None:
+                        raise RepositoryAccessDenied("Docker ACL restoration failed")
+                    propagating.add_note(
+                        "Docker ACL restoration failed; managed resources require recovery"
+                    )
 
     def normalize(self, value: str | os.PathLike[str], *, allow_root: bool = False) -> str:
         """Validate and normalize one repository-relative path."""
@@ -2146,7 +2164,12 @@ class CanonicalRoot:
 
     @contextlib.contextmanager
     def _open_managed_worktree(
-        self, leaf: str, registration_basename: str, *, create_lock: bool = True
+        self,
+        leaf: str,
+        registration_basename: str,
+        *,
+        create_lock: bool = True,
+        docker_policy_bound: bool = False,
     ) -> Iterator[_DirectoryAccess]:
         """Retain one exact managed worktree and its linked Git registration."""
 
@@ -2157,7 +2180,13 @@ class CanonicalRoot:
             opener = self._open_windows_managed_worktree
         else:
             opener = self._open_posix_managed_worktree
-        with opener(target_name, registration_name, normalized, create_lock=create_lock) as access:
+        with opener(
+            target_name,
+            registration_name,
+            normalized,
+            create_lock=create_lock,
+            docker_policy_bound=docker_policy_bound,
+        ) as access:
             active_token = _ACTIVE_DIRECTORY_ACCESS.set(access)
             try:
                 yield access
@@ -3712,6 +3741,7 @@ class CanonicalRoot:
         normalized: str,
         *,
         create_lock: bool = True,
+        docker_policy_bound: bool = False,
     ) -> Iterator[_DirectoryAccess]:
         """Retain a Windows worktree, registration, proofs, and mutation lock."""
 
@@ -3783,6 +3813,7 @@ class CanonicalRoot:
                 raise RepositoryAccessDenied("managed worktree crosses a volume")
             self._revalidate_root()
             access = _DirectoryAccess(
+                docker_policy_bound=docker_policy_bound,
                 seal=_ACCESS_SEAL,
                 owner=self._access_owner,
                 path=target_path,
@@ -3834,6 +3865,7 @@ class CanonicalRoot:
         normalized: str,
         *,
         create_lock: bool = True,
+        docker_policy_bound: bool = False,
     ) -> Iterator[_DirectoryAccess]:
         """Retain a POSIX worktree, registration, proofs, and mutation lock."""
 
@@ -3922,6 +3954,7 @@ class CanonicalRoot:
             )
             self._revalidate_root()
             access = _DirectoryAccess(
+                docker_policy_bound=docker_policy_bound,
                 seal=_ACCESS_SEAL,
                 owner=self._access_owner,
                 path=target_path,
