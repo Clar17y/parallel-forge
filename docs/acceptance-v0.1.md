@@ -30,6 +30,18 @@ separate API/worker processes, browser interaction, accessibility or restart tes
 | 17 | Retain resources; explicit teardown | `tests/integration/test_run_controls.py::test_cancel_retains_managed_resource_identity_without_successor_dispatch`; `apps/orchestrator/tests/application/test_teardown_handler.py::test_teardown_persists_admission_before_effect_and_completion_afterward`; real process vertical teardown at `d4282f3` | Browser teardown and final filesystem gate; quiescent intervention admission repaired at `8ae3a1a`, actual intervention-resource process proof remains open |
 | 18 | All required test suites | Python/runtime and web contract workflows; evaluation metrics/fixtures | Current full deterministic suite, evaluations CLI, Playwright, accessibility, secret/generated-file checks and complete review evidence |
 
+## Completed focused hosted acceptance
+
+Chromium run34371063844/job102532101737 at `5a50018` passed all three real
+API/worker browser scenarios: registration/task creation and the three exact
+approvals; keyboard navigation and accessibility across dialogs; persisted cancel
+across restart, retained resources and explicit teardown. Three browser-free
+bridge contracts passed in the same job. Supervisor startup/recovery/shutdown
+passed at `140fb43` (run34365654124/job102513567026); Linux Docker smoke and its
+cancellation gate passed at `a978454`. These close the corresponding focused
+proofs above; full integrated backend/web CI, recovery matrix and final independent
+review still determine acceptance.
+
 ## Final verification record
 
 No final accepted candidate is recorded yet. The final record must include the
