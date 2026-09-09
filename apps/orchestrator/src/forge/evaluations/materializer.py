@@ -78,7 +78,7 @@ class TemplateSnapshotFile(NamedTuple):
     sha256: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class MaterializedFixture:
     """An isolated, materialized evaluation fixture repository."""
 
@@ -86,6 +86,15 @@ class MaterializedFixture:
     base_commit: str
     fixture_identity: str
     case: EvaluationCaseContract
+    _preserve: bool = False
+
+    def preserve(self) -> None:
+        """Keep this temporary fixture for operator recovery after failed cleanup."""
+        self._preserve = True
+
+    def release(self) -> None:
+        """Allow normal temporary-fixture cleanup after durable settlement."""
+        self._preserve = False
 
 
 def _remove_readonly(func: Any, path: str, exc_info: Any) -> None:
@@ -110,10 +119,14 @@ def _is_symlink_or_reparse(path: Path) -> bool:
 def validate_repository_template(template_dir: Path) -> list[TemplateSnapshotFile]:
     """Inspect repository template for safety, bounds, credentials, and snapshot validated bytes."""
     if not template_dir.exists() or not template_dir.is_dir():
-        raise UnsafeFixturePathError(f"repository template directory does not exist: {template_dir.name}")
+        raise UnsafeFixturePathError(
+            f"repository template directory does not exist: {template_dir.name}"
+        )
 
     if _is_symlink_or_reparse(template_dir):
-        raise UnsafeFixturePathError(f"repository template is a symlink or reparse point: {template_dir.name}")
+        raise UnsafeFixturePathError(
+            f"repository template is a symlink or reparse point: {template_dir.name}"
+        )
 
     files: list[TemplateSnapshotFile] = []
     total_bytes = 0
@@ -131,20 +144,35 @@ def validate_repository_template(template_dir: Path) -> list[TemplateSnapshotFil
         for part in rel_dir.parts:
             part_lower = part.casefold() if os.name == "nt" else part
             if part_lower == ".git":
-                raise UnsafeFixturePathError(f"repository template must not contain .git: {root.name}")
-            if any(part_lower == reserved.casefold() for reserved in RESERVED_REPOSITORY_COMPONENTS):
-                raise UnsafeFixturePathError(f"repository template contains reserved component: {part}")
+                raise UnsafeFixturePathError(
+                    f"repository template must not contain .git: {root.name}"
+                )
+            if any(
+                part_lower == reserved.casefold() for reserved in RESERVED_REPOSITORY_COMPONENTS
+            ):
+                raise UnsafeFixturePathError(
+                    f"repository template contains reserved component: {part}"
+                )
 
         # Reject symlink directories
         for d in dirnames:
             dir_path = root / d
             if _is_symlink_or_reparse(dir_path):
-                raise UnsafeFixturePathError(f"symlink or reparse directory in template: {dir_path.name}")
+                raise UnsafeFixturePathError(
+                    f"symlink or reparse directory in template: {dir_path.name}"
+                )
+
+        # Test discovery/imports may create bytecode beside fixture sources.
+        # It is generated interpreter state, never part of a versioned fixture.
+        # Check links above before pruning so a cache-named link is still denied.
+        dirnames[:] = [name for name in dirnames if name != "__pycache__"]
 
         for filename in filenames:
             file_path = root / filename
             if _is_symlink_or_reparse(file_path):
-                raise UnsafeFixturePathError(f"symlink or reparse file in template: {file_path.name}")
+                raise UnsafeFixturePathError(
+                    f"symlink or reparse file in template: {file_path.name}"
+                )
 
             try:
                 st = os.lstat(file_path)
@@ -160,14 +188,18 @@ def validate_repository_template(template_dir: Path) -> list[TemplateSnapshotFil
             try:
                 normalized_rel = normalize_policy_path(rel_path)
             except ValueError as exc:
-                raise UnsafeFixturePathError(f"unsafe template file path: {rel_path}: {exc}") from exc
+                raise UnsafeFixturePathError(
+                    f"unsafe template file path: {rel_path}: {exc}"
+                ) from exc
 
             # Bounded actual read
             try:
                 with file_path.open("rb") as f:
                     content = f.read(_MAX_FILE_SIZE + 1)
             except OSError as exc:
-                raise UnsafeFixturePathError(f"cannot read template file {normalized_rel}: {exc}") from exc
+                raise UnsafeFixturePathError(
+                    f"cannot read template file {normalized_rel}: {exc}"
+                ) from exc
 
             if len(content) > _MAX_FILE_SIZE:
                 raise UnsafeFixturePathError(
@@ -176,7 +208,9 @@ def validate_repository_template(template_dir: Path) -> list[TemplateSnapshotFil
 
             total_bytes += len(content)
             if total_bytes > _MAX_TOTAL_BYTES:
-                raise UnsafeFixturePathError(f"template total size exceeds limit ({_MAX_TOTAL_BYTES} bytes)")
+                raise UnsafeFixturePathError(
+                    f"template total size exceeds limit ({_MAX_TOTAL_BYTES} bytes)"
+                )
 
             # Check credentials in validated bytes
             try:
@@ -197,7 +231,9 @@ def validate_repository_template(template_dir: Path) -> list[TemplateSnapshotFil
             )
 
             if len(files) > _MAX_FILE_COUNT:
-                raise UnsafeFixturePathError(f"template file count exceeds limit of {_MAX_FILE_COUNT}")
+                raise UnsafeFixturePathError(
+                    f"template file count exceeds limit of {_MAX_FILE_COUNT}"
+                )
 
     # Sort files deterministically by relative path
     files.sort(key=lambda item: item.rel_path)
@@ -225,9 +261,13 @@ def calculate_fixture_identity(
             raise UnsafeFixturePathError("duplicate snapshot path")
         seen.add(key)
         total_bytes += len(snapshot.content)
-        if (type(snapshot.size) is not int or snapshot.size != len(snapshot.content)
-                or snapshot.size > _MAX_FILE_SIZE or total_bytes > _MAX_TOTAL_BYTES
-                or snapshot.sha256 != hashlib.sha256(snapshot.content).hexdigest()):
+        if (
+            type(snapshot.size) is not int
+            or snapshot.size != len(snapshot.content)
+            or snapshot.size > _MAX_FILE_SIZE
+            or total_bytes > _MAX_TOTAL_BYTES
+            or snapshot.sha256 != hashlib.sha256(snapshot.content).hexdigest()
+        ):
             raise UnsafeFixturePathError("snapshot content identity differs")
         assert_credential_free(snapshot.content.decode("latin-1"), "snapshot content")
     hasher = hashlib.sha256()
@@ -256,6 +296,10 @@ def calculate_fixture_identity(
         "allowed_paths": sorted(case.allowed_paths),
         "required_tests": sorted(case.required_tests),
         "required_checks": sorted(case.required_checks),
+        "check_commands": sorted(
+            (command.model_dump(mode="json") for command in case.check_commands),
+            key=lambda command: command["name"],
+        ),
         "required_assertions": sorted(case.required_assertions),
         "prohibited_tools": sorted(case.prohibited_tools),
         "max_cost_minor": case.max_cost_minor,
@@ -306,7 +350,9 @@ def _run_git_command(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[
 def _resolve_and_confine_template_dir(case: EvaluationCaseContract) -> Path:
     """Safely validate, confine, and resolve repository template within case base directory."""
     if case.base_directory is None:
-        raise UnsafeFixturePathError(f"base directory required to resolve template for case {case.case_key}")
+        raise UnsafeFixturePathError(
+            f"base directory required to resolve template for case {case.case_key}"
+        )
 
     base = case.base_directory
     if not base.exists() or not base.is_dir():
@@ -315,7 +361,9 @@ def _resolve_and_confine_template_dir(case: EvaluationCaseContract) -> Path:
     if _is_symlink_or_reparse(base):
         raise UnsafeFixturePathError(f"case base directory is a symlink or reparse point: {base}")
 
-    rel_template = case.repository_template if case.repository_template is not None else "repository"
+    rel_template = (
+        case.repository_template if case.repository_template is not None else "repository"
+    )
     try:
         norm_rel = normalize_policy_path(rel_template)
     except ValueError as exc:
@@ -328,7 +376,9 @@ def _resolve_and_confine_template_dir(case: EvaluationCaseContract) -> Path:
         if not current.exists():
             raise UnsafeFixturePathError(f"repository template component does not exist: {part}")
         if _is_symlink_or_reparse(current):
-            raise UnsafeFixturePathError(f"repository template component is a symlink or reparse point: {part}")
+            raise UnsafeFixturePathError(
+                f"repository template component is a symlink or reparse point: {part}"
+            )
 
     if not current.is_dir():
         raise UnsafeFixturePathError(f"repository template is not a directory: {norm_rel}")
@@ -362,9 +412,13 @@ def _prepare_destination(
 
     parent = dest_path.parent
     if not parent.exists() or not parent.is_dir():
-        raise UnsafeFixturePathError(f"supplied destination parent directory does not exist: {parent}")
+        raise UnsafeFixturePathError(
+            f"supplied destination parent directory does not exist: {parent}"
+        )
     if _is_symlink_or_reparse(parent):
-        raise UnsafeFixturePathError(f"supplied destination parent is a symlink or reparse point: {parent}")
+        raise UnsafeFixturePathError(
+            f"supplied destination parent is a symlink or reparse point: {parent}"
+        )
 
     resolved_dest = dest_path.resolve()
     resolved_template = template_dir.resolve()
@@ -396,6 +450,7 @@ def materialize_fixture(
     fixture_identity = calculate_fixture_identity(case, files)
 
     target_path, temp_dir_created = _prepare_destination(destination, template_dir)
+    fixture: MaterializedFixture | None = None
 
     try:
         # Materialize files strictly from snapshotted validated bytes
@@ -436,15 +491,22 @@ def materialize_fixture(
         if len(base_commit) != 40:
             raise MaterializationError(f"invalid base commit returned: {base_commit}")
 
-        yield MaterializedFixture(
+        fixture = MaterializedFixture(
             path=target_path,
             base_commit=base_commit,
             fixture_identity=fixture_identity,
             case=case,
         )
+        yield fixture
     finally:
-        # Only remove temporary directories created by us; never remove caller-owned paths
-        if temp_dir_created and target_path.exists():
+        # A failed durable teardown leaves the exact fixture available for the
+        # intervention recorded by the evaluation service.  Caller-owned paths
+        # are never removed.
+        if (
+            temp_dir_created
+            and (fixture is None or not fixture._preserve)
+            and target_path.exists()
+        ):
             shutil.rmtree(str(target_path), onerror=_remove_readonly)
 
 

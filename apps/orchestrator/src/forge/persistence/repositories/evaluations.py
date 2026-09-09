@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.domain.artifact import validate_artifact_digest
 from forge.persistence.models import AgentExecution, ModelUsage
-from forge.persistence.models.evaluation import EvaluationCase, EvaluationSuite
+from forge.persistence.models.evaluation import EvaluationBaseline, EvaluationCase, EvaluationSuite
 from forge.persistence.repositories.artifacts import ArtifactNotFound, ArtifactRepository
 
 
@@ -166,6 +166,165 @@ class EvaluationRepository:
         suite.status = status
         await self._session.flush()
         return _summary(suite)
+
+    async def get_suite(self, suite_id: UUID) -> EvaluationSummary | None:
+        suite = await self._session.scalar(
+            select(EvaluationSuite).where(EvaluationSuite.id == suite_id)
+        )
+        return _summary(suite) if suite is not None else None
+
+    async def get_suite_by_idempotency_key(self, idempotency_key: str) -> EvaluationSummary | None:
+        suite = await self._session.scalar(
+            select(EvaluationSuite).where(EvaluationSuite.idempotency_key == idempotency_key)
+        )
+        return _summary(suite) if suite is not None else None
+
+    async def get_case(self, suite_id: UUID, case_key: str) -> EvaluationCase | None:
+        case = await self._session.scalar(
+            select(EvaluationCase).where(
+                EvaluationCase.suite_id == suite_id,
+                EvaluationCase.case_key == case_key,
+            )
+        )
+        if case is None or isinstance(case, EvaluationCase):
+            return case
+        return None
+
+
+
+
+    async def admit_case(
+        self,
+        *,
+        suite_id: UUID,
+        case_key: str,
+    ) -> EvaluationCase:
+        """Atomically lock suite and case; admit exactly one execution or return settled case."""
+        suite = await self._locked_suite(suite_id)
+        if suite.status not in {"running", "passed", "failed"}:
+            raise EvaluationConflict(f"unexpected evaluation suite status {suite.status}")
+        case = await self._session.scalar(
+            select(EvaluationCase)
+            .where(
+                EvaluationCase.suite_id == suite_id,
+                EvaluationCase.case_key == case_key,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if case is None:
+            raise EvaluationConflict("evaluation case is absent")
+        if case.status in {"passed", "failed", "skipped"}:
+            return case
+        if suite.status != "running":
+            raise EvaluationConflict(f"evaluation suite {suite_id} is not running")
+        if case.status == "running":
+            raise EvaluationConflict(
+                f"uncertain running execution for case {case_key} must not be rerun"
+            )
+        if case.status == "pending":
+            case.status = "running"
+            await self._session.flush()
+            return case
+        raise EvaluationConflict(f"unexpected case status {case.status}")
+
+    async def list_cases(self, suite_id: UUID) -> tuple[EvaluationCase, ...]:
+        return tuple((await self._session.scalars(
+            select(EvaluationCase).where(EvaluationCase.suite_id == suite_id)
+            .order_by(EvaluationCase.case_key)
+        )).all())
+
+    async def promote_baseline(
+        self,
+        *,
+        suite_id: UUID,
+        name: str,
+        floors: Mapping[str, float] | None = None,
+        ceilings: Mapping[str, float] | None = None,
+        promoted_by: str = "operator",
+    ) -> EvaluationBaseline:
+        _text(name, 128)
+        _text(promoted_by, 128)
+        suite = await self._locked_suite(suite_id)
+        if suite.status != "passed":
+            raise EvaluationConflict("cannot promote non-passed evaluation suite as baseline")
+        cases = await self.list_cases(suite_id)
+        if not cases or any(c.status != "passed" for c in cases):
+            raise EvaluationConflict(
+                "cannot promote evaluation suite with unsettled or non-passed cases"
+            )
+
+        floors_dict: dict[str, float] = {}
+        if floors:
+            for k, v in floors.items():
+                if not isinstance(k, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", k):
+                    raise ValueError(f"invalid floor metric name: {k}")
+                if type(v) not in {int, float} or not math.isfinite(v):
+                    raise ValueError(f"invalid floor metric value: {v}")
+                floors_dict[k] = float(v)
+
+        ceilings_dict: dict[str, float] = {}
+        if ceilings:
+            for k, v in ceilings.items():
+                if not isinstance(k, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", k):
+                    raise ValueError(f"invalid ceiling metric name: {k}")
+                if type(v) not in {int, float} or not math.isfinite(v):
+                    raise ValueError(f"invalid ceiling metric value: {v}")
+                ceilings_dict[k] = float(v)
+
+        case_snapshots = {
+            c.case_key: {
+                "role": c.role,
+                "status": c.status,
+                "metrics": dict(c.metrics),
+                "fixture_version": c.fixture_version,
+                "metric_version": c.metric_version,
+            }
+            for c in cases
+        }
+
+        baseline = EvaluationBaseline(
+            id=uuid4(),
+            suite_id=suite.id,
+            name=name,
+            fixture_version=suite.fixture_version,
+            metric_version=suite.metric_version,
+            cases=case_snapshots,
+            floors=floors_dict,
+            ceilings=ceilings_dict,
+            promoted_by=promoted_by,
+        )
+        self._session.add(baseline)
+        await self._session.flush()
+        return baseline
+
+    async def get_baseline(
+        self,
+        name: str | None = None,
+        *,
+        baseline_id: UUID | None = None,
+        fixture_version: str | None = None,
+        metric_version: str | None = None,
+    ) -> EvaluationBaseline | None:
+        query = select(EvaluationBaseline)
+        if baseline_id is not None:
+            query = query.where(EvaluationBaseline.id == baseline_id)
+        if name is not None:
+            query = query.where(EvaluationBaseline.name == name)
+        if fixture_version is not None:
+            query = query.where(EvaluationBaseline.fixture_version == fixture_version)
+        if metric_version is not None:
+            query = query.where(EvaluationBaseline.metric_version == metric_version)
+        query = query.order_by(EvaluationBaseline.promoted_at.desc())
+        baseline = await self._session.scalar(query)
+        if baseline is None or isinstance(baseline, EvaluationBaseline):
+            return baseline
+        return None
+
+    async def list_baselines(self) -> tuple[EvaluationBaseline, ...]:
+        return tuple((await self._session.scalars(
+            select(EvaluationBaseline).order_by(EvaluationBaseline.promoted_at.desc())
+        )).all())
 
     async def _locked_suite(self, suite_id: UUID) -> EvaluationSuite:
         suite = await self._session.scalar(

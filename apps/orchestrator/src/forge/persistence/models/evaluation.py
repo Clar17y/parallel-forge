@@ -100,3 +100,40 @@ class EvaluationCase(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EvaluationBaseline(Base):
+    __tablename__ = "evaluation_baselines"
+    __table_args__ = (
+        UniqueConstraint(
+            "name", "fixture_version", "metric_version", name="uq_evaluation_baseline_name_versions"
+        ),
+        UniqueConstraint("suite_id", name="uq_evaluation_baseline_suite"),
+        CheckConstraint("btrim(name) <> ''", name="evaluation_baseline_name_nonempty"),
+        CheckConstraint(
+            "btrim(fixture_version) <> '' AND btrim(metric_version) <> ''",
+            name="evaluation_baseline_versions_nonempty",
+        ),
+        ForeignKeyConstraint(
+            ["suite_id", "fixture_version", "metric_version"],
+            [
+                "evaluation_suites.id",
+                "evaluation_suites.fixture_version",
+                "evaluation_suites.metric_version",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_baseline_suite_binding",
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    suite_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    fixture_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    cases: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    floors: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    ceilings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    promoted_by: Mapped[str] = mapped_column(String(128), nullable=False, default="operator")
+    promoted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

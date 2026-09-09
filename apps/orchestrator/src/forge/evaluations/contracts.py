@@ -17,6 +17,7 @@ from forge.domain.evaluation import (
     SeededDefect,
 )
 from forge.domain.paths import normalize_policy_path
+from forge.domain.policy import CommandSpec
 from forge.domain.review import FindingSeverity
 from forge.domain.tool import ToolName
 from forge.evaluations.credentials import assert_credential_free
@@ -30,7 +31,9 @@ _ALLOWED_DEFECT_FIELDS = frozenset(
 )
 
 
-def _validate_non_blank_string(value: Any, field_name: str, max_length: int = _MAX_IDENTIFIER_LENGTH) -> str:
+def _validate_non_blank_string(
+    value: Any, field_name: str, max_length: int = _MAX_IDENTIFIER_LENGTH
+) -> str:
     if type(value) is not str:
         raise InvalidCaseContractError(f"{field_name} must be a string")
     stripped = value.strip()
@@ -48,7 +51,9 @@ def _validate_string_tuple(values: Any, field_name: str) -> tuple[str, ...]:
     if type(values) not in (list, tuple):
         raise InvalidCaseContractError(f"{field_name} must be a sequence of strings")
     if len(values) > _MAX_COLLECTION_ITEMS:
-        raise InvalidCaseContractError(f"{field_name} exceeds maximum count of {_MAX_COLLECTION_ITEMS}")
+        raise InvalidCaseContractError(
+            f"{field_name} exceeds maximum count of {_MAX_COLLECTION_ITEMS}"
+        )
     items: list[str] = []
     seen: set[str] = set()
     for item in values:
@@ -86,6 +91,7 @@ class EvaluationCaseContract(BaseModel):
     allowed_paths: tuple[str, ...] = ()
     required_tests: tuple[str, ...] = ()
     required_checks: tuple[str, ...] = ()
+    check_commands: tuple[CommandSpec, ...] = ()
     required_assertions: tuple[str, ...] = ()
     max_cost_minor: int | None = None
     max_duration_ms: int | None = None
@@ -158,7 +164,9 @@ class EvaluationCaseContract(BaseModel):
     def _validate_repository_template(cls, value: Any) -> str | None:
         if value is None:
             return None
-        return _validate_non_blank_string(value, "repository_template", max_length=_MAX_IDENTIFIER_LENGTH)
+        return _validate_non_blank_string(
+            value, "repository_template", max_length=_MAX_IDENTIFIER_LENGTH
+        )
 
     @field_validator("expected_defects", mode="before")
     @classmethod
@@ -166,7 +174,9 @@ class EvaluationCaseContract(BaseModel):
         if value is None:
             return MappingProxyType({})
         if not isinstance(value, Mapping):
-            raise InvalidCaseContractError("expected_defects must be a mapping of defect key to defect")
+            raise InvalidCaseContractError(
+                "expected_defects must be a mapping of defect key to defect"
+            )
         result: dict[str, SeededDefect] = {}
         for key, defect_data in value.items():
             defect_key = _validate_non_blank_string(key, "defect key")
@@ -183,7 +193,9 @@ class EvaluationCaseContract(BaseModel):
 
             for required in ("severity", "path", "start_line", "evidence_anchor"):
                 if required not in defect_data:
-                    raise InvalidCaseContractError(f"defect {defect_key} missing required field: {required}")
+                    raise InvalidCaseContractError(
+                        f"defect {defect_key} missing required field: {required}"
+                    )
 
             severity_val = defect_data["severity"]
             if isinstance(severity_val, FindingSeverity):
@@ -192,7 +204,9 @@ class EvaluationCaseContract(BaseModel):
                 try:
                     severity = FindingSeverity(severity_val.strip().lower())
                 except ValueError:
-                    raise InvalidCaseContractError(f"defect {defect_key} has invalid severity") from None
+                    raise InvalidCaseContractError(
+                        f"defect {defect_key} has invalid severity"
+                    ) from None
             else:
                 raise InvalidCaseContractError(f"defect {defect_key} has invalid severity")
 
@@ -200,7 +214,9 @@ class EvaluationCaseContract(BaseModel):
             try:
                 normalize_policy_path(path)
             except ValueError:
-                raise InvalidCaseContractError(f"defect {defect_key} path is not a valid relative repository path")
+                raise InvalidCaseContractError(
+                    f"defect {defect_key} path is not a valid relative repository path"
+                )
 
             anchor = _validate_non_blank_string(
                 defect_data["evidence_anchor"], f"defect {defect_key} evidence_anchor"
@@ -245,6 +261,15 @@ class EvaluationCaseContract(BaseModel):
 
     @model_validator(mode="after")
     def _validate_role_specific_shape(self) -> Self:
+        for command in self.check_commands:
+            assert_credential_free(command.model_dump_json(), "check command")
+        if self.check_commands and (
+            len({command.name for command in self.check_commands}) != len(self.check_commands)
+            or {command.name for command in self.check_commands} != set(self.required_checks)
+        ):
+            raise InvalidCaseContractError(
+                "check commands must exactly match declared required checks"
+            )
         # Assign default metric version if not explicitly set
         if self.metric_version is None:
             default_metric = {
@@ -256,19 +281,36 @@ class EvaluationCaseContract(BaseModel):
 
         if self.role == AgentRole.PLANNER:
             if self.expected_defects:
-                raise InvalidCaseContractError("planner case contract cannot declare expected_defects")
+                raise InvalidCaseContractError(
+                    "planner case contract cannot declare expected_defects"
+                )
             if self.allowed_paths or self.required_tests or self.required_assertions:
-                raise InvalidCaseContractError("planner case contract cannot declare developer assertions")
+                raise InvalidCaseContractError(
+                    "planner case contract cannot declare developer assertions"
+                )
         elif self.role == AgentRole.REVIEWER:
-            if self.expected_components or self.expected_checks or self.expected_risks or self.expected_dependencies:
-                raise InvalidCaseContractError("reviewer case contract cannot declare planner expectations")
+            if (
+                self.expected_components
+                or self.expected_checks
+                or self.expected_risks
+                or self.expected_dependencies
+            ):
+                raise InvalidCaseContractError(
+                    "reviewer case contract cannot declare planner expectations"
+                )
             if self.allowed_paths or self.required_tests or self.required_assertions:
-                raise InvalidCaseContractError("reviewer case contract cannot declare developer assertions")
+                raise InvalidCaseContractError(
+                    "reviewer case contract cannot declare developer assertions"
+                )
         elif self.role == AgentRole.DEVELOPER:
             if self.expected_defects:
-                raise InvalidCaseContractError("developer case contract cannot declare expected_defects")
+                raise InvalidCaseContractError(
+                    "developer case contract cannot declare expected_defects"
+                )
             if self.expected_risks or self.expected_dependencies:
-                raise InvalidCaseContractError("developer case contract cannot declare planner risks/dependencies")
+                raise InvalidCaseContractError(
+                    "developer case contract cannot declare planner risks/dependencies"
+                )
         return self
 
     @property

@@ -1,0 +1,33 @@
+{
+  "fixture_version": "eval-fixture-v1",
+  "case_key": "developer/basic-change",
+  "task": "Implement greeting function in app.py and tests in test_app.py.",
+  "role": "developer",
+  "allowed_paths": [
+    "app.py",
+    "test_app.py"
+  ],
+  "required_tests": [
+    "test_app.py"
+  ],
+  "required_checks": [
+    "pytest"
+  ],
+  "required_assertions": [
+    "greet_returns_hello"
+  ],
+  "max_cost_minor": 100,
+  "max_duration_ms": 60000,
+  "prohibited_tools": [],
+  "check_commands": [
+    {
+      "kind": "test",
+      "name": "pytest",
+      "argv": [
+        "python",
+        "test_app.py"
+      ],
+      "timeout_seconds": 60
+    }
+  ]
+}

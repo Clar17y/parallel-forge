@@ -130,3 +130,34 @@ async def test_invalid_metrics_are_rejected_before_storage(session_factory, metr
                 suite_id=uuid4(), case_key="one", run_id=uuid4(), usage_id=uuid4(),
                 input_digest="a" * 64, output_digest="b" * 64, passed=True, metrics=metrics,
             )
+
+
+async def test_concurrent_case_admission_locks_and_admits_exactly_once(session_factory):
+    import asyncio
+
+    async with session_factory() as session, session.begin():
+        repo = EvaluationRepository(session)
+        suite = await repo.begin_suite(
+            name="deterministic",
+            fixture_version="v1",
+            metric_version="m1",
+            idempotency_key="concur-admit",
+            cases={"case-1": "planner"},
+        )
+
+    async def try_admit():
+        async with session_factory() as session, session.begin():
+            repo = EvaluationRepository(session)
+            return await repo.admit_case(suite_id=suite.id, case_key="case-1")
+
+    res1, res2 = await asyncio.gather(try_admit(), try_admit(), return_exceptions=True)
+
+    # Exactly one caller admits (status "running"), and the other raises EvaluationConflict
+    exceptions = [r for r in (res1, res2) if isinstance(r, Exception)]
+    admitted = [r for r in (res1, res2) if not isinstance(r, Exception)]
+
+    assert len(admitted) == 1
+    assert admitted[0].status == "running"
+    assert len(exceptions) == 1
+    assert isinstance(exceptions[0], EvaluationConflict)
+    assert "uncertain running execution" in str(exceptions[0])

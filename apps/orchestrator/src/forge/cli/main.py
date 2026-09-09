@@ -9,6 +9,7 @@ from typing import cast
 import typer
 
 from forge.application.services.auth import AuthService, AuthUnitOfWork
+from forge.cli.evaluations import eval_app
 from forge.cli.worktrees import worktree_app
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.unit_of_work import PostgresUnitOfWork
@@ -18,6 +19,8 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 operator_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(operator_app, name="operator")
 app.add_typer(worktree_app, name="worktree")
+app.add_typer(eval_app, name="eval")
+
 
 
 @app.callback()

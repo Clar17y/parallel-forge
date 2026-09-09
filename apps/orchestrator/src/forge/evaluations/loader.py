@@ -38,7 +38,9 @@ def _read_bounded_json_file(file_path: Path, label: str) -> str:
         raise FixtureNotFoundError(f"{label} file does not exist: {file_path.name}")
 
     if _is_symlink_or_reparse(file_path):
-        raise UnsafeFixturePathError(f"{label} file is a symlink or reparse point: {file_path.name}")
+        raise UnsafeFixturePathError(
+            f"{label} file is a symlink or reparse point: {file_path.name}"
+        )
 
     try:
         st = os.lstat(file_path)
@@ -90,7 +92,9 @@ def load_evaluation_case(path: Path | str) -> EvaluationCaseContract:
         raise InvalidCaseContractError(f"malformed JSON in case file {target_file.name}") from None
 
     if not isinstance(data, dict):
-        raise InvalidCaseContractError(f"case contract must be a JSON object, got {type(data).__name__}")
+        raise InvalidCaseContractError(
+            f"case contract must be a JSON object, got {type(data).__name__}"
+        )
 
     # Default case_key to base directory name if not specified
     if "case_key" not in data:
@@ -112,7 +116,9 @@ def load_evaluation_case(path: Path | str) -> EvaluationCaseContract:
     except Exception as exc:
         if isinstance(exc, InvalidCaseContractError):
             raise
-        raise InvalidCaseContractError(f"invalid evaluation case contract in {target_file.name}") from None
+        raise InvalidCaseContractError(
+            f"invalid evaluation case contract in {target_file.name}"
+        ) from None
 
 
 def load_evaluation_cases(root_directory: Path | str) -> dict[str, EvaluationCaseContract]:
@@ -154,7 +160,9 @@ def load_evaluation_cases(root_directory: Path | str) -> dict[str, EvaluationCas
             if case.case_key in cases:
                 raise InvalidCaseContractError(f"duplicate case_key discovered: {case.case_key}")
             if len(cases) >= _MAX_DISCOVERED_CASES:
-                raise InvalidCaseContractError(f"discovery exceeded maximum cases limit of {_MAX_DISCOVERED_CASES}")
+                raise InvalidCaseContractError(
+                    f"discovery exceeded maximum cases limit of {_MAX_DISCOVERED_CASES}"
+                )
             cases[case.case_key] = case
 
     return cases
@@ -168,10 +176,14 @@ def load_expected_output(path: Path | str) -> dict[str, Any]:
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError:
-        raise InvalidCaseContractError(f"malformed JSON in expected output {expected_path.name}") from None
+        raise InvalidCaseContractError(
+            f"malformed JSON in expected output {expected_path.name}"
+        ) from None
 
     if not isinstance(data, dict):
-        raise InvalidCaseContractError(f"expected output must be a JSON object, got {type(data).__name__}")
+        raise InvalidCaseContractError(
+            f"expected output must be a JSON object, got {type(data).__name__}"
+        )
 
     return data
 
