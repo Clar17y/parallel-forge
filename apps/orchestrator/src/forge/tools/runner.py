@@ -54,6 +54,12 @@ async def await_deferred_cancellation[DeferredResult](
             if state is not None:
                 state.requested = True
             continue
+        except BaseException as error:
+            if not caller_cancelled:
+                raise
+            cancellation = asyncio.CancelledError()
+            cancellation.add_note("Deferred terminal operation failed after caller cancellation")
+            raise cancellation from error
         return result, caller_cancelled
 
 

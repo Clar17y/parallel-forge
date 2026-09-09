@@ -68,6 +68,7 @@ class WorktreeBoundRunner(RunnerPort, TerminalRunnerPort):
     async def run_terminal(self, request: RunCommandRequest) -> CommandTerminalResult:
         """Run while the mutation lock and exact registration remain retained."""
 
+        terminal: CommandTerminalResult | None = None
         try:
             if not isinstance(request, RunCommandRequest):
                 raise RunnerExecutionError()
@@ -101,11 +102,17 @@ class WorktreeBoundRunner(RunnerPort, TerminalRunnerPort):
             raise
         except LaunchOwnershipRejected:
             raise
-        except RunnerExecutionError:
-            raise
-        except ControlledGitError:
-            raise RunnerExecutionError() from None
-        except Exception:  # noqa: BLE001 - capability failures are one safe category
+        except Exception as error:
+            if terminal is not None and terminal.caller_cancelled:
+                cancellation = asyncio.CancelledError()
+                cancellation.add_note(
+                    "Managed access restoration failed after terminal cancellation"
+                )
+                raise cancellation from error
+            if isinstance(error, RunnerExecutionError):
+                raise
+            if isinstance(error, ControlledGitError):
+                raise RunnerExecutionError() from None
             raise RunnerExecutionError() from None
 
 

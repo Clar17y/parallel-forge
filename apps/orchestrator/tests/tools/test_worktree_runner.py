@@ -24,7 +24,7 @@ from forge.application.ports.worktrees import ManagedWorktree
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.git import ControlledGit
-from forge.tools.paths import CanonicalRoot
+from forge.tools.paths import CanonicalRoot, RepositoryAccessDenied
 from forge.tools.runner import RunnerExecutionError
 from forge.tools.worktree_runner import WorktreeRunnerFactory
 
@@ -407,3 +407,57 @@ async def test_bound_terminal_defers_cancellation_until_process_and_capability_r
     assert process.finished.is_set()
     assert capability_released.is_set()
     assert terminal.caller_cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_bound_docker_cancellation_survives_access_lease_restoration_failure(
+    managed_case: tuple[ControlledGit, ManagedWorktree, ProjectPolicy, _Process],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lease cleanup must not replace a cancellation with an ACL availability error."""
+
+    controlled, worktree, policy, _ = managed_case
+    docker_policy = policy.model_copy(update={"runner_mode": RunnerMode.DOCKER})
+    bound = WorktreeRunnerFactory(
+        controlled,
+        image_digest="sha256:" + "e" * 64,
+        process_runner=_DockerProcess(),
+        artifact_store=_Artifacts(),
+    ).create(worktree, docker_policy)
+    delegate = bound._delegate
+    entered = asyncio.Event()
+
+    @contextlib.contextmanager
+    def failing_lease(*args: Any, **kwargs: Any) -> Any:
+        yield
+        raise RepositoryAccessDenied("Docker ACL restoration failed")
+
+    async def cancelled_terminal(*args: Any, **kwargs: Any) -> CommandTerminalResult:
+        entered.set()
+        try:
+            await asyncio.Future[None]()
+        except asyncio.CancelledError:
+            return CommandTerminalResult(
+                result=CommandResult(
+                    command_name="bound-test", kind=StepKind.TEST, command_digest="a" * 64,
+                    policy_version=1, exit_code=0, timed_out=False, started_at=datetime.now(UTC),
+                    duration_ms=0, stdout_digest="b" * 64, stderr_digest="c" * 64,
+                    runner_mode=RunnerMode.DOCKER, image_digest="sha256:" + "e" * 64,
+                    network_enabled=False, stdout_original_byte_count=0,
+                    stderr_original_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+                    unsandboxed=False,
+                ),
+                caller_cancelled=True,
+            )
+
+    monkeypatch.setattr(delegate, "managed_access_lease", failing_lease)
+    monkeypatch.setattr(delegate, "_run_terminal_at", cancelled_terminal)
+    task = asyncio.create_task(
+        bound.run_terminal(RunCommandRequest(command_name="bound-test", kind=StepKind.TEST))
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError) as cancellation:
+        await task
+    assert task.cancelled()
+    assert "Docker ACL restoration failed" in str(cancellation.value.__cause__)

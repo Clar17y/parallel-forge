@@ -874,17 +874,16 @@ async def test_docker_cancellation_waits_for_delayed_launch_before_cleanup(
 
 
 @pytest.mark.parametrize(
-    ("cleanup_fails", "expected_error"),
+    "cleanup_fails",
     [
-        (False, asyncio.CancelledError),
-        (True, RunnerExecutionError),
+        False,
+        True,
     ],
 )
 @pytest.mark.asyncio
 async def test_docker_launch_error_preserves_prior_cancellation_after_cleanup(
     tmp_path: Path,
     cleanup_fails: bool,
-    expected_error: type[BaseException],
 ) -> None:
     worktree = tmp_path / "repo"
     worktree.mkdir()
@@ -915,8 +914,11 @@ async def test_docker_launch_error_preserves_prior_cancellation_after_cleanup(
         assert await asyncio.to_thread(process.launch_finished.wait, 1)
         assert await asyncio.to_thread(process.cleanup_started.wait, 1)
         process.cleanup_release.set()
-        with pytest.raises(expected_error):
+        with pytest.raises(asyncio.CancelledError) as cancellation:
             await task
+        assert task.cancelled()
+        if cleanup_fails:
+            assert "Docker cleanup or access repair requires recovery" in cancellation.value.__notes__
         assert process.cleanup_finished.is_set()
     finally:
         process.launch_release.set()
@@ -1015,3 +1017,46 @@ async def test_managed_cancellation_survives_access_repair_failure(
             RunCommandRequest(command_name=command.name, kind=command.kind), root.path, managed=True
         )
     assert calls == (["cleanup"] if cleanup_fails else ["cleanup", "repair"])
+
+
+@pytest.mark.asyncio
+async def test_managed_cancellation_survives_failing_repair_after_it_is_deferred(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An external cancellation remains terminal even when repair later fails."""
+
+    command = _command()
+    root = CanonicalRoot(tmp_path)
+    runner = DockerRunner(
+        policy=_policy(command),
+        root=root,
+        image_digest="sha256:" + "4" * 64,
+        process_runner=_FakeProcess(),
+        artifact_store=_FakeArtifacts(),
+    )
+    repair_started = asyncio.Event()
+    release_repair = asyncio.Event()
+
+    async def absent(*args, **kwargs):
+        return None
+
+    async def failing_repair(*args, **kwargs):
+        repair_started.set()
+        await release_repair.wait()
+        raise RunnerExecutionError()
+
+    monkeypatch.setattr(runner, "_assert_managed_name_absent", absent)
+    monkeypatch.setattr(runner, "_repair_managed_access", failing_repair)
+    task = asyncio.create_task(
+        runner._run_terminal_at(
+            RunCommandRequest(command_name=command.name, kind=command.kind), root.path, managed=True
+        )
+    )
+    assert await asyncio.wait_for(repair_started.wait(), timeout=1)
+    task.cancel()
+    release_repair.set()
+
+    with pytest.raises(asyncio.CancelledError) as cancellation:
+        await task
+    assert task.cancelled()
+    assert "runner execution failed" in repr(cancellation.value.__cause__)
