@@ -8,6 +8,7 @@ from forge.domain.operation import OperationStatus, canonical_digest
 from forge.domain.release import GitHubPullRequest
 from forge.release.fake_github import FakeGitHub
 from forge.release.fake_github_write import FakeGitHubWrite, FakeGitHubWriteCrash
+from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
 from forge.release.merge import MergeController, MergeOperation, StaleMergeEvidence
 
@@ -216,6 +217,58 @@ async def test_uncertain_merge_response_is_never_classified_as_no_effect():
     operation = MergeOperation(MergeController(read, write), record, uuid4(), evidence, current)
     with pytest.raises(GitHubWriteError, match="uncertain"):
         await operation.invoke(intent(operation.request))
+
+
+async def test_second_queue_protection_read_failure_is_preflight_rejection():
+    read, write, evidence, record = ready()
+    protection_reads = 0
+    merge_calls = []
+    original_protection = read.get_merge_protection
+
+    async def protection(*args):
+        nonlocal protection_reads
+        protection_reads += 1
+        if protection_reads == 2:
+            raise GitHubClientError("unavailable")
+        return await original_protection(*args)
+
+    async def merge(*args):
+        merge_calls.append(args)
+        raise AssertionError("preflight failure must not issue a merge write")
+
+    async def current():
+        return evidence
+
+    read.get_merge_protection = protection
+    write.merge_pull_request = merge
+    operation = MergeOperation(MergeController(read, write), record, uuid4(), evidence, current)
+    outcome = await operation.invoke(intent(operation.request))
+    assert outcome.status is OperationStatus.FAILED
+    assert outcome.error == "merge_preflight_rejected"
+    assert protection_reads == 2 and merge_calls == []
+
+
+async def test_preflight_pull_read_failure_is_preflight_rejection():
+    read, write, evidence, record = ready()
+    merge_calls = []
+
+    async def unavailable_pull(*args):
+        raise GitHubWriteError("unavailable")
+
+    async def merge(*args):
+        merge_calls.append(args)
+        raise AssertionError("preflight failure must not issue a merge write")
+
+    async def current():
+        return evidence
+
+    write.get_pull_request = unavailable_pull
+    write.merge_pull_request = merge
+    operation = MergeOperation(MergeController(read, write), record, uuid4(), evidence, current)
+    outcome = await operation.invoke(intent(operation.request))
+    assert outcome.status is OperationStatus.FAILED
+    assert outcome.error == "merge_preflight_rejected"
+    assert merge_calls == []
 
 
 async def test_definite_provider_refusal_is_a_failed_receipt():

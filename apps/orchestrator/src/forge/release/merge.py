@@ -20,6 +20,7 @@ from forge.domain.operation import (
 )
 from forge.domain.release import GitHubPullRequest
 from forge.release.controller import ReleaseReconciliationRequired, _validate_intent
+from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
 from forge.release.monitor import assess_checks, required_check_results
 
@@ -184,11 +185,11 @@ class MergeOperation:
         _validate_intent(intent, self.request)
         try:
             await self._controller.preflight(self._record, self._approved, await self._current())
-        except StaleMergeEvidence:
+        except StaleMergeEvidence, GitHubClientError, GitHubWriteError:
             return OperationOutcome(status=OperationStatus.FAILED, error="merge_preflight_rejected")
         try:
             pull = await self._controller.merge(self._approved)
-        except StaleMergeEvidence:
+        except StaleMergeEvidence, GitHubClientError:
             return OperationOutcome(status=OperationStatus.FAILED, error="merge_preflight_rejected")
         except GitHubWriteError as error:
             if error.category not in {"stale", "rejected"}:
