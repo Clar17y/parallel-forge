@@ -51,6 +51,13 @@ def test_bridge_drives_real_completion_and_cancelled_teardown(
                 evidence = json.loads(artifact.json()["text"])
                 assert evidence["head_sha"] == projection["candidate"]["commit"]
                 assert evidence["head_sha"] == projection["pull_request"]["head_sha"]
+                assert evidence["repository"] == projection["pull_request"]["repository"]
+                assert evidence["pull_request_number"] == projection["pull_request"]["number"]
+                assert evidence["base_ref"].removeprefix("refs/heads/") == projection["pull_request"]["base_ref"].removeprefix("refs/heads/")
+                assert evidence["validation_digest"] == projection["candidate"]["validation_evidence_digest"]
+                assert evidence["review_digest"] == projection["candidate"]["review_evidence_digest"]
+                assert evidence["runner_mode"] == projection["security"]["runner_mode"]
+                assert evidence["policy_version"] == command["policy_version"]
                 observation = projection["remote_observation"]
                 assert evidence["head_sha"] == observation["head_sha"]
                 proof_response = bridge._client.get(
@@ -59,6 +66,10 @@ def test_bridge_drives_real_completion_and_cancelled_teardown(
                 proof_response.raise_for_status()
                 proof = proof_response.json()
                 assert proof["protection_digest"] == evidence["protection_digest"]
+                assert proof["repository"] == evidence["repository"]
+                assert proof["pull_request_number"] == evidence["pull_request_number"]
+                assert proof["head_sha"] == evidence["head_sha"]
+                assert proof["base_ref"].removeprefix("refs/heads/") == evidence["base_ref"].removeprefix("refs/heads/")
                 assert proof["observed_base_sha"] == evidence["base_sha"]
                 assert proof["protection"]["verified"]
                 assert not proof["protection"]["actor_can_bypass"]
@@ -132,3 +143,21 @@ def test_bridge_keeps_control_auth_across_multiple_browser_scenarios(
         assert bridge.register_run(run_id) == {"runId": run_id}
     finally:
         bridge.harness.close()
+
+
+def test_bridge_progresses_the_recorded_pull_request_number(monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    bridge = Bridge.__new__(Bridge)
+    repository, head = "example/second-project", "a" * 40
+    fake = SimpleNamespace(
+        checks={}, pull_requests={(repository, 7): SimpleNamespace(head_sha=head)}
+    )
+    bridge.harness = SimpleNamespace(fake_github=fake)
+    monkeypatch.setattr(bridge, "_read_run", lambda _: {
+        "state": "MONITORING_PR", "github_repository": repository, "pull_request_number": 7,
+    })
+    monkeypatch.setattr(bridge, "_expedite", lambda _: None)
+    bridge._progress_remote_ci(uuid4())
+    assert fake.checks[(repository, head)][0].conclusion == "success"

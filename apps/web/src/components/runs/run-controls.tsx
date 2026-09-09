@@ -10,6 +10,7 @@ type Projection = components['schemas']['RunProjection'];
 type Command = components['schemas']['AvailableCommand'];
 type Binding = { returnFocus: HTMLButtonElement; resource?: Projection['resource']; command: Command; key: string; evidence?: Record<string, unknown>;
   merge?: MergeEvidence; protection?: components['schemas']['ProtectionSnapshotResponse']; pr?: PrEvidence; body?: string; challenge?: components['schemas']['ApprovalChallengeResponse']; payload?: Record<string, unknown> };
+const branchName = (ref: string) => ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
 const labels: Record<string, string> = { teardown_run_resources: 'Remove run resources', pause: 'Pause', resume: 'Resume', cancel: 'Cancel run',
   request_plan_revision: 'Request revision', approve_plan: 'Approve plan', approve_pr: 'Approve PR publication', approve_merge: 'Approve merge' };
 
@@ -67,13 +68,13 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
           const merge = next.merge, pr = fresh.pull_request, observation = fresh.remote_observation;
           if (!pr || !observation || merge.repository !== pr.repository || merge.pull_request_number !== pr.number
             || merge.head_sha !== pr.head_sha || merge.head_sha !== fresh.candidate.commit || merge.head_sha !== observation.head_sha
-            || merge.base_ref !== pr.base_ref || merge.policy_version !== command.policy_version
+            || branchName(merge.base_ref) !== branchName(pr.base_ref) || merge.policy_version !== command.policy_version
             || merge.validation_digest !== fresh.candidate.validation_evidence_digest || merge.review_digest !== fresh.candidate.review_evidence_digest
             || merge.runner_mode !== fresh.security.runner_mode) throw new ApiError(409, 'merge-evidence-mismatch');
           const proof = await api<components['schemas']['MergeProtectionResponse']>(`/artifacts/${observation.observation_digest}/merge-protection`, { signal });
           if (!proof || proof.digest !== observation.observation_digest || proof.protection_digest !== merge.protection_digest
             || proof.repository !== merge.repository || proof.pull_request_number !== merge.pull_request_number
-            || proof.head_sha !== merge.head_sha || proof.base_ref !== merge.base_ref || proof.observed_base_sha !== merge.base_sha
+            || proof.head_sha !== merge.head_sha || branchName(proof.base_ref) !== branchName(merge.base_ref) || proof.observed_base_sha !== merge.base_sha
             || !proof.protection.verified || proof.protection.actor_can_bypass
             || !(proof.protection.strict_required_checks || proof.protection.merge_queue_enabled)
             || !proof.protection.required_check_names.length

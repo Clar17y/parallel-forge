@@ -14,10 +14,10 @@ beforeAll(() => {
 afterEach(() => { cleanup(); vi.mocked(api).mockReset(); vi.mocked(mutate).mockReset(); });
 const evidence = { base_sha: 'a'.repeat(40), plan_digest: 'c'.repeat(64), policy_version: 2, token_budget: 116000 };
 
-test.each(['success', 'protection mismatch', 'base mismatch', 'unsafe protection', '409'])('merge confirmation handles %s with exact remote protection', async scenario => {
+test.each(['success', 'qualified base', 'protection mismatch', 'base mismatch', 'unsafe protection', '409'])('merge confirmation handles %s with exact remote protection', async scenario => {
   const value = projection({ available_commands: [{ name: 'approve_merge', expected_run_version: 7, requires_feedback: false,
     gate: 'merge', evidence_digest: 'd'.repeat(64), policy_version: 2 }] });
-  const merge = { repository: 'owner/repo', pull_request_number: 12, head_sha: 'a'.repeat(40), base_ref: 'main', base_sha: 'b'.repeat(40),
+  const merge = { repository: 'owner/repo', pull_request_number: 12, head_sha: 'a'.repeat(40), base_ref: scenario === 'qualified base' ? 'refs/heads/main' : 'main', base_sha: 'b'.repeat(40),
     required_checks: { ci: 'success' }, unresolved_blocking_findings: 0, validation_digest: 'c'.repeat(64), review_digest: 'e'.repeat(64),
     runner_mode: 'docker', runner_evidence_digest: '1'.repeat(64), protection_digest: '2'.repeat(64), merge_method: 'squash', policy_version: 2 };
   value.candidate.commit = merge.head_sha;

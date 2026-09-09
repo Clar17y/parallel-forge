@@ -19,7 +19,7 @@ from forge.application.services.auth import AuthService
 from forge.domain.github import CheckSnapshot, MergeProtection
 from forge.domain.teardown import teardown_confirmation
 from forge.persistence.database import create_engine, create_session_factory
-from forge.persistence.models import Project, Run, RunCommand, Task
+from forge.persistence.models import Project, PullRequest, Run, RunCommand, Task
 from forge.persistence.repositories.runs import _snapshot_from_record
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.tools.secrets import LocalSecretStore, SecretAlreadyExistsError
@@ -220,7 +220,7 @@ class Bridge:
         )
         if project.status_code >= 400:
             raise RuntimeError(
-                f"project setup failed ({project.status_code}): sent_cookie={project.request.headers.get('cookie')!r}; {project.text}"
+                f"project setup failed ({project.status_code})"
             )
         task = self._client.post(
             "/api/tasks",
@@ -260,6 +260,12 @@ class Bridge:
                         .where(Task.id == run.task_id)
                     )
                     github_repository, repository_path = project.one()
+                    pull_request_number = await session.scalar(
+                        select(PullRequest.pull_request_number)
+                        .where(PullRequest.run_id == run_id)
+                        .order_by(PullRequest.updated_at.desc(), PullRequest.id)
+                        .limit(1)
+                    )
                     return {
                         "state": run.state,
                         "version": run.version,
@@ -268,6 +274,7 @@ class Bridge:
                         "branch_name": run.branch_name,
                         "database_state": run.database_state,
                         "github_repository": github_repository,
+                        "pull_request_number": pull_request_number,
                         "repository_path": repository_path,
                         "snapshot": _snapshot_from_record(run),
                     }
@@ -291,7 +298,7 @@ class Bridge:
         if observed is None or observed["state"] != "MONITORING_PR":
             return
         repository = str(observed["github_repository"])
-        pr = self.harness.fake_github.pull_requests.get((repository, 1))
+        pr = self.harness.fake_github.pull_requests.get((repository, observed["pull_request_number"]))
         if pr is None or (repository, pr.head_sha) in self.harness.fake_github.checks:
             return
         self.harness.fake_github.checks[(repository, pr.head_sha)] = [
