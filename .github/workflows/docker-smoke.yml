@@ -4,6 +4,7 @@ on:
   push:
     branches: [forge/v0-1]
     paths:
+      - '.github/workflows/docker-smoke.yml'
       - 'Dockerfile.runner'
       - 'scripts/runner-mount-guard.c'
       - 'apps/orchestrator/src/forge/tools/docker.py'
@@ -14,6 +15,10 @@ on:
       - 'apps/orchestrator/tests/tools/test_worktree_runner.py'
       - 'tests/integration/test_runner_container.py'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
