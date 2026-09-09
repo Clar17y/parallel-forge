@@ -34,8 +34,11 @@ on Windows, or `bash scripts/dev.sh` on Linux. It requires a healthy PostgreSQL
 compose service and the provider configuration above, installs both frozen locks,
 applies migrations, builds the immutable runner image, rotates operator credentials
 and prints a fresh bootstrap URL, then supervises the three processes together.
-Ctrl+C stops its owned process trees; an unexpected child exit fails the command.
-Its lifecycle tests pass, while full startup acceptance remains pending. Use the
+Ctrl+C or SIGTERM stops its owned process trees; an unexpected child exit fails
+the command. A hosted Linux acceptance job starts this exact supervisor against the
+repository Compose PostgreSQL service, confirms API, worker and web readiness,
+then verifies clean signal shutdown without surviving owned children. Its first
+hosted result is still pending; static harness checks alone do not prove startup. Use the
 separate commands above when preserving an existing operator session.
 
 The default browser origin is `http://127.0.0.1:3000`; the server-side web proxy
