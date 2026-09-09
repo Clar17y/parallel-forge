@@ -2,7 +2,14 @@
 
 from forge.domain.operation import canonical_digest
 from forge.domain.resource import ResourceState
-from forge.domain.run import RunSnapshot
+from forge.domain.run import RunSnapshot, RunState
+
+TEARDOWN_STATES = frozenset({
+    RunState.COMPLETED,
+    RunState.FAILED,
+    RunState.CANCELLED,
+    RunState.AWAITING_HUMAN_INTERVENTION,
+})
 
 
 def teardown_identity(run: RunSnapshot) -> dict[str, object]:

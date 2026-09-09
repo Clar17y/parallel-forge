@@ -35,12 +35,12 @@ async def test_startup_branch_adapter_cannot_invoke_effects():
     executor.execute.assert_not_called()
 
 
-def ownership_fixture(tmp_path, *, enabled=False):
+def ownership_fixture(tmp_path, *, enabled=False, state=RunState.CANCELLED):
     run = RunSnapshot(
         id=uuid4(),
         project_id=uuid4(),
         task_id=uuid4(),
-        state=RunState.CANCELLED,
+        state=state,
         policy_version=1,
         branch_name="forge/task",
         base_ref="main",
@@ -170,6 +170,16 @@ async def test_enabled_database_requires_exact_removal_receipt(tmp_path, proof):
     else:
         with pytest.raises(TeardownCommandRejected, match="ownership"):
             await require_owned_removed_worktree(run, policy, events, work)
+
+
+@pytest.mark.asyncio
+async def test_owned_removed_worktree_allows_quiescent_intervention_run(tmp_path):
+    from forge.worker.branch_runtime import require_owned_removed_worktree
+
+    run, policy, identity, _, events, work = ownership_fixture(
+        tmp_path, state=RunState.AWAITING_HUMAN_INTERVENTION
+    )
+    assert await require_owned_removed_worktree(run, policy, events, work) == identity
 
 
 @pytest.mark.asyncio

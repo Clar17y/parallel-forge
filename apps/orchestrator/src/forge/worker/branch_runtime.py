@@ -31,8 +31,8 @@ from forge.domain.operation import (
 )
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity
-from forge.domain.run import RunSnapshot, RunState
-from forge.domain.teardown import teardown_identity
+from forge.domain.run import RunSnapshot
+from forge.domain.teardown import TEARDOWN_STATES, teardown_identity
 from forge.tools.branch_removal import (
     BranchRemovalAdapter,
     BranchRemovalBinding,
@@ -410,7 +410,7 @@ async def require_owned_removed_worktree(
     """
     try:
         if (
-            run.state not in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
+            run.state not in TEARDOWN_STATES
             or run.project_id != policy.id
             or run.policy_version != policy.version
             or run.branch_name is None

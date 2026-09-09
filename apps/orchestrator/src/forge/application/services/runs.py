@@ -25,7 +25,7 @@ from forge.application.services.auth import AuthenticatedActor
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.run import RunSnapshot, RunState
-from forge.domain.teardown import has_removable_resources, teardown_confirmation
+from forge.domain.teardown import TEARDOWN_STATES, has_removable_resources, teardown_confirmation
 from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.runs import (
     ConcurrencyConflict,
@@ -399,7 +399,7 @@ def _validate_state(state: RunState, command_type: str) -> None:
         RunCommandType.REQUEST_PLAN_REVISION: {RunState.AWAITING_PLAN_APPROVAL},
         RunCommandType.REQUEST_CANDIDATE_CHANGES: {RunState.AWAITING_PR_APPROVAL},
         RunCommandType.REJECT_MERGE: {RunState.AWAITING_MERGE_APPROVAL},
-        RunCommandType.TEARDOWN_RUN_RESOURCES: set(_TERMINAL_STATES),
+        RunCommandType.TEARDOWN_RUN_RESOURCES: set(TEARDOWN_STATES),
     }
     if state not in allowed[RunCommandType(command_type)]:
         raise RunCommandValidationError("command is not valid for the current run state")

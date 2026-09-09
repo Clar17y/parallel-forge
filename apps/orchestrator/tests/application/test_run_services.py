@@ -319,7 +319,8 @@ def _task(task_id: UUID, project_id: UUID) -> TaskRecord:
 
 
 def _uow(
-    *, state: RunState = RunState.CREATED, branch_name: str | None = None
+    *, state: RunState = RunState.CREATED, branch_name: str | None = None,
+    worktree_path: str | None = None,
 ) -> tuple[FakeUow, UUID, UUID]:
     project_id = uuid4()
     task_id = uuid4()
@@ -341,6 +342,7 @@ def _uow(
             state=state,
             version=4,
             branch_name=branch_name,
+            worktree_path=worktree_path,
             suspended_state=RunState.PLANNING if state is RunState.PAUSED else None,
             suspension_kind=SuspensionKind.PAUSE if state is RunState.PAUSED else None,
             pending_gate=gate,
@@ -413,9 +415,11 @@ async def test_run_queries_return_safe_snapshots() -> None:
         ("request_candidate_changes", RunState.AWAITING_PR_APPROVAL, "fix", False, None),
         ("reject_merge", RunState.AWAITING_MERGE_APPROVAL, "no", False, None),
         ("teardown_run_resources", RunState.COMPLETED, None, True, "forge/main"),
+        ("teardown_run_resources", RunState.AWAITING_HUMAN_INTERVENTION, None, False, None),
     ],
 )
 async def test_run_commands_accept_only_the_closed_state_matrix(
+    tmp_path: Path,
     command_type: str,
     state: RunState,
     feedback: str | None,
@@ -427,7 +431,10 @@ async def test_run_commands_accept_only_the_closed_state_matrix(
         RunCommandService,
     )
 
-    work, _, _ = _uow(state=state, branch_name="forge/main")
+    work, _, _ = _uow(
+        state=state, branch_name="forge/main",
+        worktree_path=str(tmp_path / "managed") if command_type == "teardown_run_resources" else None,
+    )
     run_id = next(iter(work.runs.records))
     service = RunCommandService(lambda: work)
     from forge.domain.teardown import teardown_confirmation

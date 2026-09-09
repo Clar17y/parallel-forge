@@ -14,8 +14,8 @@ from forge.domain.branch_removal import branch_removal_recorded
 from forge.domain.operation import OperationStatus, canonical_digest
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
-from forge.domain.run import RunSnapshot, RunState
-from forge.domain.teardown import has_removable_resources, teardown_confirmation
+from forge.domain.run import RunSnapshot
+from forge.domain.teardown import TEARDOWN_STATES, has_removable_resources, teardown_confirmation
 from forge.domain.worktree_operation import worktree_creation_request
 from forge.observability.redaction import redact_value
 from forge.persistence.models import (
@@ -297,7 +297,7 @@ class DashboardQuery:
                     await session.scalar(select(startup_intervention_hold(run_id)))
                 ),
                 "teardown_eligible": (
-                    snapshot.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
+                    snapshot.state in TEARDOWN_STATES
                     and (has_removable_resources(snapshot) or branch_retained)
                     and (await PostgresRunRepository(session).prove_quiescent(run_id)).is_quiescent
                 ),

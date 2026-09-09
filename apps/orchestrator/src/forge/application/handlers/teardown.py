@@ -17,12 +17,16 @@ from forge.domain.event import RunEvent
 from forge.domain.operation import canonical_digest
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import ResourceState
-from forge.domain.run import RunSnapshot, RunState
-from forge.domain.teardown import has_removable_resources, teardown_confirmation, teardown_identity
+from forge.domain.run import RunSnapshot
+from forge.domain.teardown import (
+    TEARDOWN_STATES,
+    has_removable_resources,
+    teardown_confirmation,
+    teardown_identity,
+)
 
 _ADMITTED = "resource.teardown_admitted"
 _COMPLETED = "resource.teardown_completed"
-_TERMINAL = {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
 
 
 class TeardownCommandRejected(RuntimeError):
@@ -60,8 +64,8 @@ class TeardownRunResourcesHandler:
             run.branch_name is None or command.payload.get("confirm_branch_name") != run.branch_name
         ):
             raise TeardownCommandRejected("branch confirmation does not match the run")
-        if run.state not in _TERMINAL:
-            raise TeardownCommandRejected("resource teardown requires a terminal run")
+        if run.state not in TEARDOWN_STATES:
+            raise TeardownCommandRejected("resource teardown requires a terminal or intervention run")
         events = await work.events.list_after(run.id, 0)
         admissions = [
             event

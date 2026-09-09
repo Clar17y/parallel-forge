@@ -16,12 +16,12 @@ from forge.domain.run import RunSnapshot, RunState
 from forge.domain.teardown import teardown_confirmation
 
 
-def fixture(tmp_path):
+def fixture(tmp_path, *, state=RunState.CANCELLED):
     run = RunSnapshot(
         id=uuid4(),
         project_id=uuid4(),
         task_id=uuid4(),
-        state=RunState.CANCELLED,
+        state=state,
         policy_version=1,
         worktree_path=str(tmp_path / "worktree"),
         branch_name="forge/test",
@@ -209,11 +209,12 @@ async def test_admitted_retry_rejects_rebound_resources(tmp_path, change):
         "unresolved_operations",
     ],
 )
-async def test_execution_rechecks_quiescence_before_any_effect(tmp_path, blocker):
+@pytest.mark.parametrize("state", [RunState.CANCELLED, RunState.AWAITING_HUMAN_INTERVENTION])
+async def test_execution_rechecks_quiescence_before_any_effect(tmp_path, blocker, state):
     from forge.application.handlers.teardown import TeardownRunResourcesHandler
     from forge.application.ports.commands import CommandRecoveryRequired
 
-    _, command, work, teardown, events = fixture(tmp_path)
+    _, command, work, teardown, events = fixture(tmp_path, state=state)
     work.runs.prove_quiescent.return_value = replace(RunQuiescence(0, 0, 0, 0, 0), **{blocker: 1})
     with pytest.raises(CommandRecoveryRequired, match="unsettled work"):
         await TeardownRunResourcesHandler(teardown)(command, work)
@@ -290,6 +291,18 @@ async def test_teardown_accepts_registered_policy_with_unicode_path(tmp_path):
 
     _, command, work, teardown, events = fixture(tmp_path / "café")
     await TeardownRunResourcesHandler(teardown)(command, work)
+    assert events[-1].event_type == "resource.teardown_completed"
+
+
+@pytest.mark.asyncio
+async def test_quiescent_intervention_run_can_teardown_its_recorded_resources(tmp_path):
+    from forge.application.handlers.teardown import TeardownRunResourcesHandler
+
+    _, command, work, teardown, events = fixture(
+        tmp_path, state=RunState.AWAITING_HUMAN_INTERVENTION
+    )
+    await TeardownRunResourcesHandler(teardown)(command, work)
+    teardown.assert_awaited_once()
     assert events[-1].event_type == "resource.teardown_completed"
 
 
