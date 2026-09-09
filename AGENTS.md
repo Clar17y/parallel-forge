@@ -3,53 +3,41 @@
 ## Development agent framework
 
 Use the installed personal multi-provider framework for repository coding work.
-The routing policy is the managed framework block in
-`C:/Users/sdyer/.codex/AGENTS.md`; invocation and recovery instructions are in
-`C:/Users/sdyer/.codex/agent-framework/README.md`, with provider pins in
-`C:/Users/sdyer/.codex/agent-framework/routing.json` and native role definitions
-in `C:/Users/sdyer/.codex/agents/`. Follow those installed sources when routing
-changes; the following summarizes the current version 4 policy.
+The current routing and recovery policy lives in
+`C:/Users/sdyer/.codex/AGENTS.md`, with invocation instructions in
+`C:/Users/sdyer/.codex/agent-framework/README.md` and provider pins in
+`C:/Users/sdyer/.codex/agent-framework/routing.json`. Follow those installed
+sources instead of copying a stale routing policy into this repository.
 
-- The primary agent retains the user's selected model and owns architecture,
-  decomposition, integration, and final synthesis.
-- Route routine implementation through `ask-gemini` first: `agy` with
-  `gemini-3.8-flash-medium`. Only confirmed quota exhaustion reported as
-  `fallback_required` (exit 20) permits automatic handoff to a fresh native
-  `implementer` on `gpt-5.6-luna`, medium. Preserve the contract, partial edits,
-  prior output, and unfinished checks; ensure the previous writer has stopped.
-  Authentication, permission, timeout, model, and transient network failures
-  are not quota exhaustion. Follow the framework's pending-session recovery
-  rules before retrying uncertain termination.
-- Use `complex_implementer` (Terra low) for complex bounded implementation;
-  `planner` and `test_engineer` (Sol low) for planning and adversarial tests;
-  and Luna medium for exploration, documentation, and refactor audits.
-- Classify risk once with a reason: low documentation/formatting/behavior-preserving cleanup uses direct checks; ordinary behavior changes use relevant tests and one integrated batch review; high-risk work uses that batch review plus the scoped Sol-high correctness gate after repairs. Track findings by stable ID, and after two unsuccessful repair rounds record the primary reassessment and next action.
-- The primary runs short checks. Use a verifier only for substantial independent verification or an explicit repository requirement, recording candidate HEAD and complete uncommitted identity before and after. Workers report completion, blockers, interface decisions, owned paths, and checks without routine status chatter, polling, or automatic extra agents. Records may be swept by scratch cleanup and must be reconstructible and credential-free.
-- Independent review uses `ask-claude` in fresh context with exactly
-  `claude-opus-5`. If unavailable, use a fresh `reviewer` (Astra low) and
-  disclose the fallback. Never route to Sonnet or Fable. Claude receives only
-  read/search tools, with no MCP, shell, edit, or subagent tools.
-- High-risk concurrency, cancellation, timeouts, security, migrations, data
-  integrity, and release work require a separate `correctness_gate` (Sol high)
-  after repairs. Explicit security analysis uses `security_reviewer` (Sol high).
-  Luna max is reserved for exceptional, explicitly requested deep review.
-- Use a verifier only for substantial independent verification or explicit repository requirements. Record
-  candidate HEAD and the complete uncommitted identity. The integrated batch
-  review must be independent of its writers; changed code requires current
-  evidence. Provide Claude the base revision and a saved integrated diff.
-- Delegate bounded contracts with acceptance criteria, non-overlapping owned
-  paths, and validation commands. Subagents may not delegate again without
-  parent authorization. Use installed native roles where supported; otherwise
-  pass their exact model, effort, and instructions. Respect host concurrency
-  limits.
-- Keep task contracts and provider logs in the active managed worktree's
-  `.llm-output/`. Preserve partial edits and logs. User-authorized provider CLI
-  bypass flags do not bypass Codex sandbox or automatic approval review.
+- The primary retains the user's selected model and owns scope, architecture,
+  integration and final acceptance. Small understood fixes may be implemented
+  directly with focused checks and self-review.
+- Delegate substantial bounded outcomes with fresh compact contracts, explicit
+  non-overlapping ownership, acceptance criteria and validation commands. Workers
+  own investigation, implementation, repairs, checks and self-review. No nested
+  delegation unless the primary authorizes it.
+- Routine delegated implementation uses `ask-gemini` first. Use the installed
+  fallback rules for exhausted, unavailable or blocked routes; preserve partial
+  work and confirm the previous writer has stopped. Do not relabel other errors
+  as quota exhaustion.
+- Choose review and verification depth for actual risk and uncertainty. Prefer
+  one independent integrated review when useful; do not commission reviews for
+  each small edit. Follow `ask-claude` and the installed exact model pins when
+  selecting independent review. Use additional scoped gates when they answer
+  distinct unresolved correctness or security questions.
+- Reuse matching credible test evidence. Rerun affected checks after relevant
+  changes or failures; do not repeat full suites for documentation/checkpoints.
+  Full CI dispatches and reruns require explicit authorization for that specific
+  run, including runs triggered by opening or updating a PR. Merge authorization
+  remains separate and immediate.
+- Preserve `.llm-output/` contracts, logs and partial edits locally. One owner
+  monitors each delegated process or CI run using the installed backoff policy.
+  Never reset or clean another writer's work.
 
-This framework routes the development assistants working on this repository.
-It does not grant capabilities to the Forge application's runtime agents.
-Repository worktree rules, TDD, CI, controlled runtime tools, and human release
-gates remain binding.
+This framework routes the development assistants building Forge. It does not
+configure the Forge application's runtime roles or grant them unrestricted
+shell, provider credentials, CLI bypass flags or release authority. Subscription
+runtime adapters must preserve the runtime boundaries below.
 
 ## Runtime and boundaries
 
