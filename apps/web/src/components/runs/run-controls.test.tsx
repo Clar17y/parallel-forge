@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, expect, test, vi } from 'vitest';
@@ -284,4 +285,23 @@ test('recorded branch removal does not offer another deletion choice', async () 
   await userEvent.click(screen.getByRole('button', { name: 'Remove run resources' }));
   expect(await screen.findByRole('dialog')).toHaveTextContent('Removal recorded for branch forge/exact');
   expect(screen.queryByRole('checkbox', { name: 'Also delete the branch' })).not.toBeInTheDocument();
+});
+
+
+test('approval dialog survives a queued native close event during StrictMode replay', async () => {
+  const close = vi.spyOn(HTMLDialogElement.prototype, 'close').mockImplementation(function (this: HTMLDialogElement) {
+    this.removeAttribute('open');
+    setTimeout(() => this.dispatchEvent(new Event('close')), 0);
+  });
+  try {
+    const value = projection({ available_commands: [{ name: 'approve_plan', expected_run_version: 7,
+      requires_feedback: false, gate: 'plan', evidence_digest: 'd'.repeat(64), policy_version: 2 }] });
+    vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+      .mockResolvedValueOnce({ token: 'challenge', expires_at: '2099-01-01T00:00:00Z' });
+    render(<StrictMode><RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} /></StrictMode>);
+    await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+    await waitFor(() => expect(close).toHaveBeenCalled());
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(screen.getByRole('dialog', { name: 'Approve plan' })).toBeVisible();
+  } finally { close.mockRestore(); }
 });

@@ -13,7 +13,7 @@ test.describe("keyboard and accessibility contract", () => {
       expect(result.violations, `${url} has accessibility violations`).toEqual([]);
     }
 
-    await openRun(page, runId, restartScenario.bootstrapToken);
+    await openRun(page, runId);
     await expect(page.getByRole("navigation", { name: "Run sections" })).toBeVisible();
     for (const tab of ["Overview", "Plan", "Checks", "Review", "Activity", "Usage", "Security", "Changes"]) {
       const control = page.getByRole("button", { name: tab, exact: true });

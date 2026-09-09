@@ -16,6 +16,7 @@ from forge.persistence.repositories.evaluations import EvaluationConflict
 from forge.settings import Settings
 from forge.tools.provider_credentials import LocalProviderCredentialResolver
 from forge.tools.secrets import LocalSecretStore
+from forge.worker.composition import WorkerCompositionError, load_pricing_catalog
 
 eval_app = typer.Typer(add_completion=False, no_args_is_help=True)
 
@@ -116,6 +117,11 @@ def run_evaluations(
             service = EvaluationService(
                 session_factory=session_factory,
                 credential_resolver=credential_resolver,
+                pricing_catalog=(
+                    load_pricing_catalog(settings.pricing_catalog_path)
+                    if suite == "live" and settings.pricing_catalog_path is not None
+                    else None
+                ),
                 fixtures_dir=fixtures_dir,
                 expected_dir=expected_dir,
                 settings=settings,
@@ -150,6 +156,9 @@ def run_evaluations(
 
         except EvaluationConflict as exc:
             typer.echo(f"Evaluation conflict error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        except WorkerCompositionError as exc:
+            typer.echo(f"Evaluation configuration error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         except ProviderCredentialError as exc:
             typer.echo(f"Provider credential error: {exc}", err=True)

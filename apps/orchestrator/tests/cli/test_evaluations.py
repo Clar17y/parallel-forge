@@ -335,3 +335,33 @@ def test_cli_eval_secret_store_receives_data_root_not_double_path(
     # Verify it was passed data_root directly, NOT data_root / "secrets" (which would result in double path)
     assert captured_root[0] == data_root
     assert not str(captured_root[0]).endswith("secrets")
+
+
+def test_live_cli_loads_operator_pricing_catalog(monkeypatch, tmp_path):
+    import json
+    from unittest.mock import AsyncMock
+
+    from forge.cli import evaluations as cli
+    from forge.persistence.repositories.evaluations import EvaluationConflict
+
+    catalog = tmp_path / "pricing.json"
+    catalog.write_text(json.dumps({"version": "operator-prices-v1", "entries": {
+        "google:test-model": {"input_per_million": "1", "output_per_million": "2",
+                              "cached_input_per_million": "0.5"}
+    }}), encoding="utf-8")
+    monkeypatch.setenv("FORGE_PRICING_CATALOG_PATH", str(catalog))
+    monkeypatch.setenv("FORGE_DATA_ROOT", str(tmp_path / "runtime"))
+    captured = {}
+    class Service:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+        async def run_suite(self, **kwargs):
+            raise EvaluationConflict("admission stopped by test")
+    monkeypatch.setattr(cli, "EvaluationService", Service)
+    monkeypatch.setattr(cli, "create_engine", lambda _: AsyncMock())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    result = CliRunner().invoke(app, ["eval", "run", "--suite", "live",
+        "--provider-reference", "secret://forge/google_ai_studio_api_key",
+        "--model", "test-model"])
+    assert result.exit_code == 1
+    assert captured["pricing_catalog"].version == "operator-prices-v1"

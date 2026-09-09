@@ -159,7 +159,7 @@ function ConfirmationDialog({ title, children, onClose }: { title: string; child
     element?.showModal();
     return () => { element?.close(); if (previous instanceof HTMLElement) previous.focus(); };
   }, []);
-  return <dialog ref={dialog} className="confirmation" aria-label={title} onClose={onClose}>
+  return <dialog ref={dialog} className="confirmation" aria-label={title} onClose={event => { if (!event.currentTarget.open) onClose(); }}>
     <h2>{title}</h2>{children}<button onClick={onClose}>Back</button>
   </dialog>;
 }

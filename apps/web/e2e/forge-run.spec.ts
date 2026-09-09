@@ -15,12 +15,12 @@ test.describe("real Forge run approvals", () => {
     await page.getByRole("button", { name: "Add argument", exact: true }).click();
     await page.getByLabel("Argument 1").fill("check_readme.py");
     await page.getByRole("button", { name: "Register project" }).click();
-    await expect(page).toHaveURL(/\/projects\//);
+    await expect(page).toHaveURL(/\/projects\/[a-f0-9-]{36}$/);
     await page.getByRole("link", { name: "New run" }).click();
     await page.getByLabel("Task title").fill("Create browser acceptance task");
     await page.getByLabel("Task description").fill("Exercise the real browser lifecycle");
     await page.getByRole("button", { name: "Create run" }).click();
-    await expect(page).toHaveURL(/\/runs\//);
+    await expect(page).toHaveURL(/\/runs\/[a-f0-9-]{36}$/);
     const runId = new URL(page.url()).pathname.split("/").pop()!;
     await registerRun(runId);
 

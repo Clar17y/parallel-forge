@@ -8,7 +8,7 @@ body { margin: 0; background: var(--graphite); color: var(--offwhite); font-fami
 button, input, select, textarea { font: inherit; }
 button { min-height: 44px; min-width: 44px; padding: 8px 14px; cursor: pointer; color: var(--offwhite); background: #293342; border: 1px solid #526176; border-radius: 6px; }
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
-a { color: var(--blue); }
+a { color: var(--blue); text-decoration: underline; }
 input, select, textarea { min-height: 44px; color: var(--offwhite); background: #202731; border: 1px solid #526176; border-radius: 5px; padding: 8px; max-width: 100%; }
 input[type="checkbox"] { min-width: 24px; vertical-align: middle; margin-right: 10px; }
 form { max-width: 920px; }

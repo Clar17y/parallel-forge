@@ -54,6 +54,7 @@ def upgrade():
     op.execute(
         "CREATE FUNCTION forge_reject_evaluation_baseline_identity_mutation() "
         "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+        "IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'evaluation baseline is immutable'; END IF; "
         "IF NEW.id <> OLD.id OR NEW.suite_id <> OLD.suite_id OR NEW.name <> OLD.name "
         "OR NEW.fixture_version <> OLD.fixture_version OR NEW.metric_version <> OLD.metric_version "
         "OR NEW.cases <> OLD.cases OR NEW.floors <> OLD.floors OR NEW.ceilings <> OLD.ceilings "
@@ -63,7 +64,7 @@ def upgrade():
     )
     op.execute(
         "CREATE TRIGGER trg_evaluation_baselines_identity_immutable "
-        "BEFORE UPDATE ON evaluation_baselines FOR EACH ROW EXECUTE FUNCTION "
+        "BEFORE UPDATE OR DELETE ON evaluation_baselines FOR EACH ROW EXECUTE FUNCTION "
         "forge_reject_evaluation_baseline_identity_mutation()"
     )
 

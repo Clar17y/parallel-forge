@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.domain.artifact import validate_artifact_digest
@@ -294,8 +295,14 @@ class EvaluationRepository:
             ceilings=ceilings_dict,
             promoted_by=promoted_by,
         )
-        self._session.add(baseline)
-        await self._session.flush()
+        try:
+            async with self._session.begin_nested():
+                self._session.add(baseline)
+                await self._session.flush()
+        except IntegrityError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "23505":
+                raise
+            raise EvaluationConflict("evaluation baseline already promoted for suite or name/version") from None
         return baseline
 
     async def get_baseline(

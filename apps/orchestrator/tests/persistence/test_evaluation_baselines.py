@@ -151,3 +151,33 @@ async def test_evaluation_baseline_is_immutable(session_factory, assignment):
                 text(f"UPDATE evaluation_baselines SET {assignment} WHERE id=:id"),
                 {"id": baseline.id},
             )
+
+
+async def test_baseline_delete_is_rejected(session_factory):
+    suite_id = uuid4()
+    async with session_factory() as session, session.begin():
+        await _insert_test_suite_and_case(session, suite_id)
+        baseline = await EvaluationRepository(session).promote_baseline(
+            suite_id=suite_id, name="retained-baseline"
+        )
+    async with session_factory() as session, session.begin():
+        with pytest.raises(DBAPIError, match="immutable"):
+            await session.execute(
+                text("DELETE FROM evaluation_baselines WHERE id=:id"), {"id": baseline.id}
+            )
+
+
+@pytest.mark.parametrize("same_suite", [True, False])
+async def test_duplicate_baseline_promotion_is_domain_conflict(session_factory, same_suite):
+    first, second = uuid4(), uuid4()
+    async with session_factory() as session, session.begin():
+        await _insert_test_suite_and_case(session, first)
+        await _insert_test_suite_and_case(session, second)
+        repo = EvaluationRepository(session)
+        original = await repo.promote_baseline(suite_id=first, name="unique-baseline")
+        with pytest.raises(EvaluationConflict, match="already"):
+            await repo.promote_baseline(
+                suite_id=first if same_suite else second,
+                name="other-name" if same_suite else "unique-baseline",
+            )
+        assert (await repo.get_baseline(baseline_id=original.id)).id == original.id
