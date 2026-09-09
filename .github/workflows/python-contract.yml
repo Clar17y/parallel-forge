@@ -1,8 +1,6 @@
 name: Python and runtime contracts
 
 on:
-  push:
-    branches: [forge/v0-1]
   pull_request:
   workflow_dispatch:
 

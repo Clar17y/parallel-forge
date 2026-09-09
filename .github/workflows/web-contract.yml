@@ -1,8 +1,6 @@
 name: Web contract
 
 on:
-  push:
-    branches: [forge/v0-1]
   pull_request:
   workflow_dispatch:
 
