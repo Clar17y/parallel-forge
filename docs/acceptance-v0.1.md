@@ -1,86 +1,111 @@
 # v0.1 acceptance evidence map
 
-Status on 9 September 2026: **not accepted**. This maps design section 23 to
-existing automated entry points and remaining proof. Test names identify coverage
-to inspect and execute; their presence is not a passing result. Candidate-specific
-results and reviews are recorded in [the progress ledger](v0.1-progress.md).
+Status on 9 September 2026: **not yet accepted**. Implementation and required
+independent review repairs are complete; final full CI acceptance is pending
+explicit user authorization for a specific run. No full dispatch or rerun is
+authorized, including after a failure. Focused checks and remote checkpoints
+remain authorized; they do not waive the final full gate.
+Candidate: `fc3d09ae8dc885f184a5c709f895eaa5045e2514` on `forge/v0-1`.
+The [progress ledger](v0.1-progress.md) retains task checkpoints, reproduced
+failures, repair dispositions and exact verification evidence.
 
-The design requires all items to work locally through the dashboard. Existing
-ASGI/composed-worker tests are component integration evidence; they do not replace
-separate API/worker processes, browser interaction, accessibility or restart tests.
+The browser scenarios use separate local API/worker processes, PostgreSQL and
+deterministic fake agents/GitHub on the hosted runner. Component tests supplement
+that flow with adverse authorization, budget, concurrency and recovery cases.
+Live model and live GitHub writes are credential-gated opt-ins, not claimed here.
 
-| Item | Requirement | Existing automated entry point | Remaining acceptance proof |
-| --- | --- | --- | --- |
-| 1 | Register a repository and versioned policy | `apps/orchestrator/tests/api/test_projects.py::test_projects_list_and_registration_use_injected_service`; project/task service tests | Browser registration passed at5a50018; final integrated CI remains |
-| 2 | Create a plain-text task | `apps/orchestrator/tests/api/test_tasks.py::test_tasks_list_create_and_get_use_injected_service` | Browser task creation passed at5a50018; configured issue import remains optional |
-| 3 | Plan, then wait for human approval | `tests/integration/test_worker_planning_e2e.py::test_http_plan_requires_exact_approval_before_preparation` | Separate API/worker browser plan gate passed at5a50018 |
-| 4 | Isolated worktree and optional database | `tests/integration/test_worker_delivery_e2e.py::test_http_approved_delivery_reaches_pr_gate_with_real_worktree_and_check` | Dashboard worktree flow passed at5a50018; final cross-platform lifecycle regression remains |
-| 5 | Developer confined to managed worktree | Same delivery flow; `apps/orchestrator/tests/security` and controlled-tool suites | Current cross-platform confinement results and process-level denied-tool case |
-| 6 | Local commit and inspectable diff | Same delivery flow and controlled Git tests | Browser candidate/Changes navigation and exact approval bindings passed at5a50018; final integrated regression remains |
-| 7 | Execute named required checks | `tests/integration/test_delivery_validation.py::test_required_checks_have_committed_intents_and_publish_in_policy_order` | Browser check evidence; focused hosted Docker smoke passed at `a978454` (164 passed, 46 platform skips); Linux cancellation correctness gate closed |
-| 8 | Independent Reviewer and structured findings | `tests/integration/test_dashboard_projection.py::test_cockpit_contains_actual_checks_independent_review_and_pull_request` | Review tab accessibility and candidate review bindings passed at5a50018; full integrated regression remains |
-| 9 | Bounded local remediation | `tests/integration/test_delivery_remediation.py::test_failed_validation_runs_fresh_developer_remediation_and_revalidates` | Complete default-budget cycle and exhaustion through dashboard |
-| 10 | Live state, artifacts, checks, findings and usage | Dashboard projection tests, API SSE tests and web component tests | Browser cockpit tabs/usage/accessibility passed at5a50018; final REST/SSE regression remains |
-| 11 | Approval before PR writes | `tests/integration/test_pr_approval.py::test_stale_pr_approval_never_publishes` | Browser PR approval passed at5a50018; final remote-write invariant regression remains |
-| 12 | Controlled push and PR reconciliation | `tests/integration/test_pr_publication.py::test_crash_after_pr_creation_reconciles_once_before_monitoring` | Full22-case actual-process recovery matrix passed at9d272d8; final integrated regression remains |
-| 13 | CI/review monitoring and bounded remote remediation | `tests/integration/test_remote_development.py::test_remote_failure_reaches_developer_as_untrusted_evidence_then_validation` | Failed CI through recovery and budget exhaustion in full flow |
-| 14 | Merge approval for exact green head/base | `tests/integration/test_merge_approval.py::test_merge_approval_consumes_exact_gate_or_invalidates_without_merge` | All exact merge evidence/dialog/protection bindings passed at5a50018; prior scoped release gate closed1505679 |
-| 15 | Fresh human approval, expected head and protected base | Merge approval/controller/security suites; `tests/integration/test_merge_queue_mode.py::test_consumed_merge_mode_comes_from_approved_observation` | Direct and queued merge process acceptance and stale-head/base cases; scoped release repair gates closed at `1505679`, final candidate acceptance remains open |
-| 16 | Restart, pause and cancellation | `tests/integration/test_run_controls.py::test_pause_retains_exact_approval_suspension_context_and_replays_once`; release resume and resource recovery suites | Full22-case actual-process recovery matrix passed at9d272d8; browser restart/cancel passed5a50018; final integrated security regression remains |
-| 17 | Retain resources; explicit teardown | `tests/integration/test_run_controls.py::test_cancel_retains_managed_resource_identity_without_successor_dispatch`; `apps/orchestrator/tests/application/test_teardown_handler.py::test_teardown_persists_admission_before_effect_and_completion_afterward`; real process vertical teardown at `d4282f3` | Browser retention/explicit teardown passed5a50018; complete resource teardown crash matrix passed9d272d8; final integrated regression remains |
-| 18 | All required test suites | Python/runtime and web contract workflows; evaluation metrics/fixtures | Current full deterministic suite, evaluations CLI, Playwright, accessibility, secret/generated-file checks and complete review evidence |
+## Design section 23 mapping
 
-## Completed focused hosted acceptance
+| Item | Requirement | Executable evidence |
+| --- | --- | --- |
+| 1 | Register repository and versioned policy | Project API/service suites; hosted browser registration at5a50018. |
+| 2 | Create plain-text task | Task API/service suites; hosted browser task creation. Configured issue import is optional. |
+| 3 | Structured plan and human approval | `test_worker_planning_e2e.py`; real API/worker/browser plan approval. |
+| 4 | Managed worktree and optional database | `test_worker_delivery_e2e.py`;13-step process acceptance provisions a real worktree/database. |
+| 5 | Developer confined to managed worktree | Delivery process flow, controlled-tool authorization, repository escape and Windows/POSIX path suites. |
+| 6 | Commit and inspectable diff | Controlled Git and delivery suites; browser candidate/Changes navigation with bound approval evidence. |
+| 7 | Exact named required checks | Delivery validation suites; process acceptance; independent Linux Docker/staged-worktree smoke. |
+| 8 | Independent Reviewer and findings | Review decision/projection suites; real process review and browser Review tab/approval evidence. |
+| 9 | Bounded local remediation |13-step process failed-validation/remediation flow; delivery decision, remediation and review budget suites. |
+| 10 | Live state and evidence views | REST/SSE and dashboard projection suites; browser cockpit tabs, usage, keyboard and accessibility checks. |
+| 11 | Approval before PR writes | PR approval/publication security suites; browser exact PR approval. |
+| 12 | Controlled push and PR reconciliation | Process delivery and complete publication crash/restart matrix. |
+| 13 | CI/review monitoring and bounded remote remediation |13-step process failed-CI/remediation/green recovery; remote-development and monitoring budget suites. |
+| 14 | Exact green head/base merge gate | Merge approval/protection suites; browser bound merge evidence/dialog; scoped release correctness gates. |
+| 15 | Fresh authorization, expected head and protected base | `test_release_race_flow.py` actual head/base races; direct/queue mode integration and stale/forged approval suites. |
+| 16 | Restart, pause and cancellation | Run-control/resume suites, complete actual-process crash matrix, browser restart/cancellation. |
+| 17 | Retention and explicit teardown |13-step process retention/teardown, browser confirmation and retained resources, complete teardown crash matrix. |
+| 18 | Required deterministic test suites | Current full backend CI below, both-platform static/unit/web checks, migrations/evaluations/security, Docker and Chromium evidence. |
 
-Chromium run34371063844/job102532101737 at `5a50018` passed all three real
-API/worker browser scenarios: registration/task creation and the three exact
-approvals; keyboard navigation and accessibility across dialogs; persisted cancel
-across restart, retained resources and explicit teardown. Three browser-free
-bridge contracts passed in the same job. Supervisor startup/recovery/shutdown
-passed at `140fb43` (run34365654124/job102513567026); Linux Docker smoke and its
-cancellation gate passed at `a978454`. These close the corresponding focused
-proofs above. Both-platform web CI passed at1f43755; the complete22-case recovery
-matrix passed at9d272d8; final independent review and scoped cancellation repairs
-are closed at03c3ba3. Full integrated backend CI34380288870 remains pending.
+These map the approved requirements to composed evidence; a browser pass alone
+is not a substitute for security/recovery tests. Historical failed full runs are
+not counted as complete passes. The current full backend result remains required.
 
-## Final verification record
+## Verification record
 
-No final accepted candidate is recorded yet. The final record must include the
-exact commit, commands, configuration, platform results, skips with their coverage
-elsewhere, and required independent review dispositions. It must cover:
+| Verification | Candidate and result |
+| --- | --- |
+| Full backend, migrations, evaluations and Docker | **Pending authorization**. Cancelled [run34389229107](https://github.com/Clar17y/parallel-forge/actions/runs/34389229107) atfc3d09a; its backend is not acceptance evidence. Completed jobs below remain preserved. |
+| Ubuntu contract/static checks | Same run, job102593140549:395passed7skipped10.01s; Ruff and strict mypy290sources passed. |
+| Windows contract/static checks | Same run, job102593140571:400passed2skipped21.36s; Ruff and strict mypy290sources passed. |
+| Hosted secret scan | Same run, job102593140692 passed. Exactfc3d09a git-archive scan also passed with verified Gitleaks8.30.1. |
+| Web on Windows and Ubuntu | [Run34374162224](https://github.com/Clar17y/parallel-forge/actions/runs/34374162224) at1f43755:102tests on each platform, lint, types, production build and generated contracts passed. |
+| Chromium workflow/accessibility | [Run34371063844](https://github.com/Clar17y/parallel-forge/actions/runs/34371063844), job102532101737 at5a50018:3browser scenarios and3browser-free bridge contracts passed. |
+| Development supervisor | [Run34365654124](https://github.com/Clar17y/parallel-forge/actions/runs/34365654124), job102513567026 at140fb43: install/migrate/bootstrap/API/web/worker readiness and owned-process shutdown passed. |
+| Independent Linux Docker smoke | [Run34367367831](https://github.com/Clar17y/parallel-forge/actions/runs/34367367831), job102519460835 ata978454:164passed46platformskips38.12s; Windows counterpart206passed24skipped. |
+| Complete actual-process recovery matrix | Independent Windows verification at5a50018 with test inputs checkpointed9d272d8:22passed669.59s, matching before/after input hashes. |
+| Recovery deadline repair | [Focused run34389034564](https://github.com/Clar17y/parallel-forge/actions/runs/34389034564), job102592496941 atfc3d09a:5passed49.59s. Exact crash-exit and recovery assertions retained;90s bound accounts for30s owner expiry plus startup. |
+| Baseline migration/CLI/logging repairs | Combined42-test Windows batch at4c8f716:42passed56.76s, including existing immutable snapshots across upgrade/downgrade/re-upgrade and logging order. |
+| Additional Windows skip counterparts | Current environment/secret/manifest subset117passed24skipped68.36s; mocked failed-spawn job-handle regression1passed0.07s; real-rg search passed locally. |
 
-- PostgreSQL migration upgrade/downgrade and the complete deterministic backend;
-- Ruff and strict mypy on Windows and Linux;
-- web tests, lint, types, build and OpenAPI regeneration on both platforms;
-- Docker runner and Bash lifecycle smoke on Linux, PowerShell lifecycle on Windows;
-- deterministic evaluation execution and version-bound regression thresholds;
-- Playwright Chromium, keyboard navigation and accessibility checks;
-- the complete dashboard workflow through three approvals and fake GitHub effects;
-- restart/pause/cancel/teardown and the security cases in design section 22;
-- secret-pattern and generated-file cleanliness checks.
+The final full command is `python -m pytest -q -ra -m "not live_provider and
+not live_github and not docker"`, followed by the Docker integration module.
+Runtime versions are Python3.14.5, Node24.20.0 and PostgreSQL17; runner base images
+remain pinned to the approved immutable Python3.14/Node24 digests. Local noisy
+checks use `rtk proxy`; hosted checks use the frozen uv environment.
 
-Live model/GitHub checks require explicit credential-gated opt-in and are not
-claimed by deterministic test results. No development PR merge is authorized by
-this document or by a green CI run.
+## Skip accounting and evidence reuse
 
-Full Python/runtime and web CI run on pull requests and explicit manual dispatch.
-Checkpoint pushes preserve work without rerunning those suites. The separate
-Linux Docker smoke workflow has no full-backend prerequisite and supports manual
-dispatch and narrowly filtered Docker-related pushes. Run full required CI on
-the integrated candidate; repeat it only for relevant changes or failures.
+- Ubuntu contract skips are Windows handle/PowerShell cases; Windows contract
+  skips are Bash cases. The counterpart platform passed them.
+- Full Linux platform skips for Windows path, environment, secrets, manifest,
+  artifact and job-handle behavior have Windows contract/focused coverage.
+  Windows POSIX and unavailable-link skips have Linux coverage; Windows junction
+  and native path cases cover its supported reparse-point behavior.
+- Hosted Ubuntu lacks `rg`; the actual-ripgrep search contract passed locally.
+  The privileged host bind-mount test requires mount capability unavailable to
+  the ordinary hosted process; actual Docker mount guards and related path
+  boundary tests have separate passing evidence. No privileged run is claimed.
+- Web/API schema and Docker inputs are unchanged from their cited passing
+  candidates. Evaluation-only worker changes do not affect browser delivery
+  scenarios. The recovery harness deadline changed atfc3d09a, so its focused
+  Linux result supplements the prior22-case proof; full acceptance remains pending.
+- The new baseline migration is covered by focused existing-data round trips
+  and passing cases in run34385418384 (3802 passed, one recovery timing failure).
+  That failed run is not full acceptance. Documentation-only checkpoints do not invalidate
+  executable evidence; the final committed documentation is scanned separately.
 
-## Current candidate review and evidence reuse
+## Independent dispositions and release boundary
 
-Implementation candidate: `03c3ba3b24429a4743aa95f1e9c29f8bf9304344`.
-Claude Opus5medium was attempted but returned a quota error before reviewing;
-the authorized independent Astra-low fallback reviewed the integrated candidate
-using prior accepted task reviews. FCR001–003 repair findings closed at9797b7f.
-The distinct Sol-high cancellation gate closed ECAN001 at03c3ba3. Final local
-service tests passed33/33 in129.35s; repository Ruff and strict mypy290sources pass.
-Review is not substituted for executable evidence.
+Tasks1–23 were accepted at67e1a48. Release/queue findings and their scoped Sol gate
+closed at1505679. Linux mount/cancellation findings and scoped correctness closed
+ata978454. Final integrated Claude Opus5medium was attempted but unavailable due
+to quota; the authorized fresh Astra-low fallback reviewed the integrated batch,
+using prior accepted task reviews. FCR001–003 repairs closed at9797b7f.
 
-Scoped Git comparisons to03c3ba3 show no changed web/API schema inputs since
-1f43755 and no changed runner/Docker inputs sincea978454. Browser/recovery worker
-scope differs only in evaluation_tools.py, used by EvaluationService rather than
-the delivery/recovery scenarios. Their matched passing evidence is retained.
-The ongoing full backend run covers the changed evaluation integration.
+The separate Sol-high gate closed repeated evaluation cancellation ECAN001 at
+03c3ba3. Another bounded scoped disposition passed the baseline schema migration
+at4c8f716. Test-only timing/formatting/isolation and minimal workflow adjustments
+used focused checks and primary self-review. No unresolved material review
+finding is waived. Review output is not substituted for test results.
+
+Full Python and web CI run on PRs and manual dispatch, not checkpoint pushes.
+The assistant must obtain explicit authorization for each specific full CI run
+or rerun, first explaining its necessity and why focused verification is
+insufficient. It must not trigger full CI indirectly through a PR without that
+authorization. A passing focused check or repair does not authorize a full run.
+The Docker workflow is independently runnable. Python manual recovery mode is
+explicitly focused and does not count as a full acceptance run; PRs and default
+manual dispatch retain every full gate. Superseded/failed runs and their useful
+completed evidence are recorded in the ledger. No PR merge or live application
+model/GitHub acceptance is authorized by a green run or this document.
