@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -14,10 +15,12 @@ from forge.application.ports.worktrees import DatabaseBinding
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, StepKind
 from forge.domain.resource import ResourceState, WorktreeIdentity
+from forge.observability.redaction import Redactor
 from forge.tools.docker import DockerRunner
 from forge.tools.environment import EnvironmentStager
 from forge.tools.git import ControlledGit
 from forge.tools.paths import CanonicalRoot
+from forge.tools.process import ProcessRunner
 from forge.tools.worktree_runner import WorktreeRunnerFactory
 
 pytestmark = pytest.mark.docker
@@ -229,10 +232,21 @@ def test_bound_runner_reads_e2a_staged_file_as_fixed_container_user(tmp_path: Pa
         timeout=600,
     ).strip()
     artifacts = FilesystemArtifactStore(tmp_path / "artifacts")
+
+    class DiagnosticProcessRunner:
+        """Expose bounded startup diagnostics while retaining the real runner."""
+
+        def run_argv(self, argv: Any, **kwargs: Any) -> Any:
+            result = ProcessRunner(root).run_argv(argv, **kwargs)
+            if result.return_code == 125:
+                print("Docker startup diagnostic:", Redactor(secrets=("secret-value",)).redact(result.stderr))
+            return result
+
     runner = WorktreeRunnerFactory(
         controlled,
         image_digest=image_id,
         artifact_store=artifacts,
+        process_runner=DiagnosticProcessRunner(),
     ).create(worktree, policy)
     terminal = asyncio.run(
         runner.run_terminal(RunCommandRequest(command_name="e2b-reader", kind=StepKind.TEST))
