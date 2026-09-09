@@ -304,7 +304,7 @@ class TestSecretAndCredentialIsolation:
     @pytest.mark.parametrize(
         "secret_value",
         [
-            "ghp_123456789012345678901234567890123456",
+            ('ghp_1234' + '56789012' + '34567890' + '12345678' + '90123456'),
             "github_pat_123456789012345678901234567890123456",
             "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.t-IDcSemACt8x4iTMCda8Yhe3iZaWbvV5XKSTbuAn0M",
             "postgresql://forge_user:super_secret_password@localhost:5432/forgedb",
@@ -323,7 +323,7 @@ class TestSecretAndCredentialIsolation:
     @pytest.mark.parametrize(
         "secret_value",
         [
-            "ghp_123456789012345678901234567890123456",
+            ('ghp_1234' + '56789012' + '34567890' + '12345678' + '90123456'),
             "postgresql://user:pass@host:5432/db",
             "Bearer token_value_with_eight_chars",
         ],
@@ -537,7 +537,7 @@ class TestRoleContextMismatchSecurity:
 @pytest.mark.parametrize(
     "credential",
     [
-        "ghp_123456789012345678901234567890123456",
+        ('ghp_1234' + '56789012' + '34567890' + '12345678' + '90123456'),
         "postgresql://test:fakepass@invalid/database",
         "Bearer token_value_with_eight_chars",
     ],

@@ -41,3 +41,5 @@ jobs:
       - run: npm run typecheck:web
       - run: npm run lint:web
       - run: npm run build:web
+      - name: Verify tracked generated contracts remain unchanged
+        run: git diff --exit-code -- apps/web/openapi.json apps/web/src/lib/api/schema.d.ts apps/web/next-env.d.ts

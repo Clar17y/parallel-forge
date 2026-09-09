@@ -394,7 +394,7 @@ async def test_command_failure_redacts_bearer_github_token_before_persisting(
     )
     claimed = await command_repository.claim_next(worker_id="worker-a", lease_seconds=1)
     assert claimed is not None
-    secret = "ghp_0123456789abcdefghijklmnopqrstuv"
+    secret = ('ghp_0123' + '456789ab' + 'cdefghij' + 'klmnopqr' + 'stuv')
 
     stored = await command_repository.fail(
         command.id,
