@@ -18,8 +18,15 @@ test("persists the exact cancel command across worker restart and retains resour
 
   const restart = await restartWorker();
   expect(restart.newPid).not.toBe(restart.oldPid);
-  await expect(page.getByText(/CANCELLED|Cancelled/i)).toBeVisible({ timeout: 120_000 });
-  await expect(page.getByText(/Worktree/i)).toBeVisible();
+  await expect(page.locator("header").filter({ hasText: "CANCELLED" })).toBeVisible({ timeout: 120_000 });
+  await expect.poll(async () => (await cancelCommandFor(runId)).status).toBe("SUCCEEDED");
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Run activity" }).getByRole("heading", { name: "run.cancelled", exact: true })).toBeVisible();
+  const branch = page.locator("dt").filter({ hasText: /^Branch$/ }).locator("+ dd");
+  const retainedBranch = await branch.innerText();
+  expect(retainedBranch).not.toContain("Not yet created");
+  const worktree = page.locator("dt").filter({ hasText: /^Worktree$/ }).locator("+ dd");
+  await expect(worktree).not.toHaveText("Not yet created");
 
   const teardown = page.getByRole("button", { name: "Remove run resources", exact: true });
   await expect(teardown).toBeVisible();
@@ -31,6 +38,7 @@ test("persists the exact cancel command across worker restart and retains resour
   await teardownDialog.getByLabel("Resource identity confirmation").fill(identity);
   await teardownDialog.getByRole("button", { name: "Review resource removal" }).click();
   await teardownDialog.getByRole("button", { name: "Confirm remove resources" }).click();
-  await expect(page.getByText(/Already absent|REMOVED/i)).toBeVisible({ timeout: 120_000 });
-  await expect(page.getByText(/branch remains/i)).toBeVisible();
+  await expect(teardownDialog).toBeHidden();
+  await expect(worktree).toHaveText("Not yet created", { timeout: 120_000 });
+  await expect(branch).toHaveText(retainedBranch);
 });

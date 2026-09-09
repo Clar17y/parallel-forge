@@ -35,8 +35,8 @@ test.describe("real Forge run approvals", () => {
       await expedite(runId);
     }
 
-    await expect(page.getByText(/COMPLETED|Completed/i)).toBeVisible({ timeout: 120_000 });
+    await expect(page.locator("header").filter({ hasText: "COMPLETED" })).toBeVisible({ timeout: 120_000 });
     await openRun(page, runId);
-    await expect(page.getByText(/Branch/i)).toBeVisible();
+    await expect(page.locator("dt").filter({ hasText: /^Branch$/ })).toBeVisible();
   });
 });

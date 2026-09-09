@@ -41,6 +41,7 @@ def _descendants(pid: int) -> set[int]:
 
 def _wait_for_ready(process: subprocess.Popen[str], log_path: Path, timeout: float = 600) -> None:
     deadline = time.monotonic() + timeout
+    missing_steps: list[str] = []
     while time.monotonic() < deadline:
         if process.poll() is not None:
             output = _redact(log_path.read_text(encoding="utf-8", errors="replace")[-6000:])
@@ -59,17 +60,18 @@ def _wait_for_ready(process: subprocess.Popen[str], log_path: Path, timeout: flo
                 "Forge Operator Bootstrap URL:",
                 "Forge worker recovered and is polling",
             )
+            missing_steps = [step for step in required_steps if step not in output]
             if (
                 api.json() == {"status": "ok", "role": "api"}
                 and web.status_code == 200
-                and all(step in output for step in required_steps)
+                and not missing_steps
             ):
                 return
         except httpx.HTTPError, ValueError:
             pass
         time.sleep(0.25)
     output = _redact(log_path.read_text(encoding="utf-8", errors="replace")[-6000:])
-    raise AssertionError(f"development supervisor did not become ready: {output}")
+    raise AssertionError(f"development supervisor did not become ready; missing steps={missing_steps}: {output}")
 
 
 def main() -> None:

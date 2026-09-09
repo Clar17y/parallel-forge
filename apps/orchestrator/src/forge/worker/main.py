@@ -122,6 +122,8 @@ async def run_worker(
 def run() -> None:
     """Run the worker until cancellation, exiting nonzero on failed recovery."""
 
+    logging.basicConfig(level=logging.WARNING)
+    logger.setLevel(logging.INFO)
     try:
         asyncio.run(run_worker())
     except KeyboardInterrupt:
