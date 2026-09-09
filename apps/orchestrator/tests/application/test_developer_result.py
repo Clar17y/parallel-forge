@@ -62,7 +62,7 @@ class FakeGit:
 def _worktree() -> ManagedWorktree:
     return ManagedWorktree(
         identity=WorktreeIdentity.for_developer(uuid4(), "feature/test"),
-        path=Path("C:/managed/worktree"),
+        path=Path("/managed/worktree").resolve(),
         base_sha=BASE_SHA,
     )
 

@@ -233,7 +233,7 @@ def _planner_input(
     pol = policy or ProjectPolicy(
         id=PROJECT_ID,
         version=1,
-        repository_path="C:/repo",
+        repository_path=str(Path("/repo").resolve()),
         github_repository="forge/security-test",
         default_branch="main",
     )

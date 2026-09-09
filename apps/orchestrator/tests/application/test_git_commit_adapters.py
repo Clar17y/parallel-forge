@@ -71,7 +71,7 @@ class _Reader:
 def _worktree(run_id: UUID) -> ManagedWorktree:
     return ManagedWorktree(
         identity=WorktreeIdentity.for_run(uuid4(), run_id, "forge/test", False),
-        path=Path("C:/managed/forge-test"),
+        path=Path("/managed/forge-test").resolve(),
         base_sha="a" * 40,
     )
 

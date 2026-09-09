@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -717,7 +718,7 @@ class TestUntrustedContentAndPolicySummary:
         policy = ProjectPolicy(
             id=uuid4(),
             version=1,
-            repository_path=r"C:\repo",
+            repository_path=str(Path("/repo").resolve()),
             github_repository="owner/repo",
             default_branch="main",
             commands=(),

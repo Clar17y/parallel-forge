@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -17,7 +18,7 @@ def make_policy(*commands: CommandSpec, **overrides: object) -> ProjectPolicy:
     values: dict[str, object] = {
         "id": uuid4(),
         "version": 7,
-        "repository_path": "D:/Code/Parallel",
+        "repository_path": str(Path("/Code/Parallel").resolve()),
         "github_repository": "Clar17y/Parallel",
         "default_branch": "main",
         "commands": commands,

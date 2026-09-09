@@ -32,7 +32,7 @@ def _policy(*, trusted: bool = True, mode: RunnerMode = RunnerMode.TRUSTED_HOST)
     return ProjectPolicy(
         id=uuid4(),
         version=4,
-        repository_path="D:/Code/Parallel",
+        repository_path=str(Path("/Code/Parallel").resolve()),
         github_repository="Clar17y/Parallel",
         default_branch="main",
         trusted_project=trusted,

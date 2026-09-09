@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -19,7 +20,7 @@ def make_policy(**overrides: object) -> ProjectPolicy:
     values: dict[str, object] = {
         "id": uuid4(),
         "version": 1,
-        "repository_path": "D:/Code/Parallel",
+        "repository_path": str(Path("/Code/Parallel").resolve()),
         "github_repository": "Clar17y/Parallel",
         "default_branch": "main",
     }
@@ -196,7 +197,7 @@ def test_policy_contracts_are_immutable_and_reject_unknown_command_fields() -> N
         ProjectPolicy(
             id=uuid4(),
             version=1,
-            repository_path="D:/Code/Parallel",
+            repository_path=str(Path("/Code/Parallel").resolve()),
             github_repository="Clar17y/Parallel",
             default_branch="main",
             unexpected="reject-me",  # type: ignore[call-arg]

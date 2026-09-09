@@ -40,7 +40,7 @@ def _adapter_and_intent(
     run_id = uuid4()
     identity = WorktreeIdentity.for_run(project_id, run_id, "forge/test", False)
     worktree = ManagedWorktree(
-        identity=identity, path=Path("C:/managed/forge-test"), base_sha="a" * 40
+        identity=identity, path=Path("/managed/forge-test").resolve(), base_sha="a" * 40
     )
     command = CommandSpec(
         kind=StepKind.TEST,
@@ -52,7 +52,7 @@ def _adapter_and_intent(
     policy = ProjectPolicy(
         id=project_id,
         version=1,
-        repository_path="C:/repo",
+        repository_path=str(Path("/repo").resolve()),
         github_repository="owner/repo",
         default_branch="main",
         commands=(command,),
@@ -195,13 +195,13 @@ async def _real_adapter(
     project_id = persisted_run.project_id
     identity = WorktreeIdentity.for_run(project_id, persisted_run.id, "forge/test", False)
     worktree = ManagedWorktree(
-        identity=identity, path=Path("C:/managed/forge-test"), base_sha="a" * 40
+        identity=identity, path=Path("/managed/forge-test").resolve(), base_sha="a" * 40
     )
     command = CommandSpec(kind=StepKind.TEST, name="unit", argv=("pytest",), timeout_seconds=30)
     policy = ProjectPolicy(
         id=project_id,
         version=1,
-        repository_path="C:/repo",
+        repository_path=str(Path("/repo").resolve()),
         github_repository="owner/repo",
         default_branch="main",
         commands=(command,),

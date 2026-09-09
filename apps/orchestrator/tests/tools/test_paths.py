@@ -21,6 +21,7 @@ def _make_root(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle close behavior")
 def test_windows_close_rejects_a_native_failure_and_preserves_invalid_sentinel() -> None:
     api = object.__new__(paths._WindowsPathApi)
     calls: list[int] = []
@@ -38,6 +39,7 @@ def test_windows_close_rejects_a_native_failure_and_preserves_invalid_sentinel()
     assert calls == [42]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle close behavior")
 def test_windows_close_accepts_a_successful_native_result() -> None:
     api = object.__new__(paths._WindowsPathApi)
     calls: list[int] = []

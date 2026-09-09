@@ -35,7 +35,7 @@ class _Git:
 
     def expected_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
         return ManagedWorktree(
-            identity=identity, path=Path("C:/managed") / identity.worktree_name, base_sha=base_sha
+            identity=identity, path=Path("/managed").resolve() / identity.worktree_name, base_sha=base_sha
         )
 
     def inspect_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:

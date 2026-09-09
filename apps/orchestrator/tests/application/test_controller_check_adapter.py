@@ -77,7 +77,7 @@ def _make_fixture_context(
     head_sha = "a" * 40
     identity = WorktreeIdentity.for_run(project_id, run_id, "forge/test", False)
     worktree = ManagedWorktree(
-        identity=identity, path=Path("C:/managed/forge-test"), base_sha=head_sha
+        identity=identity, path=Path("/managed/forge-test").resolve(), base_sha=head_sha
     )
     command = CommandSpec(
         kind=StepKind.TEST,
@@ -90,7 +90,7 @@ def _make_fixture_context(
     policy = ProjectPolicy(
         id=project_id,
         version=1,
-        repository_path="C:/repo",
+        repository_path=str(Path("/repo").resolve()),
         github_repository="owner/repo",
         default_branch="main",
         commands=(command,),
@@ -326,7 +326,7 @@ async def _setup_real_adapter(
     head_sha = "b" * 40
     identity = WorktreeIdentity.for_run(project_id, run_id, "forge/test", False)
     worktree = ManagedWorktree(
-        identity=identity, path=Path("C:/managed/forge-test"), base_sha=head_sha
+        identity=identity, path=Path("/managed/forge-test").resolve(), base_sha=head_sha
     )
     command = CommandSpec(
         kind=StepKind.TEST,
@@ -339,7 +339,7 @@ async def _setup_real_adapter(
     policy = ProjectPolicy(
         id=project_id,
         version=1,
-        repository_path="C:/repo",
+        repository_path=str(Path("/repo").resolve()),
         github_repository="owner/repo",
         default_branch="main",
         commands=(command,),

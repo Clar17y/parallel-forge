@@ -25,7 +25,7 @@ def _policy(command: CommandSpec) -> ProjectPolicy:
     return ProjectPolicy(
         id=uuid4(),
         version=3,
-        repository_path="D:/Code/Parallel",
+        repository_path=str(Path("/Code/Parallel").resolve()),
         github_repository="Clar17y/Parallel",
         default_branch="main",
         runner_mode=RunnerMode.DOCKER,
@@ -905,7 +905,7 @@ async def test_docker_async_adapter_runs_registered_argv_for_every_step_kind(
     policy = ProjectPolicy(
         id=uuid4(),
         version=3,
-        repository_path="D:/Code/Parallel",
+        repository_path=str(Path("/Code/Parallel").resolve()),
         github_repository="Clar17y/Parallel",
         default_branch="main",
         runner_mode=RunnerMode.DOCKER,
