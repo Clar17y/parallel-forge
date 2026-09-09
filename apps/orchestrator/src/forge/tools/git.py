@@ -537,7 +537,11 @@ class ControlledGit:
     ) -> None:
         """Prove a fully absent handle is safe to treat as an idempotent success."""
 
-        with self._repository._inspect_absent_worktree_removal(identity.worktree_name) as access:
+        # Git prune may remove the final registration's metadata parent. Reuse
+        # the retained, no-follow restoration used by the retained-branch probe.
+        with self._repository._inspect_absent_worktree_removal(
+            identity.worktree_name, restore_metadata_parent=True
+        ) as access:
             del access
             if self._registration_metadata(identity) is not None:
                 raise ControlledGitError()

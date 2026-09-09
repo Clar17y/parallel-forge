@@ -2590,6 +2590,22 @@ def test_developer_worktree_capability_rejects_forged_standalone_identity(
     assert revalidate_entered == [forged_worktree_enabled_db, forged_worktree_enabled_db]
 
 
+def test_absence_probe_and_repeated_removal_survive_last_registration_prune(
+    tmp_path: Path,
+) -> None:
+    repository, _identity, handle = _managed_repository(tmp_path)
+    controlled = _controlled(repository, tmp_path / "state")
+    controlled.remove_worktree(handle)
+    controlled.prune()
+    assert not (repository / ".git" / "worktrees").exists()
+
+    controlled.verify_worktree_absent(handle)
+    controlled.remove_worktree(handle)
+
+    assert not handle.path.exists()
+    assert controlled.retained_branch_head(handle) == handle.base_sha
+
+
 def test_retained_branch_deletion_is_bound_to_exact_head_and_absent_worktree(
     tmp_path: Path,
 ) -> None:
