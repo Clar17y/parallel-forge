@@ -331,6 +331,7 @@ def test_docker_argv_has_fixed_isolation_and_one_canonical_mount(tmp_path: Path)
     assert sum(part == "--mount" for part in argv) == 1
     mount = argv[argv.index("--mount") + 1]
     assert "readonly" not in mount
+    assert "bind-recursive=disabled" in mount
 
 
 def test_docker_runner_resolves_name_and_kind_before_execution(tmp_path: Path) -> None:

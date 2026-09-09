@@ -178,7 +178,7 @@ class DockerRunner:
             "--tmpfs",
             "/home/forge:rw,nosuid,nodev,size=64m",
             "--mount",
-            f"type=bind,src={mount_source},dst=/workspace",
+            f"type=bind,src={mount_source},dst=/workspace,bind-recursive=disabled",
             "--workdir=/workspace",
         ]
         for key in sorted(selected):

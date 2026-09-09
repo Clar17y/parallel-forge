@@ -1,6 +1,6 @@
 # v0.1 acceptance evidence map
 
-Status on 8 September 2026: **not accepted**. This maps design section 23 to
+Status on 9 September 2026: **not accepted**. This maps design section 23 to
 existing automated entry points and remaining proof. Test names identify coverage
 to inspect and execute; their presence is not a passing result. Candidate-specific
 results and reviews are recorded in [the progress ledger](v0.1-progress.md).
@@ -49,3 +49,9 @@ elsewhere, and required independent review dispositions. It must cover:
 Live model/GitHub checks require explicit credential-gated opt-in and are not
 claimed by deterministic test results. No development PR merge is authorized by
 this document or by a green CI run.
+
+Full Python/runtime and web CI run on pull requests and explicit manual dispatch.
+Checkpoint pushes preserve work without rerunning those suites. The separate
+Linux Docker smoke workflow has no full-backend prerequisite and supports manual
+dispatch and narrowly filtered Docker-related pushes. Run full required CI on
+the integrated candidate; repeat it only for relevant changes or failures.
