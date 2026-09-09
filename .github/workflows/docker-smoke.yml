@@ -1,0 +1,42 @@
+name: Focused Linux Docker smoke
+
+on:
+  push:
+    branches: [forge/v0-1]
+    paths:
+      - '.github/workflows/docker-smoke.yml'
+      - 'Dockerfile.runner'
+      - 'scripts/runner-mount-guard.c'
+      - 'apps/orchestrator/src/forge/tools/docker.py'
+      - 'apps/orchestrator/src/forge/tools/paths.py'
+      - 'apps/orchestrator/src/forge/tools/worktree_runner.py'
+      - 'apps/orchestrator/src/forge/tools/environment.py'
+      - 'apps/orchestrator/tests/tools/test_docker_runner.py'
+      - 'apps/orchestrator/tests/tools/test_paths.py'
+      - 'apps/orchestrator/tests/tools/test_worktree_runner.py'
+      - 'tests/integration/test_runner_container.py'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.12.10'
+          python-version: '3.14.5'
+          enable-cache: false
+      - run: uv sync --frozen --extra dev
+      - name: Docker image and managed-worktree mount contracts
+        run: uv run --frozen python -m pytest apps/orchestrator/tests/tools/test_paths.py apps/orchestrator/tests/tools/test_docker_runner.py apps/orchestrator/tests/tools/test_worktree_runner.py tests/integration/test_runner_container.py -q

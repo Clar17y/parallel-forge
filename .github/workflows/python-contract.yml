@@ -1,0 +1,113 @@
+name: Python and runtime contracts
+run-name: Python and runtime contracts (${{ inputs.verification_scope || 'full' }})
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Full verification or focused recovery regression
+        type: choice
+        options: [full, recovery]
+        default: full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  secret-patterns:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Scan the committed candidate with pinned Gitleaks
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/gitleaks.tar.gz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          mkdir "$RUNNER_TEMP/forge-secret-scan"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/forge-secret-scan"
+          "$RUNNER_TEMP/gitleaks" dir --redact=100 --no-banner --ignore-gitleaks-allow "$RUNNER_TEMP/forge-secret-scan"
+
+  python-contract:
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.20.0'
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.12.10'
+          python-version: '3.14.5'
+          enable-cache: false
+      - run: uv sync --frozen --extra dev
+      - run: uv run --frozen ruff check apps/orchestrator/src apps/orchestrator/tests tests
+      - run: uv run --frozen mypy
+      - name: Unit and host wrapper contracts
+        run: >-
+          uv run --frozen python -m pytest
+          apps/orchestrator/tests/domain apps/orchestrator/tests/agents
+          apps/orchestrator/tests/observability apps/orchestrator/tests/artifacts
+          tests/integration/test_worktree_scripts.py
+          -q -ra -m "not integration and not live_provider and not live_github and not docker"
+
+  postgres-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: forge
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U forge -d forge"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.20.0'
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.12.10'
+          python-version: '3.14.5'
+          enable-cache: false
+      - run: uv sync --frozen --extra dev
+      - name: Deterministic backend, evaluations and migration round trips
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+        run: uv run --frozen python -m pytest -q -ra -m "not live_provider and not live_github and not docker"
+      - name: Focused recovery crash boundary
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'recovery'
+        run: >-
+          uv run --frozen python -m pytest
+          tests/recovery_process/test_harness_waits.py
+          tests/integration/test_worker_restart.py::test_worker_crash_and_restart_during_development
+          -q -ra
+      - name: Docker runner contract
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+        run: uv run --frozen python -m pytest tests/integration/test_runner_container.py -q -ra

@@ -1,0 +1,6948 @@
+{
+  "components": {
+    "schemas": {
+      "AgentItem": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "instruction_version": {
+            "title": "Instruction Version",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "role",
+          "provider",
+          "model",
+          "status",
+          "instruction_version"
+        ],
+        "title": "AgentItem",
+        "type": "object"
+      },
+      "AgentModelPolicy": {
+        "additionalProperties": false,
+        "description": "Budget and provider limits for one Forge agent role.",
+        "properties": {
+          "max_cost_minor": {
+            "default": 1000,
+            "minimum": 0.0,
+            "title": "Max Cost Minor",
+            "type": "integer"
+          },
+          "max_duration_seconds": {
+            "default": 1800,
+            "minimum": 1.0,
+            "title": "Max Duration Seconds",
+            "type": "integer"
+          },
+          "max_input_tokens": {
+            "default": 100000,
+            "minimum": 1.0,
+            "title": "Max Input Tokens",
+            "type": "integer"
+          },
+          "max_output_tokens": {
+            "default": 16000,
+            "minimum": 1.0,
+            "title": "Max Output Tokens",
+            "type": "integer"
+          },
+          "max_tool_calls": {
+            "default": 100,
+            "minimum": 0.0,
+            "title": "Max Tool Calls",
+            "type": "integer"
+          },
+          "model": {
+            "default": "gemini-3.5-flash",
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "default": "google",
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "title": "AgentModelPolicy",
+        "type": "object"
+      },
+      "AgentRole": {
+        "description": "The complete set of agent roles that may receive controlled tools.",
+        "enum": [
+          "planner",
+          "developer",
+          "reviewer"
+        ],
+        "title": "AgentRole",
+        "type": "string"
+      },
+      "AgentSection": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Tools",
+            "type": "array"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
+          "independent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Independent"
+          },
+          "input_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Artifact Digest"
+          },
+          "instruction_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction Version"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Artifact Digest"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AgentRole"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "validation_evidence_set_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Evidence Set Id"
+          }
+        },
+        "required": [
+          "role",
+          "provider",
+          "model",
+          "execution_id",
+          "status",
+          "instruction_version",
+          "input_artifact_digest",
+          "output_artifact_digest",
+          "validation_evidence_set_id",
+          "independent",
+          "allowed_tools"
+        ],
+        "title": "AgentSection",
+        "type": "object"
+      },
+      "ApprovalChallengeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_digest": {
+            "minLength": 1,
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "gate": {
+            "minLength": 1,
+            "title": "Gate",
+            "type": "string"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "run_version": {
+            "minimum": 0.0,
+            "title": "Run Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "gate",
+          "run_version",
+          "evidence_digest"
+        ],
+        "title": "ApprovalChallengeRequest",
+        "type": "object"
+      },
+      "ApprovalChallengeResponse": {
+        "properties": {
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "expires_at"
+        ],
+        "title": "ApprovalChallengeResponse",
+        "type": "object"
+      },
+      "ApprovalHistoryItem": {
+        "additionalProperties": false,
+        "properties": {
+          "authenticated_actor_id": {
+            "format": "uuid",
+            "title": "Authenticated Actor Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "evidence_digest": {
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "gate": {
+            "enum": [
+              "plan",
+              "pr",
+              "merge"
+            ],
+            "title": "Gate",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "invalidated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated At"
+          },
+          "invalidation_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation Reason"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "run_version": {
+            "title": "Run Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "gate",
+          "evidence_digest",
+          "run_version",
+          "policy_version",
+          "authenticated_actor_id",
+          "created_at",
+          "invalidated_at",
+          "invalidation_reason"
+        ],
+        "title": "ApprovalHistoryItem",
+        "type": "object"
+      },
+      "ApprovalItem": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_digest": {
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "gate": {
+            "enum": [
+              "plan",
+              "pr",
+              "merge"
+            ],
+            "title": "Gate",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_version": {
+            "title": "Run Version",
+            "type": "integer"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "task_id",
+          "gate",
+          "evidence_digest",
+          "run_version",
+          "policy_version"
+        ],
+        "title": "ApprovalItem",
+        "type": "object"
+      },
+      "ApprovalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "challenge": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenge"
+          },
+          "challenge_token": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenge Token"
+          },
+          "evidence_digest": {
+            "minLength": 1,
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "gate": {
+            "minLength": 1,
+            "title": "Gate",
+            "type": "string"
+          },
+          "run_version": {
+            "minimum": 0.0,
+            "title": "Run Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "gate",
+          "run_version",
+          "evidence_digest"
+        ],
+        "title": "ApprovalRequest",
+        "type": "object"
+      },
+      "ApprovalResponse": {
+        "properties": {
+          "approval_id": {
+            "title": "Approval Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_id"
+        ],
+        "title": "ApprovalResponse",
+        "type": "object"
+      },
+      "ArtifactLineageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "parent_digests": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Parent Digests",
+            "type": "array"
+          },
+          "producer_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Id"
+          },
+          "producer_type": {
+            "title": "Producer Type",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "producer_type",
+          "producer_id",
+          "created_at",
+          "parent_digests"
+        ],
+        "title": "ArtifactLineageResponse",
+        "type": "object"
+      },
+      "ArtifactResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "byte_count": {
+            "title": "Byte Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "lineage": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactLineageResponse"
+            },
+            "title": "Lineage",
+            "type": "array"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "original_byte_count": {
+            "title": "Original Byte Count",
+            "type": "integer"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "truncation_policy": {
+            "title": "Truncation Policy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "media_type",
+          "byte_count",
+          "schema_version",
+          "created_at",
+          "metadata",
+          "truncated",
+          "original_byte_count",
+          "truncation_policy",
+          "lineage"
+        ],
+        "title": "ArtifactResponse",
+        "type": "object"
+      },
+      "ArtifactTextResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "text"
+        ],
+        "title": "ArtifactTextResponse",
+        "type": "object"
+      },
+      "AuditEventEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_class": {
+            "title": "Actor Class",
+            "type": "string"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "source": {
+            "enum": [
+              "operator",
+              "run"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Id"
+          },
+          "subject_type": {
+            "title": "Subject Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "actor_class",
+          "run_id",
+          "project_id",
+          "actor_id",
+          "event_type",
+          "subject_type",
+          "subject_id",
+          "created_at",
+          "payload"
+        ],
+        "title": "AuditEventEvidence",
+        "type": "object"
+      },
+      "AuditItem": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_class": {
+            "title": "Actor Class",
+            "type": "string"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/AuditOperation"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "source": {
+            "enum": [
+              "operator",
+              "run"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Id"
+          },
+          "subject_type": {
+            "title": "Subject Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "actor_class",
+          "run_id",
+          "project_id",
+          "actor_id",
+          "event_type",
+          "subject_type",
+          "subject_id",
+          "created_at",
+          "payload",
+          "operations"
+        ],
+        "title": "AuditItem",
+        "type": "object"
+      },
+      "AuditOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "SUCCEEDED",
+              "FAILED",
+              "NEEDS_RECONCILIATION"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status"
+        ],
+        "title": "AuditOperation",
+        "type": "object"
+      },
+      "AvailableCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Digest"
+          },
+          "expected_run_version": {
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "gate": {
+            "anyOf": [
+              {
+                "enum": [
+                  "plan",
+                  "pr",
+                  "merge"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "requires_feedback": {
+            "title": "Requires Feedback",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "expected_run_version",
+          "requires_feedback"
+        ],
+        "title": "AvailableCommand",
+        "type": "object"
+      },
+      "BootstrapRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "BootstrapRequest",
+        "type": "object"
+      },
+      "BootstrapResponse": {
+        "properties": {
+          "absolute_expires_at": {
+            "title": "Absolute Expires At",
+            "type": "string"
+          },
+          "actor_class": {
+            "title": "Actor Class",
+            "type": "string"
+          },
+          "actor_id": {
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "csrf_token": {
+            "title": "Csrf Token",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "idle_expires_at": {
+            "title": "Idle Expires At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor_id",
+          "actor_class",
+          "csrf_token",
+          "expires_at",
+          "idle_expires_at",
+          "absolute_expires_at"
+        ],
+        "title": "BootstrapResponse",
+        "type": "object"
+      },
+      "BudgetSection": {
+        "additionalProperties": false,
+        "properties": {
+          "cost_limit_minor": {
+            "title": "Cost Limit Minor",
+            "type": "integer"
+          },
+          "duration_limit_seconds": {
+            "title": "Duration Limit Seconds",
+            "type": "integer"
+          },
+          "local_remediation_count": {
+            "title": "Local Remediation Count",
+            "type": "integer"
+          },
+          "local_remediation_limit": {
+            "title": "Local Remediation Limit",
+            "type": "integer"
+          },
+          "local_remediation_remaining": {
+            "title": "Local Remediation Remaining",
+            "type": "integer"
+          },
+          "remote_remediation_count": {
+            "title": "Remote Remediation Count",
+            "type": "integer"
+          },
+          "remote_remediation_limit": {
+            "title": "Remote Remediation Limit",
+            "type": "integer"
+          },
+          "remote_remediation_remaining": {
+            "title": "Remote Remediation Remaining",
+            "type": "integer"
+          },
+          "token_limit": {
+            "title": "Token Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "local_remediation_count",
+          "local_remediation_limit",
+          "local_remediation_remaining",
+          "remote_remediation_count",
+          "remote_remediation_limit",
+          "remote_remediation_remaining",
+          "token_limit",
+          "cost_limit_minor",
+          "duration_limit_seconds"
+        ],
+        "title": "BudgetSection",
+        "type": "object"
+      },
+      "CandidateSection": {
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit"
+          },
+          "pending_evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Evidence Digest"
+          },
+          "review_evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Evidence Digest"
+          },
+          "validation_evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Evidence Digest"
+          }
+        },
+        "required": [
+          "commit",
+          "pending_evidence_digest",
+          "validation_evidence_digest",
+          "review_evidence_digest"
+        ],
+        "title": "CandidateSection",
+        "type": "object"
+      },
+      "CheckHistoryItem": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt"
+          },
+          "command_name": {
+            "title": "Command Name",
+            "type": "string"
+          },
+          "command_version": {
+            "title": "Command Version",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "configured_runner_mode": {
+            "title": "Configured Runner Mode",
+            "type": "string"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Digest"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Artifact Digest"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "command_name",
+          "command_version",
+          "status",
+          "exit_code",
+          "output_artifact_digest",
+          "completed_at",
+          "head_sha",
+          "step_id",
+          "attempt",
+          "started_at",
+          "duration_ms",
+          "evidence_digest",
+          "configured_runner_mode"
+        ],
+        "title": "CheckHistoryItem",
+        "type": "object"
+      },
+      "CheckItem": {
+        "additionalProperties": false,
+        "properties": {
+          "command_name": {
+            "title": "Command Name",
+            "type": "string"
+          },
+          "command_version": {
+            "title": "Command Version",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Artifact Digest"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "command_name",
+          "command_version",
+          "status",
+          "exit_code",
+          "output_artifact_digest",
+          "completed_at",
+          "head_sha"
+        ],
+        "title": "CheckItem",
+        "type": "object"
+      },
+      "CommandNetworkPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "network_enabled": {
+            "title": "Network Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "network_enabled"
+        ],
+        "title": "CommandNetworkPolicy",
+        "type": "object"
+      },
+      "CommandSpec": {
+        "additionalProperties": false,
+        "description": "One exact argv vector in the project's command registry.\n\nCommands deliberately have no shell command text field.  The runner can\nexecute only this validated argv vector and its explicitly allowed inputs.",
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Argv",
+            "type": "array"
+          },
+          "environment_keys": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Environment Keys",
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/StepKind"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "network_enabled": {
+            "default": false,
+            "title": "Network Enabled",
+            "type": "boolean"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "timeout_seconds": {
+            "maximum": 7200.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "argv",
+          "timeout_seconds"
+        ],
+        "title": "CommandSpec",
+        "type": "object"
+      },
+      "CsrfResponse": {
+        "properties": {
+          "csrf_token": {
+            "title": "Csrf Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "csrf_token"
+        ],
+        "title": "CsrfResponse",
+        "type": "object"
+      },
+      "CurrencyUsage": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "known_cost_minor": {
+            "title": "Known Cost Minor",
+            "type": "integer"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "known_cost_minor",
+          "unpriced_calls"
+        ],
+        "title": "CurrencyUsage",
+        "type": "object"
+      },
+      "DashboardSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "runs": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Runs",
+            "type": "object"
+          },
+          "total_runs": {
+            "title": "Total Runs",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_runs",
+          "runs"
+        ],
+        "title": "DashboardSummary",
+        "type": "object"
+      },
+      "DatabaseProvisioningPolicy": {
+        "additionalProperties": false,
+        "description": "Opt-in database provisioning without storing an administrator secret.",
+        "properties": {
+          "admin_url_secret_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admin Url Secret Reference"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "injected_environment_key": {
+            "default": "DATABASE_URL",
+            "title": "Injected Environment Key",
+            "type": "string"
+          }
+        },
+        "title": "DatabaseProvisioningPolicy",
+        "type": "object"
+      },
+      "EvaluationItem": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "case_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Key"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "estimated_cost_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Minor"
+          },
+          "fixture_version": {
+            "title": "Fixture Version",
+            "type": "string"
+          },
+          "input_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Artifact Digest"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "metric_version": {
+            "title": "Metric Version",
+            "type": "string"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "model_usage_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Usage Id"
+          },
+          "output_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Artifact Digest"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "suite_id": {
+            "format": "uuid",
+            "title": "Suite Id",
+            "type": "string"
+          },
+          "suite_status": {
+            "title": "Suite Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "suite_id",
+          "suite_status",
+          "fixture_version",
+          "metric_version",
+          "case_id",
+          "case_key",
+          "role",
+          "status",
+          "metrics",
+          "model_usage_id",
+          "prompt_version",
+          "provider",
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "duration_ms",
+          "currency",
+          "estimated_cost_minor",
+          "input_artifact_digest",
+          "output_artifact_digest",
+          "created_at",
+          "completed_at"
+        ],
+        "title": "EvaluationItem",
+        "type": "object"
+      },
+      "EventItem": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_class": {
+            "title": "Actor Class",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "run_version": {
+            "title": "Run Version",
+            "type": "integer"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "event_type",
+          "run_version",
+          "actor_class",
+          "occurred_at",
+          "payload"
+        ],
+        "title": "EventItem",
+        "type": "object"
+      },
+      "FindingItem": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "title": "Evidence",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "proposed_resolution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Resolution"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "start_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Line"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "path",
+          "start_line",
+          "summary",
+          "evidence",
+          "proposed_resolution",
+          "status"
+        ],
+        "title": "FindingItem",
+        "type": "object"
+      },
+      "FindingSeverity": {
+        "description": "The severity assigned to one stable review finding.",
+        "enum": [
+          "blocker",
+          "major",
+          "minor",
+          "suggestion"
+        ],
+        "title": "FindingSeverity",
+        "type": "string"
+      },
+      "GitHubIssueImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "issue_number": {
+            "maximum": 9007199254740991.0,
+            "minimum": 1.0,
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "issue_number"
+        ],
+        "title": "GitHubIssueImportRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "role"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "ListPage_AgentItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AgentItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[AgentItem]",
+        "type": "object"
+      },
+      "ListPage_ApprovalHistoryItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalHistoryItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[ApprovalHistoryItem]",
+        "type": "object"
+      },
+      "ListPage_ApprovalItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[ApprovalItem]",
+        "type": "object"
+      },
+      "ListPage_AuditItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[AuditItem]",
+        "type": "object"
+      },
+      "ListPage_CheckHistoryItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CheckHistoryItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[CheckHistoryItem]",
+        "type": "object"
+      },
+      "ListPage_EvaluationItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[EvaluationItem]",
+        "type": "object"
+      },
+      "ListPage_PermissionItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PermissionItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[PermissionItem]",
+        "type": "object"
+      },
+      "ListPage_RunUsageItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunUsageItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[RunUsageItem]",
+        "type": "object"
+      },
+      "ListPage_UsageItem_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UsageItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "ListPage[UsageItem]",
+        "type": "object"
+      },
+      "MergeProtectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "base_ref": {
+            "title": "Base Ref",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "head_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "observed_base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Observed Base Sha",
+            "type": "string"
+          },
+          "protection": {
+            "$ref": "#/components/schemas/ProtectionSnapshotResponse"
+          },
+          "protection_digest": {
+            "title": "Protection Digest",
+            "type": "string"
+          },
+          "pull_request_number": {
+            "minimum": 1.0,
+            "title": "Pull Request Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "protection_digest",
+          "protection",
+          "repository",
+          "pull_request_number",
+          "head_sha",
+          "base_ref",
+          "observed_base_sha"
+        ],
+        "title": "MergeProtectionResponse",
+        "type": "object"
+      },
+      "PermissionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "role",
+          "tools"
+        ],
+        "title": "PermissionItem",
+        "type": "object"
+      },
+      "PlanSection": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Evidence Digest"
+          },
+          "approval_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Id"
+          },
+          "output_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Artifact Digest"
+          }
+        },
+        "required": [
+          "output_artifact_digest",
+          "approval_id",
+          "approval_evidence_digest"
+        ],
+        "title": "PlanSection",
+        "type": "object"
+      },
+      "PolicyLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "local_remediation_limit": {
+            "title": "Local Remediation Limit",
+            "type": "integer"
+          },
+          "remote_remediation_limit": {
+            "title": "Remote Remediation Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "local_remediation_limit",
+          "remote_remediation_limit"
+        ],
+        "title": "PolicyLimits",
+        "type": "object"
+      },
+      "PolicyProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "database_enabled": {
+            "title": "Database Enabled",
+            "type": "boolean"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/PolicyLimits"
+          },
+          "policy_digest": {
+            "title": "Policy Digest",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "runner_mode": {
+            "title": "Runner Mode",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "version",
+          "policy_digest",
+          "runner_mode",
+          "database_enabled",
+          "limits"
+        ],
+        "title": "PolicyProjection",
+        "type": "object"
+      },
+      "ProjectCreateRequest": {
+        "additionalProperties": false,
+        "description": "Closed project registration body.",
+        "properties": {
+          "allowed_environment_files": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Environment Files",
+            "type": "array"
+          },
+          "allowed_merge_methods": {
+            "default": [
+              "squash"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Merge Methods",
+            "type": "array"
+          },
+          "commands": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CommandSpec"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
+          "database": {
+            "$ref": "#/components/schemas/DatabaseProvisioningPolicy"
+          },
+          "default_branch": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Default Branch",
+            "type": "string"
+          },
+          "developer_model": {
+            "$ref": "#/components/schemas/AgentModelPolicy"
+          },
+          "github_repository": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Github Repository",
+            "type": "string"
+          },
+          "instructions_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions Path"
+          },
+          "local_remediation_limit": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 0.0,
+            "title": "Local Remediation Limit",
+            "type": "integer"
+          },
+          "merge_blocking_severities": {
+            "default": [
+              "blocker",
+              "major"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FindingSeverity"
+            },
+            "title": "Merge Blocking Severities",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "planner_model": {
+            "$ref": "#/components/schemas/AgentModelPolicy"
+          },
+          "publication_blocking_severities": {
+            "default": [
+              "blocker",
+              "major"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FindingSeverity"
+            },
+            "title": "Publication Blocking Severities",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "remote_remediation_limit": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 0.0,
+            "title": "Remote Remediation Limit",
+            "type": "integer"
+          },
+          "repository_path": {
+            "minLength": 1,
+            "title": "Repository Path",
+            "type": "string"
+          },
+          "reviewer_model": {
+            "$ref": "#/components/schemas/AgentModelPolicy"
+          },
+          "runner_mode": {
+            "$ref": "#/components/schemas/RunnerMode",
+            "default": "docker"
+          },
+          "secret_paths": {
+            "default": [
+              ".env",
+              ".env.local"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Secret Paths",
+            "type": "array"
+          },
+          "trusted_project": {
+            "default": false,
+            "title": "Trusted Project",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "repository_path",
+          "github_repository",
+          "default_branch"
+        ],
+        "title": "ProjectCreateRequest",
+        "type": "object"
+      },
+      "ProjectPolicyResponse": {
+        "additionalProperties": false,
+        "description": "Safe immutable policy-version response.",
+        "properties": {
+          "document": {
+            "additionalProperties": true,
+            "title": "Document",
+            "type": "object"
+          },
+          "document_schema_version": {
+            "title": "Document Schema Version",
+            "type": "integer"
+          },
+          "policy_digest": {
+            "title": "Policy Digest",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "version",
+          "policy_version",
+          "policy_digest",
+          "document_schema_version",
+          "document"
+        ],
+        "title": "ProjectPolicyResponse",
+        "type": "object"
+      },
+      "ProjectPolicyUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Closed mutable policy update body.",
+        "properties": {
+          "allowed_environment_files": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Environment Files"
+          },
+          "allowed_merge_methods": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Merge Methods"
+          },
+          "commands": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CommandSpec"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commands"
+          },
+          "database": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatabaseProvisioningPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "developer_model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentModelPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_policy_version": {
+            "minimum": 1.0,
+            "title": "Expected Policy Version",
+            "type": "integer"
+          },
+          "local_remediation_limit": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Remediation Limit"
+          },
+          "merge_blocking_severities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FindingSeverity"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merge Blocking Severities"
+          },
+          "planner_model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentModelPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publication_blocking_severities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FindingSeverity"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Blocking Severities"
+          },
+          "remote_remediation_limit": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remote Remediation Limit"
+          },
+          "reviewer_model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentModelPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runner_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunnerMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "secret_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secret Paths"
+          },
+          "trusted_project": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trusted Project"
+          }
+        },
+        "required": [
+          "expected_policy_version"
+        ],
+        "title": "ProjectPolicyUpdateRequest",
+        "type": "object"
+      },
+      "ProjectResponse": {
+        "additionalProperties": false,
+        "description": "Safe project identity and current policy summary.",
+        "properties": {
+          "canonical_path_key": {
+            "title": "Canonical Path Key",
+            "type": "string"
+          },
+          "default_branch": {
+            "title": "Default Branch",
+            "type": "string"
+          },
+          "github_repository": {
+            "title": "Github Repository",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "instructions_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions Path"
+          },
+          "issue_import_available": {
+            "default": false,
+            "title": "Issue Import Available",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy"
+          },
+          "policy_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Digest"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "repository_path": {
+            "title": "Repository Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repository_path",
+          "canonical_path_key",
+          "github_repository",
+          "default_branch",
+          "instructions_path",
+          "policy_version",
+          "policy_digest"
+        ],
+        "title": "ProjectResponse",
+        "type": "object"
+      },
+      "ProjectSection": {
+        "additionalProperties": false,
+        "properties": {
+          "github_repository": {
+            "title": "Github Repository",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "policy_digest": {
+            "title": "Policy Digest",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "github_repository",
+          "policy_version",
+          "policy_digest"
+        ],
+        "title": "ProjectSection",
+        "type": "object"
+      },
+      "PromptMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AgentRole"
+          },
+          "scope": {
+            "const": "current_configuration",
+            "default": "current_configuration",
+            "title": "Scope",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "version",
+          "digest"
+        ],
+        "title": "PromptMetadata",
+        "type": "object"
+      },
+      "ProtectionSnapshotResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_can_bypass": {
+            "title": "Actor Can Bypass",
+            "type": "boolean"
+          },
+          "evidence_source": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Evidence Source",
+            "type": "string"
+          },
+          "merge_queue_enabled": {
+            "title": "Merge Queue Enabled",
+            "type": "boolean"
+          },
+          "merge_queue_method": {
+            "anyOf": [
+              {
+                "pattern": "^(merge|squash|rebase)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merge Queue Method"
+          },
+          "required_check_names": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Required Check Names",
+            "type": "array"
+          },
+          "strict_required_checks": {
+            "title": "Strict Required Checks",
+            "type": "boolean"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "strict_required_checks",
+          "merge_queue_enabled",
+          "actor_can_bypass",
+          "evidence_source",
+          "verified",
+          "required_check_names"
+        ],
+        "title": "ProtectionSnapshotResponse",
+        "type": "object"
+      },
+      "PullRequestSection": {
+        "additionalProperties": false,
+        "properties": {
+          "base_ref": {
+            "title": "Base Ref",
+            "type": "string"
+          },
+          "base_sha": {
+            "title": "Base Sha",
+            "type": "string"
+          },
+          "branch": {
+            "title": "Branch",
+            "type": "string"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "merge_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merge Sha"
+          },
+          "merge_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merge State"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "queue_admission": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "accepted",
+                  "rejected",
+                  "uncertain"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Admission"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "repository",
+          "branch",
+          "base_ref",
+          "head_sha",
+          "base_sha",
+          "state",
+          "merge_state"
+        ],
+        "title": "PullRequestSection",
+        "type": "object"
+      },
+      "RemoteCheckItem": {
+        "additionalProperties": false,
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "conclusion",
+          "head_sha",
+          "summary",
+          "text"
+        ],
+        "title": "RemoteCheckItem",
+        "type": "object"
+      },
+      "RemoteObservationSection": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteCheckItem"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "observation_digest": {
+            "title": "Observation Digest",
+            "type": "string"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteReviewItem"
+            },
+            "title": "Reviews",
+            "type": "array"
+          }
+        },
+        "required": [
+          "observation_digest",
+          "head_sha",
+          "checks",
+          "reviews"
+        ],
+        "title": "RemoteObservationSection",
+        "type": "object"
+      },
+      "RemoteReviewItem": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "comment_count": {
+            "title": "Comment Count",
+            "type": "integer"
+          },
+          "feedback": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Feedback",
+            "type": "array"
+          },
+          "requested_changes": {
+            "title": "Requested Changes",
+            "type": "boolean"
+          },
+          "reviewer": {
+            "title": "Reviewer",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "unresolved_threads": {
+            "title": "Unresolved Threads",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reviewer",
+          "state",
+          "submitted_at",
+          "requested_changes",
+          "unresolved_threads",
+          "comment_count",
+          "body",
+          "feedback"
+        ],
+        "title": "RemoteReviewItem",
+        "type": "object"
+      },
+      "ResourceSection": {
+        "additionalProperties": false,
+        "properties": {
+          "branch_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Name"
+          },
+          "branch_removed": {
+            "default": false,
+            "title": "Branch Removed",
+            "type": "boolean"
+          },
+          "database_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database Name"
+          },
+          "database_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database Role"
+          },
+          "database_state": {
+            "$ref": "#/components/schemas/ResourceState"
+          },
+          "teardown_confirmation": {
+            "title": "Teardown Confirmation",
+            "type": "string"
+          },
+          "worktree_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worktree Path"
+          }
+        },
+        "required": [
+          "teardown_confirmation",
+          "database_role",
+          "worktree_path",
+          "branch_name",
+          "database_state",
+          "database_name"
+        ],
+        "title": "ResourceSection",
+        "type": "object"
+      },
+      "ResourceState": {
+        "description": "The database lifecycle values stored on a run.",
+        "enum": [
+          "DISABLED",
+          "PROVISIONING",
+          "ACTIVE",
+          "FAILED",
+          "REMOVED"
+        ],
+        "title": "ResourceState",
+        "type": "string"
+      },
+      "ReviewArtifactResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ReviewDecision"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "missing_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Evidence",
+            "type": "array"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "producer_execution_id": {
+            "format": "uuid",
+            "title": "Producer Execution Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "tested_claims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tested Claims",
+            "type": "array"
+          }
+        },
+        "required": [
+          "digest",
+          "run_id",
+          "producer_execution_id",
+          "head_sha",
+          "policy_version",
+          "decision",
+          "summary",
+          "tested_claims",
+          "missing_evidence"
+        ],
+        "title": "ReviewArtifactResponse",
+        "type": "object"
+      },
+      "ReviewDecision": {
+        "description": "Closed decision values for Reviewer evaluations.",
+        "enum": [
+          "approve",
+          "request_changes",
+          "blocked"
+        ],
+        "title": "ReviewDecision",
+        "type": "string"
+      },
+      "ReviewSection": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Digest"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingItem"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          }
+        },
+        "required": [
+          "execution_id",
+          "evidence_digest",
+          "head_sha",
+          "findings"
+        ],
+        "title": "ReviewSection",
+        "type": "object"
+      },
+      "ReviewerDiffResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "diff_digest": {
+            "title": "Diff Digest",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "original_byte_count": {
+            "title": "Original Byte Count",
+            "type": "integer"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "producer_execution_id": {
+            "format": "uuid",
+            "title": "Producer Execution Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "validation_evidence_set_id": {
+            "format": "uuid",
+            "title": "Validation Evidence Set Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "run_id",
+          "producer_execution_id",
+          "validation_evidence_set_id",
+          "head_sha",
+          "policy_version",
+          "diff_digest",
+          "text",
+          "original_byte_count",
+          "truncated"
+        ],
+        "title": "ReviewerDiffResponse",
+        "type": "object"
+      },
+      "RunCommandRequest": {
+        "additionalProperties": false,
+        "description": "Closed command body accepted by the run command route.",
+        "properties": {
+          "command_type": {
+            "title": "Command Type",
+            "type": "string"
+          },
+          "confirm_branch_name": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirm Branch Name"
+          },
+          "confirm_resource_identity": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirm Resource Identity"
+          },
+          "delete_branch": {
+            "default": false,
+            "title": "Delete Branch",
+            "type": "boolean"
+          },
+          "expected_run_version": {
+            "minimum": 0.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback"
+          }
+        },
+        "required": [
+          "command_type",
+          "expected_run_version"
+        ],
+        "title": "RunCommandRequest",
+        "type": "object"
+      },
+      "RunCommandResponse": {
+        "additionalProperties": false,
+        "description": "Bounded command acknowledgement; payloads are never echoed.",
+        "properties": {
+          "command_type": {
+            "title": "Command Type",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "command_type",
+          "status",
+          "expected_run_version"
+        ],
+        "title": "RunCommandResponse",
+        "type": "object"
+      },
+      "RunCreateRequest": {
+        "additionalProperties": false,
+        "description": "Closed run creation body.",
+        "properties": {
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "RunCreateRequest",
+        "type": "object"
+      },
+      "RunListCostSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "currencies": {
+            "items": {
+              "$ref": "#/components/schemas/RunListCurrencyCost"
+            },
+            "title": "Currencies",
+            "type": "array"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currencies",
+          "unpriced_calls"
+        ],
+        "title": "RunListCostSummary",
+        "type": "object"
+      },
+      "RunListCurrencyCost": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "known_cost_minor": {
+            "title": "Known Cost Minor",
+            "type": "integer"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "known_cost_minor",
+          "unpriced_calls"
+        ],
+        "title": "RunListCurrencyCost",
+        "type": "object"
+      },
+      "RunListItem": {
+        "additionalProperties": false,
+        "properties": {
+          "attention_required": {
+            "title": "Attention Required",
+            "type": "boolean"
+          },
+          "cost_summary": {
+            "$ref": "#/components/schemas/RunListCostSummary"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "elapsed_seconds": {
+            "title": "Elapsed Seconds",
+            "type": "number"
+          },
+          "local_remediation_count": {
+            "title": "Local Remediation Count",
+            "type": "integer"
+          },
+          "next_gate": {
+            "anyOf": [
+              {
+                "enum": [
+                  "plan",
+                  "pr",
+                  "merge"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Gate"
+          },
+          "pending_gate": {
+            "anyOf": [
+              {
+                "enum": [
+                  "plan",
+                  "pr",
+                  "merge"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Gate"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_name": {
+            "title": "Project Name",
+            "type": "string"
+          },
+          "pull_request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunListPullRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remote_remediation_count": {
+            "title": "Remote Remediation Count",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_title": {
+            "title": "Task Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_id",
+          "task_title",
+          "project_id",
+          "project_name",
+          "run_id",
+          "state",
+          "version",
+          "pending_gate",
+          "next_gate",
+          "attention_required",
+          "local_remediation_count",
+          "remote_remediation_count",
+          "created_at",
+          "updated_at",
+          "elapsed_ms",
+          "elapsed_seconds",
+          "pull_request",
+          "cost_summary"
+        ],
+        "title": "RunListItem",
+        "type": "object"
+      },
+      "RunListPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "limit",
+          "truncated"
+        ],
+        "title": "RunListPage",
+        "type": "object"
+      },
+      "RunListPullRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "repository",
+          "head_sha"
+        ],
+        "title": "RunListPullRequest",
+        "type": "object"
+      },
+      "RunProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "agents": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AgentSection"
+            },
+            "title": "Agents",
+            "type": "object"
+          },
+          "available_commands": {
+            "items": {
+              "$ref": "#/components/schemas/AvailableCommand"
+            },
+            "title": "Available Commands",
+            "type": "array"
+          },
+          "budgets": {
+            "$ref": "#/components/schemas/BudgetSection"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/CandidateSection"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/CheckItem"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "latest_events": {
+            "items": {
+              "$ref": "#/components/schemas/EventItem"
+            },
+            "title": "Latest Events",
+            "type": "array"
+          },
+          "next_gate": {
+            "anyOf": [
+              {
+                "enum": [
+                  "plan",
+                  "pr",
+                  "merge"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Gate"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/PlanSection"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectSection"
+          },
+          "pull_request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PullRequestSection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recovery_hold": {
+            "title": "Recovery Hold",
+            "type": "boolean"
+          },
+          "remote_observation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteObservationSection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceSection"
+          },
+          "review": {
+            "$ref": "#/components/schemas/ReviewSection"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunResponse"
+          },
+          "security": {
+            "$ref": "#/components/schemas/SecuritySection"
+          },
+          "task": {
+            "$ref": "#/components/schemas/TaskSection"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/UsageSummary"
+          }
+        },
+        "required": [
+          "recovery_hold",
+          "run",
+          "task",
+          "project",
+          "resource",
+          "plan",
+          "candidate",
+          "pull_request",
+          "remote_observation",
+          "checks",
+          "review",
+          "agents",
+          "budgets",
+          "usage",
+          "security",
+          "latest_events",
+          "available_commands",
+          "next_gate"
+        ],
+        "title": "RunProjection",
+        "type": "object"
+      },
+      "RunResponse": {
+        "additionalProperties": false,
+        "description": "Safe authoritative run snapshot.",
+        "properties": {
+          "base_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Ref"
+          },
+          "base_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Sha"
+          },
+          "branch_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "local_remediation_count": {
+            "title": "Local Remediation Count",
+            "type": "integer"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "remote_remediation_count": {
+            "title": "Remote Remediation Count",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "suspended_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suspension_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuspensionKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "task_id",
+          "state",
+          "version",
+          "suspended_state",
+          "suspension_kind",
+          "local_remediation_count",
+          "remote_remediation_count",
+          "policy_version",
+          "base_ref",
+          "base_sha",
+          "branch_name"
+        ],
+        "title": "RunResponse",
+        "type": "object"
+      },
+      "RunState": {
+        "enum": [
+          "CREATED",
+          "PLANNING",
+          "AWAITING_PLAN_APPROVAL",
+          "PREPARING_WORKTREE",
+          "IMPLEMENTING",
+          "VALIDATING",
+          "REVIEWING",
+          "REMEDIATING",
+          "AWAITING_PR_APPROVAL",
+          "PUBLISHING_PR",
+          "MONITORING_PR",
+          "AWAITING_HUMAN_INTERVENTION",
+          "AWAITING_MERGE_APPROVAL",
+          "MERGING",
+          "PAUSED",
+          "COMPLETED",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "title": "RunState",
+        "type": "string"
+      },
+      "RunUsageItem": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_execution_id": {
+            "format": "uuid",
+            "title": "Agent Execution Id",
+            "type": "string"
+          },
+          "cached_input_tokens": {
+            "title": "Cached Input Tokens",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "estimated_cost_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Minor"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "instruction_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction Digest"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "pricing_version": {
+            "title": "Pricing Version",
+            "type": "string"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "tool_call_count": {
+            "title": "Tool Call Count",
+            "type": "integer"
+          },
+          "unknown_price_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Price Reason"
+          }
+        },
+        "required": [
+          "id",
+          "agent_execution_id",
+          "role",
+          "provider",
+          "model",
+          "prompt_version",
+          "instruction_digest",
+          "input_tokens",
+          "output_tokens",
+          "cached_input_tokens",
+          "duration_ms",
+          "tool_call_count",
+          "pricing_version",
+          "estimated_cost_minor",
+          "currency",
+          "unknown_price_reason",
+          "created_at"
+        ],
+        "title": "RunUsageItem",
+        "type": "object"
+      },
+      "RunnerMode": {
+        "description": "The execution boundary used for policy-controlled commands.",
+        "enum": [
+          "docker",
+          "trusted_host"
+        ],
+        "title": "RunnerMode",
+        "type": "string"
+      },
+      "SecuritySection": {
+        "additionalProperties": false,
+        "properties": {
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/CommandNetworkPolicy"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
+          "database_enabled": {
+            "title": "Database Enabled",
+            "type": "boolean"
+          },
+          "runner_mode": {
+            "title": "Runner Mode",
+            "type": "string"
+          },
+          "secret_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Secret Paths",
+            "type": "array"
+          },
+          "trusted_project": {
+            "title": "Trusted Project",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "commands",
+          "secret_paths",
+          "runner_mode",
+          "trusted_project",
+          "database_enabled"
+        ],
+        "title": "SecuritySection",
+        "type": "object"
+      },
+      "SessionResponse": {
+        "properties": {
+          "absolute_expires_at": {
+            "title": "Absolute Expires At",
+            "type": "string"
+          },
+          "actor_class": {
+            "title": "Actor Class",
+            "type": "string"
+          },
+          "actor_id": {
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "idle_expires_at": {
+            "title": "Idle Expires At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor_id",
+          "actor_class",
+          "expires_at",
+          "idle_expires_at",
+          "absolute_expires_at"
+        ],
+        "title": "SessionResponse",
+        "type": "object"
+      },
+      "StepKind": {
+        "description": "Closed set of operations that may be dispatched by a runner.",
+        "enum": [
+          "bootstrap",
+          "install",
+          "migration",
+          "seed",
+          "test",
+          "lint",
+          "typecheck",
+          "build",
+          "custom_named"
+        ],
+        "title": "StepKind",
+        "type": "string"
+      },
+      "SuspensionKind": {
+        "description": "Why a run is retaining its previous state.",
+        "enum": [
+          "PAUSE",
+          "INTERVENTION"
+        ],
+        "title": "SuspensionKind",
+        "type": "string"
+      },
+      "TaskCreateRequest": {
+        "additionalProperties": false,
+        "description": "Closed plain-text task creation body.",
+        "properties": {
+          "body": {
+            "maxLength": 1048576,
+            "title": "Body",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "title",
+          "body"
+        ],
+        "title": "TaskCreateRequest",
+        "type": "object"
+      },
+      "TaskResponse": {
+        "additionalProperties": false,
+        "description": "Exact task source fields and their deterministic derived values.",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Id"
+          },
+          "external_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Source"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "normalized_text": {
+            "title": "Normalized Text",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Updated At"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "task_digest": {
+            "title": "Task Digest",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "untrusted_external_content": {
+            "title": "Untrusted External Content",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "title",
+          "body",
+          "source_url",
+          "source_updated_at",
+          "untrusted_external_content",
+          "normalized_text",
+          "task_digest",
+          "external_source",
+          "external_id"
+        ],
+        "title": "TaskResponse",
+        "type": "object"
+      },
+      "TaskSection": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "external_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Source"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "untrusted_external_content": {
+            "title": "Untrusted External Content",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "body",
+          "external_source",
+          "source_url",
+          "untrusted_external_content"
+        ],
+        "title": "TaskSection",
+        "type": "object"
+      },
+      "UsageItem": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "known_cost_minor": {
+            "title": "Known Cost Minor",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "provider",
+          "model",
+          "currency",
+          "input_tokens",
+          "output_tokens",
+          "duration_ms",
+          "known_cost_minor",
+          "unpriced_calls",
+          "model_calls"
+        ],
+        "title": "UsageItem",
+        "type": "object"
+      },
+      "UsageSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "cached_input_tokens": {
+            "title": "Cached Input Tokens",
+            "type": "integer"
+          },
+          "currencies": {
+            "items": {
+              "$ref": "#/components/schemas/CurrencyUsage"
+            },
+            "title": "Currencies",
+            "type": "array"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "tool_calls": {
+            "title": "Tool Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cached_input_tokens",
+          "duration_ms",
+          "tool_calls",
+          "model_calls",
+          "currencies"
+        ],
+        "title": "UsageSummary",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "CSRF": {
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "type": "apiKey"
+      },
+      "OperatorSession": {
+        "in": "cookie",
+        "name": "forge_session",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "title": "Parallel Forge",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/agent-prompts": {
+      "get": {
+        "operationId": "prompts_api_agent_prompts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PromptMetadata"
+                  },
+                  "title": "Response Prompts Api Agent Prompts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Prompts"
+      }
+    },
+    "/api/agents": {
+      "get": {
+        "operationId": "agents_api_agents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_AgentItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Agents"
+      }
+    },
+    "/api/approvals": {
+      "get": {
+        "operationId": "approvals_api_approvals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_ApprovalItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Approvals"
+      }
+    },
+    "/api/artifacts/{digest}": {
+      "get": {
+        "operationId": "get_artifact_api_artifacts__digest__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Artifact"
+      }
+    },
+    "/api/artifacts/{digest}/download": {
+      "get": {
+        "operationId": "download_api_artifacts__digest__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Download"
+      }
+    },
+    "/api/artifacts/{digest}/merge-protection": {
+      "get": {
+        "operationId": "merge_protection_api_artifacts__digest__merge_protection_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeProtectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Merge Protection"
+      }
+    },
+    "/api/artifacts/{digest}/review": {
+      "get": {
+        "operationId": "review_artifact_api_artifacts__digest__review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewArtifactResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Review Artifact"
+      }
+    },
+    "/api/artifacts/{digest}/reviewer-diff": {
+      "get": {
+        "operationId": "reviewer_diff_api_artifacts__digest__reviewer_diff_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewerDiffResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Reviewer Diff"
+      }
+    },
+    "/api/artifacts/{digest}/text": {
+      "get": {
+        "operationId": "get_text_api_artifacts__digest__text_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactTextResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Text"
+      }
+    },
+    "/api/audit": {
+      "get": {
+        "operationId": "audit_api_audit_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "operation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Operation Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "operation_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "PENDING",
+                    "SUCCEEDED",
+                    "FAILED",
+                    "NEEDS_RECONCILIATION"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Operation Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_AuditItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Audit"
+      }
+    },
+    "/api/audit/run-events/{event_id}": {
+      "get": {
+        "operationId": "run_audit_detail_api_audit_run_events__event_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditEventEvidence"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Run Audit Detail"
+      }
+    },
+    "/api/audit/{event_id}": {
+      "get": {
+        "operationId": "audit_detail_api_audit__event_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditEventEvidence"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Audit Detail"
+      }
+    },
+    "/api/auth/bootstrap": {
+      "post": {
+        "description": "Exchange a single-use short-lived bootstrap token for a session. Requires the configured Host and Origin; no prior session exists.",
+        "operationId": "bootstrap_api_auth_bootstrap_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [],
+        "summary": "Bootstrap",
+        "x-forge-bootstrap-exchange": true
+      }
+    },
+    "/api/auth/csrf": {
+      "get": {
+        "operationId": "recover_csrf_api_auth_csrf_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CsrfResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Recover Csrf"
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logout_api_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Logout"
+      }
+    },
+    "/api/auth/session": {
+      "get": {
+        "operationId": "session_api_auth_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Session"
+      }
+    },
+    "/api/dashboard/summary": {
+      "get": {
+        "operationId": "summary_api_dashboard_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Summary"
+      }
+    },
+    "/api/evaluations": {
+      "get": {
+        "operationId": "evaluations_api_evaluations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_EvaluationItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Evaluations"
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "operationId": "list_projects_api_projects_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectResponse"
+                  },
+                  "title": "Response List Projects Api Projects Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Projects"
+      },
+      "post": {
+        "operationId": "register_project_api_projects_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Register Project"
+      }
+    },
+    "/api/projects/{project_id}": {
+      "get": {
+        "operationId": "get_project_api_projects__project_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Project"
+      }
+    },
+    "/api/projects/{project_id}/policy-projection": {
+      "get": {
+        "operationId": "policy_api_projects__project_id__policy_projection_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Policy"
+      }
+    },
+    "/api/projects/{project_id}/policy-versions": {
+      "post": {
+        "operationId": "update_project_policy_api_projects__project_id__policy_versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectPolicyUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPolicyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Update Project Policy"
+      }
+    },
+    "/api/projects/{project_id}/policy-versions/{version}": {
+      "get": {
+        "operationId": "get_project_policy_api_projects__project_id__policy_versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPolicyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Project Policy"
+      }
+    },
+    "/api/run-projections": {
+      "get": {
+        "operationId": "run_projections_api_run_projections_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RunState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "attention",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Attention"
+            }
+          },
+          {
+            "in": "query",
+            "name": "updated_since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Updated Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunListPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Run Projections"
+      }
+    },
+    "/api/runs": {
+      "get": {
+        "operationId": "list_runs_api_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunResponse"
+                  },
+                  "title": "Response List Runs Api Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Runs"
+      },
+      "post": {
+        "operationId": "create_run_api_runs_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Create Run"
+      }
+    },
+    "/api/runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_api_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Run"
+      }
+    },
+    "/api/runs/{run_id}/approval-challenges": {
+      "post": {
+        "operationId": "issue_challenge_api_runs__run_id__approval_challenges_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalChallengeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalChallengeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Issue Challenge"
+      }
+    },
+    "/api/runs/{run_id}/approval-history": {
+      "get": {
+        "operationId": "approval_history_api_runs__run_id__approval_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_ApprovalHistoryItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Approval History"
+      }
+    },
+    "/api/runs/{run_id}/approvals": {
+      "post": {
+        "operationId": "authorize_api_runs__run_id__approvals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Authorize"
+      }
+    },
+    "/api/runs/{run_id}/checks": {
+      "get": {
+        "operationId": "checks_api_runs__run_id__checks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_CheckHistoryItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Checks"
+      }
+    },
+    "/api/runs/{run_id}/commands": {
+      "post": {
+        "operationId": "enqueue_run_command_api_runs__run_id__commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Enqueue Run Command"
+      }
+    },
+    "/api/runs/{run_id}/events": {
+      "get": {
+        "operationId": "events_api_runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "description": "Takes precedence over after.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "pattern": "^[0-9]{1,19}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Events"
+      }
+    },
+    "/api/runs/{run_id}/projection": {
+      "get": {
+        "operationId": "projection_api_runs__run_id__projection_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Projection"
+      }
+    },
+    "/api/runs/{run_id}/usage": {
+      "get": {
+        "operationId": "run_usage_api_runs__run_id__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_RunUsageItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Run Usage"
+      }
+    },
+    "/api/tasks": {
+      "get": {
+        "operationId": "list_tasks_api_tasks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TaskResponse"
+                  },
+                  "title": "Response List Tasks Api Tasks Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Tasks"
+      },
+      "post": {
+        "operationId": "create_task_api_tasks_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Create Task"
+      }
+    },
+    "/api/tasks/import-github": {
+      "post": {
+        "operationId": "import_github_issue_api_tasks_import_github_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubIssueImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Import Github Issue"
+      }
+    },
+    "/api/tasks/{task_id}": {
+      "get": {
+        "operationId": "get_task_api_tasks__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Task"
+      }
+    },
+    "/api/tool-permissions": {
+      "get": {
+        "operationId": "permissions_api_tool_permissions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_PermissionItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Permissions"
+      }
+    },
+    "/api/usage": {
+      "get": {
+        "operationId": "usage_api_usage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage_UsageItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Usage"
+      }
+    }
+  }
+}

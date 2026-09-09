@@ -1,0 +1,319 @@
+"""Acceptance tests for the content-addressed filesystem artifact store."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+from forge.artifacts.filesystem import (
+    ArtifactIntegrityError,
+    ArtifactStoreError,
+    FilesystemArtifactStore,
+)
+
+
+@pytest.mark.asyncio
+async def test_equal_content_is_deduplicated_sequentially_and_concurrently(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+
+    first, second = await asyncio.gather(
+        store.put_bytes(b"same", media_type="text/plain"),
+        store.put_bytes(b"same", media_type="text/plain"),
+    )
+
+    assert first.digest == second.digest == hashlib.sha256(b"same").hexdigest()
+    assert first.storage_path == second.storage_path
+    assert list(tmp_path.rglob("*.blob")) == [first.storage_path]
+    assert list(tmp_path.rglob("*.tmp")) == []
+
+
+@pytest.mark.asyncio
+async def test_read_rejects_tampered_missing_and_malformed_objects(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+    artifact = await store.put_bytes(b"trusted", media_type="text/plain")
+    artifact.storage_path.write_bytes(b"changed")
+
+    with pytest.raises(ArtifactIntegrityError):
+        await store.open_bytes(artifact.digest)
+    with pytest.raises(ArtifactIntegrityError):
+        await store.verify(artifact.digest)
+    artifact.storage_path.unlink()
+    with pytest.raises(ArtifactIntegrityError):
+        await store.open_bytes(artifact.digest)
+    with pytest.raises(ValueError):
+        await store.open_bytes("ABC")
+    with pytest.raises(ValueError):
+        await store.open_bytes("../" + "a" * 64)
+
+
+@pytest.mark.asyncio
+async def test_link_and_nonregular_targets_fail_closed(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+    artifact = await store.put_bytes(b"trusted", media_type="text/plain")
+    artifact.storage_path.unlink()
+    artifact.storage_path.mkdir()
+    with pytest.raises(ArtifactIntegrityError):
+        await store.verify(artifact.digest)
+    artifact.storage_path.rmdir()
+
+    replacement = tmp_path / "replacement.blob"
+    replacement.write_bytes(b"trusted")
+    try:
+        artifact.storage_path.symlink_to(replacement)
+    except OSError, NotImplementedError:
+        pytest.skip("symbolic links are unavailable in this environment")
+
+    with pytest.raises(ArtifactIntegrityError):
+        await store.verify(artifact.digest)
+
+
+@pytest.mark.asyncio
+async def test_corrupt_preexisting_target_is_never_overwritten(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+    digest = hashlib.sha256(b"trusted").hexdigest()
+    target = tmp_path / "sha256" / digest[:2] / f"{digest[2:]}.blob"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"corrupt")
+
+    with pytest.raises(ArtifactIntegrityError):
+        await store.put_bytes(b"trusted", media_type="text/plain")
+    assert target.read_bytes() == b"corrupt"
+
+
+@pytest.mark.asyncio
+async def test_bounded_output_is_head_tail_and_discards_middle_everywhere(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+    source = b"HEAD-" + b"DISCARDED-MARKER-" + b"TAIL"
+
+    artifact = await store.put_bytes(
+        source,
+        media_type="text/plain",
+        max_bytes=9,
+        bounding_policy="head_tail",
+    )
+
+    stored = await store.open_bytes(artifact.digest)
+    assert stored == b"HEAD-TAIL"
+    assert artifact.truncated is True
+    assert artifact.original_byte_count == len(source)
+    assert artifact.truncation_policy == "head_tail"
+    assert b"DISCARDED-MARKER" not in stored
+    assert "DISCARDED-MARKER" not in repr(artifact)
+
+
+@pytest.mark.asyncio
+async def test_invalid_bounds_fail_before_writing(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError):
+        await store.put_bytes(b"data", media_type="text/plain", max_bytes=0)
+    assert list(tmp_path.rglob("*")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle cleanup regression")
+@pytest.mark.parametrize("failure_stage", ("validation", "write"))
+async def test_windows_temp_cleanup_is_armed_at_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    from forge.artifacts import _win32
+
+    def fail(*_args: object) -> None:
+        raise ArtifactStoreError("simulated artifact temp failure")
+
+    hook = "_require_regular" if failure_stage == "validation" else "_write_all"
+    monkeypatch.setattr(_win32, hook, fail)
+    store = FilesystemArtifactStore(tmp_path / "root")
+
+    with pytest.raises(ArtifactStoreError, match="simulated artifact temp failure"):
+        await store.put_bytes(b"content", media_type="text/plain")
+
+    assert not list((tmp_path / "root").rglob("*.tmp"))
+    assert not list((tmp_path / "root").rglob("*.blob"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("digest", ("０" * 64, "١" * 64, "ａ" * 64))
+async def test_non_ascii_digest_rejected_before_root_io(tmp_path: Path, digest: str) -> None:
+    root = tmp_path / "not-created"
+    store = FilesystemArtifactStore(root)
+
+    with pytest.raises(ValueError):
+        await store.open_bytes(digest)
+    assert not root.exists()
+
+
+@pytest.mark.asyncio
+async def test_root_replacement_between_calls_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    store = FilesystemArtifactStore(root)
+    await store.put_bytes(b"first", media_type="text/plain")
+    moved = tmp_path / "moved-root"
+    root.rename(moved)
+    root.mkdir()
+
+    with pytest.raises(ArtifactIntegrityError):
+        await store.put_bytes(b"second", media_type="text/plain")
+    assert list(root.rglob("*.blob")) == []
+    shutil.rmtree(moved)
+
+
+@pytest.mark.asyncio
+async def test_publish_namespace_swap_is_blocked_or_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    store = FilesystemArtifactStore(root)
+    await store.put_bytes(b"seed", media_type="text/plain")
+    race_digest = hashlib.sha256(b"race").hexdigest()
+    canonical_target = root / "sha256" / race_digest[:2] / f"{race_digest[2:]}.blob"
+    called = False
+    swapped = False
+    moved_shard: Path | None = None
+
+    def swap_shard(target: Path) -> None:
+        nonlocal called, moved_shard, swapped
+        called = True
+        shard = target.parent
+        moved = shard.with_name("moved-shard")
+        try:
+            shard.rename(moved)
+            shard.mkdir()
+        except OSError:
+            return
+        swapped = True
+        moved_shard = moved
+
+    store._before_publish = swap_shard  # type: ignore[attr-defined,method-assign]
+    try:
+        result = await store.put_bytes(b"race", media_type="text/plain")
+    except ArtifactIntegrityError, OSError:
+        result = None
+
+    assert called
+    if swapped:
+        assert result is None
+        assert moved_shard is not None
+        assert not canonical_target.exists()
+        assert not (moved_shard / canonical_target.name).exists()
+        assert not list(root.rglob("*.tmp"))
+    else:
+        assert result is not None
+        assert await store.open_bytes(result.digest) == b"race"
+
+
+@pytest.mark.asyncio
+async def test_read_namespace_swap_never_returns_replaced_bytes(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path / "root")
+    artifact = await store.put_bytes(b"trusted", media_type="text/plain")
+    called = False
+    replaced = False
+
+    def replace_target(target: Path) -> None:
+        nonlocal called, replaced
+        called = True
+        backup = target.with_name("backup.blob")
+        try:
+            target.rename(backup)
+            target.write_bytes(b"outside")
+        except OSError:
+            return
+        replaced = True
+
+    store._before_read_open = replace_target  # type: ignore[attr-defined,method-assign]
+    try:
+        result = await store.open_bytes(artifact.digest)
+    except ArtifactIntegrityError:
+        result = None
+
+    assert called
+    if replaced:
+        assert result is None
+    else:
+        assert result == b"trusted"
+
+
+@pytest.mark.asyncio
+async def test_bounded_read_rejects_oversized_blob_before_reading(tmp_path, monkeypatch):
+    store = FilesystemArtifactStore(tmp_path)
+    artifact = await store.put_bytes(b"ok", media_type="text/plain")
+    artifact.storage_path.write_bytes(b"corrupt oversized data")
+
+    def forbidden_read(*args):
+        pytest.fail("oversized file must be rejected before reading")
+
+    if os.name == "nt":
+        from forge.artifacts import _win32
+
+        monkeypatch.setattr(_win32, "_READ_FILE", forbidden_read)
+    else:
+        monkeypatch.setattr(os, "read", forbidden_read)
+    with pytest.raises(ArtifactIntegrityError, match="bound"):
+        await store.open_bytes(artifact.digest, max_bytes=2)
+
+
+@pytest.mark.asyncio
+async def test_bounded_read_accepts_exact_and_empty_and_rejects_invalid_limits(tmp_path):
+    store = FilesystemArtifactStore(tmp_path)
+    for data in (b"", b"exact"):
+        artifact = await store.put_bytes(data, media_type="text/plain")
+        assert await store.open_bytes(artifact.digest, max_bytes=len(data)) == data
+        for limit in (-1, True, 1.5):
+            with pytest.raises(ValueError):
+                await store.open_bytes(artifact.digest, max_bytes=limit)
+
+
+def test_posix_reader_limits_growth_after_initial_size_check(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from forge.artifacts import filesystem
+
+    path = tmp_path / "growing"
+    path.write_bytes(b"oversized data")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    sizes = []
+    original_read = os.read
+
+    def bounded_read(fd, size):
+        sizes.append(size)
+        return original_read(fd, size)
+
+    monkeypatch.setattr(os, "fstat", lambda fd: SimpleNamespace(st_size=0))
+    monkeypatch.setattr(os, "read", bounded_read)
+    try:
+        with pytest.raises(ArtifactIntegrityError, match="bound"):
+            filesystem._read_verified_fd(descriptor, "a" * 64, max_bytes=4)
+    finally:
+        os.close(descriptor)
+    assert sizes and max(sizes) <= 5
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle reader")
+@pytest.mark.asyncio
+async def test_windows_reader_limits_growth_after_initial_size_check(tmp_path, monkeypatch):
+    from forge.artifacts import _win32
+
+    store = FilesystemArtifactStore(tmp_path)
+    artifact = await store.put_bytes(b"oversized data", media_type="text/plain")
+    original_information = _win32._information
+    original_read = _win32._READ_FILE
+    sizes = []
+
+    def stale_size(handle):
+        info = original_information(handle)
+        info.size_high = info.size_low = 0
+        return info
+
+    def bounded_read(handle, buffer, size, count, overlapped):
+        sizes.append(size)
+        return original_read(handle, buffer, size, count, overlapped)
+
+    monkeypatch.setattr(_win32, "_information", stale_size)
+    monkeypatch.setattr(_win32, "_READ_FILE", bounded_read)
+    with pytest.raises(ArtifactIntegrityError, match="bound"):
+        await store.open_bytes(artifact.digest, max_bytes=4)
+    assert sizes and max(sizes) <= 5

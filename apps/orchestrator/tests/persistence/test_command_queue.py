@@ -1,0 +1,435 @@
+"""Integration coverage for durable command idempotency and leases."""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+import pytest
+from forge.application.ports.commands import CommandLane
+from forge.domain.command import CommandStatus
+from forge.domain.run import RunState
+from forge.persistence.repositories.commands import (
+    CommandLeaseError,
+    IdempotencyConflict,
+    PersistenceDataError,
+)
+from forge.persistence.unit_of_work import PostgresUnitOfWork
+from sqlalchemy import text
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("paused", [True, False])
+@pytest.mark.parametrize("expired_delivery", [False, True])
+async def test_stopped_run_keeps_stage_undispatched_and_allows_operator_command(
+    command_repository, persisted_run, session_factory, paused, expired_delivery
+) -> None:
+    stage = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="start_planning",
+        idempotency_key="stopped-stage",
+        payload={},
+    )
+    if expired_delivery:
+        claimed = await command_repository.claim_next(worker_id="old", lease_seconds=30)
+        assert claimed is not None and claimed.id == stage.id
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                text("UPDATE run_commands SET lease_expires_at = :expired WHERE id = :id"),
+                {"expired": datetime.now(UTC) - timedelta(seconds=1), "id": stage.id},
+            )
+    async with PostgresUnitOfWork(session_factory) as work:
+        if paused:
+            stopped = await work.runs.pause(
+                persisted_run.id, persisted_run.version, "test.paused", {}
+            )
+        else:
+            stopped = await work.runs.transition(
+                persisted_run.id, persisted_run.version, RunState.CANCELLED, "test.cancelled", {}
+            )
+        await work.commit()
+    operator = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="resume" if paused else "teardown_run_resources",
+        idempotency_key="stopped-operator",
+        payload={},
+        expected_run_version=stopped.version,
+    )
+    claimed = await command_repository.claim_next(worker_id="operator", lease_seconds=30)
+    assert claimed is not None and claimed.id == operator.id
+    retained = await command_repository.get(stage.id)
+    assert retained.status is (CommandStatus.LEASED if expired_delivery else CommandStatus.PENDING)
+    assert retained.attempt == int(expired_delivery)
+
+
+@pytest.mark.integration
+async def test_duplicate_enqueue_returns_same_command_without_mutation(
+    command_repository, persisted_run
+) -> None:
+    available_at = datetime.now(UTC) + timedelta(seconds=30)
+    first = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="start_planning",
+        idempotency_key="run-1:start-planning",
+        payload={"source": "operator"},
+        expected_run_version=0,
+        available_at=available_at,
+    )
+    second = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="start_planning",
+        idempotency_key="run-1:start-planning",
+        payload={"source": "operator"},
+        expected_run_version=0,
+        available_at=available_at,
+    )
+
+    assert second.id == first.id
+    assert second.payload == first.payload
+
+    with pytest.raises(IdempotencyConflict):
+        await command_repository.enqueue(
+            run_id=persisted_run.id,
+            command_type="start_planning",
+            idempotency_key="run-1:start-planning",
+            payload={"source": "different"},
+            expected_run_version=0,
+            available_at=available_at,
+        )
+
+
+@pytest.mark.integration
+async def test_duplicate_enqueue_without_requested_availability_is_idempotent(
+    command_repository, persisted_run
+) -> None:
+    first = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="default-availability",
+        idempotency_key="default-availability",
+        payload={},
+    )
+    second = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="default-availability",
+        idempotency_key="default-availability",
+        payload={},
+    )
+    assert second.id == first.id
+
+
+@pytest.mark.integration
+async def test_claim_is_exclusive_per_run_but_parallel_across_runs(
+    command_repository, persisted_run, session_factory
+) -> None:
+    from forge.domain.run import RunSnapshot
+    from forge.persistence.unit_of_work import PostgresUnitOfWork
+
+    second_run = RunSnapshot(
+        id=uuid4(), project_id=persisted_run.project_id, task_id=persisted_run.task_id
+    )
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(second_run)
+        await work.commit()
+
+    for index in range(2):
+        await command_repository.enqueue(
+            run_id=persisted_run.id,
+            command_type=f"same-run-{index}",
+            idempotency_key=f"same-run-{index}",
+            payload={},
+            expected_run_version=0,
+        )
+    await command_repository.enqueue(
+        run_id=second_run.id,
+        command_type="other-run",
+        idempotency_key="other-run",
+        payload={},
+        expected_run_version=0,
+    )
+
+    first, second = await asyncio.gather(
+        command_repository.claim_next(worker_id="worker-a", lease_seconds=30),
+        command_repository.claim_next(worker_id="worker-b", lease_seconds=30),
+    )
+    assert first is not None
+    assert second is not None
+    assert len({first.run_id, second.run_id}) == 2
+    assert {first.run_id, second.run_id} == {persisted_run.id, second_run.id}
+
+
+@pytest.mark.integration
+async def test_expired_lease_reclaims_and_unexpired_lease_is_skipped(
+    command_repository, persisted_run, session_factory
+) -> None:
+    expired = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="expired",
+        idempotency_key="expired",
+        payload={},
+        expected_run_version=0,
+        available_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    first = await command_repository.claim_next(worker_id="worker-a", lease_seconds=30)
+    assert first is not None
+    assert first.id == expired.id
+    assert first.status is CommandStatus.LEASED
+
+    assert await command_repository.claim_next(worker_id="worker-b", lease_seconds=30) is None
+
+    await command_repository.complete(first.id, worker_id="worker-a")
+    next_command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="reclaimable",
+        idempotency_key="reclaimable",
+        payload={},
+        expected_run_version=0,
+        available_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    leased_reclaimable = await command_repository.claim_next(worker_id="worker-c", lease_seconds=30)
+    assert leased_reclaimable is not None
+    assert leased_reclaimable.id == next_command.id
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE run_commands SET lease_expires_at = :expired WHERE id = :id"),
+            {"expired": datetime.now(UTC) - timedelta(seconds=1), "id": next_command.id},
+        )
+    reclaimed = await command_repository.claim_next(worker_id="worker-c", lease_seconds=30)
+    assert reclaimed is not None
+    assert reclaimed.id == next_command.id
+
+
+@pytest.mark.integration
+async def test_control_lane_can_join_normal_lease_but_excludes_second_leases(
+    command_repository, persisted_run
+) -> None:
+    normal = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="implement",
+        idempotency_key="normal",
+        payload={},
+    )
+    claimed_normal = await command_repository.claim_next(
+        worker_id="normal", lease_seconds=30, lane=CommandLane.NORMAL
+    )
+    control = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="pause",
+        idempotency_key="pause",
+        payload={},
+    )
+    second_control = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="cancel",
+        idempotency_key="cancel",
+        payload={},
+    )
+    second_normal = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="review",
+        idempotency_key="review",
+        payload={},
+    )
+
+    claimed_control = await command_repository.claim_next(
+        worker_id="control", lease_seconds=30, lane=CommandLane.CONTROL
+    )
+
+    assert claimed_normal is not None and claimed_normal.id == normal.id
+    assert claimed_control is not None and claimed_control.id == control.id
+    assert (
+        await command_repository.claim_next(
+            worker_id="normal-2", lease_seconds=30, lane=CommandLane.NORMAL
+        )
+        is None
+    )
+    assert (
+        await command_repository.claim_next(
+            worker_id="control-2", lease_seconds=30, lane=CommandLane.CONTROL
+        )
+        is None
+    )
+    assert await command_repository.get(second_control.id)
+    assert await command_repository.get(second_normal.id)
+
+
+@pytest.mark.integration
+async def test_pending_control_prevents_normal_overtake_when_idle(
+    command_repository, persisted_run
+) -> None:
+    control = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="pause",
+        idempotency_key="pause-priority",
+        payload={},
+    )
+    await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="implement",
+        idempotency_key="normal-after-pause",
+        payload={},
+    )
+    assert (
+        await command_repository.claim_next(
+            worker_id="normal", lease_seconds=30, lane=CommandLane.NORMAL
+        )
+        is None
+    )
+    claimed = await command_repository.claim_next(
+        worker_id="control", lease_seconds=30, lane=CommandLane.CONTROL
+    )
+    assert claimed is not None and claimed.id == control.id
+
+
+@pytest.mark.integration
+async def test_non_owner_cannot_renew_complete_or_fail(command_repository, persisted_run) -> None:
+    command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="owned",
+        idempotency_key="owned",
+        payload={},
+        expected_run_version=0,
+    )
+    leased = await command_repository.claim_next(worker_id="worker-a", lease_seconds=30)
+    assert leased is not None
+
+    with pytest.raises(CommandLeaseError):
+        await command_repository.renew(command.id, worker_id="worker-b", lease_seconds=30)
+    with pytest.raises(CommandLeaseError):
+        await command_repository.complete(command.id, worker_id="worker-b")
+    with pytest.raises(CommandLeaseError):
+        await command_repository.fail(command.id, worker_id="worker-b", error="no")
+
+
+@pytest.mark.integration
+async def test_terminal_and_transient_failures_have_safe_state_transitions(
+    command_repository, persisted_run
+) -> None:
+    transient = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="retry",
+        idempotency_key="retry",
+        payload={},
+        expected_run_version=0,
+    )
+    leased = await command_repository.claim_next(worker_id="worker-a", lease_seconds=30)
+    assert leased is not None
+    retried = await command_repository.fail(
+        transient.id, worker_id="worker-a", error="temporary", transient=True
+    )
+    assert retried.status is CommandStatus.PENDING
+    assert retried.attempt == 1
+    assert retried.lease_owner is None
+
+    terminal = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="terminal",
+        idempotency_key="terminal",
+        payload={},
+        expected_run_version=0,
+        available_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    claimed = await command_repository.claim_next(worker_id="worker-a", lease_seconds=30)
+    assert claimed is not None
+    assert claimed.id == terminal.id
+    failed = await command_repository.fail(
+        terminal.id, worker_id="worker-a", error="permanent", transient=False
+    )
+    assert failed.status is CommandStatus.FAILED
+    assert (
+        await command_repository.fail(
+            terminal.id, worker_id="worker-a", error="permanent", transient=False
+        )
+        == failed
+    )
+
+
+@pytest.mark.integration
+async def test_unknown_stored_payload_schema_fails_closed(
+    command_repository, persisted_run, session_factory
+) -> None:
+    command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="unknown-schema",
+        idempotency_key="unknown-schema",
+        payload={},
+    )
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE run_commands SET payload_schema_version = 2 WHERE id = :id"),
+            {"id": command.id},
+        )
+    with pytest.raises(PersistenceDataError):
+        await command_repository.get(command.id)
+
+
+@pytest.mark.integration
+async def test_command_payload_rejects_secret_assignments_inside_text(
+    command_repository, persisted_run
+) -> None:
+    with pytest.raises(ValueError, match="raw credential"):
+        await command_repository.enqueue(
+            run_id=persisted_run.id,
+            command_type="secret-text",
+            idempotency_key="secret-text",
+            payload={"description": "token=do-not-persist"},
+        )
+
+
+@pytest.mark.integration
+async def test_claim_rejects_subsecond_leases(command_repository, persisted_run) -> None:
+    with pytest.raises(ValueError, match="at least 1 second"):
+        await command_repository.claim_next(worker_id="worker-a", lease_seconds=0.999)
+
+
+@pytest.mark.integration
+async def test_command_failure_redacts_bearer_github_token_before_persisting(
+    command_repository, persisted_run
+) -> None:
+    command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="provider-failure",
+        idempotency_key="provider-failure-redaction",
+        payload={},
+    )
+    claimed = await command_repository.claim_next(worker_id="worker-a", lease_seconds=1)
+    assert claimed is not None
+    secret = ('ghp_0123' + '456789ab' + 'cdefghij' + 'klmnopqr' + 'stuv')
+
+    stored = await command_repository.fail(
+        command.id,
+        worker_id="worker-a",
+        error=f"Authorization: Bearer {secret}",
+        transient=False,
+    )
+
+    assert stored.error_summary is not None
+    assert secret not in stored.error_summary
+    assert "[REDACTED]" in stored.error_summary
+    assert len(stored.error_summary) <= 1024
+
+
+@pytest.mark.integration
+async def test_command_cancel_redacts_credentialed_database_url_before_persisting(
+    command_repository, persisted_run
+) -> None:
+    command = await command_repository.enqueue(
+        run_id=persisted_run.id,
+        command_type="cancel-with-secret",
+        idempotency_key="cancel-redaction",
+        payload={},
+    )
+    claimed = await command_repository.claim_next(worker_id="worker-a", lease_seconds=1)
+    assert claimed is not None
+    secret = "super-secret-password"
+
+    stored = await command_repository.cancel(
+        command.id,
+        worker_id="worker-a",
+        reason=f"database unavailable at postgresql://forge:{secret}@db.internal/forge",
+    )
+
+    assert stored.error_summary is not None
+    assert secret not in stored.error_summary
+    assert "[REDACTED]" in stored.error_summary
+    assert len(stored.error_summary) <= 1024

@@ -1,0 +1,121 @@
+name: Browser acceptance
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      browser_only:
+        description: Reuse matching completed supervisor evidence and run only browser acceptance
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  supervisor-startup-acceptance:
+    if: github.event_name != 'workflow_dispatch' || !inputs.browser_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24.20.0"
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.10"
+          python-version: "3.14.5"
+          enable-cache: false
+      - name: Start repository PostgreSQL compose service
+        run: docker compose up -d postgres
+      - name: Wait for PostgreSQL compose health
+        shell: bash
+        run: |
+          for attempt in {1..60}; do
+            postgres_id="$(docker compose ps -q postgres)"
+            test -n "$postgres_id" && test "$(docker inspect --format '{{.State.Health.Status}}' "$postgres_id")" = healthy && exit 0
+            sleep 1
+          done
+          docker compose ps postgres
+          exit 1
+      - name: Install locked test dependencies
+        run: uv sync --frozen --extra dev
+      - name: Create isolated supervisor control database
+        run: docker compose exec -T postgres createdb -U forge forge_supervisor_smoke
+      - name: Run hosted development-supervisor startup and shutdown acceptance
+        run: uv run --frozen python tests/acceptance/supervisor_smoke.py
+      - name: Stop repository PostgreSQL compose service
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
+  browser-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: forge
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge
+        ports: ["5435:5432"]
+        options: >-
+          --health-cmd "pg_isready -U forge -d forge"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      FORGE_DATABASE_URL: postgresql+asyncpg://forge:forge@127.0.0.1:5435/forge
+      FORGE_API_INTERNAL_ORIGIN: http://127.0.0.1:8000
+      FORGE_E2E_WEB_ORIGIN: http://127.0.0.1:3000
+      FORGE_E2E_CONTROL_ORIGIN: http://127.0.0.1:8765
+      FORGE_PROVIDER_SECRET_REFERENCE: secret://forge/browser-acceptance-provider
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24.20.0"
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.10"
+          python-version: "3.14.5"
+          enable-cache: false
+      - run: uv sync --frozen --extra dev
+      - run: npm ci
+        working-directory: apps/web
+      - name: Use Ubuntu archive for browser OS packages
+        shell: bash
+        run: |
+          if test -f /etc/apt/apt-mirrors.txt; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+        timeout-minutes: 8
+      - name: Apply migrations
+        run: uv run --frozen alembic -c alembic.ini upgrade head
+      - name: Verify browser control bridge against real PostgreSQL/API/worker
+        run: uv run --frozen python -m pytest tests/acceptance/test_browser_control.py -q
+      - name: Start real API, worker and control bridge
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/forge-acceptance"
+          FORGE_E2E_BRIDGE_API_PORT=8000 nohup uv run --frozen python -m tests.acceptance.browser_control >"$RUNNER_TEMP/forge-acceptance/control.log" 2>&1 &
+          (cd apps/web && nohup npm run dev -- --port 3000 >"$RUNNER_TEMP/forge-acceptance/web.log" 2>&1 &)
+          for attempt in {1..120}; do curl --fail --silent http://127.0.0.1:8765/health >/dev/null && break; sleep 1; done
+          curl --fail --silent --show-error http://127.0.0.1:8765/health >/dev/null
+          for attempt in {1..120}; do curl --fail --silent http://127.0.0.1:3000 >/dev/null && break; sleep 1; done
+          curl --fail --silent --show-error http://127.0.0.1:3000 >/dev/null
+      - name: Run browser acceptance
+        run: npm run test:e2e -- --config=playwright.config.ts
+        working-directory: apps/web

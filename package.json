@@ -1,0 +1,33 @@
+{
+  "name": "parallel-forge",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=24.0.0 <25.0.0"
+  },
+  "scripts": {
+    "dev": "python scripts/dev.py",
+    "build": "npm run build:web",
+    "lint": "python -m ruff check apps/orchestrator/src apps/orchestrator/tests tests scripts && npm run lint:web",
+    "typecheck": "python -m mypy && npm run typecheck:web",
+    "test": "python -m pytest -m \"not integration and not docker and not live_provider and not live_github\" -q && npm run test:web -- --run",
+    "test:integration": "python -m pytest -m \"integration and not live_provider and not live_github\" -q",
+    "verify": "npm run lint && npm run typecheck && python -m pytest -m \"not live_provider and not live_github\" -q && npm run test:web -- --run && npm run build",
+    "dev:web": "npm run dev --workspace apps/web",
+    "test:e2e": "npm run test:e2e --workspace apps/web",
+    "build:web": "npm run build --workspace apps/web",
+    "lint:web": "npm run lint --workspace apps/web",
+    "typecheck:web": "npm run typecheck --workspace apps/web",
+    "test:web": "npm run test --workspace apps/web --",
+    "api:generate": "npm run api:generate --workspace apps/web",
+    "api:check": "npm run api:check --workspace apps/web"
+  },
+  "overrides": {
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "devDependencies": {
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}

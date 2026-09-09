@@ -1,0 +1,44 @@
+import { test, expect, openRun, approveEvidence } from "./fixtures";
+
+test("persists the exact cancel command across worker restart and retains resources until explicit teardown", async ({ page, restartScenario, restartWorker, readyFor, evidenceFor, expedite, stopWorker, cancelCommandFor }) => {
+  const runId = restartScenario.runId!;
+  await openRun(page, runId, restartScenario.bootstrapToken);
+  await readyFor(page, "AWAITING_PLAN_APPROVAL", runId);
+  await approveEvidence(page, "Approve plan", await evidenceFor("AWAITING_PLAN_APPROVAL", runId));
+  await expedite(runId);
+  await readyFor(page, "AWAITING_PR_APPROVAL", runId);
+  await stopWorker();
+
+  const cancel = page.getByRole("button", { name: "Cancel run", exact: true });
+  await cancel.click();
+  const dialog = page.getByRole("dialog", { name: "Cancel run" });
+  await expect(dialog).toContainText(/resources and evidence remain available until explicit teardown/i);
+  await dialog.getByRole("button", { name: "Confirm cancel run" }).click();
+  await expect.poll(async () => (await cancelCommandFor(runId)).status).toMatch(/PENDING|LEASED|COMPLETED/);
+
+  const restart = await restartWorker();
+  expect(restart.newPid).not.toBe(restart.oldPid);
+  await expect(page.locator("header").filter({ hasText: "CANCELLED" })).toBeVisible({ timeout: 120_000 });
+  await expect.poll(async () => (await cancelCommandFor(runId)).status).toBe("COMPLETED");
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Run activity" }).getByRole("heading", { name: "run.cancelled", exact: true })).toBeVisible();
+  const branch = page.locator("dt").filter({ hasText: /^Branch$/ }).locator("+ dd");
+  const retainedBranch = await branch.innerText();
+  expect(retainedBranch).not.toContain("Not yet created");
+  const worktree = page.locator("dt").filter({ hasText: /^Worktree$/ }).locator("+ dd");
+  await expect(worktree).not.toHaveText("Not yet created");
+
+  const teardown = page.getByRole("button", { name: "Remove run resources", exact: true });
+  await expect(teardown).toBeVisible();
+  await teardown.click();
+  const teardownDialog = page.getByRole("dialog", { name: "Remove run resources" });
+  await expect(teardownDialog).toBeVisible();
+  await expect(teardownDialog).toContainText(/branch/i);
+  const identity = await teardownDialog.locator("code").innerText();
+  await teardownDialog.getByLabel("Resource identity confirmation").fill(identity);
+  await teardownDialog.getByRole("button", { name: "Review resource removal" }).click();
+  await teardownDialog.getByRole("button", { name: "Confirm remove resources" }).click();
+  await expect(teardownDialog).toBeHidden();
+  await expect(worktree).toHaveText("Not yet created", { timeout: 120_000 });
+  await expect(branch).toHaveText(retainedBranch);
+});

@@ -1,0 +1,60 @@
+"""Framework-free unit-of-work and event persistence contracts."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Protocol, Self
+from uuid import UUID
+
+from forge.application.ports.artifacts import ArtifactRepository
+from forge.application.ports.commands import CommandRepository
+from forge.application.ports.controller_steps import ControllerStepRepository
+from forge.application.ports.evidence import EvidenceRepository
+from forge.application.ports.executions import ExecutionRepository
+from forge.application.ports.operations import OperationRepository
+from forge.application.ports.projects import ProjectRepository
+from forge.application.ports.release import ReleaseRepository
+from forge.application.ports.runs import RunRepository
+from forge.application.ports.tasks import TaskRepository
+from forge.application.ports.tools import ToolCallRepository
+from forge.application.services.auth import AuthRepository
+from forge.domain.event import RunEvent
+
+
+class EventRepository(Protocol):
+    """Append-only causal event operations."""
+
+    async def append(self, event: RunEvent) -> RunEvent: ...
+
+    async def list_after(self, run_id: UUID, sequence: int) -> Sequence[RunEvent]: ...
+
+    async def list_for_version(self, run_id: UUID, version: int) -> Sequence[RunEvent]: ...
+
+
+class UnitOfWork(Protocol):
+    """One explicit transaction shared by run and event repositories."""
+
+    runs: RunRepository
+    projects: ProjectRepository
+    events: EventRepository
+    tool_calls: ToolCallRepository
+    operations: OperationRepository
+    artifacts: ArtifactRepository
+    executions: ExecutionRepository
+    controller_steps: ControllerStepRepository
+    evidence: EvidenceRepository
+    tasks: TaskRepository
+    commands: CommandRepository
+    auth: AuthRepository
+    releases: ReleaseRepository
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None: ...
+
+    async def commit(self) -> None: ...
+
+    async def rollback(self) -> None: ...
+
+
+__all__ = ["EventRepository", "UnitOfWork"]

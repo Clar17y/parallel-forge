@@ -1,0 +1,2079 @@
+"""A narrow, noninteractive Git read boundary for managed worktrees."""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import re
+import stat
+import unicodedata
+from collections.abc import Iterator, Sequence
+from pathlib import Path
+
+from forge.application.ports.repository import ProcessResult, RepositoryAccessDenied
+from forge.application.ports.worktrees import (
+    EnvironmentFileEvidence,
+    EnvironmentStagingInspection,
+    EnvironmentStagingPlan,
+    GitCandidateDiff,
+    GitCandidateFile,
+    GitCommit,
+    GitDiff,
+    GitStatus,
+    ManagedWorktree,
+    PreparedGitCommit,
+    PublishedGitCommit,
+)
+from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS, normalize_policy_path
+from forge.domain.policy import ProjectPolicy, RunnerMode
+from forge.domain.resource import WorktreeIdentity
+from forge.tools.paths import CanonicalRoot
+from forge.tools.process import ProcessRunner
+
+_SHA = re.compile(r"[0-9a-f]{40}\Z")
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_MAX_METADATA_BYTES = 4096
+_MAX_METADATA_ENTRIES = 256
+_MAX_BRANCH_LENGTH = 255
+_MAX_COMMIT_MESSAGE_BYTES = 4096
+_RESERVED_REPOSITORY_KEYS = frozenset(
+    component.casefold() if os.name == "nt" else component
+    for component in RESERVED_REPOSITORY_COMPONENTS
+)
+
+_FORGE_NAME = "Forge"
+_FORGE_EMAIL = "forge@example.test"
+
+
+def _has_reserved_repository_component(path: str) -> bool:
+    return any(
+        (component.casefold() if os.name == "nt" else component) in _RESERVED_REPOSITORY_KEYS
+        for component in path.split("/")
+    )
+
+
+class ControlledGitError(RuntimeError):
+    """A stable, redacted controlled-Git failure."""
+
+    def __init__(self) -> None:
+        super().__init__("controlled git operation failed")
+
+
+_CAPABILITY_SEAL = object()
+
+
+class WorktreeCapability:
+    """Opaque owner-sealed operations for one retained managed worktree."""
+
+    __slots__ = (
+        "_access",
+        "_git",
+        "_head_sha",
+        "_live",
+        "_owner",
+        "_policy",
+        "_sealed",
+        "_worktree",
+    )
+
+    def __init__(
+        self,
+        *,
+        seal: object,
+        owner: object,
+        git: ControlledGit,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+        access: object,
+        head_sha: str | None = None,
+    ) -> None:
+        if seal is not _CAPABILITY_SEAL:
+            raise TypeError("worktree capability is internal")
+        self._owner = owner
+        self._git = git
+        self._worktree = worktree
+        self._head_sha = worktree.base_sha if head_sha is None else head_sha
+        self._policy = policy
+        self._access = access
+        self._live = True
+        self._sealed = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        try:
+            sealed = object.__getattribute__(self, "_sealed")
+        except AttributeError:
+            sealed = False
+        if sealed:
+            raise AttributeError("worktree capability is immutable")
+        object.__setattr__(self, name, value)
+
+    def __getattribute__(self, name: str) -> object:
+        if name.startswith("_"):
+            raise AttributeError("worktree capability internals are private")
+        return object.__getattribute__(self, name)
+
+    def __repr__(self) -> str:
+        live = object.__getattribute__(self, "_live")
+        return "WorktreeCapability(live=True)" if live else "WorktreeCapability(live=False)"
+
+    def revalidate(self) -> None:
+        object.__getattribute__(self, "_require_live")()
+        git = object.__getattribute__(self, "_git")
+        access = object.__getattribute__(self, "_access")
+        worktree = object.__getattribute__(self, "_worktree")
+        policy = object.__getattribute__(self, "_policy")
+        identity = worktree.identity
+        if not isinstance(identity, WorktreeIdentity) or identity.project_id != policy.id:
+            raise ControlledGitError()
+        try:
+            if identity.run_id is None:
+                expected = WorktreeIdentity.for_developer(
+                    identity.project_id,
+                    identity.branch,
+                    policy.database.enabled,
+                )
+            else:
+                expected = WorktreeIdentity.for_run(
+                    identity.project_id,
+                    identity.run_id,
+                    identity.branch,
+                    policy.database.enabled,
+                )
+        except TypeError, ValueError:
+            raise ControlledGitError() from None
+        if expected != identity:
+            raise ControlledGitError()
+        git._repository._verify_directory_access(access.normalized, access)
+        git._validate_handle(worktree)
+        if git._head_sha(worktree) != object.__getattribute__(self, "_head_sha"):
+            raise ControlledGitError()
+        git._verify_ancestor_sha(worktree, worktree.base_sha)
+
+    def assert_ignored(self, relative_path: str) -> None:
+        """Prove one policy-validated destination is ignored by Git."""
+
+        object.__getattribute__(self, "_require_live")()
+        policy = object.__getattribute__(self, "_policy")
+        if relative_path not in policy.allowed_environment_files:
+            raise ControlledGitError()
+        self.revalidate()
+        git = object.__getattribute__(self, "_git")
+        worktree = object.__getattribute__(self, "_worktree")
+        result = git._run(
+            worktree.path,
+            ("check-ignore", "--quiet", "--", relative_path),
+            allow_return_codes=(0, 1),
+        )
+        if _return_code(result) != 0:
+            raise ControlledGitError()
+        self.revalidate()
+
+    def publish(self, plan: EnvironmentStagingPlan) -> tuple[EnvironmentFileEvidence, ...]:
+        object.__getattribute__(self, "_require_live")()
+        from forge.tools.environment import _publish_plan
+
+        result = _publish_plan(self, plan)
+        return result
+
+    def inspect(self, plan: EnvironmentStagingPlan) -> EnvironmentStagingInspection:
+        object.__getattribute__(self, "_require_live")()
+        from forge.tools.environment import _inspect_plan
+
+        return _inspect_plan(self, plan)
+
+    def write_repository_file(
+        self,
+        path: str,
+        content: bytes,
+        *,
+        maximum: int,
+    ) -> tuple[str | None, str, int, str]:
+        """Publish one bounded file under the retained managed worktree."""
+
+        object.__getattribute__(self, "_require_live")()
+        worktree = object.__getattribute__(self, "_worktree")
+        policy = object.__getattribute__(self, "_policy")
+        root = CanonicalRoot(worktree.path)
+        normalized = root.normalize(path)
+        if _has_reserved_repository_component(normalized):
+            raise ControlledGitError()
+        if any(root.matches(normalized, secret) for secret in policy.effective_secret_paths):
+            raise ControlledGitError()
+        self.revalidate()
+        previous, output, byte_count = root.replace_file(
+            normalized,
+            content,
+            maximum=maximum,
+        )
+        self.revalidate()
+        return previous, output, byte_count, normalized
+
+    def inspect_repository_file(
+        self,
+        path: str,
+        *,
+        maximum: int,
+    ) -> tuple[str, int, str] | None:
+        """Inspect one bounded file under the retained managed worktree."""
+
+        object.__getattribute__(self, "_require_live")()
+        worktree = object.__getattribute__(self, "_worktree")
+        policy = object.__getattribute__(self, "_policy")
+        root = CanonicalRoot(worktree.path)
+        normalized = root.normalize(path)
+        if _has_reserved_repository_component(normalized):
+            raise ControlledGitError()
+        if any(root.matches(normalized, secret) for secret in policy.effective_secret_paths):
+            raise ControlledGitError()
+        self.revalidate()
+        result = root.inspect_file(normalized, maximum=maximum)
+        self.revalidate()
+        if result is None:
+            return None
+        return result[0], result[1], normalized
+
+    def _require_live(self) -> None:
+        if not object.__getattribute__(self, "_live") or object.__getattribute__(
+            self, "_owner"
+        ) is not object.__getattribute__(self, "_git"):
+            raise ControlledGitError()
+
+    def _finish(self) -> None:
+        object.__setattr__(self, "_live", False)
+
+
+class ControlledGit:
+    """Invoke a fixed Git executable against one exact managed repository.
+
+    The constructor owns all process and configuration controls.  Public methods
+    accept only a Forge-created ``ManagedWorktree`` handle; no method accepts an
+    argv fragment, path, ref, or Git configuration override from a caller.
+    """
+
+    def __init__(
+        self,
+        repository: CanonicalRoot,
+        *,
+        default_branch: str,
+        state_root: str | os.PathLike[str],
+        git_executable: str | os.PathLike[str],
+        runner: ProcessRunner | None = None,
+    ) -> None:
+        if not isinstance(repository, CanonicalRoot):
+            raise TypeError("controlled git requires a canonical repository root")
+        if runner is not None:
+            runner_root = getattr(runner, "_root", None)
+            if isinstance(runner_root, CanonicalRoot) and runner_root is not repository:
+                raise TypeError("controlled git runner root does not match repository")
+        _validate_branch(default_branch)
+        self._repository = repository
+        self._default_branch = default_branch
+        self._managed_root = repository.path / ".worktrees"
+        if os.path.lexists(self._managed_root):
+            _reject_links(self._managed_root)
+            if not self._managed_root.is_dir():
+                raise ControlledGitError()
+
+        self._git_executable = _resolve_git_executable(git_executable)
+        self._staging_owner = object()
+        self._state_root = _prepare_directory(Path(state_root))
+        if _overlaps(self._state_root, repository.path):
+            raise ControlledGitError()
+        self._hooks_path = self._state_root / "hooks"
+        self._global_config_path = self._state_root / "global.config"
+        self._global_attributes_path = self._state_root / "global.attributes"
+        _prepare_empty_directory(self._hooks_path)
+        _prepare_empty_file(self._global_config_path)
+        _prepare_empty_file(self._global_attributes_path)
+        self._runner = runner or ProcessRunner(repository)
+
+    @property
+    def repository_path(self) -> Path:
+        """Return the one canonical repository root owned by this adapter."""
+
+        return self._repository.path
+
+    def resolve_default_base_sha(self) -> str:
+        """Resolve only the configured local default branch to an exact commit."""
+
+        try:
+            self._scan_local_config(self._repository.path)
+            return self._parse_base_sha(self._default_branch)
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, TypeError, ValueError:
+            raise ControlledGitError() from None
+
+    def expected_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
+        """Derive one exact managed handle without inspecting or mutating Git."""
+
+        try:
+            _validate_identity(identity)
+            _validate_sha(base_sha)
+            if _same_branch(identity.branch, self._default_branch):
+                raise ControlledGitError()
+            return ManagedWorktree(
+                identity=identity,
+                path=self._managed_root / identity.worktree_name,
+                base_sha=base_sha,
+            )
+        except ControlledGitError:
+            raise
+        except TypeError, ValueError, OSError, RuntimeError:
+            raise ControlledGitError() from None
+
+    def inspect_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree | None:
+        """Inspect one generated worktree and never repair or mutate it."""
+
+        try:
+            expected = self.expected_worktree(identity, base_sha)
+            self._scan_local_config(self._repository.path)
+            self._verify_branch_format(identity.branch)
+            self._verify_managed_root_ignored()
+            if os.path.lexists(self._managed_root):
+                _reject_links(self._managed_root)
+                if not self._managed_root.is_dir():
+                    raise ControlledGitError()
+
+            target_exists = os.path.lexists(expected.path)
+            metadata = self._registration_metadata(identity)
+            quarantine_metadata = self._registration_quarantine_metadata(identity)
+            target_quarantine = self._managed_root / ".forge-quarantine" / identity.worktree_name
+            if os.path.lexists(target_quarantine):
+                _reject_links(target_quarantine)
+                raise ControlledGitError()
+
+            if target_exists:
+                if metadata is None or quarantine_metadata is not None:
+                    raise ControlledGitError()
+                _reject_locked_registration(metadata)
+                self._scan_local_config(expected.path)
+                self._validate_handle(expected)
+                self._head_sha(expected)
+                if not self._is_ancestor(expected):
+                    raise ControlledGitError()
+                return expected
+
+            if metadata is not None or quarantine_metadata is not None:
+                raise ControlledGitError()
+            if self._branch_exists_at(self._repository.path, identity.branch):
+                raise ControlledGitError()
+            return None
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def create_worktree(self, identity: WorktreeIdentity, base_sha: str) -> ManagedWorktree:
+        """Create and verify one exact managed worktree without cleanup guesses."""
+
+        if not isinstance(identity, WorktreeIdentity):
+            raise ControlledGitError()
+        _validate_sha(base_sha)
+        try:
+            _validate_branch(identity.branch)
+        except TypeError, ValueError:
+            raise ControlledGitError() from None
+        if _same_branch(identity.branch, self._default_branch):
+            raise ControlledGitError()
+        self._scan_local_config(self._repository.path)
+        self._verify_branch_format(identity.branch)
+        resolved_base = self._parse_base_sha(base_sha)
+        if resolved_base != base_sha:
+            raise ControlledGitError()
+        self._verify_managed_root_ignored()
+        if self._branch_exists_at(self._repository.path, identity.branch):
+            raise ControlledGitError()
+        expected_metadata = self._registration_metadata(identity)
+        if expected_metadata is not None:
+            raise ControlledGitError()
+
+        expected_path = self._managed_root / identity.worktree_name
+        try:
+            with self._repository._create_directory(".worktrees", identity.worktree_name) as access:
+                if not self._repository._directory_access_is_empty(access):
+                    raise ControlledGitError()
+                self._run(
+                    expected_path,
+                    (
+                        "worktree",
+                        "add",
+                        "-b",
+                        identity.branch,
+                        ".",
+                        base_sha,
+                    ),
+                    omit_cwd_prefix=True,
+                    git_directory=self._repository._git_directory_for_access(
+                        f".worktrees/{identity.worktree_name}", access
+                    ),
+                )
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                handle = ManagedWorktree(identity=identity, path=expected_path, base_sha=base_sha)
+                self._validate_handle(handle)
+                if self._head_sha(handle) != base_sha or not self._is_ancestor(handle):
+                    raise ControlledGitError()
+                return handle
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, TypeError, ValueError:
+            raise ControlledGitError() from None
+
+    def remove_worktree(self, worktree: ManagedWorktree) -> None:
+        """Remove one exact registered worktree and retain its branch."""
+
+        try:
+            identity, expected_path = self._validate_handle_shape(worktree)
+            metadata = self._registration_metadata(identity)
+            target_exists = os.path.lexists(expected_path)
+            if target_exists:
+                if metadata is None:
+                    raise ControlledGitError()
+                self._remove_live_worktree(
+                    worktree,
+                    identity,
+                    expected_path,
+                    metadata.name,
+                )
+            elif metadata is not None:
+                self._remove_stale_registration(
+                    identity,
+                    expected_path,
+                    metadata.name,
+                )
+            else:
+                self._remove_absent_worktree(identity, expected_path)
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def verify_worktree_absent(self, worktree: ManagedWorktree) -> None:
+        """Prove absence, restoring a pruned metadata parent, while retaining the branch."""
+
+        try:
+            identity, expected_path = self._validate_handle_shape(worktree)
+            self._remove_absent_worktree(identity, expected_path)
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def _remove_live_worktree(
+        self,
+        worktree: ManagedWorktree,
+        identity: WorktreeIdentity,
+        expected_path: Path,
+        preflight_basename: str,
+    ) -> None:
+        """Validate a live target, then quarantine it without reopening its path."""
+
+        with self._repository._prepare_worktree_quarantine(
+            identity.worktree_name, preflight_basename
+        ) as access:
+            metadata = self._registration_metadata(identity)
+            if metadata is None or metadata.name != preflight_basename:
+                raise ControlledGitError()
+            if self._registration_quarantine_metadata(identity) is not None:
+                raise ControlledGitError()
+            _reject_links(expected_path)
+            if not expected_path.is_dir():
+                raise ControlledGitError()
+            self._scan_local_config(self._repository.path)
+            self._scan_local_config(expected_path)
+            self._verify_branch_format(identity.branch)
+            self._verify_registration(expected_path, identity)
+            self._verify_current_branch(worktree)
+            self._verify_branch_exists(identity.branch)
+
+            self._repository._bind_worktree_quarantine(access)
+            self._repository._quarantine_target(access)
+            self._repository._delete_target_quarantine(access)
+            self._repository._quarantine_registration(access)
+            self._repository._delete_registration_quarantine(access)
+            self._repository._verify_worktree_removal_state(access)
+            self._verify_removal_absent(
+                identity,
+                expected_path,
+                preflight_basename,
+            )
+            self._verify_branch_exists(identity.branch)
+
+    def _remove_stale_registration(
+        self,
+        identity: WorktreeIdentity,
+        expected_path: Path,
+        preflight_basename: str,
+    ) -> None:
+        """Remove one exact stale registration while its target stays absent."""
+
+        with self._repository._open_stale_registration_quarantine(
+            identity.worktree_name, preflight_basename
+        ) as access:
+            metadata = self._registration_metadata(identity)
+            if metadata is None or metadata.name != preflight_basename:
+                raise ControlledGitError()
+            if self._registration_quarantine_metadata(identity) is not None:
+                raise ControlledGitError()
+            self._verify_metadata_target(metadata, expected_path / ".git")
+            self._scan_local_config(self._repository.path)
+            self._verify_branch_format(identity.branch)
+            self._verify_branch_exists(identity.branch)
+
+            self._repository._quarantine_registration(access)
+            self._repository._delete_registration_quarantine(access)
+            self._verify_removal_absent(
+                identity,
+                expected_path,
+                preflight_basename,
+            )
+            self._verify_branch_exists(identity.branch)
+
+    def _remove_absent_worktree(
+        self,
+        identity: WorktreeIdentity,
+        expected_path: Path,
+    ) -> None:
+        """Prove a fully absent handle is safe to treat as an idempotent success."""
+
+        # Git prune may remove the final registration's metadata parent. Reuse
+        # the retained, no-follow restoration used by the retained-branch probe.
+        with self._repository._inspect_absent_worktree_removal(
+            identity.worktree_name, restore_metadata_parent=True
+        ) as access:
+            del access
+            if self._registration_metadata(identity) is not None:
+                raise ControlledGitError()
+            if self._registration_quarantine_metadata(identity) is not None:
+                raise ControlledGitError()
+            self._scan_local_config(self._repository.path)
+            self._verify_branch_format(identity.branch)
+            self._verify_branch_exists(identity.branch)
+            self._verify_removal_absent(identity, expected_path, None)
+            self._verify_branch_exists(identity.branch)
+
+    def _verify_removal_absent(
+        self,
+        identity: WorktreeIdentity,
+        expected_path: Path,
+        registration_basename: str | None,
+    ) -> None:
+        """Verify exact lifecycle evidence has disappeared without guessing paths."""
+
+        if os.path.lexists(expected_path):
+            raise ControlledGitError()
+        if self._registration_metadata(identity) is not None:
+            raise ControlledGitError()
+        target_quarantine = self._managed_root / ".forge-quarantine" / identity.worktree_name
+        if os.path.lexists(target_quarantine):
+            raise ControlledGitError()
+        if registration_basename is not None:
+            registration_quarantine = (
+                self._repository.path
+                / ".git"
+                / ".forge-worktree-quarantine"
+                / registration_basename
+            )
+            if os.path.lexists(registration_quarantine):
+                raise ControlledGitError()
+        if self._registration_quarantine_metadata(identity) is not None:
+            raise ControlledGitError()
+
+    def prune(self) -> None:
+        """Prune only stale Git worktree registration metadata."""
+
+        self._scan_local_config(self._repository.path)
+        self._run(self._repository.path, ("worktree", "prune", "--expire=now"))
+
+    def changed_paths(self, worktree: ManagedWorktree, policy: ProjectPolicy) -> tuple[str, ...]:
+        """Observe tracked and untracked changes against the retained fixture base."""
+        try:
+            with self.open_worktree_capability(
+                worktree, policy, allow_committed_changes=True
+            ) as capability:
+                names: set[str] = set()
+                for arguments in (
+                    (
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--no-renames",
+                        "--name-only",
+                        "-z",
+                        worktree.base_sha,
+                        "--",
+                    ),
+                    ("ls-files", "--others", "--exclude-standard", "-z", "--"),
+                ):
+                    result = self._run(worktree.path, arguments)
+                    _require_complete_result(result)
+                    if result.stdout and not result.stdout.endswith("\x00"):
+                        raise ControlledGitError()
+                    for name in result.stdout.split("\x00")[:-1]:
+                        if not name or "\ufffd" in name or normalize_policy_path(name) != name:
+                            raise ControlledGitError()
+                        names.add(name)
+                capability.revalidate()
+                return tuple(sorted(names))
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def status(self, worktree: ManagedWorktree) -> GitStatus:
+        """Return bounded deterministic porcelain-v1 status output."""
+
+        self._validate_handle(worktree, verify_branch=False)
+        self._scan_local_config(worktree.path)
+        self._verify_current_branch(worktree)
+        result = self._run(
+            worktree.path,
+            ("status", "--porcelain=v1", "--branch", "--untracked-files=all", "-z", "--"),
+        )
+        return GitStatus(
+            text=result.stdout,
+            original_byte_count=_original_count(result, "stdout"),
+            truncated=_truncated(result, "stdout"),
+        )
+
+    def diff(self, worktree: ManagedWorktree) -> GitDiff:
+        """Return bounded binary-safe diff output against the worktree HEAD."""
+
+        self._validate_handle(worktree, verify_branch=False)
+        self._scan_local_config(worktree.path)
+        self._verify_current_branch(worktree)
+        result = self._run(
+            worktree.path,
+            (
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--binary",
+                "--full-index",
+                "--no-color",
+                "HEAD",
+                "--",
+            ),
+        )
+        return GitDiff(
+            text=result.stdout,
+            original_byte_count=_original_count(result, "stdout"),
+            truncated=_truncated(result, "stdout"),
+        )
+
+    def candidate_diff(self, worktree: ManagedWorktree) -> GitCandidateDiff:
+        """Return a stable, complete diff from the managed base to HEAD."""
+
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        self._verify_current_branch(worktree)
+        status = self.status(worktree)
+        if status.truncated:
+            raise ControlledGitError()
+        status_entries = status.text.split("\x00")
+        if any(entry and not entry.startswith("##") for entry in status_entries):
+            raise ControlledGitError()
+        before = self._head_sha(worktree)
+        if not self._has_ancestor(worktree, worktree.base_sha):
+            raise ControlledGitError()
+        diff_result = self._run(
+            worktree.path,
+            (
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--binary",
+                "--full-index",
+                "--no-color",
+                f"{worktree.base_sha}..{before}",
+                "--",
+            ),
+        )
+        names_result = self._run(
+            worktree.path,
+            (
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                f"{worktree.base_sha}..{before}",
+                "--",
+            ),
+        )
+        _require_complete_result(diff_result)
+        _require_complete_result(names_result)
+        if names_result.stdout and not names_result.stdout.endswith("\x00"):
+            raise ControlledGitError()
+        names = names_result.stdout.split("\x00")
+        if names and names[-1] == "":
+            names.pop()
+        if any(not path or "\ufffd" in path for path in names):
+            raise ControlledGitError()
+        final_status = self.status(worktree)
+        if final_status.truncated:
+            raise ControlledGitError()
+        final_entries = final_status.text.split("\x00")
+        if any(entry and not entry.startswith("##") for entry in final_entries):
+            raise ControlledGitError()
+        if self._head_sha(worktree) != before:
+            raise ControlledGitError()
+        return GitCandidateDiff(
+            head_sha=before,
+            diff=GitDiff(
+                text=diff_result.stdout,
+                original_byte_count=_original_count(diff_result, "stdout"),
+                truncated=_truncated(diff_result, "stdout"),
+            ),
+            changed_paths=tuple(names),
+        )
+
+    def candidate_file(self, worktree: ManagedWorktree, path: str) -> GitCandidateFile:
+        """Read one regular UTF-8 file at the approved base and pinned HEAD."""
+
+        self._validate_handle(worktree)
+        try:
+            path = normalize_policy_path(path)
+        except TypeError, ValueError:
+            raise ControlledGitError()
+        self._scan_local_config(worktree.path)
+        self._verify_current_branch(worktree)
+        status = self.status(worktree)
+        if status.truncated or any(
+            entry and not entry.startswith("##") for entry in status.text.split("\x00")
+        ):
+            raise ControlledGitError()
+        before = self._head_sha(worktree)
+        if not self._has_ancestor(worktree, worktree.base_sha):
+            raise ControlledGitError()
+
+        def read_blob(revision: str) -> bytes | None:
+            tree = self._run(
+                worktree.path,
+                ("ls-tree", "-z", revision, "--", path),
+                allow_return_codes=(0, 1),
+            )
+            _require_complete_result(tree)
+            if tree.return_code == 1:
+                return None
+            raw = tree.stdout
+            if not raw:
+                return None
+            if not raw.endswith("\x00"):
+                raise ControlledGitError()
+            entries = raw[:-1].split("\x00")
+            if len(entries) != 1 or "\t" not in entries[0]:
+                raise ControlledGitError()
+            mode_type, listed_path = entries[0].split("\t", 1)
+            fields = mode_type.split(" ")
+            if len(fields) != 3 or fields[1] != "blob" or listed_path != path:
+                raise ControlledGitError()
+            if fields[0] not in {"100644", "100755"}:
+                raise ControlledGitError()
+            shown = self._run(worktree.path, ("show", f"{revision}:{path}", "--"))
+            _require_complete_result(shown)
+            return shown.stdout.encode("utf-8")
+
+        base_content = read_blob(worktree.base_sha)
+        head_content = read_blob(before)
+        after = self._head_sha(worktree)
+        if after != before:
+            raise ControlledGitError()
+        final = self.status(worktree)
+        if final.truncated or any(
+            entry and not entry.startswith("##") for entry in final.text.split("\x00")
+        ):
+            raise ControlledGitError()
+        return GitCandidateFile(
+            path=path,
+            head_sha=before,
+            base_content=base_content,
+            head_content=head_content,
+        )
+
+    def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit:
+        """Compatibility composition of preparation and publication.
+
+        Durable callers must persist their preparation and publication intent
+        around the two explicit methods below before invoking either effect.
+        """
+
+        published = self.commit_prepared(worktree, self.prepare_commit(worktree, message))
+        return GitCommit(previous_sha=published.previous_sha, new_sha=published.new_sha)
+
+    def prepare_commit(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit:
+        """Stage the real index and return its exact authorized snapshot."""
+
+        try:
+            commit_message = _validate_commit_message(message)
+            identity, _expected = self._validate_handle_shape(worktree)
+            self._assert_trusted_state()
+            self._validate_handle(worktree)
+            registration = self._registration_metadata(identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                identity.worktree_name, registration.name
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                return self._prepare_commit_bound(worktree, commit_message)
+        except ControlledGitError:
+            raise
+        except (
+            OSError,
+            RepositoryAccessDenied,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ):
+            raise ControlledGitError() from None
+
+    def commit_prepared(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit:
+        """Publish one unchanged prepared index without running ``git add`` again."""
+
+        try:
+            self._validate_prepared_for_worktree(worktree, prepared)
+            identity, _expected = self._validate_handle_shape(worktree)
+            self._assert_trusted_state()
+            self._validate_handle(worktree)
+            registration = self._registration_metadata(identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                identity.worktree_name, registration.name
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                return self._commit_prepared_bound(worktree, prepared)
+        except ControlledGitError:
+            raise
+        except (
+            OSError,
+            RepositoryAccessDenied,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ):
+            raise ControlledGitError() from None
+
+    def adopt_head(
+        self, worktree: ManagedWorktree, previous_sha: str, new_sha: str, base_sha: str
+    ) -> None:
+        """Fast-forward an exact fetched update after proving both required ancestors.
+
+        The release controller owns durable admission and the remote receipt.
+        This method does not fetch objects or alter the original worktree base.
+        """
+        try:
+            if (
+                any(
+                    not isinstance(sha, str) or _SHA.fullmatch(sha) is None
+                    for sha in (previous_sha, new_sha, base_sha)
+                )
+                or previous_sha == new_sha
+                or worktree.identity.run_id is None
+            ):
+                raise ControlledGitError()
+            self._validate_handle(worktree)
+            registration = self._registration_metadata(worktree.identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                worktree.identity.worktree_name, registration.name
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                self._scan_local_config(worktree.path)
+                self._reject_incomplete_history_overlays()
+                self._validate_handle(worktree)
+                current = self._head_sha(worktree)
+                if current not in {previous_sha, new_sha}:
+                    raise ControlledGitError()
+                status = self._run(
+                    worktree.path, ("status", "--porcelain=v1", "--untracked-files=all", "-z", "--")
+                )
+                _require_complete_result(status)
+                if status.stdout:
+                    raise ControlledGitError()
+                for ancestor in (previous_sha, base_sha):
+                    result = self._run(
+                        worktree.path, ("merge-base", "--is-ancestor", ancestor, new_sha)
+                    )
+                    _require_complete_result(result)
+                if current != new_sha:
+                    if self._head_sha(worktree) != previous_sha:
+                        raise ControlledGitError()
+                    result = self._run(
+                        worktree.path,
+                        (
+                            "merge",
+                            "--ff-only",
+                            "--no-edit",
+                            "--no-stat",
+                            "--no-overwrite-ignore",
+                            new_sha,
+                        ),
+                    )
+                    _require_complete_result(result)
+                self._repository._verify_directory_access(access.normalized, access)
+                self._validate_handle(worktree)
+                if self._head_sha(worktree) != new_sha:
+                    raise ControlledGitError()
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def inspect_prepared_commit(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit | None:
+        """Read-only reconciliation for a unique exact direct child on this branch."""
+
+        try:
+            self._validate_prepared_for_worktree(worktree, prepared)
+            self._validate_handle(worktree)
+            self._scan_local_config(worktree.path)
+            self._verify_branch_exists(worktree.identity.branch)
+            registration = self._registration_metadata(worktree.identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                worktree.identity.worktree_name, registration.name, create_lock=False
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                self._reject_incomplete_history_overlays()
+                return self._inspect_prepared_commit_bound(worktree, prepared)
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def _inspect_prepared_commit_bound(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit | None:
+        """Inspect while a read-only managed-worktree binding remains retained."""
+
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        result = self._run(
+            worktree.path,
+            ("rev-list", "--parents", f"refs/heads/{worktree.identity.branch}"),
+        )
+        _require_complete_result(result)
+        direct_children: list[str] = []
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if not fields or _SHA.fullmatch(fields[0]) is None:
+                raise ControlledGitError()
+            if any(_SHA.fullmatch(parent) is None for parent in fields[1:]):
+                raise ControlledGitError()
+            if prepared.previous_sha in fields[1:]:
+                direct_children.append(fields[0])
+        if len(direct_children) != 1:
+            return None
+        new_sha = direct_children[0]
+        if not self._matches_prepared_commit(worktree, prepared, new_sha):
+            return None
+        return PublishedGitCommit(
+            worktree_identity=worktree.identity,
+            previous_sha=prepared.previous_sha,
+            tree_sha=prepared.tree_sha,
+            new_sha=new_sha,
+            message=prepared.message,
+        )
+
+    @contextlib.contextmanager
+    def open_worktree_capability(
+        self,
+        worktree: ManagedWorktree,
+        policy: ProjectPolicy,
+        *,
+        read_only: bool = False,
+        allow_committed_changes: bool = False,
+    ) -> Iterator[WorktreeCapability]:
+        """Retain registration and a fixed HEAD; staging defaults to the base."""
+
+        caller_failed = False
+        try:
+            if type(allow_committed_changes) is not bool:
+                raise ControlledGitError()
+            if not isinstance(policy, ProjectPolicy):
+                raise ControlledGitError()
+            if worktree.identity.project_id != policy.id:
+                raise ControlledGitError()
+            configured = Path(policy.repository_path)
+            if configured.resolve(strict=True) != self._repository.path:
+                raise ControlledGitError()
+            self._validate_handle(worktree)
+            if (worktree.identity.database_name is not None) != policy.database.enabled:
+                raise ControlledGitError()
+            registration = self._registration_metadata(worktree.identity)
+            if registration is None:
+                raise ControlledGitError()
+            with self._repository._open_managed_worktree(
+                worktree.identity.worktree_name,
+                registration.name,
+                create_lock=not read_only,
+                docker_policy_bound=policy.runner_mode is RunnerMode.DOCKER,
+            ) as access:
+                if not self._repository._directory_access_matches_path(access):
+                    raise ControlledGitError()
+                capability = WorktreeCapability(
+                    seal=_CAPABILITY_SEAL,
+                    owner=self,
+                    git=self,
+                    worktree=worktree,
+                    policy=policy,
+                    access=access,
+                    head_sha=self._head_sha(worktree)
+                    if allow_committed_changes
+                    else worktree.base_sha,
+                )
+                operation_failed = False
+                try:
+                    capability.revalidate()
+                    try:
+                        yield capability
+                    except BaseException:
+                        caller_failed = True
+                        raise
+                finally:
+                    try:
+                        try:
+                            capability.revalidate()
+                        except Exception:
+                            # Preserve the operation's stable failure category
+                            # when release proof itself encounters a stale
+                            # target; a successful operation still fails closed.
+                            if not operation_failed:
+                                raise
+                    finally:
+                        object.__getattribute__(capability, "_finish")()
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            if caller_failed:
+                raise
+            raise ControlledGitError() from None
+
+    def _prepare_commit_bound(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit:
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        previous_sha = self._head_sha(worktree)
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+
+        self._run(worktree.path, ("add", "-A", "--"))
+        self._require_staged_changes(worktree)
+
+        tree_sha = _parse_sha(self._run(worktree.path, ("write-tree",)))
+
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        if self._head_sha(worktree) != previous_sha:
+            raise ControlledGitError()
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        self._require_staged_changes(worktree)
+        if _parse_sha(self._run(worktree.path, ("write-tree",))) != tree_sha:
+            raise ControlledGitError()
+        return PreparedGitCommit(
+            worktree_identity=worktree.identity,
+            previous_sha=previous_sha,
+            tree_sha=tree_sha,
+            message=message,
+        )
+
+    def _commit_prepared_bound(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> PublishedGitCommit:
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        if self._head_sha(worktree) != prepared.previous_sha:
+            raise ControlledGitError()
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        self._require_staged_changes(worktree)
+        if _parse_sha(self._run(worktree.path, ("write-tree",))) != prepared.tree_sha:
+            raise ControlledGitError()
+
+        # Revalidate the registration, safety configuration, branch, HEAD, and
+        # base ancestry immediately before the mutation that creates the commit.
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        if self._head_sha(worktree) != prepared.previous_sha:
+            raise ControlledGitError()
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        self._require_staged_changes(worktree)
+        if _parse_sha(self._run(worktree.path, ("write-tree",))) != prepared.tree_sha:
+            raise ControlledGitError()
+
+        result = self._run(
+            worktree.path,
+            ("commit", "--no-verify", "--no-gpg-sign", "-m", prepared.message, "--"),
+        )
+        _require_complete_result(result)
+
+        new_sha = self._head_sha(worktree)
+        if new_sha == prepared.previous_sha:
+            raise ControlledGitError()
+        self._validate_handle(worktree)
+        self._reject_incomplete_history_overlays()
+        self._verify_ancestor_sha(worktree, worktree.base_sha)
+        if self._head_sha(worktree) != new_sha or not self._matches_prepared_commit(
+            worktree, prepared, new_sha
+        ):
+            raise ControlledGitError()
+        return PublishedGitCommit(
+            worktree_identity=worktree.identity,
+            previous_sha=prepared.previous_sha,
+            tree_sha=prepared.tree_sha,
+            new_sha=new_sha,
+            message=prepared.message,
+        )
+
+    def _validate_prepared_for_worktree(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit
+    ) -> None:
+        if not isinstance(prepared, PreparedGitCommit):
+            raise ControlledGitError()
+        if prepared.worktree_identity != worktree.identity:
+            raise ControlledGitError()
+        if _validate_commit_message(prepared.message) != prepared.message:
+            raise ControlledGitError()
+
+    def _matches_prepared_commit(
+        self, worktree: ManagedWorktree, prepared: PreparedGitCommit, new_sha: str
+    ) -> bool:
+        result = self._run(worktree.path, ("cat-file", "-p", new_sha))
+        _require_complete_result(result)
+        headers, separator, body = result.stdout.partition("\n\n")
+        if separator != "\n\n":
+            return False
+        tree_sha: str | None = None
+        parents: list[str] = []
+        for line in headers.splitlines():
+            key, delimiter, value = line.partition(" ")
+            if delimiter != " ":
+                return False
+            if key == "tree":
+                if tree_sha is not None or _SHA.fullmatch(value) is None:
+                    return False
+                tree_sha = value
+            elif key == "parent":
+                if _SHA.fullmatch(value) is None:
+                    return False
+                parents.append(value)
+        return (
+            tree_sha == prepared.tree_sha
+            and parents == [prepared.previous_sha]
+            and body == f"{prepared.message}\n"
+        )
+
+    def _require_staged_changes(self, worktree: ManagedWorktree) -> None:
+        result = self._run(
+            worktree.path,
+            ("diff", "--cached", "--quiet", "--"),
+            allow_return_codes=(0, 1),
+        )
+        _require_complete_result(result)
+        if _return_code(result) != 1:
+            raise ControlledGitError()
+
+    def branch_exists(self, worktree: ManagedWorktree) -> bool:
+        """Return whether the handle's exact branch exists locally."""
+
+        self._validate_handle(worktree)
+        result = self._run(
+            worktree.path,
+            ("show-ref", "--verify", "--quiet", f"refs/heads/{worktree.identity.branch}"),
+            allow_return_codes=(0, 1),
+        )
+        return _return_code(result) == 0
+
+    def retained_branch_head(self, worktree: ManagedWorktree) -> str | None:
+        """Read the exact retained branch only after its managed worktree is absent."""
+        with self._retained_branch_access(worktree) as ref:
+            return self._direct_branch_head(ref)
+
+    def delete_retained_branch(self, worktree: ManagedWorktree, expected_head: str) -> None:
+        """Delete one direct branch ref with Git's immutable old-object comparison.
+
+        This is an operator lifecycle primitive, not an agent tool. The durable
+        caller must retain the expected head and reconcile interrupted outcomes.
+        """
+        _validate_sha(expected_head)
+        with self._retained_branch_access(worktree, require_unchecked_out=False) as ref:
+            self._reject_checkout_and_restore_missing_ref(ref, expected_head)
+            current = self._direct_branch_head(ref)
+            if current is None:
+                return
+            if current != expected_head:
+                raise ControlledGitError()
+            try:
+                result = self._run(
+                    self._repository.path, ("update-ref", "--no-deref", "-d", ref, expected_head)
+                )
+                _require_complete_result(result)
+            finally:
+                # An external checkout may race the preflight. Preserve its
+                # branch; never overwrite a concurrently recreated ref.
+                self._reject_checkout_and_restore_missing_ref(ref, expected_head)
+            if self._direct_branch_head(ref) is not None:
+                raise ControlledGitError()
+
+    def inspect_retained_branch_deletion(
+        self, worktree: ManagedWorktree, expected_head: str
+    ) -> bool:
+        """Reconcile absence, repairing a checked-out missing ref without retrying deletion."""
+        _validate_sha(expected_head)
+        with self._retained_branch_access(worktree, require_unchecked_out=False) as ref:
+            # Any direct ref proves deletion is not complete, including a moved
+            # or checked-out branch. Preserve it and settle the operation failed.
+            if self._direct_branch_head(ref) is not None:
+                return False
+            try:
+                self._reject_checkout_and_restore_missing_ref(ref, expected_head)
+            except ControlledGitError:
+                # Successful compensation (or a concurrent recreation) proves
+                # the branch remains. Failed restoration stays unresolved.
+                if self._direct_branch_head(ref) is not None:
+                    return False
+                raise
+            return self._direct_branch_head(ref) is None
+
+    def _reject_checkout_and_restore_missing_ref(self, ref: str, expected_head: str) -> None:
+        if not self._branch_is_checked_out(ref):
+            return
+        if self._direct_branch_head(ref) is None:
+            restored = self._run(
+                self._repository.path, ("update-ref", "--no-deref", ref, expected_head, "0" * 40)
+            )
+            _require_complete_result(restored)
+        raise ControlledGitError()
+
+    def _branch_is_checked_out(self, ref: str) -> bool:
+        registrations = self._run(self._repository.path, ("worktree", "list", "--porcelain", "-z"))
+        _require_complete_result(registrations)
+        if not registrations.stdout.endswith("\x00"):
+            raise ControlledGitError()
+        return f"branch {ref}" in registrations.stdout.split("\x00")
+
+    @contextlib.contextmanager
+    def _retained_branch_access(
+        self, worktree: ManagedWorktree, *, require_unchecked_out: bool = True
+    ) -> Iterator[str]:
+        identity, expected_path = self._validate_handle_shape(worktree)
+        _validate_identity(identity)
+        try:
+            with self._repository._inspect_absent_worktree_removal(
+                identity.worktree_name, restore_metadata_parent=True
+            ):
+                self._verify_removal_absent(identity, expected_path, None)
+                self._scan_local_config(self._repository.path)
+                self._verify_branch_format(identity.branch)
+                ref = f"refs/heads/{identity.branch}"
+                if require_unchecked_out and self._branch_is_checked_out(ref):
+                    raise ControlledGitError()
+                yield ref
+        except ControlledGitError:
+            raise
+        except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
+            raise ControlledGitError() from None
+
+    def _direct_branch_head(self, ref: str) -> str | None:
+        symbolic = self._run(
+            self._repository.path, ("symbolic-ref", "--quiet", ref), allow_return_codes=(0, 1)
+        )
+        _require_complete_result(symbolic)
+        if _return_code(symbolic) != 1:
+            raise ControlledGitError()
+        exists = self._run(
+            self._repository.path,
+            ("show-ref", "--verify", "--quiet", ref),
+            allow_return_codes=(0, 1),
+        )
+        _require_complete_result(exists)
+        if _return_code(exists) == 1:
+            return None
+        return _parse_sha(
+            self._run(self._repository.path, ("rev-parse", "--verify", f"{ref}^{{commit}}"))
+        )
+
+    def current_branch(self, worktree: ManagedWorktree) -> str:
+        """Return the handle's recorded branch after exact-path validation."""
+
+        self._validate_handle(worktree, verify_branch=False)
+        return self._verify_current_branch(worktree)
+
+    def head_sha(self, worktree: ManagedWorktree) -> str:
+        """Return the lowercase, complete HEAD commit SHA."""
+
+        self._validate_handle(worktree)
+        return self._head_sha(worktree)
+
+    def _head_sha(self, worktree: ManagedWorktree) -> str:
+        result = self._run(worktree.path, ("rev-parse", "--verify", "HEAD^{commit}"))
+        return _parse_sha(result)
+
+    def is_ancestor(self, worktree: ManagedWorktree) -> bool:
+        """Return whether an exact commit is an ancestor of the handle's HEAD."""
+
+        self._validate_handle(worktree)
+        return self._is_ancestor(worktree)
+
+    def _is_ancestor(self, worktree: ManagedWorktree) -> bool:
+        return self._has_ancestor(worktree, worktree.base_sha)
+
+    def _verify_ancestor_sha(self, worktree: ManagedWorktree, ancestor: str) -> None:
+        if not self._has_ancestor(worktree, ancestor):
+            raise ControlledGitError()
+
+    def _has_ancestor(self, worktree: ManagedWorktree, ancestor: str) -> bool:
+        _validate_sha(ancestor)
+        result = self._run(
+            worktree.path,
+            ("merge-base", "--is-ancestor", ancestor, "HEAD"),
+            allow_return_codes=(0, 1),
+        )
+        _require_complete_result(result)
+        return _return_code(result) == 0
+
+    def _validate_handle_shape(self, worktree: ManagedWorktree) -> tuple[WorktreeIdentity, Path]:
+        if not isinstance(worktree, ManagedWorktree):
+            raise ControlledGitError()
+        identity = worktree.identity
+        if not isinstance(identity, WorktreeIdentity):
+            raise ControlledGitError()
+        try:
+            _validate_branch(identity.branch)
+        except TypeError, ValueError:
+            raise ControlledGitError() from None
+        if _same_branch(identity.branch, self._default_branch):
+            raise ControlledGitError()
+        _validate_worktree_component(identity.worktree_name)
+        expected = self._managed_root / identity.worktree_name
+        if _path_key(worktree.path) != _path_key(expected):
+            raise ControlledGitError()
+        _validate_sha(worktree.base_sha)
+        return identity, expected
+
+    def _validate_handle(
+        self,
+        worktree: ManagedWorktree,
+        *,
+        verify_branch: bool = True,
+    ) -> None:
+        identity, expected = self._validate_handle_shape(worktree)
+        try:
+            _reject_links(worktree.path)
+            if not worktree.path.is_dir() or _path_key(worktree.path) != _path_key(expected):
+                raise ControlledGitError()
+            self._verify_registration(worktree.path, identity)
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, ValueError:
+            raise ControlledGitError() from None
+        if verify_branch:
+            self._verify_current_branch(worktree)
+
+    def _verify_current_branch(self, worktree: ManagedWorktree) -> str:
+        result = self._run(worktree.path, ("branch", "--show-current"))
+        branch = _parse_single_line(result)
+        if branch != worktree.identity.branch:
+            raise ControlledGitError()
+        return branch
+
+    def _scan_local_config(self, worktree: Path) -> None:
+        """Refuse local settings that could execute repository-controlled code."""
+
+        result = self._run(
+            worktree,
+            ("config", "--local", "--no-includes", "--name-only", "--null", "--list"),
+        )
+        if _truncated(result, "stdout") or _truncated(result, "stderr"):
+            raise ControlledGitError()
+        output = result.stdout
+        if not isinstance(output, str) or "\ufffd" in output:
+            raise ControlledGitError()
+        keys = output.split("\x00")
+        if keys and keys[-1] == "":
+            keys.pop()
+        if any(not key or _unsafe_local_key(key) for key in keys):
+            raise ControlledGitError()
+
+    def _run(
+        self,
+        worktree: Path,
+        arguments: Sequence[str],
+        *,
+        allow_return_codes: tuple[int, ...] = (0,),
+        omit_cwd_prefix: bool = False,
+        git_directory: str | None = None,
+        configuration: tuple[tuple[str, str], ...] = (),
+    ) -> ProcessResult:
+        self._assert_trusted_state()
+        normalized: str | None = None
+        active_access = None
+        try:
+            relative = Path(worktree).relative_to(self._repository.path)
+        except ValueError:
+            pass
+        else:
+            normalized = self._repository.normalize(relative, allow_root=True)
+            active_access = self._repository._active_directory_access(normalized)
+        launch_worktree = worktree
+        environment = self._environment(git_directory=git_directory)
+        if active_access is not None:
+            if normalized is None:
+                raise ControlledGitError()
+            bound_worktree = self._repository._launch_path_for_access(
+                normalized, active_access, require_fd=True
+            )
+            launch_worktree = Path(bound_worktree)
+            if active_access.registration_path is not None:
+                environment = self._environment(
+                    git_directory=self._repository._git_directory_for_access(
+                        normalized, active_access
+                    ),
+                    git_common_directory=self._repository._git_common_directory_for_access(
+                        normalized, active_access
+                    ),
+                    git_work_tree=self._repository._git_work_tree_for_access(
+                        normalized, active_access
+                    ),
+                )
+        if configuration:
+            environment["GIT_CONFIG_COUNT"] = str(len(configuration))
+            for index, (key, value) in enumerate(configuration):
+                environment[f"GIT_CONFIG_KEY_{index}"] = key
+                environment[f"GIT_CONFIG_VALUE_{index}"] = value
+        argv = [
+            *self._prefix(launch_worktree, include_cwd=not omit_cwd_prefix),
+            *arguments,
+        ]
+        cwd = str(worktree)
+        try:
+            result = self._runner.run_argv(
+                argv,
+                cwd=cwd,
+                environment=environment,
+            )
+        except OSError, RuntimeError, TypeError, ValueError:
+            raise ControlledGitError() from None
+        if not _valid_result(result):
+            raise ControlledGitError()
+        return_code = _return_code(result)
+        if return_code not in allow_return_codes:
+            raise ControlledGitError()
+        if _timed_out(result) or return_code is None:
+            raise ControlledGitError()
+        return result
+
+    def _prefix(self, worktree: Path, *, include_cwd: bool = True) -> tuple[str, ...]:
+        # Object replacement refs can rewrite commit ancestry and contents for
+        # read commands as well as mutations.  The controlled boundary proves
+        # real object identity, so disable that repository-controlled overlay
+        # for every Git invocation before selecting its worktree.
+        prefix = [str(self._git_executable), "--no-replace-objects"]
+        if include_cwd:
+            prefix.extend(("-C", str(worktree)))
+        prefix.extend(
+            (
+                "--no-pager",
+                "-c",
+                f"core.hooksPath={self._hooks_path}",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.interactive=false",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-c",
+                "diff.external=",
+                "-c",
+                f"core.attributesFile={self._global_attributes_path}",
+                "-c",
+                f"user.name={_FORGE_NAME}",
+                "-c",
+                f"user.email={_FORGE_EMAIL}",
+            )
+        )
+        return tuple(prefix)
+
+    def _environment(
+        self,
+        *,
+        git_directory: str | None = None,
+        git_common_directory: str | None = None,
+        git_work_tree: str | None = None,
+    ) -> dict[str, str]:
+        allowed_names = {
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TMP",
+            "TEMP",
+            "TMPDIR",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "PATHEXT",
+        }
+        environment: dict[str, str] = {}
+        for key, value in os.environ.items():
+            comparison = key.upper() if os.name == "nt" else key
+            if comparison not in allowed_names:
+                continue
+            if not isinstance(value, str) or "\x00" in value:
+                continue
+            environment[key] = value
+        environment.update(
+            {
+                "GIT_CONFIG_GLOBAL": str(self._global_config_path),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_ATTR_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_ASKPASS": "",
+                "GIT_PAGER": "",
+                "GIT_EDITOR": "",
+            }
+        )
+        common_directory = (
+            git_common_directory if git_common_directory is not None else git_directory
+        )
+        if git_directory is not None:
+            environment["GIT_DIR"] = git_directory
+        if common_directory is not None:
+            environment["GIT_COMMON_DIR"] = common_directory
+        if git_work_tree is not None:
+            environment["GIT_WORK_TREE"] = git_work_tree
+        return environment
+
+    def _assert_trusted_state(self) -> None:
+        try:
+            _reject_links(self._state_root)
+            _reject_links(self._hooks_path)
+            if not self._hooks_path.is_dir() or any(self._hooks_path.iterdir()):
+                raise ControlledGitError()
+            for path in (self._global_config_path, self._global_attributes_path):
+                _reject_links(path)
+                if not path.is_file() or path.stat().st_size != 0:
+                    raise ControlledGitError()
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, ValueError:
+            raise ControlledGitError() from None
+
+    def _verify_branch_format(self, branch: str) -> None:
+        self._run(self._repository.path, ("check-ref-format", "--branch", branch))
+
+    def _parse_base_sha(self, base_sha: str) -> str:
+        result = self._run(
+            self._repository.path,
+            ("rev-parse", "--verify", f"{base_sha}^{{commit}}"),
+        )
+        return _parse_sha(result)
+
+    def _verify_managed_root_ignored(self) -> None:
+        self._run(self._repository.path, ("check-ignore", "--quiet", "--", ".worktrees/"))
+
+    def _branch_exists_at(self, worktree: Path, branch: str) -> bool:
+        result = self._run(
+            worktree,
+            ("show-ref", "--verify", "--quiet", f"refs/heads/{branch}"),
+            allow_return_codes=(0, 1),
+        )
+        return _return_code(result) == 0
+
+    def _verify_branch_exists(self, branch: str) -> None:
+        if not self._branch_exists_at(self._repository.path, branch):
+            raise ControlledGitError()
+
+    def _registration_metadata(self, identity: WorktreeIdentity) -> Path | None:
+        git_directory = self._repository.path / ".git"
+        if os.path.lexists(git_directory):
+            _reject_links(git_directory)
+            if not git_directory.is_dir():
+                raise ControlledGitError()
+        metadata_root = git_directory / "worktrees"
+        if not os.path.lexists(metadata_root):
+            return None
+        _reject_links(metadata_root)
+        if not metadata_root.is_dir():
+            raise ControlledGitError()
+        expected_target = self._managed_root / identity.worktree_name / ".git"
+        expected_target = _canonical_no_links_allow_missing(expected_target)
+        matches: list[Path] = []
+        try:
+            for index, metadata in enumerate(metadata_root.iterdir()):
+                if index >= _MAX_METADATA_ENTRIES:
+                    raise ControlledGitError()
+                _reject_links(metadata)
+                metadata_stat = os.stat(metadata, follow_symlinks=False)
+                if not stat.S_ISDIR(metadata_stat.st_mode):
+                    raise ControlledGitError()
+                target = _read_metadata_target(metadata)
+                if _path_key(target) != _path_key(expected_target):
+                    continue
+                matches.append(_canonical_no_links(metadata))
+                if len(matches) > 1:
+                    raise ControlledGitError()
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, ValueError:
+            raise ControlledGitError() from None
+        return matches[0] if matches else None
+
+    def _reject_incomplete_history_overlays(self) -> None:
+        """Refuse retained repositories whose common graph may be incomplete."""
+
+        common_git = self._repository.path / ".git"
+        _reject_links(common_git)
+        if not common_git.is_dir():
+            raise ControlledGitError()
+        shallow = common_git / "shallow"
+        if os.path.lexists(shallow):
+            _reject_links(shallow)
+            raise ControlledGitError()
+        info = common_git / "info"
+        if not os.path.lexists(info):
+            return
+        _reject_links(info)
+        if not info.is_dir():
+            raise ControlledGitError()
+        grafts = info / "grafts"
+        if os.path.lexists(grafts):
+            _reject_links(grafts)
+            raise ControlledGitError()
+
+    def _registration_quarantine_metadata(self, identity: WorktreeIdentity) -> Path | None:
+        """Find exact target proof in registration quarantine, leaving foreign entries alone."""
+
+        git_directory = self._repository.path / ".git"
+        if not os.path.lexists(git_directory):
+            return None
+        _reject_links(git_directory)
+        if not git_directory.is_dir():
+            raise ControlledGitError()
+        quarantine_root = git_directory / ".forge-worktree-quarantine"
+        if not os.path.lexists(quarantine_root):
+            return None
+        _reject_links(quarantine_root)
+        if not quarantine_root.is_dir():
+            raise ControlledGitError()
+
+        expected_target = self._managed_root / identity.worktree_name / ".git"
+        expected_target = _canonical_no_links_allow_missing(expected_target)
+        matches: list[Path] = []
+        try:
+            for index, metadata in enumerate(quarantine_root.iterdir()):
+                if index >= _MAX_METADATA_ENTRIES:
+                    raise ControlledGitError()
+                _reject_links(metadata)
+                metadata_stat = os.stat(metadata, follow_symlinks=False)
+                if not stat.S_ISDIR(metadata_stat.st_mode):
+                    raise ControlledGitError()
+                target = _read_metadata_target(metadata)
+                if _path_key(target) != _path_key(expected_target):
+                    continue
+                matches.append(_canonical_no_links(metadata))
+                if len(matches) > 1:
+                    raise ControlledGitError()
+        except ControlledGitError:
+            raise
+        except OSError, RuntimeError, ValueError:
+            raise ControlledGitError() from None
+        return matches[0] if matches else None
+
+    def _verify_registration(self, worktree: Path, identity: WorktreeIdentity) -> None:
+        git_marker = worktree / ".git"
+        _reject_links(git_marker)
+        if not git_marker.is_file():
+            raise ControlledGitError()
+        marker = _read_small_text(git_marker)
+        if not marker.startswith("gitdir: ") or marker.count("\n") != 1:
+            raise ControlledGitError()
+        raw_metadata = marker.removesuffix("\n")[8:]
+        metadata = Path(raw_metadata)
+        if not metadata.is_absolute():
+            metadata = worktree / metadata
+        metadata = _canonical_no_links(metadata)
+        expected = self._registration_metadata(identity)
+        if expected is None or _path_key(metadata) != _path_key(expected):
+            raise ControlledGitError()
+        self._verify_metadata_target(metadata, git_marker)
+
+    def _verify_metadata_target(self, metadata: Path, expected_target: Path) -> None:
+        target = _read_metadata_target(metadata)
+        expected_target = _canonical_no_links_allow_missing(expected_target)
+        if _path_key(target) != _path_key(expected_target):
+            raise ControlledGitError()
+
+
+def _read_metadata_target(metadata: Path) -> Path:
+    metadata_gitdir = metadata / "gitdir"
+    _reject_links(metadata_gitdir)
+    try:
+        metadata_stat = os.stat(metadata_gitdir, follow_symlinks=False)
+    except OSError, ValueError:
+        raise ControlledGitError() from None
+    if not stat.S_ISREG(metadata_stat.st_mode):
+        raise ControlledGitError()
+    record = _read_small_text(metadata_gitdir)
+    if not record.endswith("\n") or record.count("\n") != 1:
+        raise ControlledGitError()
+    registered_target = record.removesuffix("\n")
+    if not registered_target or "\r" in registered_target:
+        raise ControlledGitError()
+    target = Path(registered_target)
+    if not target.is_absolute():
+        target = metadata / target
+    return _canonical_no_links_allow_missing(target)
+
+
+def _resolve_git_executable(value: str | os.PathLike[str]) -> Path:
+    try:
+        path = Path(os.fspath(value))
+    except TypeError, ValueError:
+        raise ControlledGitError() from None
+    if not path.is_absolute():
+        raise ControlledGitError()
+    try:
+        _reject_links(path)
+        resolved = path.resolve(strict=True)
+        metadata = os.stat(resolved, follow_symlinks=False)
+    except OSError, RuntimeError, ValueError:
+        raise ControlledGitError() from None
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ControlledGitError()
+    return resolved
+
+
+def _prepare_directory(path: Path) -> Path:
+    if not path.is_absolute() or not path.anchor:
+        raise ControlledGitError()
+    try:
+        _ensure_directory(path)
+        _reject_links(path)
+        return path.resolve(strict=True)
+    except OSError, RuntimeError, ValueError:
+        raise ControlledGitError() from None
+
+
+def _ensure_directory(path: Path) -> None:
+    missing: list[Path] = []
+    current = path
+    while not os.path.lexists(current):
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            raise ControlledGitError()
+        current = parent
+    _reject_links(current)
+    if not current.is_dir():
+        raise ControlledGitError()
+    for candidate in reversed(missing):
+        candidate.mkdir()
+        _reject_links(candidate)
+        if not candidate.is_dir():
+            raise ControlledGitError()
+
+
+def _prepare_empty_directory(path: Path) -> None:
+    if os.path.lexists(path):
+        _reject_links(path)
+        if not path.is_dir() or any(path.iterdir()):
+            raise ControlledGitError()
+        return
+    path.mkdir()
+    _reject_links(path)
+
+
+def _prepare_empty_file(path: Path) -> None:
+    if os.path.lexists(path):
+        _reject_links(path)
+        if not path.is_file() or path.stat().st_size != 0:
+            raise ControlledGitError()
+        return
+    try:
+        with path.open("xb"):
+            pass
+    except OSError, ValueError:
+        raise ControlledGitError() from None
+    _reject_links(path)
+
+
+def _reject_links(path: Path) -> None:
+    current = Path(path.anchor)
+    if not current:
+        raise ControlledGitError()
+    for component in path.parts[1:]:
+        current /= component
+        try:
+            metadata = os.lstat(current)
+        except OSError, ValueError:
+            raise ControlledGitError() from None
+        if stat.S_ISLNK(metadata.st_mode) or bool(
+            getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT
+        ):
+            raise ControlledGitError()
+
+
+def _reject_existing_links(path: Path) -> None:
+    current = Path(path.anchor)
+    if not current:
+        raise ControlledGitError()
+    for component in path.parts[1:]:
+        current /= component
+        if not os.path.lexists(current):
+            break
+        try:
+            metadata = os.lstat(current)
+        except OSError, ValueError:
+            raise ControlledGitError() from None
+        if stat.S_ISLNK(metadata.st_mode) or bool(
+            getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT
+        ):
+            raise ControlledGitError()
+
+
+def _canonical_no_links(path: Path) -> Path:
+    _reject_links(path)
+    return path.resolve(strict=True)
+
+
+def _canonical_no_links_allow_missing(path: Path) -> Path:
+    _reject_existing_links(path)
+    return path.resolve(strict=False)
+
+
+def _read_small_text(path: Path) -> str:
+    try:
+        value = path.read_bytes()
+    except OSError, ValueError:
+        raise ControlledGitError() from None
+    if len(value) > _MAX_METADATA_BYTES:
+        raise ControlledGitError()
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ControlledGitError() from None
+
+
+def _validate_branch(value: object) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > _MAX_BRANCH_LENGTH
+        or value.startswith(("-", "/"))
+        or "\x00" in value
+        or "\r" in value
+        or "\n" in value
+        or ".." in value
+        or "@{" in value
+        or value.endswith((".", "/"))
+        or "//" in value
+    ):
+        raise ValueError("invalid branch")
+
+
+def _same_branch(first: str, second: str) -> bool:
+    return first.casefold() == second.casefold() if os.name == "nt" else first == second
+
+
+def _validate_sha(value: object) -> None:
+    if not isinstance(value, str) or _SHA.fullmatch(value) is None:
+        raise ControlledGitError()
+
+
+def _validate_identity(identity: object) -> None:
+    if not isinstance(identity, WorktreeIdentity):
+        raise ControlledGitError()
+    try:
+        if identity.run_id is None:
+            expected = WorktreeIdentity.for_developer(
+                identity.project_id,
+                identity.branch,
+                identity.database_name is not None,
+            )
+        else:
+            expected = WorktreeIdentity.for_run(
+                identity.project_id,
+                identity.run_id,
+                identity.branch,
+                identity.database_name is not None,
+            )
+    except TypeError, ValueError:
+        raise ControlledGitError() from None
+    if expected != identity:
+        raise ControlledGitError()
+
+
+def _reject_locked_registration(metadata: Path) -> None:
+    locked = metadata / "locked"
+    if not os.path.lexists(locked):
+        return
+    try:
+        _reject_links(locked)
+        locked_stat = os.stat(locked, follow_symlinks=False)
+    except OSError, RuntimeError, ValueError:
+        raise ControlledGitError() from None
+    if not stat.S_ISREG(locked_stat.st_mode):
+        raise ControlledGitError()
+    raise ControlledGitError()
+
+
+def _validate_worktree_component(value: object) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or any(character in value for character in ("/", "\\", "\x00", ":"))
+        or len(os.fsencode(value)) > 255
+        or (os.name == "nt" and value.rstrip(" .") != value)
+    ):
+        raise ControlledGitError()
+
+
+def _path_key(path: Path) -> str:
+    value = str(path).replace("\\", "/").rstrip("/")
+    if not value:
+        value = "/"
+    return value.casefold() if os.name == "nt" else value
+
+
+def _overlaps(first: Path, second: Path) -> bool:
+    first_key = _path_key(first)
+    second_key = _path_key(second)
+    return (
+        first_key == second_key
+        or first_key.startswith(second_key + "/")
+        or second_key.startswith(first_key + "/")
+    )
+
+
+def _unsafe_local_key(key: str) -> bool:
+    lowered = key.casefold()
+    blocked_fragments = (
+        "include",
+        "hook",
+        "filter",
+        "fsmonitor",
+        "untrackedcache",
+        "external",
+        "textconv",
+        "credential",
+        "pager",
+        "editor",
+        "askpass",
+        "ssh",
+        "proxy",
+        "attributesfile",
+        "diff.filter",
+        "interactive.difffilter",
+    )
+    return any(fragment in lowered for fragment in blocked_fragments)
+
+
+def _validate_commit_message(value: object) -> str:
+    if not isinstance(value, str):
+        raise ControlledGitError()
+    if len(value.encode("utf-8")) > _MAX_COMMIT_MESSAGE_BYTES:
+        raise ControlledGitError()
+    if any(
+        character == "\x7f"
+        or ord(character) < 0x20
+        or unicodedata.category(character) in {"Cc", "Cf"}
+        for character in value
+    ):
+        raise ControlledGitError()
+    message = value.strip()
+    if not message or len(message.encode("utf-8")) > _MAX_COMMIT_MESSAGE_BYTES:
+        raise ControlledGitError()
+    return message
+
+
+def _require_complete_result(result: ProcessResult) -> None:
+    if (
+        _truncated(result, "stdout")
+        or _truncated(result, "stderr")
+        or "\ufffd" in result.stdout
+        or "\ufffd" in result.stderr
+    ):
+        raise ControlledGitError()
+
+
+def _valid_result(result: object) -> bool:
+    return (
+        hasattr(result, "stdout")
+        and hasattr(result, "stderr")
+        and isinstance(result.stdout, str)
+        and isinstance(result.stderr, str)
+    )
+
+
+def _return_code(result: object) -> int | None:
+    value = getattr(result, "return_code", getattr(result, "returncode", None))
+    return value if type(value) is int or value is None else None
+
+
+def _timed_out(result: object) -> bool:
+    value = getattr(result, "timed_out", False)
+    return value is True
+
+
+def _truncated(result: object, stream: str) -> bool:
+    value = getattr(result, f"{stream}_truncated", False)
+    return value is True
+
+
+def _original_count(result: object, stream: str) -> int:
+    value = getattr(result, f"{stream}_original_byte_count", None)
+    if type(value) is int and value >= 0:
+        return value
+    text = getattr(result, stream)
+    return len(text.encode("utf-8"))
+
+
+def _parse_sha(result: ProcessResult) -> str:
+    if _truncated(result, "stdout") or _truncated(result, "stderr"):
+        raise ControlledGitError()
+    value = _parse_single_line(result)
+    _validate_sha(value)
+    return value
+
+
+def _parse_single_line(result: ProcessResult) -> str:
+    if _truncated(result, "stdout") or _truncated(result, "stderr"):
+        raise ControlledGitError()
+    output = result.stdout
+    if not isinstance(output, str):
+        raise ControlledGitError()
+    lines = output.splitlines()
+    if len(lines) != 1 or not lines[0] or lines[0] != lines[0].strip():
+        raise ControlledGitError()
+    if any(ord(character) < 0x20 for character in lines[0]):
+        raise ControlledGitError()
+    return lines[0]
+
+
+__all__ = ["ControlledGit", "ControlledGitError", "WorktreeCapability"]
