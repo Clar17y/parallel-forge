@@ -417,6 +417,8 @@ async def test_live_service_resolves_adk_and_persists_a_bound_planner_tool_recei
         (True, False, "cancelled"),
         (True, False, "caller"),
         (True, False, "caller-failed"),
+        (True, False, "repeated-cancel"),
+        (True, False, "failed-then-cancel"),
     ],
 )
 async def test_live_service_binds_developer_write_check_and_reviewer_diff(
@@ -539,7 +541,7 @@ async def test_live_service_binds_developer_write_check_and_reviewer_diff(
 
         async def fail_teardown(self: object, run_id: object, policy: object) -> None:
             del self, run_id, policy
-            if teardown_outcome == "cancelled":
+            if teardown_outcome in {"cancelled", "repeated-cancel"}:
                 invocation_ready.set()
                 await asyncio.Event().wait()
             raise RuntimeError("injected teardown failure")
@@ -547,6 +549,35 @@ async def test_live_service_binds_developer_write_check_and_reviewer_diff(
         monkeypatch.setattr(
             "forge.application.services.evaluations.DeliveryRuntime.teardown", fail_teardown
         )
+    settlement_entered = asyncio.Event()
+    settlement_release = asyncio.Event()
+    case_entered = asyncio.Event()
+    case_release = asyncio.Event()
+    if teardown_outcome in {"repeated-cancel", "failed-then-cancel"}:
+        from forge.persistence.repositories.events import PostgresEventRepository
+
+        original_append = PostgresEventRepository.append
+        original_mark = service._mark_fixture_case_failed
+
+        async def pause_settlement(self: Any, event: Any) -> Any:
+            result = await original_append(self, event)
+            if (
+                teardown_outcome == "repeated-cancel"
+                and event.event_type == "evaluation.fixture_teardown_intervention_required"
+            ):
+                settlement_entered.set()
+                await asyncio.wait_for(settlement_release.wait(), timeout=10)
+            return result
+
+        async def pause_case(suite_id: Any, case_key: str) -> None:
+            case_entered.set()
+            if teardown_outcome == "failed-then-cancel":
+                invocation_ready.set()
+            await asyncio.wait_for(case_release.wait(), timeout=10)
+            await original_mark(suite_id, case_key)
+
+        monkeypatch.setattr(PostgresEventRepository, "append", pause_settlement)
+        monkeypatch.setattr(service, "_mark_fixture_case_failed", pause_case)
     execution_task = asyncio.create_task(
         service.run_suite(
             suite_name="live",
@@ -556,13 +587,27 @@ async def test_live_service_binds_developer_write_check_and_reviewer_diff(
             cases=cases,
         )
     )
-    if caller_cancel or teardown_outcome == "cancelled":
+    if caller_cancel or teardown_outcome in {"cancelled", "repeated-cancel", "failed-then-cancel"}:
         try:
             await asyncio.wait_for(invocation_ready.wait(), timeout=45)
             execution_task.cancel()
+            if teardown_outcome == "failed-then-cancel":
+                await asyncio.sleep(0)
+                case_release.set()
+            if teardown_outcome == "repeated-cancel":
+                await asyncio.wait_for(settlement_entered.wait(), timeout=10)
+                execution_task.cancel()
+                await asyncio.sleep(0)
+                settlement_release.set()
+                await asyncio.wait_for(case_entered.wait(), timeout=10)
+                execution_task.cancel()
+                await asyncio.sleep(0)
+                case_release.set()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(execution_task, timeout=15)
         finally:
+            settlement_release.set()
+            case_release.set()
             if not execution_task.done():
                 execution_task.cancel()
                 await asyncio.gather(execution_task, return_exceptions=True)

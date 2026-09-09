@@ -58,7 +58,7 @@ jobs:
           apps/orchestrator/tests/domain apps/orchestrator/tests/agents
           apps/orchestrator/tests/observability apps/orchestrator/tests/artifacts
           tests/integration/test_worktree_scripts.py
-          -q -m "not integration and not live_provider and not live_github and not docker"
+          -q -ra -m "not integration and not live_provider and not live_github and not docker"
 
   postgres-contract:
     runs-on: ubuntu-24.04
@@ -90,6 +90,6 @@ jobs:
           enable-cache: false
       - run: uv sync --frozen --extra dev
       - name: Deterministic backend, evaluations and migration round trips
-        run: uv run --frozen python -m pytest -q -m "not live_provider and not live_github and not docker"
+        run: uv run --frozen python -m pytest -q -ra -m "not live_provider and not live_github and not docker"
       - name: Docker runner contract
-        run: uv run --frozen python -m pytest tests/integration/test_runner_container.py -q
+        run: uv run --frozen python -m pytest tests/integration/test_runner_container.py -q -ra

@@ -99,6 +99,7 @@ from forge.persistence.repositories.projects import PostgresProjectRepository
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.settings import Settings
 from forge.tools.repository import RepositoryReader
+from forge.tools.runner import DeferredCancellationState, await_deferred_cancellation
 from forge.worker.delivery_runtime import DeliveryRuntime
 from forge.worker.evaluation_tools import EvaluationToolRegistry
 
@@ -848,12 +849,14 @@ class EvaluationService(EvaluationServicePort):
                             and case.role is not AgentRole.PLANNER,
                         )
                     except asyncio.CancelledError:
-                        await self._mark_fixture_case_failed(suite_summary.id, case.case_key)
-                        await self._abort_fixture_suite(suite_summary.id, cancelled=True)
+                        await self._fail_fixture_suite(
+                            suite_summary.id, case.case_key, cancelled=True
+                        )
                         raise
-                    await self._mark_fixture_case_failed(suite_summary.id, case.case_key)
-                    await self._abort_fixture_suite(
-                        suite_summary.id, cancelled=isinstance(exc, asyncio.CancelledError)
+                    await self._fail_fixture_suite(
+                        suite_summary.id,
+                        case.case_key,
+                        cancelled=isinstance(exc, asyncio.CancelledError),
                     )
                     if settled:
                         materialized.release()
@@ -871,12 +874,12 @@ class EvaluationService(EvaluationServicePort):
                         requires_teardown=bind_controlled_tools
                         and case.role is not AgentRole.PLANNER,
                     )
+                    if not settled:
+                        await self._mark_fixture_case_failed(suite_summary.id, case.case_key)
                 except asyncio.CancelledError:
-                    await self._mark_fixture_case_failed(suite_summary.id, case.case_key)
-                    await self._abort_fixture_suite(suite_summary.id, cancelled=True)
+                    await self._fail_fixture_suite(suite_summary.id, case.case_key, cancelled=True)
                     raise
                 if not settled:
-                    await self._mark_fixture_case_failed(suite_summary.id, case.case_key)
                     case_result = replace(
                         case_result,
                         passed=False,
@@ -938,82 +941,101 @@ class EvaluationService(EvaluationServicePort):
             except BaseException as exc:  # noqa: BLE001 - cancellation also requires recovery
                 teardown_error = exc
 
-        async with self._session_factory() as session, session.begin():
-            run = await session.scalar(select(Run).where(Run.id == run_id).with_for_update())
-            execution = await session.get(AgentExecution, execution_id, with_for_update=True)
-            if run is None or execution is None:
-                raise EvaluationConflict("evaluation fixture lifecycle evidence is missing")
-            step = await session.scalar(
-                select(Step).where(Step.id == execution.step_id).with_for_update()
-            )
-            if step is None:
-                raise EvaluationConflict("evaluation fixture step is missing")
+        async def persist_settlement() -> None:
+            async with self._session_factory() as session, session.begin():
+                run = await session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+                execution = await session.get(AgentExecution, execution_id, with_for_update=True)
+                if run is None or execution is None:
+                    raise EvaluationConflict("evaluation fixture lifecycle evidence is missing")
+                step = await session.scalar(
+                    select(Step).where(Step.id == execution.step_id).with_for_update()
+                )
+                if step is None:
+                    raise EvaluationConflict("evaluation fixture step is missing")
 
-            now = datetime.now(UTC)
-            if teardown_error is not None:
-                # Do not delete the temporary repository when delivery cannot
-                # prove its worktree resources are removed.  The durable event
-                # gives an operator the exact run to reconcile.
-                suspended = RunState(run.state)
-                run.state = RunState.AWAITING_HUMAN_INTERVENTION.value
-                run.suspended_state = suspended.value
-                run.suspension_kind = "INTERVENTION"
-                run.suspension_context = None
-                run.suspension_context_schema_version = None
-                run.version += 1
-                step.status = "FAILED"
-                step.completed_at = now
-                step.outcome = "fixture teardown requires intervention"
-                if execution.status == "RUNNING":
-                    execution.status = database_status_for_finish(AgentFinishStatus.FAILED).value
-                    execution.completed_at = now
-                await PostgresEventRepository(session).append(
-                    RunEvent(
-                        run_id=run_id,
-                        run_version=run.version,
-                        event_type="evaluation.fixture_teardown_intervention_required",
-                        actor_class="operator",
-                        actor_id=None,
-                        payload={"reason": type(teardown_error).__name__},
+                now = datetime.now(UTC)
+                if teardown_error is not None:
+                    # Do not delete the temporary repository when delivery cannot
+                    # prove its worktree resources are removed.  The durable event
+                    # gives an operator the exact run to reconcile.
+                    suspended = RunState(run.state)
+                    run.state = RunState.AWAITING_HUMAN_INTERVENTION.value
+                    run.suspended_state = suspended.value
+                    run.suspension_kind = "INTERVENTION"
+                    run.suspension_context = None
+                    run.suspension_context_schema_version = None
+                    run.version += 1
+                    step.status = "FAILED"
+                    step.completed_at = now
+                    step.outcome = "fixture teardown requires intervention"
+                    if execution.status == "RUNNING":
+                        execution.status = database_status_for_finish(
+                            AgentFinishStatus.FAILED
+                        ).value
+                        execution.completed_at = now
+                    await PostgresEventRepository(session).append(
+                        RunEvent(
+                            run_id=run_id,
+                            run_version=run.version,
+                            event_type="evaluation.fixture_teardown_intervention_required",
+                            actor_class="operator",
+                            actor_id=None,
+                            payload={"reason": type(teardown_error).__name__},
+                        )
                     )
-                )
-            else:
-                terminal_state = (
-                    RunState.COMPLETED
-                    if finish_status is AgentFinishStatus.SUCCEEDED
-                    else RunState.CANCELLED
-                    if finish_status is AgentFinishStatus.CANCELLED
-                    else RunState.FAILED
-                )
-                step.status = (
-                    "SUCCEEDED"
-                    if finish_status is AgentFinishStatus.SUCCEEDED
-                    else "CANCELLED"
-                    if finish_status is AgentFinishStatus.CANCELLED
-                    else "FAILED"
-                )
-                step.completed_at = now
-                step.outcome = f"evaluation fixture {terminal_state.value.lower()}"
-                run.state = terminal_state.value
-                run.version += 1
-                if execution.status == "RUNNING":
-                    execution.status = database_status_for_finish(finish_status).value
-                    execution.completed_at = now
-                await PostgresEventRepository(session).append(
-                    RunEvent(
-                        run_id=run_id,
-                        run_version=run.version,
-                        event_type="evaluation.fixture_lifecycle_settled",
-                        actor_class="operator",
-                        actor_id=None,
-                        payload={"outcome": terminal_state.value.lower()},
+                else:
+                    terminal_state = (
+                        RunState.COMPLETED
+                        if finish_status is AgentFinishStatus.SUCCEEDED
+                        else RunState.CANCELLED
+                        if finish_status is AgentFinishStatus.CANCELLED
+                        else RunState.FAILED
                     )
-                )
+                    step.status = (
+                        "SUCCEEDED"
+                        if finish_status is AgentFinishStatus.SUCCEEDED
+                        else "CANCELLED"
+                        if finish_status is AgentFinishStatus.CANCELLED
+                        else "FAILED"
+                    )
+                    step.completed_at = now
+                    step.outcome = f"evaluation fixture {terminal_state.value.lower()}"
+                    run.state = terminal_state.value
+                    run.version += 1
+                    if execution.status == "RUNNING":
+                        execution.status = database_status_for_finish(finish_status).value
+                        execution.completed_at = now
+                    await PostgresEventRepository(session).append(
+                        RunEvent(
+                            run_id=run_id,
+                            run_version=run.version,
+                            event_type="evaluation.fixture_lifecycle_settled",
+                            actor_class="operator",
+                            actor_id=None,
+                            payload={"outcome": terminal_state.value.lower()},
+                        )
+                    )
+
+        _, cancelled = await await_deferred_cancellation(persist_settlement())
         # Commit recovery evidence before propagating cancellation; do not run
         # another fixture or attempt the same uncertain teardown again.
-        if isinstance(teardown_error, asyncio.CancelledError):
-            raise teardown_error
+        if cancelled or isinstance(teardown_error, asyncio.CancelledError):
+            raise asyncio.CancelledError()
         return teardown_error is None
+
+    async def _fail_fixture_suite(self, suite_id: UUID, case_key: str, *, cancelled: bool) -> None:
+        """Finish interrupted case and suite bookkeeping despite repeated cancellation."""
+        state = DeferredCancellationState(requested=cancelled)
+
+        async def persist_failure() -> None:
+            await self._mark_fixture_case_failed(suite_id, case_key)
+            await self._abort_fixture_suite(suite_id, cancelled=state.requested)
+
+        _, cancellation_requested = await await_deferred_cancellation(
+            persist_failure(), state=state
+        )
+        if cancellation_requested and not cancelled:
+            raise asyncio.CancelledError()
 
     async def _abort_fixture_suite(self, suite_id: UUID, *, cancelled: bool) -> None:
         """Close interrupted execution without admitting any remaining fixture."""
