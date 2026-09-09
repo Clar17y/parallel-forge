@@ -37,6 +37,7 @@ async def test_cockpit_contains_actual_checks_independent_review_and_pull_reques
     projection_service = ProjectionService(DashboardQuery(factory))
     awaiting = await projection_service.run_projection(run.id, actor)
     approve = next(item for item in awaiting["available_commands"] if item["name"] == "approve_pr")
+    assert awaiting["candidate"]["commit"] == git.head
     assert approve["evidence_digest"] == run.pending_evidence_digest
     assert approve["expected_run_version"] == run.version
     async with PostgresUnitOfWork(factory) as work:

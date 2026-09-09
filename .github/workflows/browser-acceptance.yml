@@ -3,6 +3,11 @@ name: Browser acceptance
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      browser_only:
+        description: Reuse matching completed supervisor evidence and run only browser acceptance
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,6 +18,7 @@ concurrency:
 
 jobs:
   supervisor-startup-acceptance:
+    if: github.event_name != 'workflow_dispatch' || !inputs.browser_only
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

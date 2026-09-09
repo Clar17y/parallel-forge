@@ -65,3 +65,12 @@ test.each([['accepted', null], ['uncertain', null], ['accepted', 'd'.repeat(40)]
     }
   },
 );
+
+
+test('background projection refresh keeps approval actions keyboard reachable', async () => {
+  vi.mocked(api).mockImplementation(() => new Promise(() => {}));
+  render(<RunCockpit initial={projection()} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh run' }));
+  expect(screen.getByRole('button', { name: 'Refresh run' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Approve plan' })).toBeEnabled();
+});

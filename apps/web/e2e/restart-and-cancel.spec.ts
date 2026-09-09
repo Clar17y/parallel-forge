@@ -14,12 +14,12 @@ test("persists the exact cancel command across worker restart and retains resour
   const dialog = page.getByRole("dialog", { name: "Cancel run" });
   await expect(dialog).toContainText(/resources and evidence remain available until explicit teardown/i);
   await dialog.getByRole("button", { name: "Confirm cancel run" }).click();
-  await expect.poll(async () => (await cancelCommandFor(runId)).status).toMatch(/PENDING|LEASED|SUCCEEDED/);
+  await expect.poll(async () => (await cancelCommandFor(runId)).status).toMatch(/PENDING|LEASED|COMPLETED/);
 
   const restart = await restartWorker();
   expect(restart.newPid).not.toBe(restart.oldPid);
   await expect(page.locator("header").filter({ hasText: "CANCELLED" })).toBeVisible({ timeout: 120_000 });
-  await expect.poll(async () => (await cancelCommandFor(runId)).status).toBe("SUCCEEDED");
+  await expect.poll(async () => (await cancelCommandFor(runId)).status).toBe("COMPLETED");
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await expect(page.getByRole("region", { name: "Run activity" }).getByRole("heading", { name: "run.cancelled", exact: true })).toBeVisible();
   const branch = page.locator("dt").filter({ hasText: /^Branch$/ }).locator("+ dd");

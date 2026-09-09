@@ -78,7 +78,7 @@ export function RunCockpit({ initial }: { initial: Projection }) {
         {value.run.state === 'AWAITING_HUMAN_INTERVENTION' && <p>Manual attention required. Review the recorded reason and the PR on GitHub. This page does not authorize another merge or removal from the queue.</p>}
       </>}
     </section>}
-    <RunControls projection={value} onRefresh={refresh} disabled={failed || reading || connection !== 'connected'} />
+    <RunControls projection={value} onRefresh={refresh} disabled={failed || connection !== 'connected'} />
     <nav aria-label="Run sections"><button aria-pressed={section === 'overview'} onClick={() => setSection('overview')}>Overview</button>
       <button aria-pressed={section === 'plan'} onClick={() => setSection('plan')}>Plan</button>
       <button aria-pressed={section === 'checks'} onClick={() => setSection('checks')}>Checks</button>

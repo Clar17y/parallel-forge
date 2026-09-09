@@ -28,6 +28,7 @@ test.describe("keyboard and accessibility contract", () => {
     ] as const) {
       await readyFor(page, state, runId);
       const trigger = page.getByRole("button", { name, exact: true });
+      await expect(trigger).toBeEnabled();
       // Reach the action through actual keyboard navigation, not programmatic focus.
       for (let attempt = 0; attempt < 80; attempt++) {
         if (await trigger.evaluate(element => element === document.activeElement)) break;

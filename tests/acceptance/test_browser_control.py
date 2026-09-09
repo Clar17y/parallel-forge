@@ -28,6 +28,24 @@ def test_bridge_drives_real_completion_and_cancelled_teardown(
             ("AWAITING_MERGE_APPROVAL", "merge"),
         ):
             assert len(bridge.state(state, run_id)["evidenceDigest"]) == 64
+            projection_response = bridge._client.get(f"/api/runs/{run_id}/projection")
+            projection_response.raise_for_status()
+            projection = projection_response.json()
+            command = next(c for c in projection["available_commands"] if c["name"] == f"approve_{gate}")
+            artifact = bridge._client.get(f"/api/artifacts/{command['evidence_digest']}/text")
+            artifact.raise_for_status()
+            if gate == "pr":
+                import json
+                evidence = json.loads(artifact.json()["text"])
+                assert evidence["candidate_commit"] == projection["candidate"]["commit"]
+                assert evidence["repository"] == projection["project"]["github_repository"]
+                assert evidence["base_sha"] == projection["run"]["base_sha"]
+                assert evidence["base_ref"] == projection["run"]["base_ref"]
+                assert evidence["validation_digest"] == projection["candidate"]["validation_evidence_digest"]
+                assert evidence["review_digest"] == projection["candidate"]["review_evidence_digest"]
+                assert evidence["runner_mode"] == projection["security"]["runner_mode"]
+                body = bridge._client.get(f"/api/artifacts/{evidence['body_digest']}/text")
+                body.raise_for_status()
             bridge.approve(run_id, gate)
         assert bridge.state("COMPLETED", run_id)["state"] == "COMPLETED"
         assert bridge.harness.fake_github.effect_counts["prs_created"] == 1

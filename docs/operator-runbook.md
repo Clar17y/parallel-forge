@@ -37,9 +37,9 @@ and prints a fresh bootstrap URL, then supervises the three processes together.
 Ctrl+C or SIGTERM stops its owned process trees; an unexpected child exit fails
 the command. A hosted Linux acceptance job starts this exact supervisor against the
 repository Compose PostgreSQL service, confirms API, worker and web readiness,
-then verifies clean signal shutdown without surviving owned children. Its first
-hosted result is still pending; static harness checks alone do not prove startup. Use the
-separate commands above when preserving an existing operator session.
+then verifies clean signal shutdown without surviving owned children. This passed
+on 9 September 2026 at checkpoint `140fb43`; see the evidence ledger for the
+hosted run. Use the separate commands above when preserving an existing operator session.
 
 The default browser origin is `http://127.0.0.1:3000`; the server-side web proxy
 uses `http://127.0.0.1:8000` internally. When changing ports, configure
