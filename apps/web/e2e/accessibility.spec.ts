@@ -8,6 +8,7 @@ test.describe("keyboard and accessibility contract", () => {
     await openRun(page, runId, restartScenario.bootstrapToken);
     for (const url of ["/runs", "/projects/new", `/runs/${encodeURIComponent(runId)}`]) {
       await page.goto(url);
+      await expect(page.getByRole("navigation", { name: "Primary", exact: true })).toBeVisible();
       const result = await new AxeBuilder({ page }).analyze();
       expect(result.violations, `${url} has accessibility violations`).toEqual([]);
     }

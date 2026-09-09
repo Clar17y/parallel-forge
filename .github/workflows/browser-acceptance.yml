@@ -87,8 +87,15 @@ jobs:
       - run: uv sync --frozen --extra dev
       - run: npm ci
         working-directory: apps/web
+      - name: Use Ubuntu archive for browser OS packages
+        shell: bash
+        run: |
+          if test -f /etc/apt/apt-mirrors.txt; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
       - run: npx playwright install --with-deps chromium
         working-directory: apps/web
+        timeout-minutes: 8
       - name: Apply migrations
         run: uv run --frozen alembic -c alembic.ini upgrade head
       - name: Verify browser control bridge against real PostgreSQL/API/worker
@@ -97,7 +104,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/forge-acceptance"
-          nohup uv run --frozen python -m tests.acceptance.browser_control >"$RUNNER_TEMP/forge-acceptance/control.log" 2>&1 &
+          FORGE_E2E_BRIDGE_API_PORT=8000 nohup uv run --frozen python -m tests.acceptance.browser_control >"$RUNNER_TEMP/forge-acceptance/control.log" 2>&1 &
           (cd apps/web && nohup npm run dev -- --port 3000 >"$RUNNER_TEMP/forge-acceptance/web.log" 2>&1 &)
           for attempt in {1..120}; do curl --fail --silent http://127.0.0.1:8765/health >/dev/null && break; sleep 1; done
           curl --fail --silent --show-error http://127.0.0.1:8765/health >/dev/null

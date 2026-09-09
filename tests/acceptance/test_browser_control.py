@@ -76,3 +76,25 @@ def test_bridge_drives_real_completion_and_cancelled_teardown(
         )
     finally:
         bridge.harness.close()
+
+
+def test_bridge_keeps_control_auth_across_multiple_browser_scenarios(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORGE_DATABASE_URL", migrated_database_url)
+    bridge = Bridge()
+    try:
+        first = bridge.browser_scenario()
+        second = bridge.browser_scenario()
+        assert first["bootstrapToken"] != second["bootstrapToken"]
+        assert bridge.exchange_browser_bootstrap(first["bootstrapToken"]).status_code == 200
+        assert bridge.exchange_browser_bootstrap(second["bootstrapToken"]).status_code == 200
+        assert bridge._client.get("/api/auth/session").status_code == 200
+
+        restart = bridge.restart_scenario()
+        assert bridge.exchange_browser_bootstrap(restart["bootstrapToken"]).status_code == 200
+        assert bridge._client.get("/api/auth/session").status_code == 200
+        run_id = bridge._create_run(repository=bridge.github_repository, database=False)
+        assert bridge.register_run(run_id) == {"runId": run_id}
+    finally:
+        bridge.harness.close()

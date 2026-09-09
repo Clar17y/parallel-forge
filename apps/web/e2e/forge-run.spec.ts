@@ -3,6 +3,7 @@ import { test, expect, approveEvidence, openRun } from "./fixtures";
 test.describe("real Forge run approvals", () => {
   test("creates a project/task and approves the exact plan, PR, and merge evidence", async ({ page, scenario, readyFor, evidenceFor, expedite, registerRun }) => {
     await page.goto(`/projects/new#bootstrap=${encodeURIComponent(scenario.bootstrapToken ?? "")}`);
+    await expect(page.getByRole("navigation", { name: "Primary", exact: true })).toBeVisible();
     await page.getByLabel("Project name").fill(`Browser fixture ${Date.now()}`);
     await page.getByLabel("Repository path").fill(scenario.uiRepositoryPath!);
     await page.getByLabel("GitHub repository").fill(scenario.uiGithubRepository!);

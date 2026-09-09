@@ -29,6 +29,7 @@ test('reload recovers a live session and malformed fragments fail safely without
   window.location.hash = '#bootstrap=%ZZ';
   render(<BootstrapGate session={session}><div>Dashboard</div></BootstrapGate>);
   expect(await screen.findByText('Sign-in required')).toBeInTheDocument();
+  expect(screen.getByRole('main')).toContainElement(screen.getByRole('alert'));
   expect(window.location.hash).toBe('');
   expect(csrf.get()).toBeNull();
 });

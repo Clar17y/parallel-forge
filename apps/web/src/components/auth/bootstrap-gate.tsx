@@ -52,7 +52,7 @@ export function BootstrapGate({ children, exchange = exchangeBootstrap, session 
     return () => { owner.abort(); unsubscribe(); };
   }, [exchange, session]);
   if (state === 'ready') return children;
-  if (state === 'failed') return <main role="alert"><h1>Sign-in required</h1><p>Use a fresh bootstrap link to start a session.</p></main>;
+  if (state === 'failed') return <main><div role="alert"><h1>Sign-in required</h1><p>Use a fresh bootstrap link to start a session.</p></div></main>;
   return <p role="status">Starting secure session…</p>;
 }
 

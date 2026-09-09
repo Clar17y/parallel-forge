@@ -15,11 +15,13 @@ from urllib.parse import parse_qs, urlparse
 from uuid import UUID, uuid4
 
 import httpx
+from forge.application.services.auth import AuthService
 from forge.domain.github import CheckSnapshot, MergeProtection
 from forge.domain.teardown import teardown_confirmation
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.models import Project, Run, RunCommand, Task
 from forge.persistence.repositories.runs import _snapshot_from_record
+from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.tools.secrets import LocalSecretStore, SecretAlreadyExistsError
 from sqlalchemy import select
 
@@ -42,6 +44,11 @@ class Bridge:
             data_root=data_root,
             prompt_root=Path.cwd() / "agents",
             bare_remote_path=self.bare,
+            api_port=(
+                int(os.environ["FORGE_E2E_BRIDGE_API_PORT"])
+                if "FORGE_E2E_BRIDGE_API_PORT" in os.environ
+                else None
+            ),
             web_origin=os.environ.get("FORGE_E2E_WEB_ORIGIN", "http://127.0.0.1:3000"),
         )
         self._configure_github(self.github_repository)
@@ -57,7 +64,7 @@ class Bridge:
         )
         response = bootstrap_client.post(
             "/api/auth/bootstrap",
-            json={"token": self.harness.bootstrap_token()},
+            json={"token": self._issue_browser_bootstrap()},
             headers={"Idempotency-Key": idempotency_key()},
         )
         response.raise_for_status()
@@ -78,12 +85,36 @@ class Bridge:
         self._auth_headers = dict(self._client.headers)
         session = self._client.get("/api/auth/session")
         if session.status_code != 200:
-            raise RuntimeError(
-                f"bridge session bootstrap failed ({session.status_code}); cookie={self._client.headers.get('Cookie')!r}"
-            )
+            raise RuntimeError(f"bridge session bootstrap failed ({session.status_code})")
 
     def _mutation_headers(self) -> dict[str, str]:
         return {**self._auth_headers, "Idempotency-Key": idempotency_key()}
+
+    def _issue_browser_bootstrap(self) -> str:
+        """Issue a one-time browser token without revoking the control session."""
+
+        async def issue() -> str:
+            engine = create_engine(os.environ["FORGE_DATABASE_URL"])
+            try:
+                factory = create_session_factory(engine)
+                return await AuthService(lambda: PostgresUnitOfWork(factory)).issue_bootstrap()
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(issue())
+
+    def exchange_browser_bootstrap(self, token: str) -> httpx.Response:
+        """Exchange an opaque scenario token through the real browser auth route."""
+        web_origin = self.harness._env["FORGE_WEB_ORIGIN"]
+        with httpx.Client(
+            base_url=self.harness.base_url,
+            headers={"Origin": web_origin, "Host": web_origin.split("//", 1)[1]},
+        ) as client:
+            return client.post(
+                "/api/auth/bootstrap",
+                json={"token": token},
+                headers={"Idempotency-Key": idempotency_key()},
+            )
 
     def _create_repository(self) -> None:
         self.repository.mkdir()
@@ -137,7 +168,7 @@ class Bridge:
     def browser_scenario(self) -> dict[str, str]:
         return {
             "controlOrigin": "http://127.0.0.1:8765",
-            "bootstrapToken": self.harness.bootstrap_token(),
+            "bootstrapToken": self._issue_browser_bootstrap(),
             "uiRepositoryPath": str(self.repository),
             "uiGithubRepository": self.github_repository,
         }
@@ -212,7 +243,7 @@ class Bridge:
             "runId": self._create_run(
                 repository=f"example/restart-{uuid4().hex[:10]}", database=True
             ),
-            "bootstrapToken": self.harness.bootstrap_token(),
+            "bootstrapToken": self._issue_browser_bootstrap(),
         }
 
     def _read_run(self, run_id: UUID) -> dict[str, object] | None:

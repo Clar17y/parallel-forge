@@ -147,10 +147,32 @@ IDs, versions and the last successful step. Keep credentials and bootstrap URLs
 out of shared reports. Inspect GitHub read-only when a remote receipt is uncertain.
 Development PRs still require fresh, immediate human authorization before merging.
 
+## Evaluations
+
+Run the versioned deterministic fixtures with `uv run --frozen forge eval run
+--suite deterministic`. Results and version-bound metrics are persisted in the
+control database. Deterministic fixtures use the scripted gateway; they do not
+establish live model quality or spend provider credits.
+
+Live evaluation is a separate opt-in: `forge eval run --suite live` requires both
+`--provider-reference` and `--model`, along with the configured pricing catalog
+and immutable Docker runner image. It can incur provider charges. Its agents use
+the controlled runtime and cannot approve delivery or merge a PR. Inspect command
+receipts and [fixture check reports](evaluation-check-evidence.md) when scoring
+fails; a model's success claim is not a passing check.
+
+Promote a passed, settled suite using `forge eval promote --suite-id <uuid>
+--name <baseline-name> --promoted-by <operator>`. Optional `--floor metric=value`
+and `--ceiling metric=value` bounds are shown by `forge eval promote --help`.
+Promoted snapshots and their operator/time records are immutable. Compare a later
+run with `--promoted-baseline --baseline-name <baseline-name>` or an exact
+`--baseline-id`; fixture and metric versions must agree. An interrupted fixture
+may retain resources for intervention, and is not a successful baseline.
+
 ## Verification limits
 
-Default tests and CI exclude live model and GitHub writes. Evaluation fixtures and
-metrics exist; service/CLI integration is being completed. Consult the ledger
-before relying on an evaluation command. Hosted Windows/Linux checks, complete
+Default tests and CI exclude live model and GitHub writes. Evaluation service/CLI
+integration has focused passing evidence; independent acceptance remains open.
+Consult the ledger for the exact candidate. Hosted Windows/Linux checks, complete
 process acceptance, Playwright accessibility coverage and final acceptance mapping
 remain required before v0.1 can be declared complete.

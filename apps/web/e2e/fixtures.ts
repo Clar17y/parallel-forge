@@ -59,7 +59,8 @@ export async function openRun(page: Page, runId: string, bootstrapToken?: string
   const token = bootstrapToken ?? process.env.FORGE_E2E_BOOTSTRAP_TOKEN;
   const hash = token ? `#bootstrap=${encodeURIComponent(token)}` : "";
   await page.goto(`/runs/${encodeURIComponent(runId)}${hash}`);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Primary", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Run sections", exact: true })).toBeVisible();
 }
 
 export async function approveEvidence(page: Page, buttonName: string, digest: string): Promise<void> {

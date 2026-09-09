@@ -21,6 +21,8 @@ export default defineConfig({
   reporter: process.env.CI ? [["list"], ["junit", { outputFile: "test-results/browser-acceptance.xml" }]] : "list",
   use: {
     baseURL: origin.origin,
+    actionTimeout: 20_000,
+    navigationTimeout: 30_000,
     trace: "off",
     video: "off",
     screenshot: "off",
