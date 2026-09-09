@@ -46,6 +46,22 @@ def test_bridge_drives_real_completion_and_cancelled_teardown(
                 assert evidence["runner_mode"] == projection["security"]["runner_mode"]
                 body = bridge._client.get(f"/api/artifacts/{evidence['body_digest']}/text")
                 body.raise_for_status()
+            if gate == "merge":
+                import json
+                evidence = json.loads(artifact.json()["text"])
+                assert evidence["head_sha"] == projection["candidate"]["commit"]
+                assert evidence["head_sha"] == projection["pull_request"]["head_sha"]
+                observation = projection["remote_observation"]
+                assert evidence["head_sha"] == observation["head_sha"]
+                proof_response = bridge._client.get(
+                    f"/api/artifacts/{observation['observation_digest']}/merge-protection"
+                )
+                proof_response.raise_for_status()
+                proof = proof_response.json()
+                assert proof["protection_digest"] == evidence["protection_digest"]
+                assert proof["observed_base_sha"] == evidence["base_sha"]
+                assert proof["protection"]["verified"]
+                assert not proof["protection"]["actor_can_bypass"]
             bridge.approve(run_id, gate)
         assert bridge.state("COMPLETED", run_id)["state"] == "COMPLETED"
         assert bridge.harness.fake_github.effect_counts["prs_created"] == 1

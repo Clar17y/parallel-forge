@@ -170,15 +170,14 @@ class DashboardQuery:
             review_digest = await _digest(session, review.manifest_artifact_id if review else None)
             candidate_commit = run.candidate_commit
             if (
-                run.state == "AWAITING_PR_APPROVAL"
-                and review is not None
+                review is not None
                 and validation is not None
                 and review.validation_evidence_set_id == validation.id
                 and review.head_sha == validation.head_sha
                 and review.policy_version == validation.policy_version == run.policy_version
             ):
-                # Publication identity is stored only after approval. At this gate,
-                # display the candidate bound by the independent review instead.
+                # Display the candidate from the current linked immutable evidence.
+                # The delivery pipeline does not populate the run candidate column.
                 candidate_commit = review.head_sha
             return {
                 "run": {name: getattr(snapshot, name) for name in run_fields},

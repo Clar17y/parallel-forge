@@ -305,3 +305,19 @@ test('approval dialog survives a queued native close event during StrictMode rep
     expect(screen.getByRole('dialog', { name: 'Approve plan' })).toBeVisible();
   } finally { close.mockRestore(); }
 });
+
+
+test('approval dialog returns focus to its invoking button after async evidence loading', async () => {
+  const value = projection({ available_commands: [{ name: 'approve_plan', expected_run_version: 7,
+    requires_feedback: false, gate: 'plan', evidence_digest: 'd'.repeat(64), policy_version: 2 }] });
+  vi.mocked(api).mockImplementationOnce(async () => {
+    // Focus may move while the invoking button awaits its evidence request.
+    screen.getByRole('button', { name: 'Other control' }).focus();
+    return { digest: 'd'.repeat(64), text: JSON.stringify(evidence) };
+  }).mockResolvedValueOnce({ token: 'challenge', expires_at: '2099-01-01T00:00:00Z' });
+  render(<StrictMode><button>Other control</button><RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} /></StrictMode>);
+  const trigger = screen.getByRole('button', { name: 'Approve plan' });
+  await userEvent.click(trigger);
+  await userEvent.click(await screen.findByRole('button', { name: 'Back' }));
+  expect(trigger).toHaveFocus();
+});

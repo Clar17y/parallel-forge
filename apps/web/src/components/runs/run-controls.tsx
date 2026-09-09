@@ -8,7 +8,7 @@ import { parsePrEvidence, PrPublicationEvidence, type PrEvidence } from './pr-pu
 
 type Projection = components['schemas']['RunProjection'];
 type Command = components['schemas']['AvailableCommand'];
-type Binding = { resource?: Projection['resource']; command: Command; key: string; evidence?: Record<string, unknown>;
+type Binding = { returnFocus: HTMLButtonElement; resource?: Projection['resource']; command: Command; key: string; evidence?: Record<string, unknown>;
   merge?: MergeEvidence; protection?: components['schemas']['ProtectionSnapshotResponse']; pr?: PrEvidence; body?: string; challenge?: components['schemas']['ApprovalChallengeResponse']; payload?: Record<string, unknown> };
 const labels: Record<string, string> = { teardown_run_resources: 'Remove run resources', pause: 'Pause', resume: 'Resume', cancel: 'Cancel run',
   request_plan_revision: 'Request revision', approve_plan: 'Approve plan', approve_pr: 'Approve PR publication', approve_merge: 'Approve merge' };
@@ -34,7 +34,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
     } else setMessage('The request could not be confirmed. Retry after checking the connection.');
   }
 
-  async function prepare(name: string) {
+  async function prepare(name: string, returnFocus: HTMLButtonElement) {
     if (busy.current || disabled || !lifecycle.current) return;
     const signal = lifecycle.current.signal;
     busy.current = true; setPending(true); setMessage(''); setFeedback(''); setBinding(null);
@@ -43,7 +43,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
       signal.throwIfAborted();
       const command = fresh.available_commands.find(item => item.name === name);
       if (fresh.run.id !== projection.run.id || !command || command.expected_run_version !== fresh.run.version) throw new ApiError(409, 'stale-projection');
-      const next: Binding = { command, key: crypto.randomUUID() };
+      const next: Binding = { command, key: crypto.randomUUID(), returnFocus };
       if (name === 'approve_plan' || name === 'approve_pr' || name === 'approve_merge') {
         if (command.gate !== name.slice('approve_'.length) || !command.evidence_digest || !command.policy_version) throw new ApiError(409, 'stale-projection');
         const artifact = await api<components['schemas']['ArtifactTextResponse']>(`/artifacts/${command.evidence_digest}/text`, { signal });
@@ -129,11 +129,11 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
 
   return <section aria-label="Run controls">
     {projection.available_commands.filter(command => labels[command.name]).map(command => <button key={command.name}
-      disabled={disabled || pending} onClick={() => void prepare(command.name)}>{labels[command.name]}</button>)}
+      disabled={disabled || pending} onClick={event => void prepare(command.name, event.currentTarget)}>{labels[command.name]}</button>)}
     {pending && <p role="status">Checking current run evidence…</p>}
     {message && <p role="alert">{message}</p>}
     {stale && <p role="alert">The run changed. Open the action again to review current evidence.</p>}
-    {binding && !stale && <ConfirmationDialog title={labels[binding.command.name]} onClose={() => setBinding(null)}>
+    {binding && !stale && <ConfirmationDialog returnFocus={binding.returnFocus} title={labels[binding.command.name]} onClose={() => setBinding(null)}>
       <p>Run version {binding.command.expected_run_version}</p>
       {binding.command.name === 'cancel' && <p>The run will stop; resources and evidence remain available until explicit teardown.</p>}
       {binding.command.name === 'pause' && <p>Pause further work after the current durable activity settles.</p>}
@@ -151,14 +151,13 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
   </section>;
 }
 
-function ConfirmationDialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+function ConfirmationDialog({ title, children, onClose, returnFocus }: { title: string; children: ReactNode; onClose: () => void; returnFocus: HTMLButtonElement }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    const previous = document.activeElement;
     const element = dialog.current;
     element?.showModal();
-    return () => { element?.close(); if (previous instanceof HTMLElement) previous.focus(); };
-  }, []);
+    return () => { element?.close(); if (returnFocus.isConnected) returnFocus.focus(); };
+  }, [returnFocus]);
   return <dialog ref={dialog} className="confirmation" aria-label={title} onClose={event => { if (!event.currentTarget.open) onClose(); }}>
     <h2>{title}</h2>{children}<button onClick={onClose}>Back</button>
   </dialog>;
