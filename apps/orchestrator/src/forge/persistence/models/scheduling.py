@@ -15,6 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.schema import conv
 
 from forge.persistence.models.base import Base, TimestampMixin
 
@@ -68,6 +69,13 @@ class SubscriptionSchedulerRun(Base):
 
 class SubscriptionSchedulerCapacityPolicy(Base, TimestampMixin):
     __tablename__ = "subscription_scheduler_capacity_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "global_limit > 0 AND run_limit > 0 AND provider_limit > 0",
+            # Preserve the PostgreSQL identifier from migration 0009.
+            name=conv("ck_subscription_scheduler_capacity_policies_scheduler_c_ef14"),
+        ),
+    )
     version: Mapped[int] = mapped_column(Integer, primary_key=True)
     global_limit: Mapped[int] = mapped_column(Integer, nullable=False)
     run_limit: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -76,8 +84,14 @@ class SubscriptionSchedulerCapacityPolicy(Base, TimestampMixin):
 
 class SubscriptionScheduledEffect(Base, TimestampMixin):
     __tablename__ = "subscription_scheduled_effects"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('admitted','reconciling','settled','rejected')",
+            name="scheduled_effect_state",
+        ),
+    )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
-    run_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    run_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     task_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     lease_owner: Mapped[str] = mapped_column(String(255), nullable=False)
     lease_generation: Mapped[int] = mapped_column(Integer, nullable=False)

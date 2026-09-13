@@ -213,6 +213,25 @@ class ToolCall(Base):
 
     __tablename__ = "tool_calls"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ("run_id", "subscription_task_id"),
+            ("subscription_tasks.run_id", "subscription_tasks.id"),
+            ondelete="CASCADE",
+            name="fk_tool_call_subscription_task",
+        ),
+        ForeignKeyConstraint(
+            ("subscription_attempt_id",),
+            ("subscription_attempts.id",),
+            ondelete="CASCADE",
+            name="fk_tool_call_subscription_attempt",
+        ),
+        CheckConstraint(
+            "(agent_execution_id IS NOT NULL AND subscription_task_id IS NULL AND "
+            "subscription_attempt_id IS NULL AND subscription_purpose IS NULL) OR "
+            "(agent_execution_id IS NULL AND subscription_task_id IS NOT NULL AND "
+            "subscription_attempt_id IS NOT NULL AND subscription_purpose IS NOT NULL)",
+            name="tool_call_authority_lineage_xor",
+        ),
         CheckConstraint(
             "status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','DENIED','CANCELLED')",
             name="status",

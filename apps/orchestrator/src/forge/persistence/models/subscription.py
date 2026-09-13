@@ -13,6 +13,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.schema import conv
 
 from forge.persistence.models.base import Base, TimestampMixin
 
@@ -21,7 +22,11 @@ class SubscriptionProfileVersion(Base, TimestampMixin):
     __tablename__ = "subscription_profile_versions"
     __table_args__ = (
         UniqueConstraint("profile_id", "version", name="uq_subscription_profile_version"),
-        CheckConstraint("version >= 1", name="version_positive"),
+        # Retain the PostgreSQL identifier emitted by migration 0008.
+        CheckConstraint(
+            "version >= 1",
+            name=conv("ck_subscription_profile_versions_subscription_profile_v_239c"),
+        ),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
@@ -55,7 +60,10 @@ class SubscriptionEnvelope(Base, TimestampMixin):
             name="fk_subscription_envelope_profile_version",
             ondelete="RESTRICT",
         ),
-        CheckConstraint("safety_policy_version >= 1", name="safety_policy_positive"),
+        CheckConstraint(
+            "safety_policy_version >= 1",
+            name=conv("ck_subscription_envelopes_subscription_envelope_safety__0859"),
+        ),
     )
     run_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True
@@ -79,9 +87,10 @@ class SubscriptionTask(Base, TimestampMixin):
             name="fk_subscription_task_parent",
         ),
         CheckConstraint(
-            "state IN ('queued','running','blocked','reconciling','terminal')", name="state"
+            "state IN ('queued','running','blocked','reconciling','terminal')",
+            name="subscription_task_state",
         ),
-        CheckConstraint("version >= 0", name="version_nonnegative"),
+        CheckConstraint("version >= 0", name="subscription_task_version_nonnegative"),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     run_id: Mapped[UUID] = mapped_column(
@@ -132,13 +141,14 @@ class SubscriptionAttempt(Base, TimestampMixin):
         UniqueConstraint(
             "task_row_id", "idempotency_key", name="uq_subscription_attempt_idempotency"
         ),
-        CheckConstraint("attempt_number >= 1", name="attempt_number_positive"),
+        CheckConstraint("attempt_number >= 1", name="subscription_attempt_number_positive"),
         CheckConstraint(
             "(lease_owner IS NULL AND lease_generation IS NULL AND candidate_epoch IS NULL AND envelope_digest IS NULL AND task_digest IS NULL) OR (lease_owner IS NOT NULL AND lease_generation IS NOT NULL AND lease_generation > 0 AND candidate_epoch IS NOT NULL AND candidate_epoch >= 0 AND envelope_digest IS NOT NULL AND task_digest IS NOT NULL)",
             name="execution_binding",
         ),
         CheckConstraint(
-            "status IN ('queued','running','blocked','reconciling','terminal')", name="status"
+            "status IN ('queued','running','blocked','reconciling','terminal')",
+            name="subscription_attempt_status",
         ),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -236,7 +246,10 @@ class SubscriptionBudgetReservation(Base, TimestampMixin):
         UniqueConstraint(
             "run_id", "idempotency_key", name="uq_subscription_budget_reservation_key"
         ),
-        CheckConstraint("status IN ('reserved','released','consumed')", name="status"),
+        CheckConstraint(
+            "status IN ('reserved','released','consumed')",
+            name=conv("ck_subscription_budget_reservations_subscription_budget_f554"),
+        ),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     run_id: Mapped[UUID] = mapped_column(
@@ -272,7 +285,7 @@ class SubscriptionDecisionRecord(Base, TimestampMixin):
         UniqueConstraint("run_id", "idempotency_key", name="uq_subscription_decision_idempotency"),
         CheckConstraint(
             "attempt_id IS NULL OR task_row_id IS NOT NULL",
-            name="subscription_decision_attempt_requires_task",
+            name=conv("ck_subscription_decision_records_subscription_decision__6824"),
         ),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)

@@ -128,8 +128,4 @@ def test_planning_phase_never_inherits_primary_write_check_or_git_authority(tmp_
         ProjectPolicy.model_validate(work.projects.project.policy.document),
     )
     assert authorization is None and error is not None and reader.calls == 0
-    assert error[0] is (
-        ToolErrorCode.AUTHORIZATION_DENIED
-        if tool_request.name is ToolName.GIT_COMMIT
-        else ToolErrorCode.RUN_NOT_ACTIVE
-    )
+    assert error[0] is ToolErrorCode.RUN_NOT_ACTIVE

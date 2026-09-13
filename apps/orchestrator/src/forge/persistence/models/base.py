@@ -15,7 +15,7 @@ NAMING_CONVENTION = {
 
 
 class Base(DeclarativeBase):
-    """Base for the complete v0.1 schema."""
+    """Base for Forge's PostgreSQL schema."""
 
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
