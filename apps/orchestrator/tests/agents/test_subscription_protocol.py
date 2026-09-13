@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -81,7 +81,9 @@ def test_scope_response_requires_exact_request_attempt() -> None:
     assert decision.request_attempt_id == identity
 
 
-def test_bound_scope_response_roundtrip_preserves_legacy_encoding() -> None:
+@pytest.mark.parametrize("platform", ["nt", "posix"])
+def test_bound_scope_response_roundtrip_preserves_legacy_encoding(monkeypatch, platform) -> None:
+    import forge.domain.paths as policy_paths
     from forge.domain.subscription import (
         BoundScopeResponseDecision,
         ScopeResponseDecision,
@@ -89,6 +91,7 @@ def test_bound_scope_response_roundtrip_preserves_legacy_encoding() -> None:
         encode_subscription_record,
     )
 
+    monkeypatch.setattr(policy_paths, "os", SimpleNamespace(name=platform))
     legacy = ScopeResponseDecision(
         run_id=uuid4(), task_id=uuid4(), denied_paths=("src",), reason="Denied"
     )
@@ -104,7 +107,13 @@ def test_bound_scope_response_roundtrip_preserves_legacy_encoding() -> None:
     )
     assert decode_subscription_record(encode_subscription_record(bound)) == bound
     with pytest.raises(ValueError, match="grant and deny"):
-        replace(bound, granted_paths=("SRC",))
+        replace(bound, granted_paths=("src",))
+    if platform == "nt":
+        with pytest.raises(ValueError, match="grant and deny"):
+            replace(bound, granted_paths=("SRC",))
+    else:
+        distinct = replace(bound, granted_paths=("SRC",))
+        assert distinct.granted_paths == ("SRC",) and distinct.denied_paths == ("src",)
 
 
 def test_reassignment_requires_observed_version_and_stopped_attempt() -> None:

@@ -116,6 +116,7 @@ class CodexInstallation:
     script: tuple[str, ...] = ("app-server", "--stdio")
     duration_seconds: float = 30.0
     environment: Mapping[str, str] = field(default_factory=dict, repr=False)
+    disabled_mcp_servers: tuple[str, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if not Path(self.executable).is_absolute() or not Path(self.cwd).is_dir():
@@ -133,6 +134,18 @@ class CodexInstallation:
             raise ValueError("invalid Codex installation pin")
         if self.environment:
             raise ValueError("Codex environment must be isolated")
+        # The pinned override parser splits dotted paths literally. Only bounded
+        # single-segment names can become configuration keys, never arbitrary paths.
+        if (
+            not isinstance(self.disabled_mcp_servers, (tuple, list))
+            or len(self.disabled_mcp_servers) > 64
+            or any(
+                type(name) is not str or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name) is None
+                for name in self.disabled_mcp_servers
+            )
+            or len(set(self.disabled_mcp_servers)) != len(self.disabled_mcp_servers)
+        ):
+            raise ValueError("Codex disabled MCP servers require unique bounded names")
         if self.quota_limit_id is not None and (
             type(self.quota_limit_id) is not str
             or re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,95}", self.quota_limit_id) is None
@@ -145,6 +158,7 @@ class CodexInstallation:
         ):
             raise ValueError("Codex duration must be finite and positive")
         object.__setattr__(self, "script", tuple(self.script))
+        object.__setattr__(self, "disabled_mcp_servers", tuple(self.disabled_mcp_servers))
         object.__setattr__(self, "environment", freeze_context({}))
         object.__setattr__(self, "cwd", str(Path(self.cwd).resolve(strict=True)))
         object.__setattr__(self, "client_home", str(Path(self.client_home).resolve(strict=True)))
@@ -455,6 +469,10 @@ class CodexGateway:
             "notify": [],
             "project_doc_max_bytes": 0,
             **{f"features.{name}": False for name in _DISABLED_FEATURES},
+            **{
+                f"mcp_servers.{name}.enabled": False
+                for name in self._installation.disabled_mcp_servers
+            },
         }
 
     def _command(self) -> tuple[str, ...]:
@@ -477,6 +495,12 @@ class CodexGateway:
             observed: object = config
             for component in key.split("."):
                 observed = observed.get(component) if isinstance(observed, Mapping) else None
+            # These pinned FeatureToml gates also support tables. The client can
+            # retain inherited options while the explicit enabled bit is false.
+            if key in ("features.multi_agent_v2", "features.code_mode") and isinstance(
+                observed, Mapping
+            ):
+                observed = observed.get("enabled")
             if type(observed) is not type(expected) or observed != expected:
                 return False
         servers = config.get("mcp_servers")

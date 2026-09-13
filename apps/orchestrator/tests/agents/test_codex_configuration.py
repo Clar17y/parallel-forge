@@ -126,6 +126,27 @@ async def test_effective_configuration_is_verified_before_starting_thread():
 
 
 @pytest.mark.parametrize(
+    ("feature", "options"),
+    [
+        ("multi_agent_v2", {"max_concurrent_threads_per_session": 4}),
+        ("code_mode", {"default_exec_yield_time_ms": 500}),
+    ],
+)
+async def test_disabled_structured_features_preserve_supported_client_configuration(
+    feature, options
+):
+    def mutate(response):
+        response["config"]["features"][feature] = {"enabled": False, **options}
+
+    client = _gateway("success", broker=_Broker())
+    result, _, sent = await capture(client, mutate_configuration=mutate)
+    assert result.failure is None and result.launch_proof.stop_confirmed
+    thread = next(frame["params"] for frame in sent if frame.get("method") == "thread/start")
+    assert thread["config"][f"features.{feature}"] is False
+    assert client._broker.revoked
+
+
+@pytest.mark.parametrize(
     ("path", "value"),
     [
         (("config",), None),
@@ -139,10 +160,22 @@ async def test_effective_configuration_is_verified_before_starting_thread():
         (("config", "project_doc_max_bytes"), False),
         (("config", "features"), ...),
         (("config", "features", "apps"), True),
+        (("config", "features", "apps"), {"enabled": False}),
         (("config", "features", "hooks"), True),
         (("config", "features", "shell_tool"), True),
         (("config", "features", "multi_agent"), 0),
         (("config", "features", "plugins"), ...),
+        *[
+            (("config", "features", feature), value)
+            for feature in ("multi_agent_v2", "code_mode")
+            for value in (
+                {},
+                {"enabled": True},
+                {"enabled": None},
+                {"enabled": 0},
+                {"enabled": "false"},
+            )
+        ],
         (("config", "mcp_servers"), ...),
         (("config", "mcp_servers"), None),
         (("config", "mcp_servers"), {"inherited": {"enabled": True}}),
@@ -184,6 +217,94 @@ async def test_explicitly_disabled_mcp_entries_do_not_grant_a_tool():
     assert not client._broker.calls
 
 
+async def test_launch_disables_named_inherited_mcp_servers_without_rewriting_home(tmp_path):
+    home_config = tmp_path / "config.toml"
+    original = '[mcp_servers.inherited]\ncommand = "never-run"\nenabled = true\n'
+    home_config.write_text(original, encoding="utf-8")
+    client = _gateway("success", report=_report(client_home=str(tmp_path)), broker=_Broker())
+    client._installation = replace(
+        client._installation,
+        client_home=str(tmp_path),
+        disabled_mcp_servers=("inherited", "another_1"),
+    )
+
+    def mutate(response):
+        response["config"]["mcp_servers"] = {
+            name: {"enabled": False, "command": "never-run"} for name in ("inherited", "another_1")
+        }
+
+    result, launches, sent = await capture(client, mutate_configuration=mutate)
+    assert result.failure is None and result.launch_proof.stop_confirmed
+    arguments = launches[0].argv[1 + len(client._installation.script) :]
+    values = tomllib.loads("\n".join(arguments[1::2]))
+    assert values["mcp_servers"] == {
+        "inherited": {"enabled": False},
+        "another_1": {"enabled": False},
+    }
+    thread = next(frame["params"] for frame in sent if frame.get("method") == "thread/start")
+    assert thread["config"]["mcp_servers.inherited.enabled"] is False
+    assert thread["config"]["mcp_servers.another_1.enabled"] is False
+    assert home_config.read_text(encoding="utf-8") == original
+    assert not client._broker.calls and client._broker.revoked
+
+
+@pytest.mark.parametrize(
+    "servers",
+    [
+        {},
+        {"inherited": {}},
+        {"inherited": {"enabled": True}},
+        {"inherited": {"enabled": 0}},
+        {"inherited": {"enabled": "false"}},
+        {"inherited": {"enabled": False}, "unexpected": {"enabled": True}},
+    ],
+)
+async def test_mcp_disable_request_never_replaces_effective_configuration_proof(servers):
+    client = _gateway("success", broker=_Broker())
+    client._installation = replace(client._installation, disabled_mcp_servers=("inherited",))
+
+    def mutate(response):
+        response["config"]["mcp_servers"] = servers
+
+    result, _, sent = await capture(client, mutate_configuration=mutate)
+    assert result.failure is SubscriptionFailure.UNAVAILABLE and result.launch_proof.stop_confirmed
+    assert result.quota_exhaustion is None and not result.telemetry.is_quota_known
+    assert all(frame.get("method") not in {"thread/start", "turn/start"} for frame in sent)
+    assert not client._broker.calls and client._broker.revoked
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        None,
+        "inherited",
+        {"inherited": False},
+        ("",),
+        ("inherited", "inherited"),
+        ("inherited.enabled",),
+        ('"quoted"',),
+        ("has space",),
+        ("server\nfeatures.apps",),
+        ("server=false",),
+        ("a" * 129,),
+        tuple(f"server-{index}" for index in range(65)),
+        (False,),
+        (["inherited"],),
+    ],
+)
+def test_mcp_disable_names_cannot_inject_configuration_or_unbounded_arguments(names):
+    with pytest.raises(ValueError, match="unique bounded names"):
+        replace(_gateway("success")._installation, disabled_mcp_servers=names)
+
+
+def test_mcp_disable_names_are_frozen_and_omitted_from_installation_representation():
+    names = ["inherited-private-name"]
+    installation = replace(_gateway("success")._installation, disabled_mcp_servers=names)
+    names.clear()
+    assert installation.disabled_mcp_servers == ("inherited-private-name",)
+    assert "inherited-private-name" not in repr(installation)
+
+
 @pytest.mark.parametrize("home", [None, "", ".", "relative/client-home", 123])
 def test_client_home_cannot_fall_back_to_an_ambient_location(home):
     with pytest.raises(ValueError, match="explicit existing absolute"):
@@ -212,6 +333,7 @@ async def test_home_verification_must_match_before_launch(tmp_path, missing):
 @pytest.mark.parametrize("gate", ["billing_allowance_enforced", "native_tools_isolated"])
 async def test_configuration_does_not_replace_billing_or_isolation_proof(gate):
     client = _gateway("success", report=_report(**{gate: False}))
+    client._installation = replace(client._installation, disabled_mcp_servers=("inherited",))
     result, launches, _ = await capture(client)
     assert result.failure is SubscriptionFailure.UNAVAILABLE and launches == []
 
