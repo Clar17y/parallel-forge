@@ -2,12 +2,13 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
+import { SubscriptionUsageSummary } from '@/components/subscription-usage/usage-summary';
 import type { components } from '@/lib/api/schema';
 
 export default function UsagePage() {
   const [offset, setOffset] = useState(0);
   const usage = useApi<components['schemas']['ListPage_UsageItem_']>(`/usage?offset=${offset}&limit=25`);
-  return <><h1>Usage</h1><p>Recorded tokens and duration, grouped by project, run, provider, model and currency. Costs are estimates; unpriced calls are excluded from known cost.</p>
+  return <><h1>Usage</h1><SubscriptionUsageSummary /><h2>API usage</h2><p>Recorded tokens and duration, grouped by project, run, provider, model and currency. Costs are estimates; unpriced calls are excluded from known cost.</p>
     <button onClick={usage.refresh} disabled={usage.loading}>Refresh usage</button>
     {usage.loading && <p role="status">Loading usage…</p>}
     {usage.failed && <p role="alert">Usage unavailable. <button onClick={usage.refresh}>Retry</button></p>}

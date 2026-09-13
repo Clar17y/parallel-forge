@@ -39,6 +39,7 @@ RESERVED_REPOSITORY_COMPONENTS = frozenset(
         ".git",
         ".worktrees",
         ".forge",
+        ".forge-acceptance",
         ".forge-worktrees",
         "node_modules",
         ".venv",

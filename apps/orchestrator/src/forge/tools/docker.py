@@ -280,15 +280,14 @@ class DockerRunner:
                     before_launch()
                 if request.launch_ownership is not None:
                     request.launch_ownership.accept_launch()
-                process_result, caller_cancelled = await await_deferred_cancellation(
-                    asyncio.to_thread(
-                        self._process_runner.run_argv,
-                        tuple(argv),
-                        cwd=cwd,
-                        environment=client_environment,
-                        timeout_seconds=spec.timeout_seconds,
-                    ),
-                    state=launch_cancellation,
+                process_result, caller_cancelled = await self._launch_terminal(
+                    tuple(argv),
+                    container_name=container_name,
+                    owner_token=owner_token,
+                    cwd=cwd,
+                    environment=client_environment,
+                    timeout_seconds=spec.timeout_seconds,
+                    cancellation=launch_cancellation,
                 )
             except LaunchOwnershipRejected:
                 raise
@@ -402,7 +401,7 @@ class DockerRunner:
 
         try:
             mount_source, identity = _canonical_mount_binding(self._root, cwd)
-        except (ValueError, OSError, RepositoryAccessDenied):
+        except ValueError, OSError, RepositoryAccessDenied:
             raise RunnerExecutionError() from None
         if identity is None:
             return
@@ -493,6 +492,69 @@ class DockerRunner:
             if attempt + 1 < _CLEANUP_MAX_ATTEMPTS:
                 await asyncio.sleep(_CLEANUP_RETRY_DELAY_SECONDS)
         raise RunnerExecutionError()
+
+    async def _launch_terminal(
+        self,
+        argv: tuple[str, ...],
+        *,
+        container_name: str,
+        owner_token: str | None,
+        cwd: str | os.PathLike[str],
+        environment: Mapping[str, str],
+        timeout_seconds: float,
+        cancellation: DeferredCancellationState,
+    ) -> tuple[_ProcessResultLike, bool]:
+        launch = asyncio.create_task(
+            asyncio.to_thread(
+                self._process_runner.run_argv,
+                argv,
+                cwd=cwd,
+                environment=environment,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+        interrupt = (
+            asyncio.create_task(
+                self._interrupt_managed_launch(
+                    launch,
+                    cancellation,
+                    container_name,
+                    owner_token=owner_token,
+                    cwd=cwd,
+                    environment=environment,
+                )
+            )
+            if owner_token is not None
+            else None
+        )
+        try:
+            result, _ = await await_deferred_cancellation(launch, state=cancellation)
+        finally:
+            if interrupt is not None:
+                await await_deferred_cancellation(interrupt, state=cancellation)
+        return result, cancellation.requested
+
+    async def _interrupt_managed_launch(
+        self,
+        launch: asyncio.Task[_ProcessResultLike],
+        cancellation: DeferredCancellationState,
+        container_name: str,
+        *,
+        owner_token: str,
+        cwd: str | os.PathLike[str],
+        environment: Mapping[str, str],
+    ) -> None:
+        # The Docker client waits for command exit. Remove only its verified
+        # owned container on cancellation, then still drain that client and
+        # persist its terminal evidence before releasing the worktree lease.
+        # Absence while submission is pending is not proof against a late launch.
+        while not launch.done():
+            if cancellation.requested:
+                await self._cleanup_managed(
+                    container_name, owner_token=owner_token, cwd=cwd, environment=environment
+                )
+            if not launch.done():
+                await asyncio.wait({launch}, timeout=_CLEANUP_RETRY_DELAY_SECONDS)
 
     async def _assert_managed_name_absent(
         self,

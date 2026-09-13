@@ -24,6 +24,9 @@ from forge.application.services.recovery import OperationExecutor
 from forge.application.services.release_resume import resumed_release_origin
 from forge.application.services.resume_source import RESUME_FIELDS
 from forge.application.services.reviewed_push_replay import verify_reviewed_push_replay
+from forge.application.services.subscription_publication_evidence import (
+    is_reviewed_publication_event,
+)
 from forge.application.services.validation import _fence_command
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
@@ -315,9 +318,7 @@ class ReleaseService:
             causal = [
                 e
                 for e in events
-                if e.event_type == "run.review_decided"
-                and e.actor_class == "worker"
-                and e.actor_id is None
+                if is_reviewed_publication_event(e, command.actor_id)
                 and e.payload.get("target") == RunState.MONITORING_PR.value
                 and e.payload.get("queued_command_id") == str(authority.id)
                 and e.payload.get("queued_key") == authority.idempotency_key

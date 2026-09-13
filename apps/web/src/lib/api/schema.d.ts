@@ -416,6 +416,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/subscription-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Selected Profile */
+        get: operations["selected_profile_api_projects__project_id__subscription_profile_get"];
+        /** Select Profile */
+        put: operations["select_profile_api_projects__project_id__subscription_profile_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/run-projections": {
         parameters: {
             query?: never;
@@ -587,6 +605,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/subscription-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tasks */
+        get: operations["tasks_api_runs__run_id__subscription_tasks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Attempts */
+        get: operations["attempts_api_runs__run_id__subscription_tasks__task_id__attempts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/controls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Control Task */
+        post: operations["control_task_api_runs__run_id__subscription_tasks__task_id__controls_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/usage": {
         parameters: {
             query?: never;
@@ -596,6 +665,126 @@ export interface paths {
         };
         /** Run Usage */
         get: operations["run_usage_api_runs__run_id__usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Profiles */
+        get: operations["list_profiles_api_subscription_profiles_get"];
+        put?: never;
+        /** Create Profile */
+        post: operations["create_profile_api_subscription_profiles_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-profiles/{profile_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Append Profile */
+        post: operations["append_profile_api_subscription_profiles__profile_id__versions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-profiles/{profile_id}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Profile */
+        get: operations["get_profile_api_subscription_profiles__profile_id__versions__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Quota */
+        get: operations["list_quota_api_subscription_quota_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-quota/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report Quota */
+        post: operations["report_quota_api_subscription_quota_reports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Runtime Status */
+        get: operations["runtime_status_api_subscription_runtime_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Usage */
+        get: operations["usage_api_subscription_usage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -940,6 +1129,21 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** AttemptRoute */
+        AttemptRoute: {
+            /** Auth Mode */
+            auth_mode: string;
+            /** Billing Mode */
+            billing_mode: string;
+            /** Client */
+            client: string;
+            /** Effort */
+            effort: string;
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+        };
         /** AuditEventEvidence */
         AuditEventEvidence: {
             /** Actor Class */
@@ -1029,6 +1233,12 @@ export interface components {
              */
             status: "PENDING" | "SUCCEEDED" | "FAILED" | "NEEDS_RECONCILIATION";
         };
+        /**
+         * AuthMode
+         * @description Authentication mode used to access the provider client.
+         * @enum {string}
+         */
+        AuthMode: "subscription" | "api_key";
         /** AvailableCommand */
         AvailableCommand: {
             /** Evidence Digest */
@@ -1044,6 +1254,12 @@ export interface components {
             /** Requires Feedback */
             requires_feedback: boolean;
         };
+        /**
+         * BillingMode
+         * @description Billing and charge boundary for an execution route.
+         * @enum {string}
+         */
+        BillingMode: "allowance_only" | "paid_opt_in";
         /** BootstrapRequest */
         BootstrapRequest: {
             /** Token */
@@ -1087,6 +1303,10 @@ export interface components {
         };
         /** CandidateSection */
         CandidateSection: {
+            /** Acceptance Evidence Digest */
+            acceptance_evidence_digest?: string | null;
+            /** Candidate Tree Digest */
+            candidate_tree_digest?: string | null;
             /** Commit */
             commit: string | null;
             /** Pending Evidence Digest */
@@ -1095,6 +1315,13 @@ export interface components {
             review_evidence_digest: string | null;
             /** Validation Evidence Digest */
             validation_evidence_digest: string | null;
+        };
+        /** CapacityLimitView */
+        CapacityLimitView: {
+            /** Active */
+            active: number;
+            /** Limit */
+            limit: number;
         };
         /** CheckHistoryItem */
         CheckHistoryItem: {
@@ -1459,6 +1686,15 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** MappingInput */
+        MappingInput: {
+            /** Effective Model */
+            effective_model: string;
+            /** Reason */
+            reason: string;
+            /** Requested Model */
+            requested_model: string;
+        };
         /** MergeProtectionResponse */
         MergeProtectionResponse: {
             /** Base Ref */
@@ -1514,6 +1750,62 @@ export interface components {
             project_id: string;
             /** Runner Mode */
             runner_mode: string;
+            /** Version */
+            version: number;
+        };
+        /** PreferenceInput */
+        PreferenceInput: {
+            /**
+             * Fallback Routes
+             * @default []
+             */
+            fallback_routes: components["schemas"]["RouteInput"][];
+            preferred_route: components["schemas"]["RouteInput"];
+            purpose: components["schemas"]["SpecialistPurpose"];
+        };
+        /** ProfileAppendRequest */
+        ProfileAppendRequest: {
+            /**
+             * Approved Mappings
+             * @default []
+             */
+            approved_mappings: components["schemas"]["MappingInput"][];
+            /** @default allowance_only */
+            default_billing_mode: components["schemas"]["BillingMode"];
+            /** Expected Current Version */
+            expected_current_version: number;
+            /** Preferences */
+            preferences: components["schemas"]["PreferenceInput"][];
+        };
+        /** ProfileCreateRequest */
+        ProfileCreateRequest: {
+            /**
+             * Approved Mappings
+             * @default []
+             */
+            approved_mappings: components["schemas"]["MappingInput"][];
+            /** @default allowance_only */
+            default_billing_mode: components["schemas"]["BillingMode"];
+            /** Preferences */
+            preferences: components["schemas"]["PreferenceInput"][];
+        };
+        /** ProfileResponse */
+        ProfileResponse: {
+            /** Approved Mappings */
+            approved_mappings: {
+                [key: string]: unknown;
+            }[];
+            /** Default Billing Mode */
+            default_billing_mode: string;
+            /** Preferences */
+            preferences: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Profile Id
+             * Format: uuid
+             */
+            profile_id: string;
             /** Version */
             version: number;
         };
@@ -1649,6 +1941,20 @@ export interface components {
             /** Trusted Project */
             trusted_project?: boolean | null;
         };
+        /** ProjectProfileSelectRequest */
+        ProjectProfileSelectRequest: {
+            /** Expected Profile Id */
+            expected_profile_id?: string | null;
+            /** Expected Profile Version */
+            expected_profile_version?: number | null;
+            /**
+             * Profile Id
+             * Format: uuid
+             */
+            profile_id: string;
+            /** Profile Version */
+            profile_version: number;
+        };
         /**
          * ProjectResponse
          * @description Safe project identity and current policy summary.
@@ -1732,6 +2038,15 @@ export interface components {
             /** Verified */
             verified: boolean;
         };
+        /** ProviderCapacityView */
+        ProviderCapacityView: {
+            /** Active */
+            active: number;
+            /** Limit */
+            limit: number;
+            /** Provider */
+            provider: string;
+        };
         /** PullRequestSection */
         PullRequestSection: {
             /** Base Ref */
@@ -1755,6 +2070,55 @@ export interface components {
             /** State */
             state: string;
         };
+        /**
+         * QuotaExhaustionReportRequest
+         * @description HTTP alias for the application-owned report command.
+         */
+        QuotaExhaustionReportRequest: {
+            /** Account */
+            account: string;
+            /** Pool */
+            pool: string;
+            /** Provider */
+            provider: string;
+            /** Reason */
+            reason: string;
+            /** Reset At */
+            reset_at?: string | null;
+        };
+        /** QuotaStatusResponse */
+        QuotaStatusResponse: {
+            /** Account */
+            account: string;
+            /** Next Eligible At */
+            next_eligible_at: string | null;
+            /** Observed At */
+            observed_at: string | null;
+            /** Pool */
+            pool: string;
+            /** Probe Attempt Id */
+            probe_attempt_id: string | null;
+            /** Provider */
+            provider: string;
+            /** Reason */
+            reason: string | null;
+            /** Recovered At */
+            recovered_at: string | null;
+            /** Reset At */
+            reset_at: string | null;
+            /** Retry Basis */
+            retry_basis: string | null;
+            /** Revision */
+            revision: number;
+            /** Status */
+            status: string;
+        };
+        /**
+         * ReasoningEffort
+         * @description Provider-agnostic reasoning effort level.
+         * @enum {string}
+         */
+        ReasoningEffort: "none" | "low" | "medium" | "high" | "maximum";
         /** RemoteCheckItem */
         RemoteCheckItem: {
             /** Conclusion */
@@ -1899,6 +2263,21 @@ export interface components {
              * Format: uuid
              */
             validation_evidence_set_id: string;
+        };
+        /** RouteInput */
+        RouteInput: {
+            /** @default subscription */
+            auth_mode: components["schemas"]["AuthMode"];
+            /** @default allowance_only */
+            billing_mode: components["schemas"]["BillingMode"];
+            /** Client */
+            client: string;
+            /** @default low */
+            effort: components["schemas"]["ReasoningEffort"];
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
         };
         /**
          * RunCommandRequest
@@ -2193,17 +2572,437 @@ export interface components {
             idle_expires_at: string;
         };
         /**
+         * SpecialistPurpose
+         * @description Closed vocabulary of specialist purposes separating purpose from tools.
+         * @enum {string}
+         */
+        SpecialistPurpose: "primary" | "routine_implementation" | "complex_implementation" | "independent_review" | "planning" | "exploration" | "security" | "integration" | "verification";
+        /**
          * StepKind
          * @description Closed set of operations that may be dispatched by a runner.
          * @enum {string}
          */
         StepKind: "bootstrap" | "install" | "migration" | "seed" | "test" | "lint" | "typecheck" | "build" | "custom_named";
+        /** SubscriptionAttemptPage */
+        SubscriptionAttemptPage: {
+            /** Attempts */
+            attempts: components["schemas"]["SubscriptionAttemptView"][];
+            /** Has More */
+            has_more: boolean;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+        };
+        /** SubscriptionAttemptView */
+        SubscriptionAttemptView: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /** Cached Tokens */
+            cached_tokens: number | null;
+            /** Currency */
+            currency: string | null;
+            /** Duration Ms */
+            duration_ms: number | null;
+            effective_route: components["schemas"]["AttemptRoute"];
+            /** Estimated Api Cost Minor */
+            estimated_api_cost_minor: number | null;
+            /** Input Tokens */
+            input_tokens: number | null;
+            /** Named Checks */
+            named_checks: number | null;
+            /** Output Tokens */
+            output_tokens: number | null;
+            /** Quota Status */
+            quota_status: string;
+            requested_route: components["schemas"]["AttemptRoute"];
+            /** State */
+            state: string;
+            /** Tool Calls */
+            tool_calls: number | null;
+        };
+        /** SubscriptionCapacityView */
+        SubscriptionCapacityView: {
+            host: components["schemas"]["CapacityLimitView"];
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Policy Version */
+            policy_version: number;
+            /** Providers */
+            providers: components["schemas"]["ProviderCapacityView"][];
+            /**
+             * Queue Order
+             * @constant
+             */
+            queue_order: "least_recently_served_run_then_oldest_task";
+            run: components["schemas"]["CapacityLimitView"];
+        };
+        /** SubscriptionRuntimeStatusPage */
+        SubscriptionRuntimeStatusPage: {
+            /** Fresh For Seconds */
+            fresh_for_seconds: number;
+            /** Has More */
+            has_more: boolean;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Workers */
+            workers: components["schemas"]["SubscriptionWorkerStatusView"][];
+        };
+        /** SubscriptionTaskControlView */
+        SubscriptionTaskControlView: {
+            action: components["schemas"]["TaskControlAction"];
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Pause Receipt Id */
+            pause_receipt_id?: string | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            status: components["schemas"]["TaskControlStatus"];
+        };
+        /** SubscriptionTaskPage */
+        SubscriptionTaskPage: {
+            /** Candidate Epoch */
+            candidate_epoch?: number | null;
+            /** Candidate State */
+            candidate_state?: string | null;
+            capacity?: components["schemas"]["SubscriptionCapacityView"] | null;
+            /** Has More */
+            has_more: boolean;
+            /** Quota Statuses */
+            quota_statuses?: components["schemas"]["QuotaStatusResponse"][];
+            /**
+             * Run Allows Execution
+             * @default false
+             */
+            run_allows_execution: boolean;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Run Is Terminal
+             * @default false
+             */
+            run_is_terminal: boolean;
+            /** Run Version */
+            run_version?: number | null;
+            /** Subscription */
+            subscription: boolean;
+            /** Tasks */
+            tasks: components["schemas"]["SubscriptionTaskView"][];
+        };
+        /** SubscriptionTaskView */
+        SubscriptionTaskView: {
+            /** Cancel Requested */
+            cancel_requested: boolean;
+            /** Capacity Waits */
+            capacity_waits?: ("host" | "run" | "provider")[];
+            control?: components["schemas"]["SubscriptionTaskControlView"] | null;
+            /** Dependency Task Ids */
+            dependency_task_ids: string[];
+            effective_route?: components["schemas"]["AttemptRoute"] | null;
+            /**
+             * Fallback Selected
+             * @default false
+             */
+            fallback_selected: boolean;
+            /** Owned Paths */
+            owned_paths: string[];
+            /** Parent Task Id */
+            parent_task_id: string | null;
+            /** Pause Requested */
+            pause_requested: boolean;
+            /** Purpose */
+            purpose: string;
+            quota_status?: components["schemas"]["QuotaStatusResponse"] | null;
+            /** Repairs */
+            repairs: number | null;
+            requested_route?: components["schemas"]["AttemptRoute"] | null;
+            /** State */
+            state: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+            /** Unsettled Effects */
+            unsettled_effects: number;
+            /** Version */
+            version: number;
+        };
+        /** SubscriptionUsageAssessment */
+        SubscriptionUsageAssessment: {
+            /** All Attempts */
+            all_attempts: number;
+            /** Delegation Decisions */
+            delegation_decisions: number;
+            /** Fallback Attempts */
+            fallback_attempts: number;
+            /** Outcomes */
+            outcomes: components["schemas"]["SubscriptionUsageOutcome"][];
+            /** Outcomes Has More */
+            outcomes_has_more: boolean;
+            /** Preferred Attempts */
+            preferred_attempts: number;
+            /** Primary Turns */
+            primary_turns: number;
+            /** Repair Debits */
+            repair_debits: number;
+            shares: components["schemas"]["SubscriptionUsageShares"];
+            /** Unknown Route Attempts */
+            unknown_route_attempts: number;
+            /** Unverified Decisions */
+            unverified_decisions: number;
+            /** Wait Decisions */
+            wait_decisions: number;
+            waits: components["schemas"]["SubscriptionUsageWaits"];
+        };
+        /** SubscriptionUsageItem */
+        SubscriptionUsageItem: {
+            /** Attempts */
+            attempts: number;
+            cached_input_tokens: components["schemas"]["SubscriptionUsageMetric"];
+            /** Currency */
+            currency: string | null;
+            duration_ms: components["schemas"]["SubscriptionUsageMetric"];
+            effective_route: components["schemas"]["AttemptRoute"];
+            estimated_api_cost_minor: components["schemas"]["SubscriptionUsageMetric"];
+            /** Failed Results */
+            failed_results: number;
+            input_tokens: components["schemas"]["SubscriptionUsageMetric"];
+            named_checks: components["schemas"]["SubscriptionUsageMetric"];
+            output_tokens: components["schemas"]["SubscriptionUsageMetric"];
+            /** Pending Results */
+            pending_results: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Purpose */
+            purpose: string;
+            /** Recorded Results */
+            recorded_results: number;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            tool_calls: components["schemas"]["SubscriptionUsageMetric"];
+        };
+        /** SubscriptionUsageMetric */
+        SubscriptionUsageMetric: {
+            /** Known Total */
+            known_total: number | null;
+            /** Measured Attempts */
+            measured_attempts: number;
+            /** Unknown Attempts */
+            unknown_attempts: number;
+        };
+        /** SubscriptionUsageOutcome */
+        SubscriptionUsageOutcome: {
+            /** Applied Decisions */
+            applied_decisions: number;
+            /** Attempts */
+            attempts: number;
+            /** Completed Handoffs */
+            completed_handoffs: number;
+            /** Currency */
+            currency: string | null;
+            /** Distinct Tasks */
+            distinct_tasks: number;
+            effective_route: components["schemas"]["AttemptRoute"];
+            /** Failed Results */
+            failed_results: number;
+            /** Fallback Attempts */
+            fallback_attempts: number;
+            /** Latest Fallback Reason */
+            latest_fallback_reason: string | null;
+            /** Latest Result Disposition */
+            latest_result_disposition: string | null;
+            /** Pending Results */
+            pending_results: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Purpose */
+            purpose: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Task Acceptances */
+            task_acceptances: number;
+            /** Terminal Tasks */
+            terminal_tasks: number;
+            /** Unverified Results */
+            unverified_results: number;
+            /** Verified Results */
+            verified_results: number;
+        };
+        /** SubscriptionUsagePage */
+        SubscriptionUsagePage: {
+            assessment?: components["schemas"]["SubscriptionUsageAssessment"] | null;
+            /** Has More */
+            has_more: boolean;
+            /** Items */
+            items: components["schemas"]["SubscriptionUsageItem"][];
+        };
+        /** SubscriptionUsageShare */
+        SubscriptionUsageShare: {
+            /** All Attempts */
+            all_attempts: number;
+            /** Coverage */
+            coverage: number | null;
+            /** Denominator */
+            denominator: number | null;
+            /** Denominator Measured Attempts */
+            denominator_measured_attempts: number;
+            /** Denominator Unknown Attempts */
+            denominator_unknown_attempts: number;
+            /** Numerator */
+            numerator: number | null;
+            /** Numerator Measured Attempts */
+            numerator_measured_attempts: number;
+            /** Numerator Unknown Attempts */
+            numerator_unknown_attempts: number;
+            /** Primary Attempts */
+            primary_attempts: number;
+            /** Share */
+            share: number | null;
+        };
+        /** SubscriptionUsageShares */
+        SubscriptionUsageShares: {
+            duration_ms: components["schemas"]["SubscriptionUsageShare"];
+            input_tokens: components["schemas"]["SubscriptionUsageShare"];
+            output_tokens: components["schemas"]["SubscriptionUsageShare"];
+        };
+        /** SubscriptionUsageWaits */
+        SubscriptionUsageWaits: {
+            /** Continued */
+            continued: number;
+            /** Decisions */
+            decisions: number;
+            /** Elapsed Ms */
+            elapsed_ms: number | null;
+            /** Ended Without Continuation */
+            ended_without_continuation: number;
+            /** Measured Intervals */
+            measured_intervals: number;
+            /** Unfinished */
+            unfinished: number;
+            /** Unknown Intervals */
+            unknown_intervals: number;
+        };
+        /** SubscriptionWorkerStatusView */
+        SubscriptionWorkerStatusView: {
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
+            /** Routes */
+            routes: components["schemas"]["AttemptRoute"][];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "current" | "stale" | "stopped";
+            /** Stopped At */
+            stopped_at: string | null;
+            /**
+             * Worker Instance Id
+             * Format: uuid
+             */
+            worker_instance_id: string;
+        };
         /**
          * SuspensionKind
          * @description Why a run is retaining its previous state.
          * @enum {string}
          */
         SuspensionKind: "PAUSE" | "INTERVENTION";
+        /** @enum {string} */
+        TaskControlAction: "pause" | "cancel" | "resume";
+        /** TaskControlReceipt */
+        TaskControlReceipt: {
+            action: components["schemas"]["TaskControlAction"];
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Pause Receipt Id */
+            pause_receipt_id?: string | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run Version */
+            run_version: number;
+            status: components["schemas"]["TaskControlStatus"];
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+            /** Task Version */
+            task_version: number;
+        };
+        /**
+         * TaskControlRequest
+         * @description Parse JSON UUIDs while preserving strict optimistic-concurrency versions.
+         */
+        TaskControlRequest: {
+            action: components["schemas"]["TaskControlAction"];
+            /** Expected Run Version */
+            expected_run_version: number;
+            /** Expected Task Version */
+            expected_task_version: number;
+            /** Pause Receipt Id */
+            pause_receipt_id?: string | null;
+            /** Reason */
+            reason: string;
+        };
+        /** @enum {string} */
+        TaskControlStatus: "pause_requested" | "cancel_requested" | "paused" | "cancelled" | "queued" | "blocked" | "decision_pending";
         /**
          * TaskCreateRequest
          * @description Closed plain-text task creation body.
@@ -3059,6 +3858,74 @@ export interface operations {
             };
         };
     };
+    selected_profile_api_projects__project_id__subscription_profile_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileResponse"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    select_profile_api_projects__project_id__subscription_profile_put: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectProfileSelectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     run_projections_api_run_projections_get: {
         parameters: {
             query?: {
@@ -3435,6 +4302,113 @@ export interface operations {
             };
         };
     };
+    tasks_api_runs__run_id__subscription_tasks_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionTaskPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attempts_api_runs__run_id__subscription_tasks__task_id__attempts_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionAttemptPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    control_task_api_runs__run_id__subscription_tasks__task_id__controls_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskControlRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskControlReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     run_usage_api_runs__run_id__usage_get: {
         parameters: {
             query?: {
@@ -3456,6 +4430,263 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListPage_RunUsageItem_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_profiles_api_subscription_profiles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileResponse"][];
+                };
+            };
+        };
+    };
+    create_profile_api_subscription_profiles_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    append_profile_api_subscription_profiles__profile_id__versions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileAppendRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_profile_api_subscription_profiles__profile_id__versions__version__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_quota_api_subscription_quota_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaStatusResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_quota_api_subscription_quota_reports_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuotaExhaustionReportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runtime_status_api_subscription_runtime_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionRuntimeStatusPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    usage_api_subscription_usage_get: {
+        parameters: {
+            query?: {
+                run_id?: string | null;
+                offset?: number;
+                limit?: number;
+                include_assessment?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionUsagePage"];
                 };
             };
             /** @description Validation Error */

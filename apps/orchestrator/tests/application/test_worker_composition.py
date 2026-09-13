@@ -80,10 +80,8 @@ def _make_prompt_root(tmp_path: Path) -> Path:
     return prompt_dir
 
 
-from forge.agents.adk_runtime import AdkRuntime
 from forge.application.handlers.approvals import ApprovePlanHandler, RequestPlanRevisionHandler
 from forge.application.services.plan_evidence import PlanEvidenceValidator
-from forge.tools.provider_credentials import LocalProviderCredentialResolver
 
 
 def test_load_pricing_catalog_success(tmp_path: Path) -> None:
@@ -119,17 +117,33 @@ def test_load_pricing_catalog_missing_or_malformed_fails_context_free(tmp_path: 
     assert str(nonexistent) not in str(exc.value)
 
 
-def test_compose_worker_handlers_missing_config_fails_closed(tmp_path: Path) -> None:
+def test_compose_worker_handlers_subscription_startup_defers_legacy_config(tmp_path: Path) -> None:
     prompt_root = _make_prompt_root(tmp_path)
 
-    # Missing secret reference
+    # Subscription-only workers do not resolve the retained API-key runtime at startup.
     settings_no_secret = Settings(
         provider_secret_reference="",
         pricing_catalog_path=tmp_path / "pricing.json",
         prompt_root=prompt_root,
     )
-    with pytest.raises(WorkerCompositionError, match="provider secret reference is not configured"):
-        compose_worker_handlers(settings_no_secret, session_factory=object())  # type: ignore[arg-type]
+    handlers = compose_worker_handlers(settings_no_secret, session_factory=object())  # type: ignore[arg-type]
+    from forge.application.services.subscription_candidate import SubscriptionCandidateApplication
+    from forge.application.services.subscription_decision_recovery import (
+        SubscriptionDecisionRecovery,
+    )
+    from forge.application.services.subscription_handoff_application import (
+        SubscriptionHandoffApplication,
+    )
+    from forge.worker.subscription_tools import SubscriptionToolServiceFactory
+
+    assert isinstance(handlers.subscription_tools, SubscriptionToolServiceFactory)
+    assert isinstance(handlers.subscription_decision_recovery, SubscriptionDecisionRecovery)
+    assert isinstance(handlers.subscription_handoffs, SubscriptionHandoffApplication)
+    assert handlers.subscription_decision_recovery._handoffs is handlers.subscription_handoffs
+    assert isinstance(handlers.subscription_candidates, SubscriptionCandidateApplication)
+    assert handlers.subscription_decision_recovery._candidates is handlers.subscription_candidates
+    assert handlers.subscription_candidates._snapshot is handlers.subscription_handoffs._snapshot
+    assert isinstance(handlers["start_planning"]._service._gateway, BoundPlanningGateway)
 
     # Invalid secret reference rejected by Settings
     with pytest.raises(ProviderCredentialError):
@@ -139,14 +153,14 @@ def test_compose_worker_handlers_missing_config_fails_closed(tmp_path: Path) -> 
             prompt_root=prompt_root,
         )
 
-    # Missing pricing catalog path
+    # Nor does startup require an API pricing catalog.
     settings_no_catalog = Settings(
         provider_secret_reference="secret://forge/gemini-api-key",
         pricing_catalog_path=None,
         prompt_root=prompt_root,
     )
-    with pytest.raises(WorkerCompositionError, match="pricing catalog path is not configured"):
-        compose_worker_handlers(settings_no_catalog, session_factory=object())  # type: ignore[arg-type]
+    handlers = compose_worker_handlers(settings_no_catalog, session_factory=object())  # type: ignore[arg-type]
+    assert isinstance(handlers["start_planning"]._service._gateway, BoundPlanningGateway)
 
 
 def test_compose_worker_handlers_missing_prompt_root_fails_closed(tmp_path: Path) -> None:
@@ -159,7 +173,79 @@ def test_compose_worker_handlers_missing_prompt_root_fails_closed(tmp_path: Path
         compose_worker_handlers(settings, session_factory=object())  # type: ignore[arg-type]
 
 
-def test_compose_worker_handlers_invalid_pricing_catalog_fails_closed(tmp_path: Path) -> None:
+async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from forge.application.ports.subscription_decisions import (
+        PendingDecisionKind,
+        PendingSubscriptionDecision,
+    )
+    from forge.application.services.subscription_acceptance_dispatch import (
+        SubscriptionAcceptanceDispatch,
+    )
+    from forge.application.services.subscription_acceptance_receipts import (
+        SubscriptionAcceptanceReceiptVerification,
+    )
+
+    handlers = compose_worker_handlers(
+        Settings(provider_secret_reference="", prompt_root=_make_prompt_root(tmp_path)),
+        session_factory=object(),
+    )
+    identity, applied, active = uuid4(), [], []
+
+    async def pending(cursor, limit):
+        return (
+            ()
+            if cursor is not None
+            else (PendingSubscriptionDecision(identity, PendingDecisionKind.FINAL_ACCEPTANCE),)
+        )
+
+    async def rollback():
+        pass
+
+    @asynccontextmanager
+    async def factory():
+        active.append(True)
+        try:
+            yield SimpleNamespace(
+                subscription_decisions=SimpleNamespace(pending_applications=pending),
+                rollback=rollback,
+            )
+        finally:
+            active.pop()
+
+    async def apply(dispatch, attempt_id):
+        assert not active
+        assert isinstance(dispatch._receipts, SubscriptionAcceptanceReceiptVerification)
+        assert dispatch._receipts._terminal is handlers.tool_recovery
+        assert dispatch._snapshot is handlers.subscription_candidates._snapshot
+        applied.append(attempt_id)
+
+    monkeypatch.setattr(SubscriptionAcceptanceDispatch, "apply", apply)
+    recovery = handlers.subscription_decision_recovery
+    recovery._factory = factory
+    from forge.application.services.subscription_task_controls import (
+        SubscriptionTaskControlService,
+        TaskControlRecoveryReport,
+    )
+
+    assert isinstance(recovery._task_controls, SubscriptionTaskControlService)
+
+    async def stopped_controls():
+        assert not active
+        return TaskControlRecoveryReport()
+
+    monkeypatch.setattr(recovery._task_controls, "reconcile_all", stopped_controls)
+    try:
+        report = await recovery.reconcile_all()
+        assert (report.applied, report.deferred, report.unsupported) == (1, 0, 0)
+        assert applied == [identity]
+    finally:
+        await handlers.aclose()
+
+
+def test_compose_worker_handlers_invalid_pricing_catalog_is_deferred(tmp_path: Path) -> None:
     prompt_root = _make_prompt_root(tmp_path)
     bad_catalog = tmp_path / "bad_pricing.json"
     bad_catalog.write_text("invalid json", encoding="utf-8")
@@ -171,11 +257,11 @@ def test_compose_worker_handlers_invalid_pricing_catalog_fails_closed(tmp_path: 
         pricing_catalog_path=bad_catalog,
         prompt_root=prompt_root,
     )
-    with pytest.raises(WorkerCompositionError, match="pricing catalog is invalid"):
-        compose_worker_handlers(settings, session_factory=object())  # type: ignore[arg-type]
+    handlers = compose_worker_handlers(settings, session_factory=object())  # type: ignore[arg-type]
+    assert isinstance(handlers["start_planning"]._service._gateway, BoundPlanningGateway)
 
 
-def test_compose_worker_handlers_unavailable_data_root_fails_closed(tmp_path: Path) -> None:
+def test_compose_worker_handlers_unavailable_data_root_is_deferred(tmp_path: Path) -> None:
     prompt_root = _make_prompt_root(tmp_path)
     catalog_path = _write_catalog(tmp_path / "pricing.json")
     settings = Settings(
@@ -184,8 +270,8 @@ def test_compose_worker_handlers_unavailable_data_root_fails_closed(tmp_path: Pa
         pricing_catalog_path=catalog_path,
         prompt_root=prompt_root,
     )
-    with pytest.raises(WorkerCompositionError, match="secret store initialization failed"):
-        compose_worker_handlers(settings, session_factory=object())  # type: ignore[arg-type]
+    handlers = compose_worker_handlers(settings, session_factory=object())  # type: ignore[arg-type]
+    assert isinstance(handlers["start_planning"]._service._gateway, BoundPlanningGateway)
 
 
 def test_load_pricing_catalog_rejects_numeric_non_string_rates(tmp_path: Path) -> None:
@@ -293,14 +379,12 @@ async def test_compose_worker_handlers_production_construction(tmp_path: Path) -
     assert isinstance(handlers["approve_plan"], ApprovePlanHandler)
     assert isinstance(handlers["request_plan_revision"], RequestPlanRevisionHandler)
 
-    # Real BoundPlanningGateway wrapping real AdkRuntime with local credential resolver
+    # The retained Google runtime and catalog are created only for an actual legacy request.
     gateway = handlers["start_planning"]._service._gateway
     assert isinstance(gateway, BoundPlanningGateway)
-    assert isinstance(gateway._runtime, AdkRuntime)
-    assert isinstance(gateway._runtime._credential_resolver, LocalProviderCredentialResolver)
-    assert gateway._runtime._credential_resolver._secret_store._root == data_root.resolve()
-    assert gateway._runtime._credential_reference == "secret://forge/gemini-api-key"
-    assert gateway._pricing_catalog.version == "2026-09-01"
+    assert gateway._runtime is None
+    assert gateway._pricing_catalog is None
+    assert gateway._runtime_factory is not None
 
     # Real PlanEvidenceValidator assembled with FilesystemArtifactStore and LocalGitRepositoryInspector
     approve_handler = handlers["approve_plan"]
@@ -333,7 +417,12 @@ async def test_compose_worker_handlers_production_construction(tmp_path: Path) -
     assert queue._write is writes
     assert handlers["observe_merge_queue"].__self__._queue is queue
     assert "enqueue_pr" in handlers.recovery_adapters
-    assert handlers["remediate_remote"].__self__ is handlers["implement"].__self__
+    remote = handlers["remediate_remote"]
+    assert remote._legacy is handlers["implement"].__self__
+    assert remote._subscription._publications is release._evidence
+    assert handlers["validate"].__self__._subscription._remote_repairs is remote._subscription
+    assert handlers["resume"]._subscription_remote_repairs is remote._subscription
+    assert handlers["update_base"].__self__._subscription is remote._subscription.base_updates
     assert not read._client.is_closed and not writes._client.is_closed
     await handlers.aclose()
     assert read._client.is_closed and writes._client.is_closed
@@ -409,7 +498,9 @@ async def test_injected_queue_controls_observation_and_recovery(tmp_path, config
     dependencies = ReleaseDependencies(object(), object(), lambda _: object(), queue=queue)
     handlers = compose_worker_handlers(
         Settings(data_root=tmp_path, prompt_root=_make_prompt_root(tmp_path)),
-        object(), agent_gateway=object(), release_dependencies=dependencies,
+        object(),
+        agent_gateway=object(),
+        release_dependencies=dependencies,
     )
     assert handlers["merge_pr"].__self__._queue is queue
     assert ("enqueue_pr" in handlers.recovery_adapters) is configured

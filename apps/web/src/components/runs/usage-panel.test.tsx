@@ -6,8 +6,21 @@ import { api } from '@/lib/api/client';
 
 vi.mock('@/lib/api/client', () => ({ api: vi.fn() }));
 afterEach(() => { cleanup(); vi.mocked(api).mockReset(); });
+
+function mockLegacyUsage(value: unknown) {
+  vi.mocked(api).mockImplementation(async <T,>(path: string) =>
+    (path.startsWith('/subscription-usage') ? { items: [], has_more: false } : value) as T);
+}
+
+test('run usage also exposes subscription measurements', async () => {
+  vi.mocked(api).mockResolvedValue({ items: [], truncated: false, has_more: false });
+  render(<UsagePanel runId="run-1" />);
+  expect(screen.getByRole('region', { name: 'Subscription usage' })).toBeInTheDocument();
+  expect(await screen.findByText('No subscription attempts on this page.')).toBeInTheDocument();
+  expect(vi.mocked(api).mock.calls.some(([path]) => path === '/subscription-usage?run_id=run-1&offset=0&limit=25')).toBe(true);
+});
 test('usage keeps actual tokens and unknown estimates distinct and pages historical calls', async () => {
-  vi.mocked(api).mockResolvedValue({ items: [{ id: 'call-1', agent_execution_id: 'execution-1',
+  mockLegacyUsage({ items: [{ id: 'call-1', agent_execution_id: 'execution-1',
     role: 'planner', provider: 'fixture', model: 'test', prompt_version: 'v1', instruction_digest: null,
     input_tokens: 12, output_tokens: 3, cached_input_tokens: 2, duration_ms: 125, tool_call_count: 4,
     pricing_version: 'prices-v1', estimated_cost_minor: null, currency: 'USD', unknown_price_reason: 'No price',
@@ -23,7 +36,7 @@ test('usage keeps actual tokens and unknown estimates distinct and pages histori
 });
 
 test('usage preserves a recorded zero estimate and historical digest', async () => {
-  vi.mocked(api).mockResolvedValue({ items: [{ id: 'call-2', agent_execution_id: 'execution-2',
+  mockLegacyUsage({ items: [{ id: 'call-2', agent_execution_id: 'execution-2',
     role: 'reviewer', provider: 'fixture', model: 'test', prompt_version: 'old-version', instruction_digest: 'd'.repeat(64),
     input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, duration_ms: 0, tool_call_count: 0,
     pricing_version: 'old-prices', estimated_cost_minor: 0, currency: 'GBP', unknown_price_reason: null,
@@ -37,7 +50,12 @@ test('usage preserves a recorded zero estimate and historical digest', async () 
 });
 
 test('usage failure is recoverable without displaying an invented empty result', async () => {
-  vi.mocked(api).mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ items: [], truncated: false });
+  let failed = false;
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.startsWith('/subscription-usage')) return { items: [], has_more: false } as T;
+    if (!failed) { failed = true; throw new Error('offline'); }
+    return { items: [], truncated: false } as T;
+  });
   render(<UsagePanel runId="run-1" />);
   expect(await screen.findByRole('alert')).toHaveTextContent('Usage unavailable');
   expect(screen.queryByText('No usage recorded on this page.')).not.toBeInTheDocument();

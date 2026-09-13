@@ -5,6 +5,7 @@ import type { components } from '@/lib/api/schema';
 import { ResourceTeardown } from './resource-teardown';
 import { parseMergeEvidence, MergeApprovalEvidence, type MergeEvidence } from './merge-approval-evidence';
 import { parsePrEvidence, PrPublicationEvidence, type PrEvidence } from './pr-publication-evidence';
+import { matchesPublicationDecision } from './publication-decision-evidence';
 
 type Projection = components['schemas']['RunProjection'];
 type Command = components['schemas']['AvailableCommand'];
@@ -57,7 +58,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
           if (next.pr.candidate_commit !== fresh.candidate.commit || next.pr.repository !== fresh.project.github_repository
             || next.pr.base_sha !== fresh.run.base_sha || next.pr.base_ref !== fresh.run.base_ref
             || next.pr.validation_digest !== fresh.candidate.validation_evidence_digest
-            || next.pr.review_digest !== fresh.candidate.review_evidence_digest
+            || !matchesPublicationDecision(next.pr, fresh.candidate)
             || next.pr.runner_mode !== fresh.security.runner_mode) throw new ApiError(409, 'publication-evidence-mismatch');
           const body = await api<components['schemas']['ArtifactTextResponse']>(`/artifacts/${next.pr.body_digest}/text`, { signal });
           if (body?.digest !== next.pr.body_digest || typeof body.text !== 'string') throw new ApiError(409, 'body-evidence-mismatch');
@@ -69,7 +70,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
           if (!pr || !observation || merge.repository !== pr.repository || merge.pull_request_number !== pr.number
             || merge.head_sha !== pr.head_sha || merge.head_sha !== fresh.candidate.commit || merge.head_sha !== observation.head_sha
             || branchName(merge.base_ref) !== branchName(pr.base_ref) || merge.policy_version !== command.policy_version
-            || merge.validation_digest !== fresh.candidate.validation_evidence_digest || merge.review_digest !== fresh.candidate.review_evidence_digest
+            || merge.validation_digest !== fresh.candidate.validation_evidence_digest || !matchesPublicationDecision(merge, fresh.candidate)
             || merge.runner_mode !== fresh.security.runner_mode) throw new ApiError(409, 'merge-evidence-mismatch');
           const proof = await api<components['schemas']['MergeProtectionResponse']>(`/artifacts/${observation.observation_digest}/merge-protection`, { signal });
           if (!proof || proof.digest !== observation.observation_digest || proof.protection_digest !== merge.protection_digest

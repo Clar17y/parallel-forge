@@ -63,6 +63,7 @@ from forge.application.services.resume_source import (
     resume_origin,
 )
 from forge.application.services.suspended_delivery import record_suspended_delivery
+from forge.application.services.tools import CapabilityMatrix
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
     AgentBudget,
@@ -92,16 +93,8 @@ from forge.observability.usage import UsageRecord
 
 _STEP_NAMESPACE = UUID("5f7bc719-a867-443c-b6a8-936c6663a983")
 _EXECUTION_NAMESPACE = UUID("6649eb62-7e4a-421f-9861-8be14cefa22b")
-_TOOLS = (
-    ToolName.REPOSITORY_LIST_FILES,
-    ToolName.REPOSITORY_READ_FILE,
-    ToolName.REPOSITORY_SEARCH,
-    ToolName.REPOSITORY_READ_INSTRUCTIONS,
-    ToolName.REPOSITORY_WRITE_FILE,
-    ToolName.GIT_STATUS,
-    ToolName.GIT_DIFF,
-    ToolName.GIT_COMMIT,
-    ToolName.BUILD_RUN_NAMED_CHECK,
+_TOOLS = tuple(
+    tool for tool in ToolName if tool in CapabilityMatrix().capabilities_for(AgentRole.DEVELOPER)
 )
 
 

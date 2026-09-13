@@ -26,6 +26,11 @@ from forge.api.routes.projects import router_for as project_router_for
 from forge.api.routes.prompts import router_for as prompt_router_for
 from forge.api.routes.run_list import router_for as run_list_router_for
 from forge.api.routes.runs import router_for as run_router_for
+from forge.api.routes.subscription_profiles import router_for as subscription_profile_router_for
+from forge.api.routes.subscription_quota import router_for as subscription_quota_router_for
+from forge.api.routes.subscription_runtime import router_for as subscription_runtime_router_for
+from forge.api.routes.subscription_tasks import router_for as subscription_task_router_for
+from forge.api.routes.subscription_usage import router_for as subscription_usage_router_for
 from forge.api.routes.tasks import router_for as task_router_for
 from forge.api.security import parse_web_origin
 from forge.application.adapters.git import LocalGitRepositoryInspector
@@ -41,6 +46,9 @@ from forge.application.services.plan_evidence import PlanEvidenceValidator
 from forge.application.services.projections import ProjectionService
 from forge.application.services.projects import ProjectService
 from forge.application.services.runs import RunCommandService, RunService
+from forge.application.services.subscription_profiles import SubscriptionProfileService
+from forge.application.services.subscription_quota import SubscriptionQuotaService
+from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
 from forge.application.services.tasks import TaskService
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.persistence.database import create_engine, create_session_factory
@@ -49,6 +57,11 @@ from forge.persistence.queries.dashboard import DashboardQuery
 from forge.persistence.queries.dashboard_lists import DashboardListQuery
 from forge.persistence.queries.events import EventQuery
 from forge.persistence.queries.run_list import RunListQuery
+from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
+from forge.persistence.queries.subscription_usage import SubscriptionUsageQuery
+from forge.persistence.repositories.subscription_runtime_status import (
+    SubscriptionRuntimeStatusStore,
+)
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.release.credentials import LocalGitHubCredentialResolver
 from forge.release.github_client import GitHubClient
@@ -74,6 +87,9 @@ def create_app(
     event_query: Any | None = None,
     dashboard_list_query: Any | None = None,
     github_issue_import_service: Any | None = None,
+    subscription_profile_service: Any | None = None,
+    subscription_quota_service: Any | None = None,
+    subscription_task_control_service: Any | None = None,
 ) -> FastAPI:
     """Create the API without opening a database connection."""
 
@@ -88,7 +104,10 @@ def create_app(
         resolved_session_factory = session_factory
         resolved_uow_factory = cast(
             Callable[[], Any],
-            lambda: PostgresUnitOfWork(resolved_session_factory),
+            lambda: PostgresUnitOfWork(
+                resolved_session_factory,
+                quota_policy=getattr(resolved_settings, "subscription_quota_policy", None),
+            ),
         )
     resolved_auth_service = auth_service or AuthService(resolved_uow_factory, clock=clock)
     resolved_challenge_service = approval_challenge_service or ApprovalChallengeService(
@@ -108,6 +127,15 @@ def create_app(
         resolved_uow_factory, settings=resolved_settings
     )
     resolved_task_service = task_service or TaskService(resolved_uow_factory)
+    resolved_subscription_profile_service = (
+        subscription_profile_service or SubscriptionProfileService(resolved_uow_factory)
+    )
+    resolved_subscription_quota_service = subscription_quota_service or SubscriptionQuotaService(
+        resolved_uow_factory
+    )
+    resolved_task_control_service = (
+        subscription_task_control_service or SubscriptionTaskControlService(resolved_uow_factory)
+    )
     resolved_run_service = run_service or RunService(
         resolved_uow_factory, settings=resolved_settings
     )
@@ -164,10 +192,27 @@ def create_app(
     app.state.approval_authorization_service = resolved_authorization_service
     app.state.project_service = resolved_project_service
     app.state.task_service = resolved_task_service
+    app.state.subscription_profile_service = resolved_subscription_profile_service
+    app.state.subscription_quota_service = resolved_subscription_quota_service
+    app.state.subscription_task_control_service = resolved_task_control_service
     app.state.github_issue_import_service = resolved_issue_import
     app.state.run_service = resolved_run_service
     app.state.run_command_service = resolved_run_command_service
     app.state.session_factory = session_factory
+    app.state.subscription_task_query = (
+        SubscriptionTaskQuery(
+            session_factory,
+            quota_policy=getattr(resolved_settings, "subscription_quota_policy", None),
+        )
+        if session_factory is not None
+        else None
+    )
+    app.state.subscription_usage_query = (
+        SubscriptionUsageQuery(session_factory) if session_factory is not None else None
+    )
+    app.state.subscription_runtime_status = (
+        SubscriptionRuntimeStatusStore(session_factory) if session_factory is not None else None
+    )
     app.state.shutdown_event = shutdown
     app.state.projection_service = projection_service or (
         ProjectionService(DashboardQuery(session_factory)) if session_factory is not None else None
@@ -193,6 +238,11 @@ def create_app(
     app.include_router(auth_router_for(), prefix="/api")
     app.include_router(approval_router_for(), prefix="/api")
     app.include_router(project_router_for(), prefix="/api")
+    app.include_router(subscription_profile_router_for(), prefix="/api")
+    app.include_router(subscription_quota_router_for(), prefix="/api")
+    app.include_router(subscription_task_router_for(), prefix="/api")
+    app.include_router(subscription_usage_router_for(), prefix="/api")
+    app.include_router(subscription_runtime_router_for(), prefix="/api")
     app.include_router(prompt_router_for(), prefix="/api")
     app.include_router(task_router_for(), prefix="/api")
     app.include_router(run_router_for(), prefix="/api")

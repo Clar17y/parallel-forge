@@ -17,10 +17,12 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, BinaryIO, NamedTuple, cast
+from uuid import UUID
 
 from forge.application.ports.repository import PathEscape, RepositoryAccessDenied
 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_FILE_READ_DATA = 0x0001
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
@@ -77,6 +79,23 @@ if sys.platform == "linux":
 else:
     _LINUX_STATX = None
 
+_LINUX_RENAME_NOREPLACE = 1
+_LINUX_RENAMEAT2: Callable[[int, bytes, int, bytes, int], int] | None = None
+if sys.platform == "linux":
+    try:
+        _linux_renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+        _linux_renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        _linux_renameat2.restype = ctypes.c_int
+        _LINUX_RENAMEAT2 = _linux_renameat2
+    except AttributeError, OSError:
+        _LINUX_RENAMEAT2 = None
+
 
 def _require_windows_native_pointer_size(pointer_size: int | None = None) -> None:
     actual_size = ctypes.sizeof(ctypes.c_void_p) if pointer_size is None else pointer_size
@@ -88,6 +107,12 @@ class _WindowsIdentity(NamedTuple):
     volume_serial: int
     file_index_high: int
     file_index_low: int
+
+
+class _StagedPosixMutationFile(NamedTuple):
+    name: str
+    descriptor: int
+    identity: tuple[int, int]
 
 
 _ACCESS_SEAL = object()
@@ -1476,6 +1501,27 @@ class _WindowsPathApi:
             self.close(handle)
             raise
 
+    def open_managed_mutation_child(self, parent_handle: int, name: str) -> int:
+        """Open one unlinked regular repository child for an exact mutation."""
+
+        handle = self._open_child(
+            parent_handle,
+            name,
+            access=_DELETE | _FILE_READ_DATA | _FILE_READ_ATTRIBUTES | _READ_CONTROL | _SYNCHRONIZE,
+            share=0,
+        )
+        try:
+            info = self.information(handle)
+            if (
+                int(info.attributes) & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY)
+                or int(info.link_count) != 1
+            ):
+                raise RepositoryAccessDenied("repository file is unsafe")
+            return handle
+        except BaseException:
+            self.close(handle)
+            raise
+
     def open_managed_directory_child(self, parent_handle: int, name: str) -> int:
         """Open one retained directory child while denying delete sharing."""
 
@@ -2117,6 +2163,116 @@ class CanonicalRoot:
         parent = "." if len(parts) == 1 else "/".join(parts[:-1])
         with self._open_directory(parent) as access:
             return _inspect_repository_file(self, access, parts[-1], maximum)
+
+    def delete_file(
+        self,
+        value: str | os.PathLike[str],
+        *,
+        expected_digest: str,
+        maximum: int,
+        mutation_id: UUID,
+    ) -> tuple[str, int]:
+        """Delete one verified, single-link regular file below this pinned root."""
+
+        _validate_mutation_identity(mutation_id)
+        normalized = self.normalize(value)
+        parts = tuple(normalized.split("/"))
+        parent = "." if len(parts) == 1 else "/".join(parts[:-1])
+        with self._open_directory(parent) as access:
+            current = _inspect_repository_file(self, access, parts[-1], maximum)
+            if current is None or current[0] != expected_digest:
+                raise RepositoryAccessDenied("repository file precondition changed")
+            if os.name == "nt":
+                _delete_repository_file(self, access, parts[-1], expected=current, maximum=maximum)
+            else:
+                with _open_private_posix_mutation_stage(self, access) as stage_descriptor:
+                    staged_name = _stage_posix_repository_file(
+                        self,
+                        access,
+                        stage_descriptor,
+                        parts[-1],
+                        expected=current,
+                        maximum=maximum,
+                        mutation_id=mutation_id,
+                    )
+                    try:
+                        _delete_posix_staged_repository_file(
+                            stage_descriptor, staged_name, expected=current, maximum=maximum
+                        )
+                    finally:
+                        with contextlib.suppress(OSError):
+                            os.close(staged_name.descriptor)
+            if _inspect_repository_file(self, access, parts[-1], maximum) is not None:
+                raise RepositoryAccessDenied("repository file deletion could not be verified")
+            return current
+
+    def rename_file(
+        self,
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *,
+        expected_digest: str,
+        maximum: int,
+        mutation_id: UUID,
+    ) -> tuple[str, int]:
+        """Move one verified regular file to an absent exact destination."""
+
+        _validate_mutation_identity(mutation_id)
+        source_normalized = self.normalize(source)
+        destination_normalized = self.normalize(destination)
+        if source_normalized == destination_normalized:
+            raise RepositoryAccessDenied("repository rename destination is unchanged")
+        source_parts = tuple(source_normalized.split("/"))
+        destination_parts = tuple(destination_normalized.split("/"))
+        source_parent = "." if len(source_parts) == 1 else "/".join(source_parts[:-1])
+        destination_parent = (
+            "." if len(destination_parts) == 1 else "/".join(destination_parts[:-1])
+        )
+        with (
+            self._open_directory(source_parent) as source_access,
+            self._open_directory(destination_parent) as destination_access,
+        ):
+            current = _inspect_repository_file(self, source_access, source_parts[-1], maximum)
+            if current is None or current[0] != expected_digest:
+                raise RepositoryAccessDenied("repository file precondition changed")
+            if _inspect_repository_file(self, destination_access, destination_parts[-1], maximum):
+                raise RepositoryAccessDenied("repository rename destination already exists")
+            if os.name == "nt":
+                _rename_repository_file(
+                    self, source_access, source_parts[-1], destination_access,
+                    destination_parts[-1], expected=current, maximum=maximum,
+                )
+            else:
+                with _open_private_posix_mutation_stage(self, source_access) as stage_descriptor:
+                    staged_name = _stage_posix_repository_file(
+                        self,
+                        source_access,
+                        stage_descriptor,
+                        source_parts[-1],
+                        expected=current,
+                        maximum=maximum,
+                        mutation_id=mutation_id,
+                    )
+                    try:
+                        _rename_posix_staged_repository_file(
+                            stage_descriptor,
+                            staged_name,
+                            destination_access,
+                            destination_parts[-1],
+                            expected=current,
+                            maximum=maximum,
+                        )
+                    finally:
+                        with contextlib.suppress(OSError):
+                            os.close(staged_name.descriptor)
+            final = _inspect_repository_file(
+                self, destination_access, destination_parts[-1], maximum
+            )
+            if final != current or _inspect_repository_file(
+                self, source_access, source_parts[-1], maximum
+            ):
+                raise RepositoryAccessDenied("repository rename could not be verified")
+            return current
 
     @contextlib.contextmanager
     def open_directory(self, value: str | os.PathLike[str] = ".") -> Iterator[Path]:
@@ -3761,14 +3917,6 @@ class CanonicalRoot:
             git_path = root_path / ".git"
             git_handle = api.open_directory(git_path)
             resources.append(git_handle)
-            lock_path = git_path / "forge-worktree.lock"
-            lock_handle = (
-                api.open_mutation_lock(lock_path)
-                if create_lock
-                else api.open_existing_mutation_lock(lock_path)
-            )
-            resources.append(lock_handle)
-
             worktree_parent_path = root_path / ".worktrees"
             worktree_parent_handle = api.open_directory(worktree_parent_path)
             resources.append(worktree_parent_handle)
@@ -3797,6 +3945,13 @@ class CanonicalRoot:
             registration_gitdir_content = _validate_gitdir_content(
                 api.read_bounded(registration_gitdir_handle), registration_path, target_git_path
             )
+            lock_path = registration_path / "forge-worktree.lock"
+            lock_handle = (
+                api.open_mutation_lock(lock_path)
+                if create_lock
+                else api.open_existing_mutation_lock(lock_path)
+            )
+            resources.append(lock_handle)
 
             identities = {
                 "root": root_identity,
@@ -3889,14 +4044,6 @@ class CanonicalRoot:
             git_path = self._path / ".git"
             git_descriptor = _open_posix_directory_at(root_descriptor, ".git")
             resources.append(git_descriptor)
-            lock_path = git_path / "forge-worktree.lock"
-            lock_descriptor = (
-                _open_posix_mutation_lock(git_descriptor)
-                if create_lock
-                else _open_existing_posix_mutation_lock(git_descriptor)
-            )
-            resources.append(lock_descriptor)
-
             worktree_parent_path = self._path / ".worktrees"
             worktree_parent_descriptor = _open_posix_directory_at(root_descriptor, ".worktrees")
             resources.append(worktree_parent_descriptor)
@@ -3930,6 +4077,13 @@ class CanonicalRoot:
                 registration_path,
                 target_git_path,
             )
+            lock_path = registration_path / "forge-worktree.lock"
+            lock_descriptor = (
+                _open_posix_mutation_lock(registration_descriptor)
+                if create_lock
+                else _open_existing_posix_mutation_lock(registration_descriptor)
+            )
+            resources.append(lock_descriptor)
             identities = {
                 "root": root_identity,
                 "git": _fd_identity(git_descriptor),
@@ -4510,8 +4664,6 @@ class CanonicalRoot:
                 raise RepositoryAccessDenied("repository root identity changed")
             git_descriptor = _open_posix_directory_at(root_descriptor, ".git")
             reopened.append(git_descriptor)
-            lock_descriptor = _open_posix_regular_at(git_descriptor, access.lock_path.name)
-            reopened.append(lock_descriptor)
             worktree_parent_descriptor = _open_posix_directory_at(root_descriptor, ".worktrees")
             reopened.append(worktree_parent_descriptor)
             target_descriptor = _open_posix_directory_at(
@@ -4526,6 +4678,8 @@ class CanonicalRoot:
                 metadata_descriptor, access.registration_path.name
             )
             reopened.append(registration_descriptor)
+            lock_descriptor = _open_posix_regular_at(registration_descriptor, access.lock_path.name)
+            reopened.append(lock_descriptor)
             _reject_posix_registration_lock(registration_capability)
             _reject_posix_registration_lock(registration_descriptor)
             registration_gitdir_descriptor = _open_posix_gitdir(registration_descriptor)
@@ -5563,6 +5717,11 @@ def _repository_file_digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _validate_mutation_identity(mutation_id: UUID) -> None:
+    if not isinstance(mutation_id, UUID) or mutation_id.int == 0:
+        raise RepositoryAccessDenied("repository mutation identity is invalid")
+
+
 def _inspect_repository_file(
     root: CanonicalRoot,
     access: _DirectoryAccess,
@@ -5655,6 +5814,321 @@ def _replace_repository_file(
     if final != (output_digest, len(data)):
         raise RepositoryAccessDenied("repository file publication could not be verified")
     return None if previous is None else previous[0], output_digest, len(data)
+
+
+@contextlib.contextmanager
+def _open_private_posix_mutation_stage(
+    root: CanonicalRoot, source_access: _DirectoryAccess
+) -> Iterator[int]:
+    """Retain Forge's private, same-filesystem mutation namespace."""
+
+    root._verify_directory_access(source_access.normalized, source_access)
+    root_descriptor: int | None = None
+    forge_descriptor: int | None = None
+    stage_descriptor: int | None = None
+    try:
+        root_descriptor = os.open(
+            root.path, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
+        )
+        if _fd_identity(root_descriptor) != root._identity:
+            raise RepositoryAccessDenied("repository root identity changed")
+        try:
+            os.mkdir(".forge", mode=0o700, dir_fd=root_descriptor)
+        except FileExistsError:
+            pass
+        else:
+            os.fsync(root_descriptor)
+        forge_descriptor = os.open(
+            ".forge", os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC, dir_fd=root_descriptor
+        )
+        _verify_private_posix_mutation_directory(forge_descriptor)
+        try:
+            os.mkdir("mutations", mode=0o700, dir_fd=forge_descriptor)
+        except FileExistsError:
+            pass
+        else:
+            os.fsync(forge_descriptor)
+        stage_descriptor = os.open(
+            "mutations",
+            os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+            dir_fd=forge_descriptor,
+        )
+        _verify_private_posix_mutation_directory(stage_descriptor)
+        if int(os.fstat(stage_descriptor).st_dev) != int(os.fstat(source_access.capability).st_dev):
+            raise RepositoryAccessDenied("repository mutation staging crosses a volume")
+        yield stage_descriptor
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("private repository mutation staging is unavailable") from None
+    finally:
+        for descriptor in (stage_descriptor, forge_descriptor, root_descriptor):
+            if descriptor is not None:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+
+
+def _verify_private_posix_mutation_directory(descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or int(metadata.st_uid) != _current_posix_uid()
+        or int(metadata.st_uid) == 10001
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise RepositoryAccessDenied("private repository mutation staging is unsafe")
+
+
+def _stage_posix_repository_file(
+    root: CanonicalRoot,
+    source_access: _DirectoryAccess,
+    stage_descriptor: int,
+    name: str,
+    *,
+    expected: tuple[str, int],
+    maximum: int,
+    mutation_id: UUID,
+) -> _StagedPosixMutationFile:
+    """Atomically move a source into its durable-operation-owned staging name.
+
+    POSIX has no compare-and-unlink/rename syscall.  Once the operation intent is
+    committed, its UUID gives the effect a deterministic retained name inside
+    Forge's private namespace. A failed post-move verification deliberately
+    leaves that name in place as the durable reconciliation fence.
+    """
+
+    _validate_mutation_identity(mutation_id)
+    stage_name = f".forge-mutation-{mutation_id.hex}"
+    root._verify_directory_access(source_access.normalized, source_access)
+    descriptor: int | None = None
+    try:
+        before = os.stat(name, dir_fd=source_access.capability, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or int(before.st_nlink) != 1:
+            raise RepositoryAccessDenied("repository file is unsafe")
+        rename = _LINUX_RENAMEAT2
+        if rename is None:
+            raise RepositoryAccessDenied("atomic no-replace rename is unavailable")
+        if (
+            rename(
+                source_access.capability,
+                os.fsencode(name),
+                stage_descriptor,
+                os.fsencode(stage_name),
+                _LINUX_RENAME_NOREPLACE,
+            )
+            != 0
+        ):
+            raise RepositoryAccessDenied("repository mutation staging is unavailable")
+        descriptor = _open_posix_regular_at(stage_descriptor, stage_name)
+        after = os.fstat(descriptor)
+        staged_data = _read_staging_descriptor(descriptor, maximum)
+        staged = (_repository_file_digest(staged_data), len(staged_data))
+        if (
+            staged != expected
+            or (int(after.st_dev), int(after.st_ino)) != (int(before.st_dev), int(before.st_ino))
+        ):
+            raise RepositoryAccessDenied("repository file precondition changed")
+        os.fsync(source_access.capability)
+        os.fsync(stage_descriptor)
+        staged_file = _StagedPosixMutationFile(
+            stage_name, descriptor, (int(after.st_dev), int(after.st_ino))
+        )
+        descriptor = None
+        return staged_file
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("repository mutation staging failed") from None
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+
+def _delete_posix_staged_repository_file(
+    stage_descriptor: int,
+    staged: _StagedPosixMutationFile,
+    *,
+    expected: tuple[str, int],
+    maximum: int,
+) -> None:
+    try:
+        metadata = os.fstat(staged.descriptor)
+        named = os.stat(staged.name, dir_fd=stage_descriptor, follow_symlinks=False)
+        if (
+            (int(metadata.st_dev), int(metadata.st_ino)) != staged.identity
+            or (int(named.st_dev), int(named.st_ino)) != staged.identity
+            or int(metadata.st_nlink) != 1
+        ):
+            raise RepositoryAccessDenied("repository staged file identity changed")
+        os.lseek(staged.descriptor, 0, os.SEEK_SET)
+        data = _read_staging_descriptor(staged.descriptor, maximum)
+        if (_repository_file_digest(data), len(data)) != expected:
+            raise RepositoryAccessDenied("repository file precondition changed")
+        os.unlink(staged.name, dir_fd=stage_descriptor)
+        os.fsync(stage_descriptor)
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("repository staged file deletion failed") from None
+
+
+def _rename_posix_staged_repository_file(
+    stage_descriptor: int,
+    staged: _StagedPosixMutationFile,
+    destination_access: _DirectoryAccess,
+    destination_name: str,
+    *,
+    expected: tuple[str, int],
+    maximum: int,
+) -> None:
+    try:
+        metadata = os.fstat(staged.descriptor)
+        named = os.stat(staged.name, dir_fd=stage_descriptor, follow_symlinks=False)
+        if (
+            (int(metadata.st_dev), int(metadata.st_ino)) != staged.identity
+            or (int(named.st_dev), int(named.st_ino)) != staged.identity
+            or int(metadata.st_nlink) != 1
+        ):
+            raise RepositoryAccessDenied("repository staged file identity changed")
+        os.lseek(staged.descriptor, 0, os.SEEK_SET)
+        data = _read_staging_descriptor(staged.descriptor, maximum)
+        if (_repository_file_digest(data), len(data)) != expected:
+            raise RepositoryAccessDenied("repository file precondition changed")
+        try:
+            os.stat(destination_name, dir_fd=destination_access.capability, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            raise RepositoryAccessDenied("repository rename destination is unavailable") from None
+        else:
+            raise RepositoryAccessDenied("repository rename destination already exists")
+        rename = _LINUX_RENAMEAT2
+        if rename is None or (
+            rename(
+                stage_descriptor,
+                os.fsencode(staged.name),
+                destination_access.capability,
+                os.fsencode(destination_name),
+                _LINUX_RENAME_NOREPLACE,
+            )
+            != 0
+        ):
+            raise RepositoryAccessDenied("atomic no-replace rename failed")
+        os.fsync(stage_descriptor)
+        os.fsync(destination_access.capability)
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("repository staged file rename failed") from None
+
+
+def _delete_repository_file(
+    root: CanonicalRoot,
+    access: _DirectoryAccess,
+    name: str,
+    *,
+    expected: tuple[str, int],
+    maximum: int,
+) -> None:
+    """Unlink one already-proved regular child through its retained parent."""
+
+    root._verify_directory_access(access.normalized, access)
+    try:
+        if os.name == "nt":
+            api = root._windows
+            if api is None:
+                raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+            handle = api.open_managed_mutation_child(
+                access.capability,
+                name,
+            )
+            try:
+                data = api.read_bounded(handle, maximum)
+                if (_repository_file_digest(data), len(data)) != expected:
+                    raise RepositoryAccessDenied("repository file precondition changed")
+                api.dispose(handle)
+                api.flush_secret_directory(access.capability)
+            finally:
+                api.close(handle)
+            return
+        metadata = os.stat(name, dir_fd=access.capability, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode) or int(metadata.st_nlink) != 1:
+            raise RepositoryAccessDenied("repository file is unsafe")
+        os.unlink(name, dir_fd=access.capability)
+        os.fsync(access.capability)
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("repository file deletion failed") from None
+
+
+def _rename_repository_file(
+    root: CanonicalRoot,
+    source_access: _DirectoryAccess,
+    source_name: str,
+    destination_access: _DirectoryAccess,
+    destination_name: str,
+    *,
+    expected: tuple[str, int],
+    maximum: int,
+) -> None:
+    """Rename one already-proved child without following either parent path."""
+
+    root._verify_directory_access(source_access.normalized, source_access)
+    root._verify_directory_access(destination_access.normalized, destination_access)
+    try:
+        if os.name == "nt":
+            api = root._windows
+            if api is None:
+                raise RepositoryAccessDenied("Windows path capabilities are unavailable")
+            handle = api.open_managed_mutation_child(
+                source_access.capability,
+                source_name,
+            )
+            try:
+                data = api.read_bounded(handle, maximum)
+                if (_repository_file_digest(data), len(data)) != expected:
+                    raise RepositoryAccessDenied("repository file precondition changed")
+                api.rename_entry(
+                    handle, destination_access.capability, destination_name, replace=False
+                )
+                api.flush_secret_directory(source_access.capability)
+                if destination_access.capability != source_access.capability:
+                    api.flush_secret_directory(destination_access.capability)
+            finally:
+                api.close(handle)
+            return
+        metadata = os.stat(source_name, dir_fd=source_access.capability, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode) or int(metadata.st_nlink) != 1:
+            raise RepositoryAccessDenied("repository file is unsafe")
+        try:
+            os.stat(destination_name, dir_fd=destination_access.capability, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RepositoryAccessDenied("repository rename destination already exists")
+        rename = _LINUX_RENAMEAT2
+        if rename is None:
+            raise RepositoryAccessDenied("atomic no-replace rename is unavailable")
+        if (
+            rename(
+                source_access.capability,
+                os.fsencode(source_name),
+                destination_access.capability,
+                os.fsencode(destination_name),
+                _LINUX_RENAME_NOREPLACE,
+            )
+            != 0
+        ):
+            raise RepositoryAccessDenied("atomic no-replace rename failed")
+        os.fsync(source_access.capability)
+        if destination_access.capability != source_access.capability:
+            os.fsync(destination_access.capability)
+    except RepositoryAccessDenied:
+        raise
+    except OSError, ValueError:
+        raise RepositoryAccessDenied("repository rename failed") from None
 
 
 def _replace_repository_file_posix(

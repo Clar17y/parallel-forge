@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from forge.domain.approval import (
@@ -10,7 +10,9 @@ from forge.domain.approval import (
     MergeApprovalEvidence,
     PlanApprovalEvidence,
     PrApprovalEvidence,
+    SubscriptionPlanProducer,
     canonical_digest,
+    decode_subscription_plan_producer,
 )
 from forge.domain.policy import RunnerMode
 from pydantic import ValidationError
@@ -219,3 +221,62 @@ def test_evidence_and_approval_models_reject_unknown_fields_and_bad_digests() ->
             authenticated_actor_id="operator-1",
             created_at=datetime.now(UTC),
         )
+
+
+def test_subscription_plan_producer_is_closed_and_preserves_legacy_evidence_digest() -> None:
+    legacy = plan_evidence()
+    producer = SubscriptionPlanProducer(
+        attempt_id=uuid4(), run_id=uuid4(), task_id=uuid4(), plan_attempt=1,
+        plan_digest="a" * 64, task_digest="b" * 64, envelope_digest="c" * 64,
+        budget_digest="d" * 64, route_digest="e" * 64,
+        telemetry={"input_tokens": None, "output_tokens": 2, "duration_ms": 1},
+    )
+    assert canonical_digest(legacy) == "7706b0c98d2065f8b231a02c22306954d82cac77a64ff388653b4f10964d088e"
+    assert len(canonical_digest(producer)) == 64
+    assert decode_subscription_plan_producer(producer.model_dump()) == producer
+    with pytest.raises(ValidationError):
+        decode_subscription_plan_producer({**producer.model_dump(), "unknown": True})
+    with pytest.raises(ValidationError):
+        SubscriptionPlanProducer(**{**producer.model_dump(), "schema_version": 2})
+    for invalid in (True, "1", 1.0):
+        with pytest.raises(ValidationError):
+            SubscriptionPlanProducer(**{**producer.model_dump(), "schema_version": invalid})
+    with pytest.raises(ValidationError):
+        SubscriptionPlanProducer(**{**producer.model_dump(), "attempt_id": UUID(int=0)})
+    with pytest.raises(ValidationError):
+        SubscriptionPlanProducer(
+            **{**producer.model_dump(), "telemetry": {"input_tokens": -1, "output_tokens": 1, "duration_ms": 1}}
+        )
+    for invalid in (True, "1", 1.0):
+        with pytest.raises(ValidationError):
+            SubscriptionPlanProducer(
+                **{**producer.model_dump(), "telemetry": {"input_tokens": invalid, "output_tokens": 1, "duration_ms": 1}}
+            )
+
+
+def test_subscription_plan_evidence_versions_bind_exact_result_without_changing_legacy():
+    from forge.domain.approval import (
+        SubscriptionPlanApprovalEvidence,
+        decode_plan_approval_evidence,
+    )
+
+    legacy = plan_evidence()
+    producer = SubscriptionPlanProducer(
+        attempt_id=uuid4(), run_id=uuid4(), task_id=uuid4(), plan_attempt=1,
+        plan_digest=legacy.plan_digest, task_digest="b" * 64, envelope_digest="c" * 64,
+        budget_digest="d" * 64, route_digest="e" * 64,
+        telemetry={"input_tokens": None, "output_tokens": 2, "duration_ms": 1},
+    )
+    evidence = SubscriptionPlanApprovalEvidence(
+        **legacy.model_dump(), producer=producer, result_digest="f" * 64,
+    )
+    assert evidence.schema_version == 2
+    assert decode_plan_approval_evidence(evidence.model_dump_json()) == evidence
+    assert decode_plan_approval_evidence(legacy.model_dump_json()) == legacy
+    assert canonical_digest(legacy) == "7706b0c98d2065f8b231a02c22306954d82cac77a64ff388653b4f10964d088e"
+    assert canonical_digest(evidence) != canonical_digest(legacy)
+    for changed in ({"schema_version": True}, {"schema_version": "2"},
+                    {"schema_version": 3}, {"result_digest": "invalid"},
+                    {"plan_digest": "0" * 64}, {"plan_attempt": 2}):
+        with pytest.raises(ValidationError):
+            SubscriptionPlanApprovalEvidence.model_validate({**evidence.model_dump(), **changed})

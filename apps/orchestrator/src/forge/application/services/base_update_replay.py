@@ -1,5 +1,6 @@
 """Canonical base-update settlement proof shared by replay and pause recovery."""
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from forge.application.ports.artifacts import ArtifactStore
@@ -14,9 +15,16 @@ from forge.persistence.models import Approval
 from forge.persistence.repositories.release import ReleaseRecordConflict
 from forge.persistence.repositories.runs import PersistenceDataError
 
+if TYPE_CHECKING:
+    from forge.application.services.subscription_base_update import SubscriptionBaseUpdateController
+
 
 async def verify_base_update_replay(
-    command: CommandEnvelope, work: UnitOfWork, *, paused: bool = False
+    command: CommandEnvelope,
+    work: UnitOfWork,
+    *,
+    paused: bool = False,
+    subscription: SubscriptionBaseUpdateController | None = None,
 ) -> bool:
     origin = await resumed_release_origin(work, command)
     run = await work.runs.get_for_update(command.run_id)
@@ -31,6 +39,20 @@ async def verify_base_update_replay(
     ):
         raise CommandRecoveryRequired("base update replay authority differs")
     events = await work.events.list_after(run.id, 0)
+    if await work.subscription.envelope_for_run(run.id) is not None:
+        if subscription is None:
+            raise CommandRecoveryRequired("subscription base update replay verifier is absent")
+        proof = await subscription.replay(command, work)
+        if proof is None:
+            return False
+        if (
+            record != proof.record
+            or run.state is not (RunState.PAUSED if paused else RunState.REMEDIATING)
+            or (paused and run.suspended_state is not RunState.REMEDIATING)
+            or run.version != proof.version + int(paused)
+        ):
+            raise CommandRecoveryRequired("subscription base update replay differs")
+        return True
     settled = [
         e
         for e in events
@@ -69,7 +91,8 @@ async def verify_base_update_replay(
         if (
             record.base_update_intent_id is None
             or record.base_adoption_intent_id is None
-            or event.payload != {
+            or event.payload
+            != {
                 "source_command_id": str(command.id),
                 "pull_request_id": str(record.id),
                 "update_intent_id": str(record.base_update_intent_id),
@@ -94,8 +117,10 @@ async def verify_base_update_replay(
             ):
                 raise CommandRecoveryRequired("base update replay authority differs")
             await work.releases.record_base_update(
-                run.id, record.pull_request,
-                record.base_update_intent_id, record.base_adoption_intent_id,
+                run.id,
+                record.pull_request,
+                record.base_update_intent_id,
+                record.base_adoption_intent_id,
             )
         except ReleaseRecordConflict, PersistenceDataError:
             raise CommandRecoveryRequired("base update replay receipt differs") from None
@@ -104,7 +129,11 @@ async def verify_base_update_replay(
 
 
 async def settle_base_updates(
-    work: UnitOfWork, resume: CommandEnvelope, paused: RunSnapshot, store: ArtifactStore | None
+    work: UnitOfWork,
+    resume: CommandEnvelope,
+    paused: RunSnapshot,
+    store: ArtifactStore | None,
+    subscription: SubscriptionBaseUpdateController | None = None,
 ) -> None:
     """Acknowledge only a proved committed update whose delivery lease expired."""
     for source in await work.commands.list_outstanding_normal(
@@ -112,7 +141,9 @@ async def settle_base_updates(
     ):
         if source.command_type != "update_base":
             continue
-        if not await verify_base_update_replay(source, work, paused=True):
+        if not await verify_base_update_replay(
+            source, work, paused=True, subscription=subscription
+        ):
             continue
         if store is None:
             raise CommandRecoveryRequired("settled base update evidence store is absent")

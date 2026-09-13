@@ -14,6 +14,60 @@ beforeAll(() => {
 afterEach(() => { cleanup(); vi.mocked(api).mockReset(); vi.mocked(mutate).mockReset(); });
 const evidence = { base_sha: 'a'.repeat(40), plan_digest: 'c'.repeat(64), policy_version: 2, token_budget: 116000 };
 
+test.each((['pr', 'merge'] as const).flatMap(gate =>
+  ['success', 'acceptance mismatch', 'contents mismatch'].map(scenario => ({ gate, scenario })),
+))('subscription $gate approval handles $scenario with actual acceptance evidence', async ({ gate, scenario }) => {
+  const value = projection({ available_commands: [{ name: `approve_${gate}`, expected_run_version: 7, requires_feedback: false,
+    gate, evidence_digest: 'd'.repeat(64), policy_version: 2 }] });
+  const decision = { schema_version: 2, acceptance_digest: 'e'.repeat(64), candidate_tree_digest: 'f'.repeat(64),
+    validation_digest: 'c'.repeat(64), repository: 'owner/repo', base_ref: 'main', base_sha: 'b'.repeat(40),
+    runner_mode: 'docker', runner_evidence_digest: '1'.repeat(64) };
+  const approval = gate === 'pr'
+    ? { ...decision, candidate_commit: 'a'.repeat(40), diff_digest: '2'.repeat(64), title: 'Ship accepted candidate',
+      body_digest: '3'.repeat(64), remote_remediation_limit: 3 }
+    : { ...decision, head_sha: 'a'.repeat(40), pull_request_number: 12, required_checks: { ci: 'success' },
+      unresolved_blocking_findings: 0, protection_digest: '4'.repeat(64), merge_method: 'squash', policy_version: 2 };
+  value.candidate.commit = 'a'.repeat(40); value.run.base_sha = decision.base_sha;
+  value.candidate.validation_evidence_digest = decision.validation_digest;
+  Object.assign(value.candidate, {
+    acceptance_evidence_digest: scenario === 'acceptance mismatch' ? '9'.repeat(64) : decision.acceptance_digest,
+    candidate_tree_digest: scenario === 'contents mismatch' ? '9'.repeat(64) : decision.candidate_tree_digest,
+  });
+  value.pull_request = { repository: 'owner/repo', number: 12, head_sha: 'a'.repeat(40), base_sha: decision.base_sha,
+    base_ref: 'main', branch: 'feature', state: 'open', merge_state: null };
+  value.remote_observation = { observation_digest: '5'.repeat(64), head_sha: 'a'.repeat(40), checks: [], reviews: [] };
+  vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(approval) })
+    .mockResolvedValueOnce(gate === 'pr'
+      ? { digest: '3'.repeat(64), text: 'Review not required. Documentation-only change within approved scope.' }
+      : { digest: '5'.repeat(64), repository: 'owner/repo', pull_request_number: 12, head_sha: 'a'.repeat(40),
+        base_ref: 'main', observed_base_sha: decision.base_sha, protection_digest: '4'.repeat(64), protection: {
+          strict_required_checks: true, merge_queue_enabled: false, actor_can_bypass: false, verified: true,
+          required_check_names: ['ci'], evidence_source: 'branch-protection+rulesets' } })
+    .mockResolvedValueOnce({ token: 'subscription-challenge', expires_at: '2099-01-01T00:00:00Z' })
+    .mockResolvedValueOnce({ approval_id: 'approval-1' });
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: gate === 'pr' ? 'Approve PR publication' : 'Approve merge' }));
+  if (scenario !== 'success') {
+    expect(await screen.findByRole('alert')).toHaveTextContent('changed');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(api).toHaveBeenCalledTimes(1); return;
+  }
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('Acceptance digest'); expect(dialog).toHaveTextContent(decision.acceptance_digest);
+  expect(dialog).toHaveTextContent('Candidate contents'); expect(dialog).toHaveTextContent(decision.candidate_tree_digest);
+  expect(dialog).not.toHaveTextContent('Review digest');
+  if (gate === 'pr') expect(dialog).toHaveTextContent('Review not required. Documentation-only change within approved scope.');
+  expect(JSON.parse(vi.mocked(api).mock.calls[2][1]!.body as string)).toEqual({
+    gate, run_version: 7, evidence_digest: 'd'.repeat(64), policy_version: 2,
+  });
+  await userEvent.click(screen.getByRole('button', { name: gate === 'pr' ? 'Confirm approve pr publication' : 'Confirm approve merge' }));
+  await waitFor(() => expect(api).toHaveBeenCalledTimes(4));
+  expect(JSON.parse(vi.mocked(api).mock.calls[3][1]!.body as string)).toEqual({
+    gate, run_version: 7, evidence_digest: 'd'.repeat(64), challenge_token: 'subscription-challenge',
+  });
+  expect(mutate).not.toHaveBeenCalled();
+});
+
 test.each(['success', 'qualified base', 'protection mismatch', 'base mismatch', 'unsafe protection', '409'])('merge confirmation handles %s with exact remote protection', async scenario => {
   const value = projection({ available_commands: [{ name: 'approve_merge', expected_run_version: 7, requires_feedback: false,
     gate: 'merge', evidence_digest: 'd'.repeat(64), policy_version: 2 }] });

@@ -29,9 +29,13 @@ class _Git:
         self.publish_calls = 0
         self.inspect_calls = 0
         self.published: PublishedGitCommit | None = None
+        self.allowed_paths: tuple[str, ...] | None = None
 
-    def prepare_commit(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit:
+    def prepare_commit(
+        self, worktree: ManagedWorktree, message: str, *, allowed_paths=None
+    ) -> PreparedGitCommit:
         self.prepare_calls += 1
+        self.allowed_paths = allowed_paths
         return PreparedGitCommit(
             worktree_identity=worktree.identity,
             previous_sha="a" * 40,
@@ -368,3 +372,34 @@ async def test_publish_rejects_paired_receipt_and_publication_authority_tamper()
         )
 
     assert git.publish_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("authority_schema_version", 2.0),
+        ("subscription_task_id", str(UUID(int=0))),
+        ("subscription_attempt_id", "invalid"),
+        ("subscription_purpose", "routine_implementation"),
+    ],
+)
+async def test_subscription_prepare_rejects_malformed_authority_before_git(field, value):
+    run_id = uuid4()
+    worktree = _worktree(run_id)
+    payload = _payload(worktree, run_id)
+    del payload["agent_execution_id"]
+    del payload["step_id"]
+    payload.update(
+        authority_schema_version=2,
+        subscription_task_id=str(uuid4()),
+        subscription_attempt_id=str(uuid4()),
+        subscription_purpose="integration",
+    )
+    payload[field] = value
+    git = _Git(worktree)
+    with pytest.raises(GitCommitOperationError):
+        await PrepareGitCommitAdapter(git, worktree).invoke(
+            _intent(PREPARE_GIT_COMMIT_KIND, run_id, payload)
+        )
+    assert git.prepare_calls == 0

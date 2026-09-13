@@ -18,6 +18,7 @@ from forge.application.ports.unit_of_work import UnitOfWork
 from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.evidence import (
     EvidenceManifest,
+    ReviewEvidenceManifest,
     ValidationEvidenceManifest,
     decode_evidence_manifest,
 )
@@ -96,7 +97,8 @@ class EvidenceReader:
             or descriptor.byte_count != bound.manifest_byte_count
             or descriptor.schema_version != bound.manifest_schema_version
             or descriptor.media_type != _MANIFEST_MEDIA_TYPE
-            or descriptor.schema_version != 1
+            or descriptor.schema_version
+            not in ((1, 2) if expected_kind is EvidenceKind.VALIDATION else (1,))
             or descriptor.byte_count > _MAX_MANIFEST_BYTES
             or descriptor.truncated
             or descriptor.original_byte_count != descriptor.byte_count
@@ -120,6 +122,9 @@ class EvidenceReader:
             or manifest.kind != bound.kind.value
             or manifest.policy_version != bound.policy_version
             or manifest.head_sha != bound.head_sha
+            or manifest.schema_version != bound.manifest_schema_version
+            or bound.producer_task_id is not None
+            or bound.producer_attempt_id is not None
         ):
             raise EvidenceCorruptLineage(_CORRUPT_MESSAGE)
         if isinstance(manifest, ValidationEvidenceManifest):
@@ -127,6 +132,7 @@ class EvidenceReader:
                 purpose is not EvidenceInputPurpose.VALIDATION_RESULTS
                 or manifest.head_sha != scope.head_sha
                 or bound.producer_execution_id is not None
+                or bound.candidate_tree_digest != manifest.candidate_tree_digest
                 or bound.validation_evidence_set_id is not None
                 or bound.prior_review_evidence_set_id != manifest.prior_review_evidence_set_id
                 or bound.review_finding_ids is not None
@@ -134,7 +140,9 @@ class EvidenceReader:
                 raise EvidenceCorruptLineage(_CORRUPT_MESSAGE)
             return
         if (
-            purpose is not EvidenceInputPurpose.PRIOR_REVIEW
+            not isinstance(manifest, ReviewEvidenceManifest)
+            or purpose is not EvidenceInputPurpose.PRIOR_REVIEW
+            or bound.candidate_tree_digest is not None
             or bound.producer_execution_id != manifest.producer_execution_id
             or bound.validation_evidence_set_id != manifest.validation_evidence_set_id
             or bound.prior_review_evidence_set_id is not None
@@ -171,6 +179,11 @@ class EvidenceReader:
                 ):
                     raise EvidenceCorruptLineage(_CORRUPT_MESSAGE)
                 parents.add(prior.manifest_digest)
+            parents.update(
+                m.controller_receipt_digest
+                for m in manifest.members
+                if m.controller_receipt_digest is not None
+            )
             if descriptor.parent_digests != tuple(sorted(parents)):
                 raise EvidenceCorruptLineage(_CORRUPT_MESSAGE)
             return

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import unicodedata
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
@@ -14,6 +17,7 @@ from uuid import UUID
 
 from forge.domain.command import CommandEnvelope
 from forge.domain.operation import OperationIntent
+from forge.domain.paths import normalize_policy_path
 from forge.domain.policy import DatabaseProvisioningPolicy, ProjectPolicy
 from forge.domain.resource import ResourceState, WorktreeIdentity, validate_resource_shape
 from forge.domain.run import RunSnapshot
@@ -24,6 +28,24 @@ if TYPE_CHECKING:
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _STAGING_PLAN_SEAL = object()
+
+
+class SnapshotFailureReason(StrEnum):
+    PATH_REJECTED = "path_rejected"
+    INDEX_CONFLICT = "index_conflict"
+    SIZE_LIMIT = "size_limit"
+    LISTING_INVALID = "listing_invalid"
+    TREE_CHANGED = "tree_changed"
+
+
+class SnapshotReadError(RuntimeError):
+    """Closed diagnostic vocabulary; never carries repository text."""
+
+    def __init__(self, reason: SnapshotFailureReason) -> None:
+        if not isinstance(reason, SnapshotFailureReason):
+            raise TypeError("snapshot failure requires a closed reason")
+        self.reason = reason
+        super().__init__("working tree snapshot rejected")
 
 
 class _RedactedEnvironment(Mapping[str, str]):
@@ -129,6 +151,85 @@ class GitCandidateDiff:
             not isinstance(path, str) or not path for path in self.changed_paths
         ):
             raise TypeError("candidate changed paths are invalid")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GitSnapshotFile:
+    path: str
+    mode: str
+    content_digest: str
+    byte_count: int
+
+    def __post_init__(self) -> None:
+        if normalize_policy_path(self.path) != self.path or self.mode not in {"100644", "100755"}:
+            raise ValueError("snapshot file identity is invalid")
+        if _DIGEST.fullmatch(self.content_digest) is None:
+            raise ValueError("snapshot content digest is invalid")
+        if type(self.byte_count) is not int or not 0 <= self.byte_count <= 8 * 1024 * 1024:
+            raise ValueError("snapshot file size is invalid")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GitWorkingTreeSnapshot:
+    """Bounded raw-byte working tree evidence, not candidate approval."""
+
+    head_sha: str
+    base_sha: str
+    files: tuple[GitSnapshotFile, ...]
+    changed_paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if _SHA.fullmatch(self.head_sha) is None or _SHA.fullmatch(self.base_sha) is None:
+            raise ValueError("snapshot revision is invalid")
+        if type(self.files) is not tuple or any(
+            not isinstance(item, GitSnapshotFile) for item in self.files
+        ):
+            raise TypeError("snapshot files are invalid")
+        paths = tuple(item.path for item in self.files)
+        if (
+            paths != tuple(sorted(set(paths)))
+            or len(paths) > 10_000
+            or sum(item.byte_count for item in self.files) > 64 * 1024 * 1024
+        ):
+            raise ValueError("snapshot file order or count is invalid")
+        if (
+            type(self.changed_paths) is not tuple
+            or any(normalize_policy_path(path) != path for path in self.changed_paths)
+            or self.changed_paths != tuple(sorted(set(self.changed_paths)))
+        ):
+            raise ValueError("snapshot changed paths are invalid")
+
+    @property
+    def candidate_tree_digest(self) -> str:
+        payload = {
+            "schema_version": 1,
+            "files": [
+                [item.path, item.mode, item.content_digest, item.byte_count] for item in self.files
+            ],
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
+    def manifest(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "head_sha": self.head_sha,
+            "base_sha": self.base_sha,
+            "candidate_tree_digest": self.candidate_tree_digest,
+            "files": [
+                {
+                    "path": item.path,
+                    "mode": item.mode,
+                    "content_digest": item.content_digest,
+                    "byte_count": item.byte_count,
+                }
+                for item in self.files
+            ],
+            "changed_paths": list(self.changed_paths),
+        }
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -241,6 +342,10 @@ class ControlledGitPort(Protocol):
 
     def candidate_diff(self, worktree: ManagedWorktree) -> GitCandidateDiff: ...
 
+    def working_tree_snapshot(
+        self, worktree: ManagedWorktree, *, secret_paths: tuple[str, ...]
+    ) -> GitWorkingTreeSnapshot: ...
+
     def candidate_file(self, worktree: ManagedWorktree, path: str) -> GitCandidateFile: ...
 
     def branch_exists(self, worktree: ManagedWorktree) -> bool: ...
@@ -261,7 +366,13 @@ class ControlledGitPort(Protocol):
 
     def commit(self, worktree: ManagedWorktree, message: str) -> GitCommit: ...
 
-    def prepare_commit(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit: ...
+    def prepare_commit(
+        self,
+        worktree: ManagedWorktree,
+        message: str,
+        *,
+        allowed_paths: tuple[str, ...] | None = None,
+    ) -> PreparedGitCommit: ...
 
     def commit_prepared(
         self, worktree: ManagedWorktree, prepared: PreparedGitCommit
@@ -575,8 +686,10 @@ __all__ = [
     "GitDiffResult",
     "GitOutput",
     "GitPort",
+    "GitSnapshotFile",
     "GitStatus",
     "GitStatusResult",
+    "GitWorkingTreeSnapshot",
     "ManagedWorktree",
     "ManagedWorktreePort",
     "PreparedGitCommit",

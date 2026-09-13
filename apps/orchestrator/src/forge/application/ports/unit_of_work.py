@@ -15,6 +15,13 @@ from forge.application.ports.operations import OperationRepository
 from forge.application.ports.projects import ProjectRepository
 from forge.application.ports.release import ReleaseRepository
 from forge.application.ports.runs import RunRepository
+from forge.application.ports.scheduling import SchedulingRepository
+from forge.application.ports.subscription import SubscriptionRepository
+from forge.application.ports.subscription_budget import SubscriptionBudgetRepository
+from forge.application.ports.subscription_decisions import SubscriptionDecisionRepository
+from forge.application.ports.subscription_execution import SubscriptionExecutionRepository
+from forge.application.ports.subscription_plan_gate import SubscriptionPlanGateRepository
+from forge.application.ports.subscription_quota import SubscriptionQuotaRepository
 from forge.application.ports.tasks import TaskRepository
 from forge.application.ports.tools import ToolCallRepository
 from forge.application.services.auth import AuthRepository
@@ -47,6 +54,13 @@ class UnitOfWork(Protocol):
     commands: CommandRepository
     auth: AuthRepository
     releases: ReleaseRepository
+    subscription_execution: SubscriptionExecutionRepository
+    subscription_budget: SubscriptionBudgetRepository
+    subscription_decisions: SubscriptionDecisionRepository
+    subscription: SubscriptionRepository
+    subscription_plan_gate: SubscriptionPlanGateRepository
+    scheduler: SchedulingRepository
+    quota: SubscriptionQuotaRepository
 
     async def __aenter__(self) -> Self: ...
 

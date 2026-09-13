@@ -52,6 +52,8 @@ _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
             ToolName.REPOSITORY_SEARCH,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
             ToolName.REPOSITORY_WRITE_FILE,
+            ToolName.REPOSITORY_DELETE_FILE,
+            ToolName.REPOSITORY_RENAME_FILE,
             ToolName.GIT_STATUS,
             ToolName.GIT_DIFF,
             ToolName.GIT_COMMIT,

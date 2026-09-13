@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime
 from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -12,6 +14,7 @@ from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.operations import OperationRepository
 from forge.application.services.state_engine import StateEngine
+from forge.domain.subscription_quota import QuotaPolicy
 from forge.observability.redaction import Redactor
 from forge.persistence.repositories.artifacts import ArtifactRepository
 from forge.persistence.repositories.audit import PostgresAuditRepository
@@ -26,6 +29,22 @@ from forge.persistence.repositories.operations import PostgresOperationRepositor
 from forge.persistence.repositories.projects import PostgresProjectRepository
 from forge.persistence.repositories.release import PostgresReleaseRepository
 from forge.persistence.repositories.runs import PostgresRunRepository
+from forge.persistence.repositories.scheduling import PostgresSchedulingRepository
+from forge.persistence.repositories.subscription import PostgresSubscriptionRepository
+from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
+from forge.persistence.repositories.subscription_decisions import (
+    PostgresSubscriptionDecisionRepository,
+)
+from forge.persistence.repositories.subscription_execution import (
+    PostgresSubscriptionExecutionRepository,
+)
+from forge.persistence.repositories.subscription_plan_gate import (
+    PostgresSubscriptionPlanGateRepository,
+)
+from forge.persistence.repositories.subscription_quota import PostgresSubscriptionQuotaRepository
+from forge.persistence.repositories.subscription_task_controls import (
+    PostgresSubscriptionTaskControlRepository,
+)
 from forge.persistence.repositories.tasks import PostgresTaskRepository
 from forge.persistence.repositories.tool_calls import PostgresToolCallRepository
 
@@ -39,10 +58,13 @@ class PostgresUnitOfWork:
         *,
         state_engine: StateEngine | None = None,
         redactor: Redactor | None = None,
+        quota_policy: QuotaPolicy | None = None,
+        quota_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._state_engine = state_engine or StateEngine()
         self._redactor = redactor or Redactor()
+        self._quota_policy, self._quota_clock = quota_policy, quota_clock
         self._session: AsyncSession | None = None
         self._entered = False
         self._committed = False
@@ -62,6 +84,14 @@ class PostgresUnitOfWork:
         self.controller_steps: ControllerStepRepository
         self.evidence: EvidenceRepository
         self.releases: PostgresReleaseRepository
+        self.subscription_execution: PostgresSubscriptionExecutionRepository
+        self.subscription_budget: PostgresSubscriptionBudgetRepository
+        self.subscription_decisions: PostgresSubscriptionDecisionRepository
+        self.subscription: PostgresSubscriptionRepository
+        self.scheduler: PostgresSchedulingRepository
+        self.quota: PostgresSubscriptionQuotaRepository
+        self.subscription_plan_gate: PostgresSubscriptionPlanGateRepository
+        self.task_controls: PostgresSubscriptionTaskControlRepository
 
     @property
     def session(self) -> AsyncSession:
@@ -102,6 +132,20 @@ class PostgresUnitOfWork:
             state_engine=self._state_engine,
             events=self.events,
         )
+        self.quota = PostgresSubscriptionQuotaRepository(
+            self._session, policy=self._quota_policy, clock=self._quota_clock
+        )
+        self.subscription_execution = PostgresSubscriptionExecutionRepository(
+            self._session, quota=self.quota
+        )
+        self.subscription_budget = PostgresSubscriptionBudgetRepository(self._session)
+        self.subscription_decisions = PostgresSubscriptionDecisionRepository(self._session)
+        self.subscription = PostgresSubscriptionRepository(self._session)
+        self.scheduler = PostgresSchedulingRepository(self._session, quota=self.quota)
+        self.task_controls = PostgresSubscriptionTaskControlRepository(
+            self._session, scheduler=self.scheduler
+        )
+        self.subscription_plan_gate = PostgresSubscriptionPlanGateRepository(self._session)
         self._entered = True
         self._committed = False
         return self

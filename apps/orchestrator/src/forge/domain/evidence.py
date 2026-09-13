@@ -20,8 +20,17 @@ from pydantic import (
     model_validator,
 )
 
-from forge.domain.agent import ReviewOutput
+from forge.domain.agent import ReviewDecision, ReviewOutput
+from forge.domain.operation import canonical_digest
 from forge.domain.review import ReviewFinding
+from forge.domain.subscription import (
+    AcceptDecision,
+    HandoffStatus,
+    ReviewedTaskHandoff,
+    ReviewSelection,
+    decode_subscription_record,
+    encode_subscription_record,
+)
 
 _SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
 _SHA1_HEX = re.compile(r"\A[0-9a-f]{40}\Z", re.ASCII)
@@ -143,6 +152,7 @@ class ValidationEvidenceMember(BaseModel):
     command_version: int
     command_digest: str
     command_result_digest: str
+    controller_receipt_digest: str | None = None
     stdout_digest: str
     stderr_digest: str
     status: EvidenceStatus
@@ -190,6 +200,11 @@ class ValidationEvidenceMember(BaseModel):
             raise TypeError("exit_code must be a strict integer or None")
         return value
 
+    @field_validator("controller_receipt_digest", mode="before")
+    @classmethod
+    def _validate_controller_receipt(cls, value: Any) -> str | None:
+        return None if value is None else _validate_sha256(value, "controller_receipt_digest")
+
     @field_validator("started_at", "completed_at", mode="before")
     @classmethod
     def _validate_timestamps(cls, value: Any, info: Any) -> datetime:
@@ -217,13 +232,14 @@ class ValidationEvidenceManifest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     kind: Literal["validation"] = "validation"
     evidence_set_id: UUID
     run_id: UUID
     step_id: UUID
     policy_version: int
     head_sha: str
+    candidate_tree_digest: str | None = None
     prior_review_evidence_set_id: UUID | None = None
     members: tuple[ValidationEvidenceMember, ...] = Field(
         default=(), max_length=_MAX_VALIDATION_MEMBERS
@@ -234,8 +250,8 @@ class ValidationEvidenceManifest(BaseModel):
     def _validate_schema_version(cls, value: Any) -> int:
         if type(value) is not int or isinstance(value, bool):
             raise TypeError("schema_version must be a strict integer")
-        if value != 1:
-            raise ValueError("schema_version must be integer 1")
+        if value not in (1, 2):
+            raise ValueError("validation schema_version must be integer 1 or 2")
         return value
 
     @field_validator("evidence_set_id", "run_id", "step_id", mode="before")
@@ -254,6 +270,11 @@ class ValidationEvidenceManifest(BaseModel):
     @classmethod
     def _validate_head_sha(cls, value: Any) -> str:
         return _validate_sha1(value, "head_sha")
+
+    @field_validator("candidate_tree_digest", mode="before")
+    @classmethod
+    def _validate_candidate_tree(cls, value: Any) -> str | None:
+        return None if value is None else _validate_sha256(value, "candidate_tree_digest")
 
     @field_validator("prior_review_evidence_set_id", mode="before")
     @classmethod
@@ -302,6 +323,13 @@ class ValidationEvidenceManifest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_invariants(self) -> Self:
+        if (self.schema_version == 2) != (self.candidate_tree_digest is not None):
+            raise ValueError("validation schema and candidate content binding differ")
+        if any(
+            (self.schema_version == 2) != (m.controller_receipt_digest is not None)
+            for m in self.members
+        ):
+            raise ValueError("validation schema and controller receipt bindings differ")
         if (
             self.prior_review_evidence_set_id is not None
             and self.prior_review_evidence_set_id == self.evidence_set_id
@@ -416,8 +444,165 @@ class ReviewEvidenceManifest(BaseModel):
         return self
 
 
+class SubscriptionAcceptanceEvidenceManifest(BaseModel):
+    """Final primary evidence with actual subscription producers and review choice.
+
+    Shape validation does not establish source authority or grant human approval.
+    Persistence and publication must prove the source, receipt and validation links.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1] = 1
+    kind: Literal["acceptance"] = "acceptance"
+    evidence_set_id: UUID
+    run_id: UUID
+    step_id: UUID
+    policy_version: int
+    head_sha: str
+    base_sha: str
+    candidate_tree_digest: str
+    candidate_manifest_digest: str
+    candidate_epoch: int
+    producer_task_id: UUID
+    producer_attempt_id: UUID
+    producer_result_digest: str
+    acceptance: AcceptDecision
+    selection_attempt_id: UUID
+    selection_result_digest: str
+    selection_application_digest: str
+    selection: ReviewSelection
+    review_handoff: ReviewedTaskHandoff | None = None
+    review_result_digest: str | None = None
+    review_application_digest: str | None = None
+    receipt_evidence_digest: str
+    validation_evidence_set_id: UUID
+
+    @field_validator("schema_version", "policy_version", "candidate_epoch", mode="before")
+    @classmethod
+    def _validate_integers(cls, value: Any, info: Any) -> int:
+        maximum = (
+            1
+            if info.field_name == "schema_version"
+            else (_MAX_POLICY_VERSION if info.field_name == "policy_version" else None)
+        )
+        return _validate_strict_int(value, info.field_name, max_value=maximum)
+
+    @field_validator(
+        "evidence_set_id",
+        "run_id",
+        "step_id",
+        "producer_task_id",
+        "producer_attempt_id",
+        "selection_attempt_id",
+        "validation_evidence_set_id",
+        mode="before",
+    )
+    @classmethod
+    def _validate_ids(cls, value: Any, info: Any) -> UUID:
+        return _validate_non_nil_uuid(value, info.field_name)
+
+    @field_validator("head_sha", "base_sha", mode="before")
+    @classmethod
+    def _validate_commits(cls, value: Any, info: Any) -> str:
+        return _validate_sha1(value, info.field_name)
+
+    @field_validator(
+        "candidate_tree_digest",
+        "candidate_manifest_digest",
+        "producer_result_digest",
+        "selection_result_digest",
+        "selection_application_digest",
+        "receipt_evidence_digest",
+        "review_result_digest",
+        "review_application_digest",
+        mode="before",
+    )
+    @classmethod
+    def _validate_digests(cls, value: Any, info: Any) -> str | None:
+        if value is None and info.field_name in {
+            "review_result_digest",
+            "review_application_digest",
+        }:
+            return None
+        return _validate_sha256(value, info.field_name)
+
+    @field_validator("acceptance", "selection", "review_handoff", mode="before")
+    @classmethod
+    def _validate_records(cls, value: Any, info: Any) -> Any:
+        expected = {
+            "acceptance": AcceptDecision,
+            "selection": ReviewSelection,
+            "review_handoff": ReviewedTaskHandoff,
+        }[info.field_name]
+        if value is None and expected is ReviewedTaskHandoff:
+            return None
+        if type(value) is ReviewedTaskHandoff:
+            # Preserve deep validation of model_copy/model_construct bypasses.
+            ReviewEvidenceManifest._validate_review(value.review_output)
+        if type(value) is expected:
+            payload = encode_subscription_record(value)
+        elif isinstance(value, Mapping):
+            payload = dict(value)
+        else:
+            raise TypeError("acceptance evidence requires typed subscription records")
+        decoded = decode_subscription_record(payload)
+        if type(decoded) is not expected or canonical_digest(payload) != canonical_digest(
+            encode_subscription_record(decoded)
+        ):
+            raise ValueError("acceptance subscription record differs")
+        return decoded
+
+    @model_validator(mode="after")
+    def _validate_bindings(self) -> Self:
+        if (
+            self.evidence_set_id == self.validation_evidence_set_id
+            or self.producer_attempt_id == self.selection_attempt_id
+            or self.acceptance.run_id != self.run_id
+            or self.acceptance.task_id != self.producer_task_id
+            or self.selection.run_id != self.run_id
+        ):
+            raise ValueError("acceptance evidence source identity differs")
+        for decision in (self.acceptance, self.selection):
+            if decision.candidate_tree_digest != self.candidate_tree_digest or (
+                decision.candidate_commit is not None and decision.candidate_commit != self.head_sha
+            ):
+                raise ValueError("acceptance evidence candidate differs")
+        claims = self.acceptance.evidence_receipt_ids
+        if not 1 <= len(claims) <= 128 or len(set(claims)) != len(claims):
+            raise ValueError("acceptance receipt claims differ")
+        for claim in claims:
+            _validate_non_nil_uuid(claim, "evidence_receipt_id")
+        handoff = self.review_handoff
+        if not self.selection.review_required:
+            if any(
+                value is not None
+                for value in (handoff, self.review_result_digest, self.review_application_digest)
+            ):
+                raise ValueError("no-review acceptance cannot contain reviewer evidence")
+        elif (
+            handoff is None
+            or self.review_result_digest is None
+            or self.review_application_digest is None
+            or handoff.run_id != self.run_id
+            or handoff.task_id == self.producer_task_id
+            or handoff.attempt_id in {self.producer_attempt_id, self.selection_attempt_id}
+            or (
+                self.selection.review_task_id is not None
+                and handoff.task_id != self.selection.review_task_id
+            )
+            or handoff.status is not HandoffStatus.COMPLETED
+            or handoff.candidate_tree_digest != self.candidate_tree_digest
+            or (handoff.candidate_commit is not None and handoff.candidate_commit != self.head_sha)
+            or handoff.review_output.decision is not ReviewDecision.APPROVE
+            or handoff.review_output.missing_evidence
+        ):
+            raise ValueError("acceptance requires the selected approving review source")
+        return self
+
+
 type EvidenceManifest = Annotated[
-    ValidationEvidenceManifest | ReviewEvidenceManifest,
+    ValidationEvidenceManifest | ReviewEvidenceManifest | SubscriptionAcceptanceEvidenceManifest,
     Field(discriminator="kind"),
 ]
 
@@ -449,10 +634,15 @@ def _plain_state(value: Any) -> Any:
 
 
 def _to_canonical_dict(
-    manifest: ValidationEvidenceManifest | ReviewEvidenceManifest,
+    manifest: EvidenceManifest,
 ) -> dict[str, Any]:
     if isinstance(manifest, ValidationEvidenceManifest):
         return {
+            **(
+                {"candidate_tree_digest": manifest.candidate_tree_digest}
+                if manifest.schema_version == 2
+                else {}
+            ),
             "evidence_set_id": str(manifest.evidence_set_id),
             "head_sha": manifest.head_sha,
             "kind": manifest.kind,
@@ -462,6 +652,11 @@ def _to_canonical_dict(
                     "command_digest": m.command_digest,
                     "command_name": m.command_name,
                     "command_result_digest": m.command_result_digest,
+                    **(
+                        {"controller_receipt_digest": m.controller_receipt_digest}
+                        if manifest.schema_version == 2
+                        else {}
+                    ),
                     "command_version": m.command_version,
                     "completed_at": _format_datetime(m.completed_at),
                     "exit_code": m.exit_code,
@@ -516,22 +711,68 @@ def _to_canonical_dict(
             "step_id": str(manifest.step_id),
             "validation_evidence_set_id": str(manifest.validation_evidence_set_id),
         }
+    elif isinstance(manifest, SubscriptionAcceptanceEvidenceManifest):
+        return {
+            **{
+                key: str(getattr(manifest, key))
+                for key in (
+                    "evidence_set_id",
+                    "run_id",
+                    "step_id",
+                    "producer_task_id",
+                    "producer_attempt_id",
+                    "selection_attempt_id",
+                    "validation_evidence_set_id",
+                )
+            },
+            **{
+                key: getattr(manifest, key)
+                for key in (
+                    "schema_version",
+                    "kind",
+                    "policy_version",
+                    "head_sha",
+                    "base_sha",
+                    "candidate_tree_digest",
+                    "candidate_manifest_digest",
+                    "candidate_epoch",
+                    "producer_result_digest",
+                    "selection_result_digest",
+                    "selection_application_digest",
+                    "review_result_digest",
+                    "review_application_digest",
+                    "receipt_evidence_digest",
+                )
+            },
+            "acceptance": encode_subscription_record(manifest.acceptance),
+            "selection": encode_subscription_record(manifest.selection),
+            "review_handoff": None
+            if manifest.review_handoff is None
+            else encode_subscription_record(manifest.review_handoff),
+        }
     else:
         raise EvidenceManifestError("unknown manifest type")
 
 
 def _deep_validate_manifest(
-    manifest: ValidationEvidenceManifest | ReviewEvidenceManifest,
-) -> ValidationEvidenceManifest | ReviewEvidenceManifest:
+    manifest: EvidenceManifest,
+) -> EvidenceManifest:
     """Deeply revalidate a manifest to catch any bypass via model_copy or model_construct."""
     try:
-        if not isinstance(manifest, (ValidationEvidenceManifest, ReviewEvidenceManifest)):
-            raise EvidenceManifestError(
-                "manifest must be ValidationEvidenceManifest or ReviewEvidenceManifest"
-            )
+        if not isinstance(
+            manifest,
+            (
+                ValidationEvidenceManifest,
+                ReviewEvidenceManifest,
+                SubscriptionAcceptanceEvidenceManifest,
+            ),
+        ):
+            raise EvidenceManifestError("manifest must be a supported evidence manifest")
         state = _plain_state(manifest)
         if isinstance(manifest, ValidationEvidenceManifest):
             return ValidationEvidenceManifest.model_validate(state)
+        if isinstance(manifest, SubscriptionAcceptanceEvidenceManifest):
+            return SubscriptionAcceptanceEvidenceManifest.model_validate(state)
         return ReviewEvidenceManifest.model_validate(state)
     except EvidenceManifestError:
         raise
@@ -548,7 +789,7 @@ def _deep_validate_manifest(
 
 
 def encode_evidence_manifest(
-    manifest: ValidationEvidenceManifest | ReviewEvidenceManifest,
+    manifest: EvidenceManifest,
 ) -> bytes:
     """Encode an evidence manifest into canonical UTF-8 JSON bytes."""
     validated = _deep_validate_manifest(manifest)
@@ -574,7 +815,7 @@ def encode_evidence_manifest(
 
 
 def evidence_manifest_digest(
-    manifest: ValidationEvidenceManifest | ReviewEvidenceManifest,
+    manifest: EvidenceManifest,
 ) -> str:
     """Compute the canonical lowercase SHA-256 digest of an evidence manifest."""
     return hashlib.sha256(encode_evidence_manifest(manifest)).hexdigest()
@@ -595,8 +836,8 @@ def _pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def decode_evidence_manifest(
     data: bytes,
-) -> ValidationEvidenceManifest | ReviewEvidenceManifest:
-    """Decode canonical bytes into a typed ValidationEvidenceManifest or ReviewEvidenceManifest."""
+) -> EvidenceManifest:
+    """Decode canonical bytes into the explicitly declared evidence manifest kind."""
     if not isinstance(data, bytes):
         raise EvidenceManifestError("manifest data must be bytes")
 
@@ -623,12 +864,14 @@ def decode_evidence_manifest(
         raise EvidenceManifestError("evidence manifest root must be a JSON object")
 
     schema_version = raw.get("schema_version")
-    if type(schema_version) is not int or isinstance(schema_version, bool) or schema_version != 1:
+    if type(schema_version) is not int or schema_version not in (1, 2):
         raise EvidenceManifestError("unsupported or invalid schema_version")
 
     kind = raw.get("kind")
-    if kind not in ("validation", "review"):
+    if kind not in ("validation", "review", "acceptance"):
         raise EvidenceManifestError("unsupported or invalid manifest kind")
+    if kind != "validation" and schema_version != 1:
+        raise EvidenceManifestError("unsupported schema_version for manifest kind")
 
     policy_version = raw.get("policy_version")
     if (
@@ -648,7 +891,7 @@ def decode_evidence_manifest(
     if not isinstance(head_sha, str) or _SHA1_HEX.fullmatch(head_sha) is None:
         raise EvidenceManifestError("invalid head_sha commit SHA")
 
-    manifest: ValidationEvidenceManifest | ReviewEvidenceManifest
+    manifest: EvidenceManifest
     try:
         if kind == "validation":
             prior_id = raw.get("prior_review_evidence_set_id")
@@ -673,7 +916,7 @@ def decode_evidence_manifest(
                     raise EvidenceManifestError("exit_code must be a strict integer or None")
 
             manifest = ValidationEvidenceManifest.model_validate(raw)
-        else:
+        elif kind == "review":
             for review_uuid_key in ("producer_execution_id", "validation_evidence_set_id"):
                 val = raw.get(review_uuid_key)
                 if not isinstance(val, str) or _CANONICAL_UUID.fullmatch(val) is None:
@@ -682,6 +925,8 @@ def decode_evidence_manifest(
                     )
 
             manifest = ReviewEvidenceManifest.model_validate(raw)
+        else:
+            manifest = SubscriptionAcceptanceEvidenceManifest.model_validate(raw)
     except EvidenceManifestError:
         raise
     except ValidationError, ValueError, TypeError, KeyError, OverflowError, RecursionError:
@@ -699,6 +944,7 @@ __all__ = [
     "EvidenceManifestError",
     "EvidenceStatus",
     "ReviewEvidenceManifest",
+    "SubscriptionAcceptanceEvidenceManifest",
     "ValidationEvidenceManifest",
     "ValidationEvidenceMember",
     "ValidationStatus",

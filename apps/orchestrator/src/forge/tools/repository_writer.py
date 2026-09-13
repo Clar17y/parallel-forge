@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from forge.application.ports.repository import MAX_REPOSITORY_WRITE_BYTES, FileWrite
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.domain.artifact import validate_artifact_digest
@@ -112,6 +114,57 @@ class WorktreeRepositoryWriter:
             previous_digest=digest,
             output_digest=digest,
             byte_count=byte_count,
+            created=False,
+        )
+
+    def delete_file(self, path: str, expected_digest: str, mutation_id: UUID) -> FileWrite:
+        try:
+            validate_artifact_digest(expected_digest)
+            if not isinstance(mutation_id, UUID) or mutation_id.int == 0:
+                raise ValueError("mutation identity is invalid")
+            with self._git.open_worktree_capability(
+                self._worktree, self._policy, allow_committed_changes=True
+            ) as capability:
+                digest, byte_count, normalized = capability.delete_repository_file(
+                    path,
+                    expected_digest=expected_digest,
+                    maximum=MAX_REPOSITORY_WRITE_BYTES,
+                    mutation_id=mutation_id,
+                )
+        except Exception as error:
+            raise RepositoryWriteError() from error
+        return FileWrite(
+            path=normalized,
+            output_digest=digest,
+            byte_count=byte_count,
+            previous_digest=digest,
+            created=False,
+        )
+
+    def rename_file(
+        self, source: str, destination: str, expected_digest: str, mutation_id: UUID
+    ) -> FileWrite:
+        try:
+            validate_artifact_digest(expected_digest)
+            if not isinstance(mutation_id, UUID) or mutation_id.int == 0:
+                raise ValueError("mutation identity is invalid")
+            with self._git.open_worktree_capability(
+                self._worktree, self._policy, allow_committed_changes=True
+            ) as capability:
+                digest, byte_count, _source, normalized_destination = capability.rename_repository_file(
+                    source,
+                    destination,
+                    expected_digest=expected_digest,
+                    maximum=MAX_REPOSITORY_WRITE_BYTES,
+                    mutation_id=mutation_id,
+                )
+        except Exception as error:
+            raise RepositoryWriteError() from error
+        return FileWrite(
+            path=normalized_destination,
+            output_digest=digest,
+            byte_count=byte_count,
+            previous_digest=digest,
             created=False,
         )
 

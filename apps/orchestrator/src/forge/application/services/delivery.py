@@ -6,6 +6,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from forge.application.ports.artifacts import ArtifactStore
@@ -16,9 +17,15 @@ from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
 from forge.application.services.control_settlement import pending_current_control_stop
 from forge.application.services.resume_source import resume_origin
+from forge.application.services.subscription_publication import (
+    SubscriptionPublicationController,
+    SubscriptionPublicationDecision,
+    SubscriptionValidationRepairDecision,
+)
 from forge.application.services.validation import (
     ValidationService,
     _fence_command,
+    validation_acceptance_attempt,
     validation_command_binding,
 )
 from forge.domain.command import CommandEnvelope, CommandStatus
@@ -32,6 +39,11 @@ from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
 from forge.domain.validation import command_spec_digest
 from forge.persistence.repositories.commands import IdempotencyConflict
+
+if TYPE_CHECKING:
+    from forge.application.services.subscription_remote_remediation import (
+        SubscriptionRemoteRemediationController,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,14 +61,23 @@ class DeliveryService:
         *,
         validation: ValidationService,
         git_factory: Callable[[ProjectPolicy], ControlledGitPort],
+        remote_repairs: SubscriptionRemoteRemediationController | None = None,
     ) -> None:
         self._store = artifact_store
         self._validation = validation
         self._git_factory = git_factory
         self._approved_plans = ApprovedPlanLoader(artifact_store)
+        self._subscription = SubscriptionPublicationController(
+            artifact_store, validation=validation, git_factory=git_factory,
+            remote_repairs=remote_repairs,
+        )
 
-    async def validate(self, command: CommandEnvelope, work: UnitOfWork) -> DeliveryDecision:
+    async def validate(
+        self, command: CommandEnvelope, work: UnitOfWork
+    ) -> DeliveryDecision | SubscriptionPublicationDecision | SubscriptionValidationRepairDecision:
         """Run checks, then atomically choose review, remediation, or intervention."""
+        if validation_acceptance_attempt(command) is not None:
+            return await self._subscription.validate(command, work)
         await _fence_command(command, work)
         _attempt, prior_review_id = validation_command_binding(
             command, await resume_origin(work, command)

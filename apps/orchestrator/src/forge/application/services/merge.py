@@ -14,7 +14,7 @@ from forge.application.services.recovery import OperationExecutor
 from forge.application.services.release_resume import resumed_release_origin
 from forge.application.services.resume_source import RESUME_FIELDS
 from forge.application.services.validation import _fence_command
-from forge.domain.approval import MergeApprovalEvidence
+from forge.domain.approval import MergePublicationEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.operation import (
     OperationIntent,
@@ -109,7 +109,10 @@ class MergeService:
                 from forge.application.services.queue_admission import QueueAdmissionService
 
                 await QueueAdmissionService(
-                    self._evidence, self._controller, self._queue, self._executor,
+                    self._evidence,
+                    self._controller,
+                    self._queue,
+                    self._executor,
                     clock=self._clock,
                 ).execute(command, work)
                 return
@@ -221,7 +224,7 @@ class MergeService:
             await self._reject_evidence(command, work, run, approval, record.id)
             return
 
-        async def current() -> MergeApprovalEvidence:
+        async def current() -> MergePublicationEvidence:
             await _fence_command(command, work)
             current_run = await work.runs.get_for_update(run.id)
             if current_run != run or await pending_current_control_stop(work, current_run):
@@ -337,8 +340,12 @@ class MergeService:
         await work.commit()
 
     async def _reject_evidence(
-        self, command: CommandEnvelope, work: UnitOfWork, run: RunSnapshot,
-        approval: Approval, record_id: UUID,
+        self,
+        command: CommandEnvelope,
+        work: UnitOfWork,
+        run: RunSnapshot,
+        approval: Approval,
+        record_id: UUID,
     ) -> None:
         await _fence_command(command, work)
         current_run = await work.runs.get_for_update(run.id)

@@ -47,6 +47,7 @@ class ForgeProcessHarness:
         bare_remote_path: Path | None = None,
         api_port: int | None = None,
         web_origin: str | None = None,
+        subscription_only: bool = False,
     ) -> None:
         self.port = api_port or free_loopback_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -54,6 +55,10 @@ class ForgeProcessHarness:
         self._data_root = data_root
         self._prompt_root = prompt_root
         self._bare_remote_path = bare_remote_path
+        self._subscription_only = subscription_only
+        # Settings reads .env from cwd. Keyless process tests must not accidentally
+        # load the developer worktree's credential references or pricing catalog.
+        self._cwd = data_root if subscription_only else Path.cwd()
         self._processes: list[subprocess.Popen[str]] = []
         self._log_handles: list[object] = []
         self._api_process: subprocess.Popen[str] | None = None
@@ -63,8 +68,26 @@ class ForgeProcessHarness:
         self.fake_github_server.start()
         self.fake_github_url = self.fake_github_server.url
 
+        inherited = dict(os.environ)
+        if subscription_only:
+            inherited = {
+                name: value
+                for name, value in inherited.items()
+                if not name.upper().startswith(
+                    (
+                        "FORGE_",
+                        "OPENAI_",
+                        "GOOGLE_",
+                        "GEMINI_",
+                        "ANTHROPIC_",
+                        "CLAUDE_",
+                        "CODEX_",
+                        "AGY_",
+                    )
+                )
+            }
         self._env = {
-            **os.environ,
+            **inherited,
             "FORGE_DATABASE_URL": database_url,
             "FORGE_DATA_ROOT": str(data_root),
             "FORGE_PROMPT_ROOT": str(prompt_root),
@@ -72,17 +95,19 @@ class ForgeProcessHarness:
             "FORGE_API_PORT": str(self.port),
             "FORGE_WEB_ORIGIN": web_origin or self.base_url,
             "FORGE_RUNNER_IMAGE": "sha256:" + "1" * 64,
-            "FORGE_PROVIDER_SECRET_REFERENCE": "secret://forge/acceptance-provider",
             "FORGE_ACCEPTANCE_DB_ADMIN": database_url,
             "FORGE_FAKE_GITHUB_URL": self.fake_github_url,
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": str(Path.cwd() / "apps" / "orchestrator" / "src")
             + os.pathsep
-            + os.environ.get("PYTHONPATH", ""),
+            + inherited.get("PYTHONPATH", ""),
         }
         if bare_remote_path is not None:
             self._env["FORGE_BARE_REMOTE_PATH"] = str(bare_remote_path)
 
+        if subscription_only:
+            return
+        self._env["FORGE_PROVIDER_SECRET_REFERENCE"] = "secret://forge/acceptance-provider"
         catalog = data_root / "acceptance-pricing.json"
         catalog.write_text(
             json.dumps(
@@ -135,7 +160,7 @@ class ForgeProcessHarness:
         self._log_handles.append(api_log)
         process = subprocess.Popen(
             [sys.executable, "-u", "-c", "from forge.api.main import run; run()"],
-            cwd=Path.cwd(),
+            cwd=self._cwd,
             env=self._env,
             stdin=subprocess.DEVNULL,
             stdout=api_log,
@@ -147,12 +172,16 @@ class ForgeProcessHarness:
         self.wait_ready()
 
     def start_worker(self) -> None:
-        """Launch production ``run_worker`` with only its provider boundary scripted."""
+        """Use the public worker in keyless mode; otherwise script its provider boundary."""
         worker_log = open(self._data_root / "worker.log", "a", encoding="utf-8")  # noqa: SIM115 - child owns handle
         self._log_handles.append(worker_log)
         process = subprocess.Popen(
-            [sys.executable, "-u", "-m", "tests.acceptance.worker_process"],
-            cwd=Path.cwd(),
+            (
+                [sys.executable, "-u", "-c", "from forge.worker.main import run; run()"]
+                if self._subscription_only
+                else [sys.executable, "-u", "-m", "tests.acceptance.worker_process"]
+            ),
+            cwd=self._cwd,
             env=self._env,
             stdin=subprocess.DEVNULL,
             stdout=worker_log,
@@ -169,13 +198,24 @@ class ForgeProcessHarness:
             )
 
     def stop_worker(self) -> None:
-        if self._worker_process is not None and self._worker_process.poll() is None:
-            self._worker_process.terminate()
+        self._stop_process(self._worker_process)
+
+    @staticmethod
+    def _stop_process(process: subprocess.Popen[str] | None) -> None:
+        if process is not None and process.poll() is None:
+            process.terminate()
             with suppress(subprocess.TimeoutExpired):
-                self._worker_process.wait(timeout=5)
-            if self._worker_process.poll() is None:
-                self._worker_process.kill()
-                self._worker_process.wait(timeout=5)
+                process.wait(timeout=5)
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+    def restart_api(self) -> int:
+        old_pid = self.api_pid
+        self._stop_process(self._api_process)
+        self.start_api()
+        assert self.api_pid != old_pid
+        return self.api_pid
 
     def restart_worker(self) -> int:
         """Restart worker process, asserting distinct child process identity."""
@@ -184,9 +224,9 @@ class ForgeProcessHarness:
         self.start_worker()
         new_pid = self.worker_pid
         assert new_pid != old_pid, f"Restarted worker PID {new_pid} equals old PID {old_pid}"
-        assert (
-            new_pid != self.api_pid
-        ), f"Restarted worker PID {new_pid} equals API PID {self.api_pid}"
+        assert new_pid != self.api_pid, (
+            f"Restarted worker PID {new_pid} equals API PID {self.api_pid}"
+        )
         return new_pid
 
     def wait_ready(self, *, timeout: float = 15) -> None:
@@ -211,9 +251,13 @@ class ForgeProcessHarness:
         raise AssertionError("API did not become ready within bounded timeout")
 
     def bootstrap_token(self) -> str:
+        return self.run_cli(["operator", "rotate"]).strip().rsplit("#bootstrap=", 1)[1]
+
+    def run_cli(self, arguments: list[str]) -> str:
+        """Run a test-owned operator command with the exact process environment/cwd."""
         result = subprocess.run(
-            [sys.executable, "-m", "forge.cli.main", "operator", "rotate"],
-            cwd=Path.cwd(),
+            [sys.executable, "-m", "forge.cli.main", *arguments],
+            cwd=self._cwd,
             env=self._env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -221,7 +265,7 @@ class ForgeProcessHarness:
             timeout=15,
             check=True,
         )
-        return result.stdout.strip().rsplit("#bootstrap=", 1)[1]
+        return result.stdout
 
     async def expedite_commands(self, factory, run_id: UUID) -> None:
         """Set available_at in the past for queued commands to claim immediately."""
@@ -276,13 +320,7 @@ class ForgeProcessHarness:
 
     def close(self) -> None:
         for process in reversed(self._processes):
-            if process.poll() is None:
-                process.terminate()
-                with suppress(subprocess.TimeoutExpired):
-                    process.wait(timeout=5)
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=5)
+            self._stop_process(process)
         for handle in self._log_handles:
             handle.close()
         self._log_handles.clear()

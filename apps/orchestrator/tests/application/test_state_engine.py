@@ -45,6 +45,8 @@ EXPECTED_LEGAL_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     RunState.VALIDATING: frozenset(
         {
             RunState.REVIEWING,
+            RunState.AWAITING_PR_APPROVAL,
+            RunState.MONITORING_PR,
             RunState.REMEDIATING,
             RunState.AWAITING_HUMAN_INTERVENTION,
             RunState.FAILED,

@@ -75,7 +75,12 @@ class PostgresOperationRepository:
         operation_kind: str | None = None,
         execution_owner: str | None = None,
         execution_lease_seconds: float | None = None,
+        operation_id: UUID | None = None,
     ) -> OperationIntent:
+        if operation_id is not None and (
+            not isinstance(operation_id, UUID) or operation_id.int == 0
+        ):
+            raise ValueError("operation identity must be a non-nil UUID")
         resolved_kind = operation_type or kind or operation_kind
         if resolved_kind is None:
             raise ValueError("operation type is required")
@@ -95,7 +100,7 @@ class PostgresOperationRepository:
             else None
         )
         candidate = OperationIntent(
-            id=uuid4(),
+            id=operation_id if operation_id is not None else uuid4(),
             run_id=request.run_id,
             kind=request.kind,
             idempotency_key=request.idempotency_key,
@@ -116,7 +121,10 @@ class PostgresOperationRepository:
             is_new=True,
         )
         async with self._session_scope(transaction=True) as session:
-            return await self._begin_core(session, candidate, now)
+            result = await self._begin_core(session, candidate, now)
+            if operation_id is not None and result.id != operation_id:
+                raise ValueError("operation replay identity conflicts")
+            return result
 
     async def _begin_core(
         self,

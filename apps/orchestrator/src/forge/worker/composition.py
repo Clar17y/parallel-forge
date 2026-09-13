@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,9 +13,17 @@ from typing import Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.agents.adk_gateway import BoundAdkTools, GoogleAdkGateway
-from forge.agents.adk_runtime import AdkRuntime, AdkRuntimeError, AdkRuntimeProtocol
+from forge.agents.adk_runtime import AdkRuntime, AdkRuntimeProtocol
 from forge.agents.errors import AgentGatewayError
 from forge.agents.prompt_loader import PromptLoader, PromptLoadError
+from forge.agents.runtime_factory import (
+    AgentRuntimeFactory,
+    GoogleAdkRuntimeAdapter,
+    LegacyGoogleRequestGateway,
+    RouteUnavailable,
+    SubscriptionRuntimeAdapter,
+    legacy_google_api_binding,
+)
 from forge.agents.tool_bridge import build_adk_tools
 from forge.application.adapters.git import LocalGitRepositoryInspector
 from forge.application.handlers.approvals import (
@@ -25,6 +34,7 @@ from forge.application.handlers.delivery import ReviewHandler
 from forge.application.handlers.merge import ApproveMergeHandler
 from forge.application.handlers.planning import PlanningHandler
 from forge.application.handlers.release import ApprovePrHandler
+from forge.application.handlers.remote_remediation import RemoteRemediationHandler
 from forge.application.handlers.run_controls import (
     CancelRunHandler,
     PauseRunHandler,
@@ -40,12 +50,12 @@ from forge.application.ports.git_push import ManagedPushPort
 from forge.application.ports.github import GitHubPort
 from forge.application.ports.github_write import GitHubMergeQueuePort, GitHubWritePort
 from forge.application.ports.operations import OperationAdapter
-from forge.application.ports.provider_credentials import (
-    ProviderCredentialError,
-    validate_provider_secret_reference,
-)
+from forge.application.ports.provider_credentials import validate_provider_secret_reference
+from forge.application.ports.subscription_acceptance import PreparedSubscriptionAcceptance
+from forge.application.ports.subscription_candidate import PreparedReviewSelection
+from forge.application.ports.subscription_handoff import SettledSubscriptionHandoff
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.application.ports.worktrees import ManagedWorktree
+from forge.application.ports.worktrees import GitWorkingTreeSnapshot, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
 from forge.application.services.base_update import BaseUpdateService
 from forge.application.services.candidate_revision import CandidateRevisionService
@@ -64,6 +74,26 @@ from forge.application.services.release import ReleaseService
 from forge.application.services.release_monitor import ReleaseMonitor
 from forge.application.services.review import ReviewService
 from forge.application.services.review_decision import ReviewDecisionService
+from forge.application.services.subscription_acceptance_dispatch import (
+    SubscriptionAcceptanceDispatch,
+)
+from forge.application.services.subscription_acceptance_receipts import (
+    SubscriptionAcceptanceReceiptVerification,
+)
+from forge.application.services.subscription_candidate import SubscriptionCandidateApplication
+from forge.application.services.subscription_candidate_revision import (
+    SubscriptionCandidateRevisionController,
+)
+from forge.application.services.subscription_decision_recovery import SubscriptionDecisionRecovery
+from forge.application.services.subscription_handoff import SubscriptionHandoffVerifier
+from forge.application.services.subscription_handoff_application import (
+    SubscriptionHandoffApplication,
+)
+from forge.application.services.subscription_planning import SubscriptionPlanningService
+from forge.application.services.subscription_task_controls import (
+    SubscriptionTaskControlService,
+    TaskControlUnitOfWork,
+)
 from forge.application.services.tool_recovery import ToolRecoveryService
 from forge.application.services.tools import ControlledToolService
 from forge.application.services.validation import ValidationService
@@ -74,6 +104,7 @@ from forge.domain.agent import AgentBudget, AgentRequest, AgentResult, PlannerIn
 from forge.domain.command import CommandEnvelope
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunState
+from forge.domain.subscription import RouteBinding, SpecialistPurpose
 from forge.domain.tool import (
     ToolAuthorizationContext,
     ToolName,
@@ -81,6 +112,9 @@ from forge.domain.tool import (
 )
 from forge.observability.redaction import Redactor
 from forge.observability.usage import PricingCatalog
+from forge.persistence.repositories.subscription_runtime_status import (
+    SubscriptionRuntimeStatusStore,
+)
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.release.credentials import LocalGitHubCredentialResolver
 from forge.release.git_adoption import ManagedBaseAdoption
@@ -92,7 +126,7 @@ from forge.settings import Settings
 from forge.tools.git import ControlledGit
 from forge.tools.provider_credentials import LocalProviderCredentialResolver
 from forge.tools.repository import RepositoryReader
-from forge.tools.secrets import LocalSecretStore, SecretStoreError
+from forge.tools.secrets import LocalSecretStore
 from forge.worker.agent_tools import PerRequestToolProvider as _PerRequestToolProvider
 from forge.worker.base_recovery import base_recovery_adapters
 from forge.worker.bound_delivery import BoundDeliveryGateway
@@ -102,6 +136,10 @@ from forge.worker.publication_recovery import publication_recovery_adapters
 from forge.worker.recovery_adapters import local_recovery_adapters
 from forge.worker.release_recovery import merge_recovery_adapters
 from forge.worker.resource_recovery import resource_recovery_adapters
+from forge.worker.subscription_invocation import SubscriptionInvocationWorker
+from forge.worker.subscription_session import ControlledSubscriptionSessionFactory
+from forge.worker.subscription_status import SubscriptionRuntimeReporter
+from forge.worker.subscription_tools import SubscriptionToolServiceFactory
 
 
 class WorkerCompositionError(RuntimeError):
@@ -119,6 +157,12 @@ class WorkerHandlers(dict[str, CommandHandler]):
         self.resources = AsyncExitStack()
         self.recovery_adapters: dict[str, OperationAdapter] = {}
         self.tool_recovery: ToolRecoveryService | None = None
+        self.subscription_decision_recovery: SubscriptionDecisionRecovery | None = None
+        self.subscription_tools: SubscriptionToolServiceFactory | None = None
+        self.subscription_handoffs: SubscriptionHandoffApplication | None = None
+        self.subscription_candidates: SubscriptionCandidateApplication | None = None
+        self.subscription_invocations: Callable[[str], SubscriptionInvocationWorker] | None = None
+        self.subscription_status: SubscriptionRuntimeReporter | None = None
 
     async def aclose(self) -> None:
         await self.resources.aclose()
@@ -203,6 +247,7 @@ class BoundPlanningGateway:
         underlying_gateway_factory: (
             Callable[[_PerRequestToolProvider], AgentGateway] | None
         ) = None,
+        runtime_factory: AgentRuntimeFactory | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._artifact_store = artifact_store
@@ -213,6 +258,7 @@ class BoundPlanningGateway:
         self._supported_provider = supported_provider
         self._currency = currency
         self._underlying_gateway_factory = underlying_gateway_factory
+        self._runtime_factory = runtime_factory
 
     async def execute(self, request: AgentRequest) -> AgentResult:
         if type(request) is not AgentRequest:
@@ -250,6 +296,31 @@ class BoundPlanningGateway:
             if policy.id != run.project_id or policy.version != run.policy_version:
                 raise AgentGatewayError("policy mismatch")
 
+            envelope = None
+            if self._underlying_gateway_factory is None:
+                subscription = getattr(uow, "subscription", None)
+                if subscription is not None:
+                    try:
+                        envelope = await subscription.envelope_for_run(request.run_id)
+                    except Exception:  # noqa: BLE001 - durable route lookup is an authority boundary
+                        raise AgentGatewayError("run route binding is unavailable") from None
+                if envelope is not None:
+                    try:
+                        route_binding = envelope.route_for(SpecialistPurpose.PLANNING)
+                    except AttributeError, KeyError, TypeError, ValueError:
+                        raise AgentGatewayError("planning route binding is unavailable") from None
+                    if not isinstance(route_binding, RouteBinding):
+                        raise AgentGatewayError("planning route binding is unavailable")
+                    if (
+                        route_binding.effective.provider != request.provider
+                        or route_binding.effective.model != request.model
+                    ):
+                        raise AgentGatewayError("frozen planning route differs")
+                else:
+                    route_binding = legacy_google_api_binding(
+                        provider=request.provider, model=request.model
+                    )
+
             if (
                 policy.planner_model.provider != request.provider
                 or policy.planner_model.model != request.model
@@ -258,7 +329,17 @@ class BoundPlanningGateway:
                 or request.context.policy_summary != PolicySummary.from_policy(policy)
                 or request.context.base_commit != run.base_sha
             ):
-                raise AgentGatewayError("policy planner model mismatch")
+                # A frozen v0.2 envelope owns provider/model selection.  Retained
+                # v0.1 requests continue to be pinned to the policy model.
+                if envelope is None:
+                    raise AgentGatewayError("policy planner model mismatch")
+                if (
+                    request.budget != AgentBudget.from_model_policy(policy.planner_model)
+                    or type(request.context) is not PlannerInput
+                    or request.context.policy_summary != PolicySummary.from_policy(policy)
+                    or request.context.base_commit != run.base_sha
+                ):
+                    raise AgentGatewayError("policy planner request mismatch")
 
             step_id = execution.step_id
             project_id = run.project_id
@@ -297,16 +378,24 @@ class BoundPlanningGateway:
         if self._underlying_gateway_factory is not None:
             gateway = self._underlying_gateway_factory(tool_provider)
         else:
-            if self._runtime is None or self._pricing_catalog is None:
-                raise AgentGatewayError("gateway runtime or pricing catalog not configured")
-            gateway = GoogleAdkGateway(
-                runtime=self._runtime,
-                prompt_loader=self._prompt_loader,
-                tool_provider=tool_provider,
-                pricing_catalog=self._pricing_catalog,
-                supported_provider=self._supported_provider,
-                currency=self._currency,
-            )
+            factory = self._runtime_factory
+            if factory is None:
+                if self._runtime is None or self._pricing_catalog is None:
+                    raise AgentGatewayError("gateway runtime or pricing catalog not configured")
+                runtime = self._runtime
+                pricing_catalog = self._pricing_catalog
+                adapter = GoogleAdkRuntimeAdapter(
+                    route=route_binding.effective,
+                    prompt_loader=self._prompt_loader,
+                    runtime_supplier=lambda: runtime,
+                    pricing_catalog_supplier=lambda: pricing_catalog,
+                    currency=self._currency,
+                )
+                factory = AgentRuntimeFactory((adapter,))
+            try:
+                gateway = factory.gateway_for(route_binding, tool_provider)
+            except RouteUnavailable:
+                raise AgentGatewayError("planning route is unavailable") from None
 
         return await gateway.execute(request)
 
@@ -316,6 +405,7 @@ def compose_worker_handlers(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     agent_gateway: AgentGateway | None = None,
+    subscription_adapters: Iterable[SubscriptionRuntimeAdapter] = (),
     redactor: Redactor | None = None,
     clock: Clock | None = None,
     repository_inspector: LocalGitRepositoryInspector | None = None,
@@ -335,43 +425,64 @@ def compose_worker_handlers(
     # The concrete repositories narrow writable protocol attributes; the UoW
     # still exposes the complete service port used by these production adapters.
     uow_factory = lambda: cast(
-        UnitOfWork, PostgresUnitOfWork(session_factory, redactor=shared_redactor)
+        UnitOfWork,
+        PostgresUnitOfWork(
+            session_factory,
+            redactor=shared_redactor,
+            quota_policy=settings.subscription_quota_policy,
+        ),
     )
 
     if agent_gateway is None:
-        if not settings.effective_provider_secret_reference:
-            raise WorkerCompositionError("provider secret reference is not configured")
-        try:
-            validate_provider_secret_reference(settings.effective_provider_secret_reference)
-        except ProviderCredentialError, ValueError, TypeError:
-            raise WorkerCompositionError("provider secret reference is invalid") from None
 
-        if settings.pricing_catalog_path is None:
-            raise WorkerCompositionError("pricing catalog path is not configured")
-        pricing_catalog = load_pricing_catalog(settings.pricing_catalog_path)
+        def legacy_google_adapter(route: object) -> GoogleAdkRuntimeAdapter | None:
+            from forge.domain.subscription import AuthMode, BillingMode, RouteSpec
 
-        try:
-            secret_store = LocalSecretStore(settings.data_root)
-        except SecretStoreError, OSError, ValueError, TypeError:
-            raise WorkerCompositionError("secret store initialization failed") from None
-        credential_resolver = LocalProviderCredentialResolver(secret_store)
-        try:
-            runtime = AdkRuntime(
-                credential_resolver=credential_resolver,
-                credential_reference=settings.effective_provider_secret_reference,
+            if (
+                not isinstance(route, RouteSpec)
+                or route.provider != "google"
+                or route.client != "google_adk"
+                or route.auth_mode is not AuthMode.API_KEY
+                or route.billing_mode is not BillingMode.PAID_OPT_IN
+            ):
+                return None
+
+            def runtime_supplier() -> AdkRuntimeProtocol:
+                reference = settings.effective_provider_secret_reference
+                if not reference:
+                    raise RouteUnavailable()
+                validate_provider_secret_reference(reference)
+                secret_store = LocalSecretStore(settings.data_root)
+                return AdkRuntime(
+                    credential_resolver=LocalProviderCredentialResolver(secret_store),
+                    credential_reference=reference,
+                )
+
+            def pricing_supplier() -> PricingCatalog:
+                if settings.pricing_catalog_path is None:
+                    raise RouteUnavailable()
+                return load_pricing_catalog(settings.pricing_catalog_path)
+
+            return GoogleAdkRuntimeAdapter(
+                route=route,
+                prompt_loader=prompt_loader,
+                runtime_supplier=runtime_supplier,
+                pricing_catalog_supplier=pricing_supplier,
+                gateway_builder=GoogleAdkGateway,
             )
-        except AdkRuntimeError, ProviderCredentialError, ValueError, TypeError:
-            raise WorkerCompositionError("adk runtime initialization failed") from None
 
+        runtime_factory = AgentRuntimeFactory.with_resolver(
+            legacy_google_adapter, subscription_adapters=subscription_adapters
+        )
         resolved_gateway: AgentGateway = BoundPlanningGateway(
             unit_of_work_factory=uow_factory,
             artifact_store=artifact_store,
             prompt_loader=prompt_loader,
             redactor=shared_redactor,
-            runtime=runtime,
-            pricing_catalog=pricing_catalog,
+            runtime_factory=runtime_factory,
         )
     else:
+        runtime_factory = AgentRuntimeFactory(subscription_adapters=subscription_adapters)
         resolved_gateway = agent_gateway
 
     delivery_dependencies = delivery_runtime or DeliveryRuntime(
@@ -411,14 +522,7 @@ def compose_worker_handlers(
             )
 
         def delivery_provider(tools: _PerRequestToolProvider) -> AgentGateway:
-            return GoogleAdkGateway(
-                runtime=runtime,
-                prompt_loader=prompt_loader,
-                tool_provider=tools,
-                pricing_catalog=pricing_catalog,
-                supported_provider="google",
-                currency="USD",
-            )
+            return LegacyGoogleRequestGateway(runtime_factory, tools)
 
         delivery_gateway = BoundDeliveryGateway(
             unit_of_work_factory=uow_factory,
@@ -442,7 +546,10 @@ def compose_worker_handlers(
         repository_reader_factory=make_repository_reader,
         clock=clock,
     )
-    start_planning_handler = PlanningHandler(planning_service)
+    start_planning_handler = PlanningHandler(
+        planning_service,
+        subscription_service=SubscriptionPlanningService(settings.subscription_primary_budget),
+    )
 
     inspector = repository_inspector or LocalGitRepositoryInspector()
     validator = PlanEvidenceValidator(
@@ -503,7 +610,7 @@ def compose_worker_handlers(
             "prepare_worktree": preparation.execute,
             "implement": development.execute,
             "remediate": development.execute,
-            "remediate_remote": development.execute,
+            "remediate_remote": RemoteRemediationHandler(development),
             "validate": delivery.validate,
             "review": ReviewHandler(review, review_decision),
             "pause": PauseRunHandler(),
@@ -529,6 +636,72 @@ def compose_worker_handlers(
     )
     handlers.tool_recovery = ToolRecoveryService(
         uow_factory, artifact_store, redactor=shared_redactor
+    )
+    handlers.subscription_tools = SubscriptionToolServiceFactory(
+        uow_factory,
+        artifacts=artifact_store,
+        delivery=delivery_dependencies,
+        redactor=shared_redactor,
+    )
+
+    async def subscription_snapshot(
+        proposal: SettledSubscriptionHandoff
+        | PreparedReviewSelection
+        | PreparedSubscriptionAcceptance,
+    ) -> GitWorkingTreeSnapshot:
+        def capture() -> GitWorkingTreeSnapshot:
+            return delivery_dependencies.git(proposal.policy).working_tree_snapshot(
+                proposal.worktree,
+                secret_paths=tuple(proposal.policy.effective_secret_paths),
+            )
+
+        return await asyncio.to_thread(capture)
+
+    handlers.subscription_handoffs = SubscriptionHandoffApplication(
+        uow_factory,
+        SubscriptionHandoffVerifier(uow_factory, artifact_store, handlers.tool_recovery),
+        subscription_snapshot,
+    )
+    handlers.subscription_candidates = SubscriptionCandidateApplication(
+        uow_factory, subscription_snapshot
+    )
+    subscription_acceptance = SubscriptionAcceptanceDispatch(
+        uow_factory,
+        artifact_store,
+        subscription_snapshot,
+        SubscriptionAcceptanceReceiptVerification(
+            uow_factory, artifact_store, handlers.tool_recovery
+        ),
+    )
+    sessions = ControlledSubscriptionSessionFactory(
+        uow_factory,
+        tools=handlers.subscription_tools,
+        gateway=lambda admission, request, broker, lifecycle: (
+            runtime_factory.subscription_gateway_for(request, broker=broker, lifecycle=lifecycle)
+        ),
+    )
+    handlers.subscription_invocations = lambda owner: SubscriptionInvocationWorker(
+        uow_factory,
+        sessions,
+        artifacts=artifact_store,
+        owner=owner,
+        reservation=settings.subscription_attempt_budget,
+        candidates=handlers.subscription_candidates,
+        acceptance=subscription_acceptance,
+        eligible_routes=runtime_factory.subscription_routes,
+    )
+    handlers.subscription_status = SubscriptionRuntimeReporter(
+        SubscriptionRuntimeStatusStore(session_factory), runtime_factory.subscription_routes
+    )
+    handlers.subscription_decision_recovery = SubscriptionDecisionRecovery(
+        uow_factory,
+        artifact_store,
+        handoffs=handlers.subscription_handoffs,
+        candidates=handlers.subscription_candidates,
+        task_controls=SubscriptionTaskControlService(
+            cast(Callable[[], TaskControlUnitOfWork], uow_factory)
+        ),
+        acceptance=subscription_acceptance,
     )
     handlers.recovery_adapters.update(
         resource_recovery_adapters(session_factory, delivery_dependencies)
@@ -570,6 +743,25 @@ def compose_worker_handlers(
     pr_evidence = PrEvidenceValidator(
         artifact_store, approved_plans, delivery_dependencies.git, release_dependencies.read
     )
+    from forge.application.services.subscription_remote_remediation import (
+        SubscriptionRemoteRemediationController,
+    )
+
+    remote_repairs = SubscriptionRemoteRemediationController(
+        artifact_store, pr_evidence, delivery_dependencies.git
+    )
+    handlers["remediate_remote"] = RemoteRemediationHandler(development, remote_repairs)
+    handlers["resume"] = ResumeRunHandler(
+        artifact_store=artifact_store,
+        preparation_inspector=delivery_dependencies,
+        subscription_remote_repairs=remote_repairs,
+    )
+    handlers["validate"] = DeliveryService(
+        artifact_store,
+        validation=validation,
+        git_factory=delivery_dependencies.git,
+        remote_repairs=remote_repairs,
+    ).validate
     handlers.recovery_adapters.update(
         publication_recovery_adapters(session_factory, pr_evidence, release_dependencies.writes)
     )
@@ -599,7 +791,10 @@ def compose_worker_handlers(
         )
     )
     merge = MergeService(
-        merge_evidence, merge_controller, delivery_dependencies.operation_executor, clock=clock,
+        merge_evidence,
+        merge_controller,
+        delivery_dependencies.operation_executor,
+        clock=clock,
         queue=release_dependencies.queue,
     )
     handlers.update(
@@ -612,10 +807,18 @@ def compose_worker_handlers(
                 release_dependencies.adoption,
                 delivery_dependencies.operation_executor,
                 clock=clock,
+                subscription=remote_repairs.base_updates,
             ).execute
             if release_dependencies.adoption is not None
             else _adoption_unconfigured,
-            "approve_pr": ApprovePrHandler(pr_evidence, approved_plans, clock=clock),
+            "approve_pr": ApprovePrHandler(
+                pr_evidence,
+                approved_plans,
+                clock=clock,
+                subscription_revisions=SubscriptionCandidateRevisionController(
+                    artifact_store, delivery_dependencies.git, clock=clock
+                ),
+            ),
             "publish_pr": release.publish,
             "monitor_pr": ReleaseMonitor(
                 artifact_store,
@@ -628,9 +831,14 @@ def compose_worker_handlers(
             "approve_merge": ApproveMergeHandler(merge_evidence, clock=clock),
             "merge_pr": merge.execute,
             "observe_merge_queue": QueueObservationService(
-                merge_evidence, merge_controller, release_dependencies.queue,
-                delivery_dependencies.operation_executor, clock=clock,
-            ).execute if release_dependencies.queue is not None else _queue_unconfigured,
+                merge_evidence,
+                merge_controller,
+                release_dependencies.queue,
+                delivery_dependencies.operation_executor,
+                clock=clock,
+            ).execute
+            if release_dependencies.queue is not None
+            else _queue_unconfigured,
         }
     )
     return handlers

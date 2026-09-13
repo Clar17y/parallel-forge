@@ -106,6 +106,10 @@ jobs:
         run: uv run --frozen alembic -c alembic.ini upgrade head
       - name: Verify browser control bridge against real PostgreSQL/API/worker
         run: uv run --frozen python -m pytest tests/acceptance/test_browser_control.py -q
+      - name: Verify subscription profiles and controls in Chromium
+        env:
+          FORGE_SUBSCRIPTION_BROWSER_TEST: "1"
+        run: uv run --frozen python -m pytest tests/acceptance/test_subscription_browser_process.py -q
       - name: Start real API, worker and control bridge
         shell: bash
         run: |

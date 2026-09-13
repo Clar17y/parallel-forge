@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 const links = [
   ['Runs', '/runs'], ['Approvals', '/approvals'], ['Projects', '/projects'],
   ['Policies', '/policies'], ['Agents & models', '/agents'], ['Tool permissions', '/tools'],
-  ['Evaluations', '/evaluations'], ['Audit log', '/audit'], ['Usage', '/usage'],
+  ['Evaluations', '/evaluations'], ['Audit log', '/audit'], ['Usage', '/usage'], ['Subscription profiles', '/subscription-profiles'],
 ] as const;
 
 export function Navigation({ close }: { close?: () => void }) {

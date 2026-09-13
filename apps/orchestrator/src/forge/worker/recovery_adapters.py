@@ -27,7 +27,7 @@ from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlanLoader
 from forge.application.services.recovery import RecoveryError
 from forge.application.services.tool_recovery import ToolRecoveryService
-from forge.application.services.tools import _RepositoryWriteOperationAdapter
+from forge.application.services.tools import _PreparedWrite, _RepositoryWriteOperationAdapter
 from forge.domain.operation import OperationIntent, OperationOutcome, canonical_digest
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
@@ -51,7 +51,15 @@ def local_recovery_adapters(
     git_factory: Callable[[ProjectPolicy], ControlledGitPort],
     writer_factory: WriterFactory | None = None,
 ) -> dict[str, OperationAdapter]:
-    kinds = _LOCAL_KINDS + ((ToolName.REPOSITORY_WRITE_FILE.value,) if writer_factory else ())
+    kinds = _LOCAL_KINDS + (
+        (
+            ToolName.REPOSITORY_WRITE_FILE.value,
+            ToolName.REPOSITORY_DELETE_FILE.value,
+            ToolName.REPOSITORY_RENAME_FILE.value,
+        )
+        if writer_factory
+        else ()
+    )
     return {
         kind: _LocalRecovery(kind, factory, store, git_factory, writer_factory) for kind in kinds
     }
@@ -93,11 +101,18 @@ class _LocalRecovery:
                 path=Path(run.worktree_path),
                 base_sha=run.base_sha,
             )
-            if self._kind == ToolName.REPOSITORY_WRITE_FILE.value:
+            if self._kind in {
+                ToolName.REPOSITORY_WRITE_FILE.value,
+                ToolName.REPOSITORY_DELETE_FILE.value,
+                ToolName.REPOSITORY_RENAME_FILE.value,
+            }:
                 call = await work.tool_calls.get(UUID(intent.idempotency_key.removeprefix("tool:")))
                 if (
-                    not ToolRecoveryService.valid_write_request(call, intent, run)
+                    not ToolRecoveryService.valid_repository_mutation(
+                        call, intent, run, intent.outcome or {}
+                    )
                     or call.resource_id != worktree.identity.worktree_name
+                    or call.agent_execution_id is None
                     or call.step_id is None
                     or call.role is None
                     or not await work.tool_calls.validate_execution_context(
@@ -125,6 +140,9 @@ class _LocalRecovery:
             )
         elif self._kind == CONTROLLER_CHECK_KIND:
             payload = intent.request_payload
+            candidate = payload.get("candidate_tree_digest")
+            if candidate is not None and not isinstance(candidate, str):
+                raise RecoveryError("startup controller candidate binding is invalid")
             adapter = ControllerCheckOperationAdapter.for_recovery(
                 run_id=intent.run_id,
                 step_id=UUID(str(payload["step_id"])),
@@ -133,6 +151,7 @@ class _LocalRecovery:
                 policy=policy,
                 command_name=str(payload["command_name"]),
                 head_sha=str(payload["head_sha"]),
+                candidate_tree_digest=candidate,
                 artifacts=artifacts,
                 artifact_store=self._store,
             )
@@ -148,10 +167,24 @@ class _LocalRecovery:
             writer = self._writer(policy, worktree, git)
             if not writer.is_bound_to(git, worktree, policy):
                 raise RecoveryError("startup write inspector binding differs")
-            adapter = _RepositoryWriteOperationAdapter.for_recovery(
-                writer,
-                path=cast(str, intent.request_payload["path"]),
-                content_digest=cast(str, intent.request_payload["content_digest"]),
-                byte_count=cast(int, intent.request_payload["content_byte_count"]),
-            )
+            tool_name = ToolName(self._kind)
+            if tool_name is ToolName.REPOSITORY_WRITE_FILE:
+                adapter = _RepositoryWriteOperationAdapter.for_recovery(
+                    writer,
+                    path=cast(str, intent.request_payload["path"]),
+                    content_digest=cast(str, intent.request_payload["content_digest"]),
+                    byte_count=cast(int, intent.request_payload["content_byte_count"]),
+                )
+            else:
+                adapter = _RepositoryWriteOperationAdapter(
+                    writer=writer,
+                    tool_name=tool_name,
+                    prepared=_PreparedWrite(
+                        path=cast(str, intent.request_payload["path"]),
+                        content=None,
+                        content_digest=cast(str, intent.request_payload["expected_digest"]),
+                        byte_count=None,
+                        destination=cast(str | None, intent.request_payload.get("destination")),
+                    ),
+                )
         return await adapter.reconcile(intent)

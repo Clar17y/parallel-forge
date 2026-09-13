@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import re
 import stat
 import unicodedata
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from uuid import UUID
 
 from forge.application.ports.repository import ProcessResult, RepositoryAccessDenied
 from forge.application.ports.worktrees import (
@@ -19,12 +21,21 @@ from forge.application.ports.worktrees import (
     GitCandidateFile,
     GitCommit,
     GitDiff,
+    GitSnapshotFile,
     GitStatus,
+    GitWorkingTreeSnapshot,
     ManagedWorktree,
     PreparedGitCommit,
     PublishedGitCommit,
+    SnapshotFailureReason,
+    SnapshotReadError,
 )
-from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS, normalize_policy_path
+from forge.domain.paths import (
+    RESERVED_REPOSITORY_COMPONENTS,
+    normalize_policy_path,
+    normalize_policy_paths,
+    policy_path_key,
+)
 from forge.domain.policy import ProjectPolicy, RunnerMode
 from forge.domain.resource import WorktreeIdentity
 from forge.tools.paths import CanonicalRoot
@@ -48,6 +59,7 @@ _FORGE_EMAIL = "forge@example.test"
 def _has_reserved_repository_component(path: str) -> bool:
     return any(
         (component.casefold() if os.name == "nt" else component) in _RESERVED_REPOSITORY_KEYS
+        or component.startswith(".forge-mutation-")
         for component in path.split("/")
     )
 
@@ -57,6 +69,11 @@ class ControlledGitError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("controlled git operation failed")
+
+
+class ControlledSnapshotError(ControlledGitError, SnapshotReadError):
+    def __init__(self, reason: SnapshotFailureReason) -> None:
+        SnapshotReadError.__init__(self, reason)
 
 
 _CAPABILITY_SEAL = object()
@@ -231,6 +248,60 @@ class WorktreeCapability:
         if result is None:
             return None
         return result[0], result[1], normalized
+
+    def delete_repository_file(
+        self, path: str, *, expected_digest: str, maximum: int, mutation_id: UUID
+    ) -> tuple[str, int, str]:
+        """Delete one policy-allowed file when its exact digest still matches."""
+
+        object.__getattribute__(self, "_require_live")()
+        worktree = object.__getattribute__(self, "_worktree")
+        policy = object.__getattribute__(self, "_policy")
+        root = CanonicalRoot(worktree.path)
+        normalized = root.normalize(path)
+        if _has_reserved_repository_component(normalized) or any(
+            root.matches(normalized, secret) for secret in policy.effective_secret_paths
+        ):
+            raise ControlledGitError()
+        self.revalidate()
+        digest, byte_count = root.delete_file(
+            normalized, expected_digest=expected_digest, maximum=maximum, mutation_id=mutation_id
+        )
+        self.revalidate()
+        return digest, byte_count, normalized
+
+    def rename_repository_file(
+        self,
+        source: str,
+        destination: str,
+        *,
+        expected_digest: str,
+        maximum: int,
+        mutation_id: UUID,
+    ) -> tuple[str, int, str, str]:
+        """Move one policy-allowed file to an absent policy-allowed destination."""
+
+        object.__getattribute__(self, "_require_live")()
+        worktree = object.__getattribute__(self, "_worktree")
+        policy = object.__getattribute__(self, "_policy")
+        root = CanonicalRoot(worktree.path)
+        normalized_source = root.normalize(source)
+        normalized_destination = root.normalize(destination)
+        for normalized in (normalized_source, normalized_destination):
+            if _has_reserved_repository_component(normalized) or any(
+                root.matches(normalized, secret) for secret in policy.effective_secret_paths
+            ):
+                raise ControlledGitError()
+        self.revalidate()
+        digest, byte_count = root.rename_file(
+            normalized_source,
+            normalized_destination,
+            expected_digest=expected_digest,
+            maximum=maximum,
+            mutation_id=mutation_id,
+        )
+        self.revalidate()
+        return digest, byte_count, normalized_source, normalized_destination
 
     def _require_live(self) -> None:
         if not object.__getattribute__(self, "_live") or object.__getattribute__(
@@ -729,6 +800,170 @@ class ControlledGit:
             changed_paths=tuple(names),
         )
 
+    def working_tree_snapshot(
+        self, worktree: ManagedWorktree, *, secret_paths: tuple[str, ...]
+    ) -> GitWorkingTreeSnapshot:
+        """Read raw identity twice; Git derives changes with safe checkout normalization."""
+        self._validate_handle(worktree)
+        self._scan_local_config(worktree.path)
+        self._verify_current_branch(worktree)
+        if not self._has_ancestor(worktree, worktree.base_sha):
+            raise ControlledGitError()
+        root = CanonicalRoot(worktree.path)
+        if type(secret_paths) is not tuple or any(type(path) is not str for path in secret_paths):
+            raise ControlledGitError()
+
+        def records(arguments: tuple[str, ...]) -> tuple[str, ...]:
+            result = self._run(worktree.path, arguments)
+            try:
+                _require_complete_result(result)
+            except ControlledGitError:
+                raise ControlledSnapshotError(SnapshotFailureReason.LISTING_INVALID) from None
+            if result.stdout and not result.stdout.endswith("\x00"):
+                raise ControlledSnapshotError(SnapshotFailureReason.LISTING_INVALID)
+            items = tuple(result.stdout[:-1].split("\x00")) if result.stdout else ()
+            if len(items) > 10_000:
+                raise ControlledSnapshotError(SnapshotFailureReason.SIZE_LIMIT)
+            return items
+
+        def path_checked(path: str) -> str:
+            if (
+                not path
+                or "\ufffd" in path
+                or root.normalize(path) != path
+                or _has_reserved_repository_component(path)
+                or any(root.matches(path, secret) for secret in secret_paths)
+            ):
+                raise ControlledSnapshotError(SnapshotFailureReason.PATH_REJECTED)
+            return path
+
+        def capture() -> GitWorkingTreeSnapshot:
+            head = self._head_sha(worktree)
+            base: dict[str, tuple[str, str]] = {}
+            for record in records(("ls-tree", "-r", "-z", worktree.base_sha, "--")):
+                metadata, separator, path = record.partition("\t")
+                parts = metadata.split(" ")
+                if (
+                    not separator
+                    or len(parts) != 3
+                    or parts[0] not in {"100644", "100755"}
+                    or parts[1] != "blob"
+                    or _SHA.fullmatch(parts[2]) is None
+                ):
+                    raise ControlledSnapshotError(SnapshotFailureReason.LISTING_INVALID)
+                path = path_checked(path)
+                if path in base:
+                    raise ControlledSnapshotError(SnapshotFailureReason.LISTING_INVALID)
+                base[path] = (parts[0], parts[2])
+            tracked: dict[str, str] = {}
+            for record in records(("ls-files", "--stage", "-z", "--")):
+                metadata, separator, path = record.partition("\t")
+                parts = metadata.split(" ")
+                if separator and len(parts) == 3 and parts[2] in {"1", "2", "3"}:
+                    raise ControlledSnapshotError(SnapshotFailureReason.INDEX_CONFLICT)
+                if (
+                    not separator
+                    or len(parts) != 3
+                    or parts[0] not in {"100644", "100755"}
+                    or _SHA.fullmatch(parts[1]) is None
+                    or parts[2] != "0"
+                ):
+                    raise ControlledSnapshotError(SnapshotFailureReason.LISTING_INVALID)
+                path = path_checked(path)
+                if path in tracked:
+                    raise ControlledSnapshotError(SnapshotFailureReason.LISTING_INVALID)
+                tracked[path] = parts[0]
+            untracked = {
+                path_checked(path)
+                for path in records(("ls-files", "--others", "--exclude-standard", "-z", "--"))
+            }
+            deleted = {
+                path_checked(path) for path in records(("ls-files", "--deleted", "-z", "--"))
+            }
+            names = sorted((set(tracked) | untracked) - deleted)
+            if len(names) > 10_000:
+                raise ControlledSnapshotError(SnapshotFailureReason.SIZE_LIMIT)
+            if not deleted <= tracked.keys() or len(
+                {os.path.normcase(path) for path in names}
+            ) != len(names):
+                raise ControlledSnapshotError(SnapshotFailureReason.LISTING_INVALID)
+            files = []
+            # Configuration scanning rejects executable filters/textconv. Git's
+            # built-in text/EOL normalization defines changes, while the manifest
+            # below deliberately retains exact raw working-tree byte identity.
+            changed = untracked | {
+                path_checked(path)
+                for path in records(
+                    (
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--no-renames",
+                        "--name-only",
+                        "-z",
+                        worktree.base_sha,
+                        "--",
+                    )
+                )
+            }
+            total = 0
+            for path in names:
+                with root.open_read(path) as stream:
+                    before = os.fstat(stream.fileno())
+                    if before.st_nlink != 1:
+                        raise ControlledSnapshotError(SnapshotFailureReason.PATH_REJECTED)
+                    data = stream.read(8 * 1024 * 1024 + 1)
+                    after = os.fstat(stream.fileno())
+                if len(data) > 8 * 1024 * 1024:
+                    raise ControlledSnapshotError(SnapshotFailureReason.SIZE_LIMIT)
+                if len(data) != before.st_size or (
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                ) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                    raise ControlledSnapshotError(SnapshotFailureReason.TREE_CHANGED)
+                total += len(data)
+                if total > 64 * 1024 * 1024:
+                    raise ControlledSnapshotError(SnapshotFailureReason.SIZE_LIMIT)
+                mode = (
+                    tracked.get(path, "100644")
+                    if os.name == "nt"
+                    else "100755"
+                    if before.st_mode & stat.S_IXUSR
+                    else "100644"
+                )
+                files.append(
+                    GitSnapshotFile(
+                        path=path,
+                        mode=mode,
+                        content_digest=hashlib.sha256(data).hexdigest(),
+                        byte_count=len(data),
+                    )
+                )
+            if self._head_sha(worktree) != head:
+                raise ControlledSnapshotError(SnapshotFailureReason.TREE_CHANGED)
+            return GitWorkingTreeSnapshot(
+                head_sha=head,
+                base_sha=worktree.base_sha,
+                files=tuple(files),
+                changed_paths=tuple(sorted(changed)),
+            )
+
+        try:
+            first = capture()
+            if capture() != first:
+                raise ControlledSnapshotError(SnapshotFailureReason.TREE_CHANGED)
+            self._validate_handle(worktree)
+            self._scan_local_config(worktree.path)
+            self._verify_current_branch(worktree)
+            return first
+        except ControlledSnapshotError:
+            raise
+        except RepositoryAccessDenied:
+            raise ControlledSnapshotError(SnapshotFailureReason.PATH_REJECTED) from None
+        except OSError, RuntimeError, TypeError, ValueError:
+            raise ControlledGitError() from None
+
     def candidate_file(self, worktree: ManagedWorktree, path: str) -> GitCandidateFile:
         """Read one regular UTF-8 file at the approved base and pinned HEAD."""
 
@@ -802,11 +1037,23 @@ class ControlledGit:
         published = self.commit_prepared(worktree, self.prepare_commit(worktree, message))
         return GitCommit(previous_sha=published.previous_sha, new_sha=published.new_sha)
 
-    def prepare_commit(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit:
+    def prepare_commit(
+        self,
+        worktree: ManagedWorktree,
+        message: str,
+        *,
+        allowed_paths: tuple[str, ...] | None = None,
+    ) -> PreparedGitCommit:
         """Stage the real index and return its exact authorized snapshot."""
 
         try:
             commit_message = _validate_commit_message(message)
+            if allowed_paths is not None and (
+                type(allowed_paths) is not tuple
+                or not allowed_paths
+                or normalize_policy_paths(allowed_paths) != allowed_paths
+            ):
+                raise ControlledGitError()
             identity, _expected = self._validate_handle_shape(worktree)
             self._assert_trusted_state()
             self._validate_handle(worktree)
@@ -818,7 +1065,7 @@ class ControlledGit:
             ) as access:
                 if not self._repository._directory_access_matches_path(access):
                     raise ControlledGitError()
-                return self._prepare_commit_bound(worktree, commit_message)
+                return self._prepare_commit_bound(worktree, commit_message, allowed_paths)
         except ControlledGitError:
             raise
         except (
@@ -1065,17 +1312,46 @@ class ControlledGit:
                 raise
             raise ControlledGitError() from None
 
-    def _prepare_commit_bound(self, worktree: ManagedWorktree, message: str) -> PreparedGitCommit:
+    def _require_commit_scope(
+        self, worktree: ManagedWorktree, paths: tuple[str, ...], arguments: tuple[str, ...]
+    ) -> None:
+        result = self._run(worktree.path, arguments)
+        _require_complete_result(result)
+        if result.stdout and not result.stdout.endswith("\x00"):
+            raise ControlledGitError()
+        for name in result.stdout[:-1].split("\x00") if result.stdout else ():
+            path = policy_path_key(normalize_policy_path(name))
+            if "\ufffd" in name or not any(
+                path == policy_path_key(owned) or path.startswith(policy_path_key(owned) + "/")
+                for owned in paths
+            ):
+                raise ControlledGitError()
+
+    def _prepare_commit_bound(
+        self, worktree: ManagedWorktree, message: str, allowed_paths: tuple[str, ...] | None = None
+    ) -> PreparedGitCommit:
         self._validate_handle(worktree)
         self._scan_local_config(worktree.path)
         previous_sha = self._head_sha(worktree)
         self._reject_incomplete_history_overlays()
         self._verify_ancestor_sha(worktree, worktree.base_sha)
 
+        scope_diff = ("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z")
+        if allowed_paths is not None:
+            # Refuse foreign edits before staging, including untracked files.
+            self._require_commit_scope(worktree, allowed_paths, (*scope_diff, previous_sha, "--"))
+            self._require_commit_scope(
+                worktree, allowed_paths, ("ls-files", "--others", "--exclude-standard", "-z", "--")
+            )
         self._run(worktree.path, ("add", "-A", "--"))
         self._require_staged_changes(worktree)
 
         tree_sha = _parse_sha(self._run(worktree.path, ("write-tree",)))
+        if allowed_paths is not None:
+            # Bind the check to immutable Git objects, catching edits during staging.
+            self._require_commit_scope(
+                worktree, allowed_paths, (*scope_diff, previous_sha, tree_sha, "--")
+            )
 
         self._validate_handle(worktree)
         self._scan_local_config(worktree.path)

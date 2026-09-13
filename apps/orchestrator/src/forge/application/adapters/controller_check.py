@@ -7,10 +7,12 @@ exact controller step and result identifiers to command evidence and durable rec
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from typing import Final, Literal, Self, cast
 from uuid import UUID
 
@@ -85,6 +87,7 @@ _RECEIPT_KEYS: Final = frozenset(
         "stdout_digest",
     }
 )
+_CANDIDATE_KEYS: Final = frozenset({"candidate_tree_digest_before", "candidate_tree_digest_after"})
 
 _CANCELLED_RECEIPT_KEYS: Final = frozenset(
     {
@@ -148,6 +151,7 @@ def controller_check_request(
     policy: ProjectPolicy,
     command_name: str,
     head_sha: str,
+    candidate_tree_digest: str | None = None,
     environment: Mapping[str, str] | Iterable[str] | None = None,
     environment_keys: Iterable[str] | None = None,
 ) -> OperationRequest:
@@ -185,6 +189,8 @@ def controller_check_request(
         allowed_keys=command.environment_keys,
     )
     env_keys_digest = _environment_keys_digest(keys)
+    _validate_candidate_digest(candidate_tree_digest)
+    version = 1 if candidate_tree_digest is None else 2
 
     payload: dict[str, object] = {
         "command_digest": command_spec_digest(command),
@@ -194,12 +200,14 @@ def controller_check_request(
         "kind": command.kind.value,
         "policy_version": policy.version,
         "project_id": str(policy.id),
-        "protocol_version": 1,
+        "protocol_version": version,
         "result_id": str(result_id),
         "run_id": str(run_id),
         "step_id": str(step_id),
         "worktree_id": worktree.identity.worktree_name,
     }
+    if candidate_tree_digest is not None:
+        payload["candidate_tree_digest"] = candidate_tree_digest
 
     idempotency_key = f"{run_id}:controller-check:{step_id}:{command.name}"
     if len(idempotency_key) > 255:
@@ -228,6 +236,7 @@ class ControllerCheckOperationAdapter(OperationAdapter):
         policy: ProjectPolicy,
         command_name: str,
         head_sha: str,
+        candidate_tree_digest: str | None = None,
         artifacts: ArtifactRepository,
         artifact_store: ArtifactStore | None = None,
         store: ArtifactStore | None = None,
@@ -294,6 +303,8 @@ class ControllerCheckOperationAdapter(OperationAdapter):
         self._command_name = command_name
         self._command = command
         self._head_sha = head_sha
+        _validate_candidate_digest(candidate_tree_digest)
+        self._candidate_tree_digest = candidate_tree_digest
         self._artifacts = artifacts
         self._store = resolved_store
         self._git = controlled_git
@@ -311,6 +322,7 @@ class ControllerCheckOperationAdapter(OperationAdapter):
         policy: ProjectPolicy,
         command_name: str,
         head_sha: str,
+        candidate_tree_digest: str | None = None,
         artifacts: ArtifactRepository,
         artifact_store: ArtifactStore | None = None,
         store: ArtifactStore | None = None,
@@ -324,6 +336,7 @@ class ControllerCheckOperationAdapter(OperationAdapter):
             policy=policy,
             command_name=command_name,
             head_sha=head_sha,
+            candidate_tree_digest=candidate_tree_digest,
             artifacts=artifacts,
             artifact_store=artifact_store,
             store=store,
@@ -339,8 +352,7 @@ class ControllerCheckOperationAdapter(OperationAdapter):
             return await self.cancel_before_launch(intent)
         if self._git is None or self._factory is None or self._environment is None:
             raise ControllerCheckOperationError("recovery adapter cannot execute commands")
-        if self._git.head_sha(self._worktree) != values["head_sha"]:
-            raise ControllerCheckOperationError("controller check worktree head changed")
+        before = await asyncio.to_thread(self._observe_candidate)
 
         runner = self._factory.create(self._worktree, self._policy)
         request = RunCommandRequest(
@@ -357,15 +369,34 @@ class ControllerCheckOperationAdapter(OperationAdapter):
         if terminal is None:
             return await self.cancel_before_launch(intent)
 
-        # Recheck git head after terminal effect before accepting result
-        if self._git.head_sha(self._worktree) != values["head_sha"]:
-            raise ControllerCheckOperationError(
-                "controller check worktree head changed during execution"
-            )
+        after = await asyncio.to_thread(self._observe_candidate, after_terminal=True)
 
         result = terminal.result
         self._result_matches(values, command, result)
-        return await self._persist(intent, result_id, result, terminal.caller_cancelled)
+        candidate = (before, after) if before is not None and after is not None else None
+        return await self._persist(intent, result_id, result, terminal.caller_cancelled, candidate)
+
+    def _observe_candidate(self, *, after_terminal: bool = False) -> str | None:
+        assert self._git is not None
+        phase = " during execution" if after_terminal else ""
+        if self._candidate_tree_digest is None:
+            if self._git.head_sha(self._worktree) != self._head_sha:
+                raise ControllerCheckOperationError(
+                    f"controller check worktree head changed{phase}"
+                )
+            return None
+        snapshot = self._git.working_tree_snapshot(
+            self._worktree, secret_paths=self._policy.effective_secret_paths
+        )
+        if (
+            snapshot.head_sha != self._head_sha
+            or snapshot.base_sha != self._worktree.base_sha
+            or snapshot.candidate_tree_digest != self._candidate_tree_digest
+        ):
+            raise ControllerCheckOperationError(
+                f"controller check candidate contents changed{phase}"
+            )
+        return snapshot.candidate_tree_digest
 
     async def cancel_before_launch(self, intent: OperationIntent) -> OperationOutcome:
         """Persist canonical evidence that this admission had no command effect."""
@@ -383,7 +414,7 @@ class ControllerCheckOperationAdapter(OperationAdapter):
                 "controller check cancellation receipt verification failed"
             )
         await self._artifacts.record(
-            descriptor,
+            replace(descriptor, schema_version=cast(int, values["protocol_version"])),
             run_id=intent.run_id,
             producer_type=CONTROLLER_CHECK_KIND,
             producer_id=result_id,
@@ -410,7 +441,12 @@ class ControllerCheckOperationAdapter(OperationAdapter):
         descriptor = receipts[0]
         try:
             if not _is_descriptor(
-                descriptor, intent.run_id, CONTROLLER_CHECK_KIND, result_id, _RECEIPT_MEDIA
+                descriptor,
+                intent.run_id,
+                CONTROLLER_CHECK_KIND,
+                result_id,
+                _RECEIPT_MEDIA,
+                schema_version=cast(int, values["protocol_version"]),
             ):
                 raise ControllerCheckOperationError()
             receipt_data = await self._verified_bytes(descriptor)
@@ -418,6 +454,7 @@ class ControllerCheckOperationAdapter(OperationAdapter):
                 cancelled = _decode_cancelled_receipt(receipt_data)
                 if (
                     cancelled["intent_id"] != str(intent.id)
+                    or cancelled["receipt_version"] != values["protocol_version"]
                     or cancelled["request_digest"] != intent.request_digest
                     or canonical_digest(cast(Mapping[str, object], cancelled["request_payload"]))
                     != intent.request_digest
@@ -434,7 +471,14 @@ class ControllerCheckOperationAdapter(OperationAdapter):
             receipt = _decode_receipt(receipt_data)
             if (
                 receipt["intent_id"] != str(intent.id)
+                or receipt["receipt_version"] != values["protocol_version"]
                 or receipt["request_digest"] != intent.request_digest
+                or (
+                    self._candidate_tree_digest is not None
+                    and any(
+                        receipt.get(key) != self._candidate_tree_digest for key in _CANDIDATE_KEYS
+                    )
+                )
             ):
                 raise ControllerCheckOperationError()
             if canonical_digest(
@@ -500,11 +544,16 @@ class ControllerCheckOperationAdapter(OperationAdapter):
         return data
 
     def _request(self, intent: OperationIntent) -> tuple[dict[str, object], CommandSpec, UUID]:
+        version = 1 if self._candidate_tree_digest is None else 2
+        keys = _CONTROLLER_CHECK_PAYLOAD_KEYS | (
+            {"candidate_tree_digest"} if version == 2 else set()
+        )
         if (
             intent.kind != CONTROLLER_CHECK_KIND
+            or type(intent.request_schema_version) is not int
             or intent.request_schema_version != 1
             or intent.run_id != self._run_id
-            or frozenset(intent.request_payload.keys()) != _CONTROLLER_CHECK_PAYLOAD_KEYS
+            or frozenset(intent.request_payload.keys()) != keys
             or canonical_digest(intent.request_payload) != intent.request_digest
         ):
             raise ControllerCheckOperationError("controller check request is invalid")
@@ -545,7 +594,8 @@ class ControllerCheckOperationAdapter(OperationAdapter):
                 or values["worktree_id"] != self._worktree.identity.worktree_name
                 or values["command_name"] != self._command_name
                 or values["head_sha"] != self._head_sha
-                or values["protocol_version"] != 1
+                or values["protocol_version"] != version
+                or values.get("candidate_tree_digest") != self._candidate_tree_digest
                 or values["policy_version"] != self._policy.version
                 or values["kind"] != self._command.kind.value
                 or values["command_digest"] != command_spec_digest(self._command)
@@ -599,7 +649,12 @@ class ControllerCheckOperationAdapter(OperationAdapter):
                 )
 
     async def _persist(
-        self, intent: OperationIntent, result_id: UUID, result: CommandResult, cancelled: bool
+        self,
+        intent: OperationIntent,
+        result_id: UUID,
+        result: CommandResult,
+        cancelled: bool,
+        candidate: tuple[str, str] | None = None,
     ) -> OperationOutcome:
         for stream in _STREAMS:
             digest = result.stdout_digest if stream == "stdout" else result.stderr_digest
@@ -631,7 +686,7 @@ class ControllerCheckOperationAdapter(OperationAdapter):
             parent_digests=tuple(sorted({result.stdout_digest, result.stderr_digest})),
         )
 
-        receipt = _encode_receipt(intent, result_id, result, cancelled)
+        receipt = _encode_receipt(intent, result_id, result, cancelled, candidate)
         receipt_descriptor = await self._store.put_bytes(receipt, media_type=_RECEIPT_MEDIA)
         if (
             receipt_descriptor.byte_count != len(receipt)
@@ -640,7 +695,10 @@ class ControllerCheckOperationAdapter(OperationAdapter):
         ):
             raise ControllerCheckOperationError("controller check receipt verification failed")
         await self._artifacts.record(
-            receipt_descriptor,
+            replace(
+                receipt_descriptor,
+                schema_version=cast(int, intent.request_payload["protocol_version"]),
+            ),
             run_id=intent.run_id,
             producer_type=CONTROLLER_CHECK_KIND,
             producer_id=result_id,
@@ -656,19 +714,27 @@ def _encode_value(value: Mapping[str, object]) -> bytes:
 
 
 def _encode_receipt(
-    intent: OperationIntent, result_id: UUID, result: CommandResult, cancelled: bool
+    intent: OperationIntent,
+    result_id: UUID,
+    result: CommandResult,
+    cancelled: bool,
+    candidate: tuple[str, str] | None = None,
 ) -> bytes:
     payload = {
         "caller_cancelled": cancelled,
         "command_result_digest": result.evidence_digest,
         "intent_id": str(intent.id),
-        "receipt_version": 1,
+        "receipt_version": intent.request_payload["protocol_version"],
         "request_digest": intent.request_digest,
         "request_payload": dict(intent.request_payload),
         "result_id": str(result_id),
         "stderr_digest": result.stderr_digest,
         "stdout_digest": result.stdout_digest,
     }
+    if candidate is not None:
+        payload.update(
+            candidate_tree_digest_before=candidate[0], candidate_tree_digest_after=candidate[1]
+        )
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
@@ -679,7 +745,7 @@ def _encode_cancelled_receipt(
         {
             "disposition": _CANCELLED_BEFORE_LAUNCH,
             "intent_id": str(intent.id),
-            "receipt_version": 1,
+            "receipt_version": values["protocol_version"],
             "request_digest": intent.request_digest,
             "request_payload": dict(values),
             "result_id": str(result_id),
@@ -694,7 +760,8 @@ def _decode_receipt(data: bytes) -> dict[str, object]:
         raise ControllerCheckOperationError("invalid receipt json") from None
     if (
         not isinstance(value, dict)
-        or frozenset(value.keys()) != _RECEIPT_KEYS
+        or frozenset(value.keys())
+        != (_RECEIPT_KEYS | _CANDIDATE_KEYS if value.get("receipt_version") == 2 else _RECEIPT_KEYS)
         or _encode_value(value) != data
     ):
         raise ControllerCheckOperationError("receipt keys or encoding invalid")
@@ -702,7 +769,7 @@ def _decode_receipt(data: bytes) -> dict[str, object]:
         type(value["caller_cancelled"]) is not bool
         or type(value["receipt_version"]) is not int
         or isinstance(value["receipt_version"], bool)
-        or value["receipt_version"] != 1
+        or value["receipt_version"] not in (1, 2)
     ):
         raise ControllerCheckOperationError("receipt version or cancellation marker invalid")
     if not all(
@@ -712,6 +779,10 @@ def _decode_receipt(data: bytes) -> dict[str, object]:
         raise ControllerCheckOperationError("receipt string fields invalid")
     if not isinstance(value["request_payload"], dict):
         raise ControllerCheckOperationError("receipt request payload invalid")
+    if value["receipt_version"] == 2:
+        for key in _CANDIDATE_KEYS:
+            if not isinstance(value[key], str) or _HEX_64_PATTERN.fullmatch(value[key]) is None:
+                raise ControllerCheckOperationError("receipt candidate observation invalid")
     try:
         if (
             UUID(cast(str, value["intent_id"])).int == 0
@@ -739,7 +810,7 @@ def _decode_cancelled_receipt(data: bytes) -> dict[str, object]:
         or value.get("disposition") != _CANCELLED_BEFORE_LAUNCH
         or type(value.get("receipt_version")) is not int
         or isinstance(value.get("receipt_version"), bool)
-        or value["receipt_version"] != 1
+        or value["receipt_version"] not in (1, 2)
         or not isinstance(value.get("request_payload"), dict)
         or not all(
             isinstance(value[key], str)
@@ -765,18 +836,26 @@ def _decode_cancelled_receipt(data: bytes) -> dict[str, object]:
 def _outcome(
     intent: OperationIntent, receipt: Mapping[str, object], result: CommandResult
 ) -> OperationOutcome:
-    return OperationOutcome(
-        payload={
-            "caller_cancelled": receipt["caller_cancelled"],
-            "command_result_digest": result.evidence_digest,
-            "exit_code": result.exit_code,
-            "receipt_digest": hashlib.sha256(_encode_value(receipt)).hexdigest(),
-            "result_id": str(receipt["result_id"]),
-            "stderr_digest": result.stderr_digest,
-            "stdout_digest": result.stdout_digest,
-            "timed_out": result.timed_out,
-        }
-    )
+    payload = {
+        "caller_cancelled": receipt["caller_cancelled"],
+        "command_result_digest": result.evidence_digest,
+        "exit_code": result.exit_code,
+        "receipt_digest": hashlib.sha256(_encode_value(receipt)).hexdigest(),
+        "result_id": str(receipt["result_id"]),
+        "stderr_digest": result.stderr_digest,
+        "stdout_digest": result.stdout_digest,
+        "timed_out": result.timed_out,
+    }
+    if receipt["receipt_version"] == 2:
+        payload.update({key: receipt[key] for key in _CANDIDATE_KEYS})
+    return OperationOutcome(payload=payload)
+
+
+def _validate_candidate_digest(value: str | None) -> None:
+    if value is not None and (
+        not isinstance(value, str) or _HEX_64_PATTERN.fullmatch(value) is None
+    ):
+        raise ControllerCheckOperationError("candidate tree digest is invalid")
 
 
 def _needs_reconciliation() -> OperationOutcome:
@@ -792,6 +871,8 @@ def _is_descriptor(
     producer_type: str,
     producer_id: UUID,
     media_type: str,
+    *,
+    schema_version: int = 1,
 ) -> bool:
     return (
         bool(descriptor.digest)
@@ -799,7 +880,7 @@ def _is_descriptor(
         and descriptor.producer_type == producer_type
         and descriptor.producer_id == producer_id
         and descriptor.media_type == media_type
-        and descriptor.schema_version == 1
+        and descriptor.schema_version == schema_version
         and descriptor.truncated is False
         and descriptor.original_byte_count == descriptor.byte_count
         and descriptor.truncation_policy == "none"

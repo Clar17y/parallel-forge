@@ -15,7 +15,7 @@ from forge.application.ports.git_push import ManagedPushPort
 from forge.application.ports.github_write import GitHubWritePort
 from forge.application.ports.release import ReleaseRecord
 from forge.application.ports.worktrees import ManagedWorktree
-from forge.domain.approval import PrApprovalEvidence
+from forge.domain.approval import PrPublicationEvidence
 from forge.domain.approval import canonical_digest as evidence_digest
 from forge.domain.operation import (
     OperationIntent,
@@ -38,7 +38,7 @@ class Publication:
     approval_id: UUID
     policy_version: int
     branch: str
-    evidence: PrApprovalEvidence
+    evidence: PrPublicationEvidence
 
     @property
     def base_branch(self) -> str:
@@ -144,7 +144,7 @@ class ReviewedPushOperation(PushOperation):
         record: ReleaseRecord,
         approval_id: UUID,
         approval_digest: str,
-        candidate: PrApprovalEvidence,
+        candidate: PrPublicationEvidence,
         github: GitHubWritePort,
         push: ManagedPushPort,
         worktree: ManagedWorktree,

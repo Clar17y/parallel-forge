@@ -30,6 +30,11 @@ from forge.persistence.models import (
     Task,
     ToolCall,
 )
+from forge.persistence.models.scheduling import (
+    SubscriptionScheduledEffect,
+    SubscriptionScheduledTask,
+)
+from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionClientLaunch
 
 if TYPE_CHECKING:
     from forge.persistence.repositories.events import PostgresEventRepository
@@ -202,12 +207,72 @@ class PostgresRunRepository:
                 OperationIntent.status.in_(("PENDING", "NEEDS_RECONCILIATION")),
             )
         )
+        # A current operator resume can retain a fully settled decision for its
+        # later human-approval application.  Prove those exact rows before
+        # excluding them; every other subscription row remains a blocker.
+        from forge.persistence.repositories.subscription_resumption import (
+            pending_decision_quiescence_exemptions,
+        )
+
+        exemptions = await pending_decision_quiescence_exemptions(
+            self._session, run_id, exclude_command_id
+        )
+        from forge.persistence.repositories.subscription_task_controls import (
+            paused_task_quiescence_exemptions,
+        )
+
+        exemptions += await paused_task_quiescence_exemptions(self._session, run_id)
+        exempt_attempt_ids = tuple(attempt_id for attempt_id, _ in exemptions)
+        exempt_task_ids = tuple(task_id for _, task_id in exemptions)
+        subscription_count = await self._session.scalar(
+            select(
+                select(func.count())
+                .select_from(SubscriptionAttempt)
+                .where(
+                    SubscriptionAttempt.run_id == run_id,
+                    SubscriptionAttempt.status.in_(("running", "reconciling")),
+                    SubscriptionAttempt.id.not_in(exempt_attempt_ids)
+                    if exempt_attempt_ids
+                    else true(),
+                )
+                .scalar_subquery()
+                + select(func.count())
+                .select_from(SubscriptionScheduledTask)
+                .where(
+                    SubscriptionScheduledTask.run_id == run_id,
+                    SubscriptionScheduledTask.state.in_(("leased", "reconciling")),
+                    SubscriptionScheduledTask.task_id.not_in(exempt_task_ids)
+                    if exempt_task_ids
+                    else true(),
+                )
+                .scalar_subquery()
+                + select(func.count())
+                .select_from(SubscriptionScheduledEffect)
+                .where(
+                    SubscriptionScheduledEffect.run_id == run_id,
+                    SubscriptionScheduledEffect.state.in_(("admitted", "reconciling")),
+                )
+                .scalar_subquery()
+                + select(func.count())
+                .select_from(SubscriptionClientLaunch)
+                .join(
+                    SubscriptionAttempt,
+                    SubscriptionAttempt.id == SubscriptionClientLaunch.attempt_id,
+                )
+                .where(
+                    SubscriptionAttempt.run_id == run_id,
+                    SubscriptionClientLaunch.state != "terminal",
+                )
+                .scalar_subquery()
+            )
+        )
         return RunQuiescence(
             pending_or_leased_commands=int(command_count or 0),
             running_steps=int(step_count or 0),
             running_executions=int(execution_count or 0),
             running_tools=int(tool_count or 0),
             unresolved_operations=int(operation_count or 0),
+            unsettled_subscription_work=int(subscription_count or 0),
         )
 
     async def list(
@@ -463,11 +528,15 @@ class PostgresRunRepository:
         self, current: RunSnapshot, *, automatic: bool, limit: int
     ) -> RunSnapshot:
         if automatic:
-            if current.state not in {RunState.VALIDATING, RunState.REVIEWING}:
+            if current.state not in {
+                RunState.VALIDATING,
+                RunState.REVIEWING,
+                RunState.AWAITING_PR_APPROVAL,
+            }:
                 raise InvalidTransition(
                     current.state,
                     RunState.REMEDIATING,
-                    reason="automatic local remediation requires validation or review",
+                    reason="automatic local remediation requires validation, review or PR approval",
                 )
             if current.local_remediation_count >= limit:
                 return self._state_engine.intervene(current)
