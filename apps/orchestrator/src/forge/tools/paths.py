@@ -21,6 +21,11 @@ from uuid import UUID
 
 from forge.application.ports.repository import PathEscape, RepositoryAccessDenied
 
+
+class RepositoryLockBusy(RepositoryAccessDenied):
+    """An existing controller holds the exact mutation lock; no effect began."""
+
+
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 _FILE_READ_DATA = 0x0001
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -1098,8 +1103,10 @@ class _WindowsPathApi:
         )
         try:
             handle = self._value(raw)
-        except OSError:
-            raise RepositoryAccessDenied("Git worktree operation is busy") from None
+        except OSError as error:
+            if getattr(error, "winerror", None) in (32, 33):  # sharing or lock violation
+                raise RepositoryLockBusy("Git worktree operation is busy") from None
+            raise RepositoryAccessDenied("Git worktree lock is unavailable") from None
         try:
             info = self.information(handle)
             if int(info.attributes) & (_FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY):
@@ -2239,8 +2246,13 @@ class CanonicalRoot:
                 raise RepositoryAccessDenied("repository rename destination already exists")
             if os.name == "nt":
                 _rename_repository_file(
-                    self, source_access, source_parts[-1], destination_access,
-                    destination_parts[-1], expected=current, maximum=maximum,
+                    self,
+                    source_access,
+                    source_parts[-1],
+                    destination_access,
+                    destination_parts[-1],
+                    expected=current,
+                    maximum=maximum,
                 )
             else:
                 with _open_private_posix_mutation_stage(self, source_access) as stage_descriptor:
@@ -5500,7 +5512,12 @@ def _open_posix_mutation_lock_with_flags(git_descriptor: int, creation_flags: in
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise RepositoryAccessDenied("Git worktree lock is not a regular file")
-        fcntl_api.flock(descriptor, fcntl_api.LOCK_EX | fcntl_api.LOCK_NB)
+        try:
+            fcntl_api.flock(descriptor, fcntl_api.LOCK_EX | fcntl_api.LOCK_NB)
+        except OSError as error:
+            if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise RepositoryLockBusy("Git worktree operation is busy") from None
+            raise
         return descriptor
     except RepositoryAccessDenied:
         with contextlib.suppress(OSError):
@@ -5509,7 +5526,7 @@ def _open_posix_mutation_lock_with_flags(git_descriptor: int, creation_flags: in
     except OSError, ValueError:
         with contextlib.suppress(OSError):
             os.close(descriptor)
-        raise RepositoryAccessDenied("Git worktree operation is busy") from None
+        raise RepositoryAccessDenied("Git worktree lock is unavailable") from None
 
 
 def _reject_posix_registration_lock(registration: int) -> None:
@@ -5827,9 +5844,7 @@ def _open_private_posix_mutation_stage(
     forge_descriptor: int | None = None
     stage_descriptor: int | None = None
     try:
-        root_descriptor = os.open(
-            root.path, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
-        )
+        root_descriptor = os.open(root.path, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
         if _fd_identity(root_descriptor) != root._identity:
             raise RepositoryAccessDenied("repository root identity changed")
         try:
@@ -5923,9 +5938,9 @@ def _stage_posix_repository_file(
         after = os.fstat(descriptor)
         staged_data = _read_staging_descriptor(descriptor, maximum)
         staged = (_repository_file_digest(staged_data), len(staged_data))
-        if (
-            staged != expected
-            or (int(after.st_dev), int(after.st_ino)) != (int(before.st_dev), int(before.st_ino))
+        if staged != expected or (int(after.st_dev), int(after.st_ino)) != (
+            int(before.st_dev),
+            int(before.st_ino),
         ):
             raise RepositoryAccessDenied("repository file precondition changed")
         os.fsync(source_access.capability)

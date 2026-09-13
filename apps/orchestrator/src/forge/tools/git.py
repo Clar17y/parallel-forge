@@ -38,7 +38,7 @@ from forge.domain.paths import (
 )
 from forge.domain.policy import ProjectPolicy, RunnerMode
 from forge.domain.resource import WorktreeIdentity
-from forge.tools.paths import CanonicalRoot
+from forge.tools.paths import CanonicalRoot, RepositoryLockBusy
 from forge.tools.process import ProcessRunner
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -74,6 +74,10 @@ class ControlledGitError(RuntimeError):
 class ControlledSnapshotError(ControlledGitError, SnapshotReadError):
     def __init__(self, reason: SnapshotFailureReason) -> None:
         SnapshotReadError.__init__(self, reason)
+
+
+class ControlledGitBusy(ControlledGitError):
+    """A capability could not yet acquire its worktree mutation lock."""
 
 
 _CAPABILITY_SEAL = object()
@@ -1305,6 +1309,10 @@ class ControlledGit:
                                 raise
                     finally:
                         object.__getattribute__(capability, "_finish")()
+        except RepositoryLockBusy:
+            if caller_failed:
+                raise
+            raise ControlledGitBusy() from None
         except ControlledGitError:
             raise
         except OSError, RepositoryAccessDenied, RuntimeError, TypeError, ValueError, AttributeError:
@@ -2352,4 +2360,4 @@ def _parse_single_line(result: ProcessResult) -> str:
     return lines[0]
 
 
-__all__ = ["ControlledGit", "ControlledGitError", "WorktreeCapability"]
+__all__ = ["ControlledGit", "ControlledGitBusy", "ControlledGitError", "WorktreeCapability"]

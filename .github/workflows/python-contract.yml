@@ -71,7 +71,9 @@ jobs:
 
   postgres-contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # v0.2 reached 95% of the backend suite at the old 60-minute cap;
+    # leave room for its remaining acceptance cases and the Docker step.
+    timeout-minutes: 90
     services:
       postgres:
         image: postgres:17

@@ -23,6 +23,48 @@ def _make_root(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows mutation lock API")
+@pytest.mark.parametrize("code", [32, 33, 5, None])
+def test_windows_mutation_lock_distinguishes_contention_from_access_errors(
+    tmp_path, monkeypatch, code
+):
+    api = object.__new__(paths._WindowsPathApi)
+    failure = OSError("untrusted error text says busy")
+    if code is not None:
+        failure.winerror = code
+
+    def fail(_raw):
+        raise failure
+
+    api._create_file = lambda *args: 0
+    api._value = fail
+    monkeypatch.setattr(paths, "_set_last_error", lambda _: None)
+    with pytest.raises(RepositoryAccessDenied) as captured:
+        api.open_mutation_lock(tmp_path / "lock")
+    assert isinstance(captured.value, paths.RepositoryLockBusy) is (code in (32, 33))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock error classification")
+@pytest.mark.parametrize("code", ["EAGAIN", "EACCES", "EIO"])
+def test_posix_mutation_lock_distinguishes_contention_from_access_errors(
+    tmp_path, monkeypatch, code
+):
+    import errno
+    import fcntl
+
+    def fail(*args):
+        raise OSError(getattr(errno, code), "untrusted error text says busy")
+
+    monkeypatch.setattr(fcntl, "flock", fail)
+    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(RepositoryAccessDenied) as captured:
+            paths._open_posix_mutation_lock(parent)
+        assert isinstance(captured.value, paths.RepositoryLockBusy) is (code == "EAGAIN")
+    finally:
+        os.close(parent)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle close behavior")
 def test_windows_close_rejects_a_native_failure_and_preserves_invalid_sentinel() -> None:
     api = object.__new__(paths._WindowsPathApi)
@@ -808,7 +850,9 @@ def test_rename_preserves_destination_created_after_absence_check(
         )
     assert inserted
     assert not source.exists()
-    assert (root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}").read_bytes() == original
+    assert (
+        root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}"
+    ).read_bytes() == original
     assert destination.read_bytes() == b"human edit"
 
 
@@ -883,7 +927,9 @@ def test_posix_rename_retains_stage_when_destination_appears_after_staging(
             mutation_id=mutation_id,
         )
     assert destination.read_bytes() == b"human destination"
-    assert (root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}").read_bytes() == original
+    assert (
+        root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}"
+    ).read_bytes() == original
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
@@ -1035,7 +1081,10 @@ def test_mutation_source_change_is_rechecked_on_exclusive_handle(
     with pytest.raises(RepositoryAccessDenied):
         if operation == "delete":
             root.delete_file(
-                "src/main.py", expected_digest=paths._repository_file_digest(original), maximum=1024, mutation_id=uuid4()
+                "src/main.py",
+                expected_digest=paths._repository_file_digest(original),
+                maximum=1024,
+                mutation_id=uuid4(),
             )
         else:
             root.rename_file(
