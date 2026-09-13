@@ -5,10 +5,11 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+import sys
 from ctypes import wintypes as w
 from typing import Any, BinaryIO
 
-if os.name != "nt":
+if sys.platform != "win32":
     raise ImportError("Windows process primitives are available only on Windows")
 
 import msvcrt

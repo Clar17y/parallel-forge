@@ -17,7 +17,7 @@ test('run usage also exposes subscription measurements', async () => {
   render(<UsagePanel runId="run-1" />);
   expect(screen.getByRole('region', { name: 'Subscription usage' })).toBeInTheDocument();
   expect(await screen.findByText('No subscription attempts on this page.')).toBeInTheDocument();
-  expect(vi.mocked(api).mock.calls.some(([path]) => path === '/subscription-usage?run_id=run-1&offset=0&limit=25')).toBe(true);
+  expect(vi.mocked(api).mock.calls.some(([path]) => path === '/subscription-usage?run_id=run-1&offset=0&limit=25&include_assessment=true')).toBe(true);
 });
 test('usage keeps actual tokens and unknown estimates distinct and pages historical calls', async () => {
   mockLegacyUsage({ items: [{ id: 'call-1', agent_execution_id: 'execution-1',
