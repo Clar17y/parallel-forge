@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +23,117 @@ async def test_client_process_exchanges_bounded_jsonl_frames() -> None:
     assert result.frames == ({"request": "hello"},)
     assert result.return_code == 0
     assert result.receipt.pid > 0
+
+
+@pytest.mark.asyncio
+async def test_pinned_launch_consumes_verified_executable_and_file_bytes(tmp_path) -> None:
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientPinnedFile,
+        ClientProcessSupervisor,
+    )
+
+    pinned = tmp_path / "policy.json"
+    pinned.write_text('{"policy":"closed"}', encoding="utf-8")
+    executable = str(Path(sys.executable).resolve(strict=True))
+    code = (
+        "import json,pathlib,sys; sys.stdin.readline(); "
+        "path=json.loads(sys.argv[1].partition('=')[2]); "
+        "print(json.dumps({'policy':json.loads(pathlib.Path(path).read_text())}),flush=True)"
+    )
+    spec = ClientLaunchSpec(
+        argv=(executable, "-c", code, "__FORGE_PINNED_POLICY__"),
+        cwd=tmp_path,
+        environment={},
+        executable_digest=hashlib.sha256(Path(executable).read_bytes()).hexdigest(),
+        pinned_files=(
+            ClientPinnedFile(
+                argument_placeholder="__FORGE_PINNED_POLICY__",
+                argument_prefix="policy=",
+                path=pinned,
+                digest=hashlib.sha256(pinned.read_bytes()).hexdigest(),
+            ),
+        ),
+    )
+
+    session = await ClientProcessSupervisor().start(spec)
+    try:
+        try:
+            pinned.write_text('{"policy":"changed"}', encoding="utf-8")
+        except PermissionError:
+            pass
+        await session.send({})
+        frame = await session.receive()
+        result = await session.wait_closed()
+    finally:
+        await session.close(completed=True)
+
+    assert frame == {"policy": {"policy": "closed"}}
+    assert result.frames == (frame,)
+
+
+@pytest.mark.asyncio
+async def test_pinned_launch_rejects_executable_drift_before_spawn(tmp_path) -> None:
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessError,
+        ClientProcessSupervisor,
+    )
+
+    executable = tmp_path / ("client.exe" if os.name == "nt" else "client")
+    executable.write_bytes(b"trusted")
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    spec = ClientLaunchSpec(
+        argv=(str(executable),),
+        cwd=tmp_path,
+        environment={},
+        executable_digest=digest,
+    )
+    executable.write_bytes(b"changed")
+
+    with pytest.raises(ClientProcessError):
+        await ClientProcessSupervisor().start(spec)
+
+
+@pytest.mark.asyncio
+async def test_pinned_launch_rejects_file_drift_before_child_execution(tmp_path) -> None:
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientPinnedFile,
+        ClientProcessError,
+        ClientProcessSupervisor,
+    )
+
+    marker, pinned = tmp_path / "ran", tmp_path / "policy.json"
+    pinned.write_bytes(b"trusted")
+    digest = hashlib.sha256(pinned.read_bytes()).hexdigest()
+    executable = str(Path(sys.executable).resolve(strict=True))
+    spec = ClientLaunchSpec(
+        argv=(
+            executable,
+            "-c",
+            "import pathlib,sys;pathlib.Path(sys.argv[1]).write_text('ran')",
+            str(marker),
+            "__FORGE_PINNED_POLICY__",
+        ),
+        cwd=tmp_path,
+        environment={},
+        executable_digest=hashlib.sha256(Path(executable).read_bytes()).hexdigest(),
+        pinned_files=(
+            ClientPinnedFile(
+                argument_placeholder="__FORGE_PINNED_POLICY__",
+                argument_prefix="policy=",
+                path=pinned,
+                digest=digest,
+            ),
+        ),
+    )
+    pinned.write_bytes(b"changed")
+
+    with pytest.raises(ClientProcessError):
+        await ClientProcessSupervisor().start(spec)
+
+    assert not marker.exists()
 
 
 def _spec(code: str, **kwargs: object):

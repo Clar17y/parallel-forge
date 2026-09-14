@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -8,7 +9,12 @@ from typing import Any
 
 import pytest
 from capability_support import fake_capability_evidence
-from forge.agents.codex_gateway import CodexCapabilityReport, CodexGateway, CodexInstallation
+from forge.agents.codex_gateway import (
+    CodexCapabilityReport,
+    CodexGateway,
+    CodexInstallation,
+    codex_account_identity,
+)
 from forge.agents.subscription_protocol import ProviderToolCall, tool_input_schema
 from forge.application.ports.capability_evidence import CapabilityEvidenceUnavailable
 from forge.application.ports.subscription_gateway import (
@@ -18,6 +24,21 @@ from forge.application.ports.subscription_gateway import (
 from forge.domain.capability_evidence import CapabilityEvidenceScope
 from forge.domain.tool import ToolName
 from test_subscription_protocol import _request
+
+_TEST_ACCOUNT = codex_account_identity("codex@example.invalid")
+_TEST_EXECUTABLE = Path(sys.executable).resolve(strict=True)
+_TEST_EXECUTABLE_DIGEST = hashlib.sha256(_TEST_EXECUTABLE.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("email", ["", " leading@example.invalid", "trailing@example.invalid ", 1])
+def test_account_identity_accepts_only_one_bounded_exact_email(email) -> None:
+    with pytest.raises(ValueError, match="account email"):
+        codex_account_identity(email)
+
+
+def test_installation_account_is_always_an_opaque_digest() -> None:
+    with pytest.raises(ValueError, match="account"):
+        replace(_gateway("success")._installation, account="codex@example.invalid")
 
 
 @dataclass
@@ -69,8 +90,8 @@ def _report(**changes: object) -> CodexCapabilityReport:
         "billing_allowance_enforced": True,
         "native_tools_isolated": True,
         "client_home": str(Path.cwd()),
-        "account": "test-account",
-        "executable_digest": "a" * 64,
+        "account": _TEST_ACCOUNT,
+        "executable_digest": _TEST_EXECUTABLE_DIGEST,
     }
     values.update(changes)
     return CodexCapabilityReport(**values)  # type: ignore[arg-type]
@@ -88,7 +109,7 @@ def recv(method):
 def send(value): print(json.dumps(value),flush=True)
 m=recv("initialize"); send({{"jsonrpc":"2.0","id":m["id"],"result":{{"userAgent":"fake/0.153.4"}}}})
 recv("initialized")
-m=recv("account/read"); send({{"jsonrpc":"2.0","id":m["id"],"result":{{"account":{{"type":"apiKey" if scenario=="account_mismatch" else "chatgpt"}}}}}})
+m=recv("account/read"); send({{"jsonrpc":"2.0","id":m["id"],"result":{{"account":{{"type":"apiKey"}} if scenario=="account_mismatch" else {{"type":"chatgpt","email":"other@example.invalid" if scenario=="account_identity_mismatch" else "codex@example.invalid","planType":"plus"}}}}}})
 if scenario=="account_mismatch": raise SystemExit(0)
 m=recv("model/list"); models=[] if scenario=="model_missing" else [{{"id":"gpt-5.6-luna","supportedReasoningEfforts":[{{"reasoningEffort":"medium"}}]}}]
 send({{"jsonrpc":"2.0","id":m["id"],"result":{{"data":models}}}})
@@ -102,7 +123,11 @@ p=m["params"]
 assert p["model"]=="gpt-5.6-luna" and p["allowProviderModelFallback"] is False
 assert p["environments"]==[] and p["ephemeral"] is True
 if scenario=="schema":
- s=p["dynamicTools"][0]["inputSchema"]
+ namespace=p["dynamicTools"][0]
+ assert namespace["type"]=="namespace" and namespace["name"]=="forge"
+ assert len(p["dynamicTools"])==1 and len(namespace["tools"])==1
+ assert namespace["tools"][0]["name"]=="forge_repository_read_file"
+ s=namespace["tools"][0]["inputSchema"]
  assert s["type"]=="object" and s["additionalProperties"] is False
  assert "path" in s["properties"] and "path" in s["required"]
 send({{"jsonrpc":"2.0","id":m["id"],"result":{{"thread":{{"id":"thread-actual"}},"model":"gpt-5.6-luna"}}}})
@@ -130,15 +155,21 @@ elif scenario=="malformed_final":
 elif scenario=="native_request":
  send({{"jsonrpc":"2.0","id":90,"method":"item/fileChange/request","params":{{"threadId":"thread-actual","turnId":"turn-actual"}}}})
 elif scenario=="stale_tool":
- send({{"jsonrpc":"2.0","id":80,"method":"item/tool/call","params":{{"callId":"stale","threadId":"thread-actual","turnId":"old-turn","tool":"repository.read_file","arguments":{{"path":"README.md"}}}}}})
+ send({{"jsonrpc":"2.0","id":80,"method":"item/tool/call","params":{{"callId":"stale","threadId":"thread-actual","turnId":"old-turn","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":"README.md"}}}}}})
+elif scenario in ("wrong_namespace", "missing_namespace", "raw_tool_name"):
+ params={{"callId":"call-actual","threadId":"thread-actual","turnId":"turn-actual","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":"README.md"}}}}
+ if scenario=="wrong_namespace": params["namespace"]="other"
+ if scenario=="missing_namespace": params.pop("namespace")
+ if scenario=="raw_tool_name": params["tool"]="repository.read_file"
+ send({{"jsonrpc":"2.0","id":80,"method":"item/tool/call","params":params}})
 elif scenario in ("tool", "schema", "cancel"):
- send({{"jsonrpc":"2.0","id":80,"method":"item/tool/call","params":{{"callId":"call-actual","threadId":"thread-actual","turnId":"turn-actual","tool":"repository.read_file","arguments":{{"path":"README.md"}}}}}})
+ send({{"jsonrpc":"2.0","id":80,"method":"item/tool/call","params":{{"callId":"call-actual","threadId":"thread-actual","turnId":"turn-actual","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":"README.md"}}}}}})
  r=recv(None) if False else json.loads(sys.stdin.readline())
  assert r["id"]==80 and r["result"]["success"] is True
  if scenario=="cancel":
   time.sleep(30)
  else:
-  send({{"jsonrpc":"2.0","id":81,"method":"item/tool/call","params":{{"callId":"call-actual","threadId":"thread-actual","turnId":"turn-actual","tool":"repository.read_file","arguments":{{"path":"README.md"}}}}}})
+  send({{"jsonrpc":"2.0","id":81,"method":"item/tool/call","params":{{"callId":"call-actual","threadId":"thread-actual","turnId":"turn-actual","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":"README.md"}}}}}})
   r=json.loads(sys.stdin.readline()); assert r["id"]==81
   send({{"method":"thread/tokenUsage/updated","params":{{"threadId":"thread-actual","turnId":"turn-actual","tokenUsage":{{"total":{{"inputTokens":13,"outputTokens":5,"cachedInputTokens":2}}}}}}}})
   send({{"method":"thread/status/changed","params":{{"threadId":"thread-actual","status":{{"type":"active"}}}}}})
@@ -147,7 +178,7 @@ elif scenario in ("tool", "schema", "cancel"):
   send({{"method":"turn/completed","params":{{"threadId":"thread-actual","turn":{{"id":"turn-actual","items":[],"status":"completed"}}}}}})
 elif scenario=="duplicate_conflict":
  for rid,path in ((80,"README.md"),(81,"other.txt")):
-  send({{"jsonrpc":"2.0","id":rid,"method":"item/tool/call","params":{{"callId":"same","threadId":"thread-actual","turnId":"turn-actual","tool":"repository.read_file","arguments":{{"path":path}}}}}})
+  send({{"jsonrpc":"2.0","id":rid,"method":"item/tool/call","params":{{"callId":"same","threadId":"thread-actual","turnId":"turn-actual","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":path}}}}}})
   if rid==80: json.loads(sys.stdin.readline())
 else:
  send({{"method":"item/completed","params":{{"threadId":"thread-actual","turnId":"turn-actual","item":{{"id":"i","type":"agentMessage","text":final}}}}}})
@@ -168,13 +199,13 @@ def _gateway(
 ) -> CodexGateway:
     return CodexGateway(
         CodexInstallation(
-            executable=sys.executable,
+            executable=str(_TEST_EXECUTABLE),
             cwd=".",
             model="gpt-5.6-luna",
             effort="medium",
             client_home=str(Path.cwd()),
-            account="test-account",
-            executable_digest="a" * 64,
+            account=_TEST_ACCOUNT,
+            executable_digest=_TEST_EXECUTABLE_DIGEST,
             quota_limit_id=quota_limit_id,
             script=("-c", _script(scenario)),
             duration_seconds=duration,
@@ -232,9 +263,25 @@ async def test_runtime_account_and_model_catalog_must_match(
 
 
 @pytest.mark.asyncio
+async def test_runtime_account_identity_must_match_before_model_discovery() -> None:
+    result = await _gateway("account_identity_mismatch").execute(_request())
+    assert result.failure is SubscriptionFailure.AUTHENTICATION
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "scenario",
-    ["foreign", "stale_tool", "duplicate_conflict", "malformed_final", "native_request"],
+    [
+        "foreign",
+        "stale_tool",
+        "duplicate_conflict",
+        "malformed_final",
+        "native_request",
+        "wrong_namespace",
+        "missing_namespace",
+        "raw_tool_name",
+    ],
 )
 async def test_unadmitted_or_malformed_messages_fail_closed(scenario: str) -> None:
     broker = _Broker()

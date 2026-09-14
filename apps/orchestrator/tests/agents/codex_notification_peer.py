@@ -14,9 +14,17 @@ assert configuration["forced_login_method"] == "chatgpt"
 assert configuration["model"] == model and configuration["model_reasoning_effort"] == effort
 assert configuration["web_search"] == "disabled"
 assert configuration["notify"] == [] and configuration["project_doc_max_bytes"] == 0
-assert configuration["features"] and all(
-    value is False for value in configuration["features"].values()
-)
+
+
+def flatten(values, prefix=""):
+    result = {}
+    for key, value in values.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            result.update(flatten(value, path))
+        else:
+            result[path] = value
+    return result
 
 
 def receive(method):
@@ -47,7 +55,10 @@ respond(receive("initialize"), {"userAgent": "offline-fake/0.153.4"})
 receive("initialized")
 account = receive("account/read")
 limits()
-respond(account, {"account": {"type": "chatgpt"}})
+respond(
+    account,
+    {"account": {"type": "chatgpt", "email": "codex@example.invalid", "planType": "plus"}},
+)
 respond(
     receive("model/list"),
     {"data": [{"id": model, "supportedReasoningEfforts": [{"reasoningEffort": effort}]}]},
@@ -57,11 +68,7 @@ thread = receive("thread/start")
 assert thread["params"]["environments"] == []
 assert thread["params"]["allowProviderModelFallback"] is False
 thread_configuration = dict(thread["params"]["config"])
-for feature, enabled in configuration["features"].items():
-    assert thread_configuration.pop("features." + feature) is enabled
-assert thread_configuration == {
-    key: value for key, value in configuration.items() if key != "features"
-}
+assert thread_configuration == flatten(configuration)
 respond(thread, {"thread": {"id": "thread-actual"}, "model": model})
 turn = receive("turn/start")
 assert turn["params"]["model"] == model and turn["params"]["effort"] == effort
@@ -96,7 +103,8 @@ if scenario in {"partial_tool", "plan"}:
             "params": {
                 **identity,
                 "callId": "read-once",
-                "tool": "repository.read_file",
+                "namespace": "forge",
+                "tool": "forge_repository_read_file",
                 "arguments": {"path": "README.md"},
             },
         }
@@ -143,7 +151,8 @@ else:
                 "params": {
                     **identity,
                     "callId": "too-late",
-                    "tool": "repository.read_file",
+                    "namespace": "forge",
+                    "tool": "forge_repository_read_file",
                     "arguments": {"path": "README.md"},
                 },
             }

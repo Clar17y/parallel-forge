@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import hmac
+import json
 import os
+import stat
 import subprocess
 import sys
 from ctypes import wintypes as w
-from typing import Any, BinaryIO
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, BinaryIO, Protocol
 
 if sys.platform != "win32":
     raise ImportError("Windows process primitives are available only on Windows")
@@ -111,7 +117,61 @@ _wait = _api("WaitForSingleObject", (H, w.DWORD), w.DWORD)
 _exit_code = _api("GetExitCodeProcess", (H, ctypes.POINTER(w.DWORD)), w.BOOL)
 _times = _api("GetProcessTimes", (H, P, P, P, P), w.BOOL)
 _open = _api("OpenProcess", (w.DWORD, w.BOOL, w.DWORD), H)
+_create_file = _api("CreateFileW", (w.LPCWSTR, w.DWORD, w.DWORD, P, w.DWORD, w.DWORD, H), H)
 _windows_directory = _api("GetSystemWindowsDirectoryW", (w.LPWSTR, w.UINT), w.UINT)
+
+
+class _PinnedFile(Protocol):
+    @property
+    def argument_placeholder(self) -> str: ...
+
+    @property
+    def argument_prefix(self) -> str: ...
+
+    @property
+    def path(self) -> str | os.PathLike[str]: ...
+
+    @property
+    def digest(self) -> str: ...
+
+
+def _locked_verified_file(path: str, digest: str) -> BinaryIO:
+    """Open bytes with write/delete sharing denied and verify that held handle."""
+
+    handle = _create_file(path, 0x80000000, 1, None, 3, 0x80, None)
+    if not handle or handle == ctypes.c_void_p(-1).value:
+        raise OSError(ctypes.get_last_error(), "CreateFileW")
+    descriptor = -1
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+        handle = None
+        stream = os.fdopen(descriptor, "rb", buffering=0)
+        descriptor = -1
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if handle:
+            _close(handle)
+    try:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError("pinned file is not regular")
+        observed = hashlib.sha256()
+        while payload := stream.read(1024 * 1024):
+            observed.update(payload)
+        after = os.fstat(stream.fileno())
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) or not hmac.compare_digest(observed.hexdigest(), digest):
+            raise OSError("pinned file identity differs")
+        stream.seek(0)
+        return stream
+    except BaseException:
+        stream.close()
+        raise
 
 
 def system_environment() -> dict[str, str]:
@@ -150,10 +210,19 @@ def identity_token(pid: int) -> str | None:
 
 
 class OwnedWindowsProcess:
-    def __init__(self, pi: ProcessInfo, job: int, streams: tuple[BinaryIO, BinaryIO, BinaryIO]):
+    def __init__(
+        self,
+        pi: ProcessInfo,
+        job: int,
+        streams: tuple[BinaryIO, BinaryIO, BinaryIO],
+        pinned_files: tuple[BinaryIO, ...] = (),
+        pinned_paths: dict[str, str] | None = None,
+    ):
         self.process, self.thread, self.pid = pi.process, pi.thread, pi.pid
         self.job: int | None = job
         self.stdin, self.stdout, self.stderr = streams
+        self._pinned_files = pinned_files
+        self.pinned_paths = MappingProxyType(dict(pinned_paths or {}))
         self._token = _token(self.process)
 
     def token(self) -> str:
@@ -186,6 +255,9 @@ class OwnedWindowsProcess:
             self.job = None
         for stream in (self.stdin, self.stdout, self.stderr):
             stream.close()
+        for stream in self._pinned_files:
+            stream.close()
+        self._pinned_files = ()
         for name in ("thread", "process"):
             handle = getattr(self, name)
             if handle:
@@ -194,15 +266,32 @@ class OwnedWindowsProcess:
 
 
 def launch_suspended(
-    argv: tuple[str, ...], cwd: str, environment: dict[str, str]
+    argv: tuple[str, ...],
+    cwd: str,
+    environment: dict[str, str],
+    *,
+    executable_digest: str | None = None,
+    pinned_files: tuple[_PinnedFile, ...] = (),
 ) -> OwnedWindowsProcess:
     """Synchronous ownership transition; any failure also disposes a suspended child."""
     handles: list[int] = []
     streams: list[BinaryIO] = []
+    locked_files: list[BinaryIO] = []
+    pinned_paths: dict[str, str] = {}
     job = None
     pi = ProcessInfo()
     attributes = None
     try:
+        if executable_digest is not None:
+            locked_files.append(_locked_verified_file(argv[0], executable_digest))
+        resolved_argv = list(argv)
+        for pinned in pinned_files:
+            locked_files.append(_locked_verified_file(str(pinned.path), pinned.digest))
+            path = Path(pinned.path).as_posix()
+            pinned_paths[pinned.argument_placeholder] = path
+            index = resolved_argv.index(pinned.argument_placeholder)
+            resolved_argv[index] = pinned.argument_prefix + json.dumps(path)
+        argv = tuple(resolved_argv)
         job = _create_job(None, None)
         _check(job, "CreateJobObjectW")
         limits = ExtendedLimits()
@@ -282,10 +371,17 @@ def launch_suspended(
             except BaseException:
                 os.close(fd)
                 raise
-        owned = OwnedWindowsProcess(pi, job, (streams[0], streams[1], streams[2]))
+        owned = OwnedWindowsProcess(
+            pi,
+            job,
+            (streams[0], streams[1], streams[2]),
+            tuple(locked_files),
+            pinned_paths,
+        )
         job = None
         pi = ProcessInfo()
         streams = []
+        locked_files = []
         return owned
     except BaseException:
         if pi.process:
@@ -298,6 +394,8 @@ def launch_suspended(
         for handle in handles:
             _close(handle)
         for stream in streams:
+            stream.close()
+        for stream in locked_files:
             stream.close()
         for remaining_handle in (pi.thread, pi.process, job):
             if remaining_handle:

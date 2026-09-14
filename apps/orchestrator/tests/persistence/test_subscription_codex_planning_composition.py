@@ -1,12 +1,17 @@
 """Forge's concrete Codex adapter reaches plan approval using a supervised fake peer."""
 
+import hashlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import test_subscription_planning_start as planning_fixture
-from forge.agents.codex_gateway import CodexCapabilityReport, CodexInstallation
+from forge.agents.codex_gateway import (
+    CodexCapabilityReport,
+    CodexInstallation,
+    codex_account_identity,
+)
 from forge.agents.codex_runtime import CodexRuntimeAdapter
 from forge.application.services.projects import PolicyUpdateRequest, ProjectService
 from forge.application.services.subscription_plan_gate import SubscriptionPlanGateOutcome
@@ -69,8 +74,10 @@ async def test_concrete_codex_registration_uses_bound_read_and_preserves_human_p
         client_home=str(home),
         model=primary.model,
         effort=primary.effort.value,
-        account="test-account",
-        executable_digest="a" * 64,
+        account=codex_account_identity("codex@example.invalid"),
+        executable_digest=hashlib.sha256(
+            Path(sys.executable).resolve(strict=True).read_bytes()
+        ).hexdigest(),
         script=(
             str(Path(__file__).parents[1] / "agents/codex_notification_peer.py"),
             "plan",

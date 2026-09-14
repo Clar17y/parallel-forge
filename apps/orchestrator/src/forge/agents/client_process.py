@@ -9,10 +9,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import hashlib
+import hmac
 import json
 import math
 import os
+import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -26,6 +30,8 @@ from uuid import uuid4
 
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
 from forge.observability.redaction import Redactor
+
+_SHA256 = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
 
 
 def _json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -67,11 +73,45 @@ class ProcessIdentityStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ClientPinnedFile:
+    """One launch argument backed by identity-stable verified file bytes."""
+
+    argument_placeholder: str
+    argument_prefix: str
+    path: str | os.PathLike[str]
+    digest: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.argument_placeholder) is not str
+            or re.fullmatch(r"__[A-Z0-9_]{1,124}__", self.argument_placeholder) is None
+            or type(self.argument_prefix) is not str
+            or "\0" in self.argument_prefix
+            or len(self.argument_prefix.encode("utf-8")) > 256
+            or type(self.digest) is not str
+            or _SHA256.fullmatch(self.digest) is None
+        ):
+            raise ValueError("invalid pinned client file")
+        path = Path(self.path)
+        if not path.is_absolute():
+            raise ValueError("pinned client file must be absolute")
+        try:
+            canonical = path.resolve(strict=True)
+        except OSError:
+            raise ValueError("pinned client file is unavailable") from None
+        if not canonical.is_file():
+            raise ValueError("pinned client file must be regular")
+        object.__setattr__(self, "path", str(canonical))
+
+
+@dataclass(frozen=True, slots=True)
 class ClientLaunchSpec:
     argv: tuple[str, ...] = field(repr=False)
     cwd: str | os.PathLike[str]
     environment: Mapping[str, str] = field(repr=False)
     allowed_environment: frozenset[str] = frozenset()
+    executable_digest: str | None = None
+    pinned_files: tuple[ClientPinnedFile, ...] = field(default=(), repr=False)
     duration_seconds: float = 30.0
     settlement_seconds: float = 2.0
     stdout_max_bytes: int = 1024 * 1024
@@ -82,8 +122,27 @@ class ClientLaunchSpec:
         argv = tuple(self.argv)
         if not argv or any(type(a) is not str or not a or "\0" in a for a in argv):
             raise ValueError("invalid client argv")
-        if not Path(argv[0]).is_absolute():
+        executable = Path(argv[0])
+        if not executable.is_absolute():
             raise ValueError("client executable must be absolute")
+        if self.executable_digest is not None:
+            if (
+                type(self.executable_digest) is not str
+                or _SHA256.fullmatch(self.executable_digest) is None
+            ):
+                raise ValueError("client executable digest must be SHA-256")
+            try:
+                argv = (str(executable.resolve(strict=True)), *argv[1:])
+            except OSError:
+                raise ValueError("client executable is unavailable") from None
+        pins = tuple(self.pinned_files)
+        if any(not isinstance(pin, ClientPinnedFile) for pin in pins) or len(
+            {pin.argument_placeholder for pin in pins}
+        ) != len(pins):
+            raise ValueError("pinned client files must be distinct")
+        for pin in pins:
+            if argv.count(pin.argument_placeholder) != 1:
+                raise ValueError("pinned client placeholder must be one complete argument")
         if (
             type(self.duration_seconds) not in (int, float)
             or not math.isfinite(self.duration_seconds)
@@ -131,6 +190,7 @@ class ClientLaunchSpec:
             env = {key: value for key, value in env.items() if key.upper() != "SYSTEMROOT"} | system
             allowed |= frozenset(system)
         object.__setattr__(self, "argv", argv)
+        object.__setattr__(self, "pinned_files", pins)
         object.__setattr__(self, "cwd", str(Path(self.cwd).resolve(strict=True)))
         object.__setattr__(self, "allowed_environment", allowed)
         object.__setattr__(self, "environment", MappingProxyType(env))
@@ -214,6 +274,7 @@ class _OwnedProcess(Protocol):
     stdin: IO[bytes]
     stdout: IO[bytes]
     stderr: IO[bytes]
+    pinned_paths: Mapping[str, str]
 
     def token(self) -> str: ...
     def resume(self) -> None: ...
@@ -222,19 +283,97 @@ class _OwnedProcess(Protocol):
     def close(self) -> None: ...
 
 
+def _write_all(fd: int, payload: bytes) -> None:
+    remaining = memoryview(payload)
+    while remaining:
+        count = os.write(fd, remaining)
+        if count <= 0:
+            raise OSError("short pinned file write")
+        remaining = remaining[count:]
+
+
+def _sealed_verified_file(path: str, digest: str, *, executable: bool) -> int:
+    """Copy exact source bytes into a sealed Linux descriptor and verify the copy."""
+
+    if not hasattr(os, "memfd_create") or not Path("/proc/self/fd").is_dir():
+        raise OSError("identity-stable pinned files are unavailable")
+    source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    source = os.open(path, source_flags)
+    target = -1
+    try:
+        if not stat.S_ISREG(os.fstat(source).st_mode):
+            raise OSError("pinned source is not regular")
+        flags = getattr(os, "MFD_CLOEXEC", 0) | getattr(os, "MFD_ALLOW_SEALING", 0)
+        if executable:
+            flags |= getattr(os, "MFD_EXEC", 0)
+        target = os.memfd_create("forge-client-image" if executable else "forge-client-file", flags)
+        observed = hashlib.sha256()
+        while payload := os.read(source, 1024 * 1024):
+            observed.update(payload)
+            _write_all(target, payload)
+        if not hmac.compare_digest(observed.hexdigest(), digest):
+            raise OSError("pinned file identity differs")
+        os.fchmod(target, 0o500 if executable else 0o400)
+        fcntl = cast(Any, __import__("fcntl"))
+        seals = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+        fcntl.fcntl(target, fcntl.F_ADD_SEALS, seals)
+        os.lseek(target, 0, os.SEEK_SET)
+        result = int(target)
+        target = -1
+        return result
+    finally:
+        os.close(source)
+        if target >= 0:
+            os.close(target)
+
+
+def _resolved_pinned_argv(
+    argv: tuple[str, ...], pins: tuple[ClientPinnedFile, ...], paths: Mapping[str, str]
+) -> tuple[str, ...]:
+    result = list(argv)
+    for pin in pins:
+        index = result.index(pin.argument_placeholder)
+        result[index] = pin.argument_prefix + json.dumps(paths[pin.argument_placeholder])
+    return tuple(result)
+
+
 class _PosixProcess:
     def __init__(self, spec: ClientLaunchSpec) -> None:
-        self.process = subprocess.Popen(
-            spec.argv,
-            cwd=spec.cwd,
-            env=dict(spec.environment),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-            start_new_session=True,
-            close_fds=True,
-        )
+        descriptors: list[int] = []
+        executable: str | None = None
+        pinned_paths: dict[str, str] = {}
+        try:
+            if spec.executable_digest is not None:
+                descriptor = _sealed_verified_file(
+                    spec.argv[0], spec.executable_digest, executable=True
+                )
+                descriptors.append(descriptor)
+                executable = f"/proc/self/fd/{descriptor}"
+            for pin in spec.pinned_files:
+                descriptor = _sealed_verified_file(str(pin.path), pin.digest, executable=False)
+                descriptors.append(descriptor)
+                pinned_paths[pin.argument_placeholder] = f"/proc/self/fd/{descriptor}"
+            argv = _resolved_pinned_argv(spec.argv, spec.pinned_files, pinned_paths)
+            self.process = subprocess.Popen(
+                argv,
+                executable=executable,
+                cwd=spec.cwd,
+                env=dict(spec.environment),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+                start_new_session=True,
+                close_fds=True,
+                pass_fds=tuple(descriptors),
+            )
+        except BaseException:
+            for descriptor in descriptors:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            raise
+        self._pinned_descriptors = descriptors
+        self.pinned_paths: Mapping[str, str] = MappingProxyType(pinned_paths)
         assert (
             self.process.stdin is not None
             and self.process.stdout is not None
@@ -276,6 +415,10 @@ class _PosixProcess:
     def close(self) -> None:
         for stream in (self.stdin, self.stdout, self.stderr):
             stream.close()
+        for descriptor in self._pinned_descriptors:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        self._pinned_descriptors = []
 
 
 def _spawn(spec: ClientLaunchSpec) -> _OwnedProcess:
@@ -284,9 +427,18 @@ def _spawn(spec: ClientLaunchSpec) -> _OwnedProcess:
             from forge.agents.client_process_win32 import launch_suspended
 
             return cast(
-                _OwnedProcess, launch_suspended(spec.argv, str(spec.cwd), dict(spec.environment))
+                _OwnedProcess,
+                launch_suspended(
+                    spec.argv,
+                    str(spec.cwd),
+                    dict(spec.environment),
+                    executable_digest=spec.executable_digest,
+                    pinned_files=spec.pinned_files,
+                ),
             )
         return _PosixProcess(spec)
+    except ClientProcessError:
+        raise
     except OSError, ValueError:
         raise ClientProcessError("official client launch failed") from None
 
@@ -348,6 +500,14 @@ class ClientProcessSession:
                 if v and any(s in k.lower() for s in ("key", "token", "secret", "password"))
             ]
         )
+
+    def pinned_path(self, argument_placeholder: str) -> str:
+        """Return the identity-stable path substituted for one pinned argument."""
+
+        try:
+            return self.process.pinned_paths[argument_placeholder]
+        except KeyError:
+            raise ClientProcessError("pinned client file is unavailable") from None
 
     def begin(self) -> None:
         self._tasks = [

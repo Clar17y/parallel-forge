@@ -1,5 +1,6 @@
 """Codex primary protocol completes the offline counter delivery to the human PR gate."""
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -7,7 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 import test_subscription_counter_acceptance as counter_fixture
-from forge.agents.codex_gateway import CodexCapabilityReport, CodexInstallation
+from forge.agents.codex_gateway import (
+    CodexCapabilityReport,
+    CodexInstallation,
+    codex_account_identity,
+)
 from forge.agents.codex_runtime import CodexRuntimeAdapter
 from forge.application.services.subscription_requests import SubscriptionRequestBuilder
 from forge.artifacts.filesystem import FilesystemArtifactStore
@@ -73,8 +78,10 @@ class CodexCounterScript(CounterScript):
             client_home=str(home),
             model=PRIMARY.model,
             effort=PRIMARY.effort.value,
-            account="test-account",
-            executable_digest="a" * 64,
+            account=codex_account_identity("codex@example.invalid"),
+            executable_digest=hashlib.sha256(
+                Path(sys.executable).resolve(strict=True).read_bytes()
+            ).hexdigest(),
             duration_seconds=60,
             script=(str(Path(__file__).parents[1] / "agents/codex_counter_peer.py"),),
         )

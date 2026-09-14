@@ -48,6 +48,7 @@ asyncio_mode = "auto"
 markers = [
   "integration: requires local PostgreSQL or Docker",
   "docker: requires a running Docker daemon",
+  "official_client: requires an installed pinned official client but makes no provider call",
   "live_provider: requires an explicitly configured paid model provider",
   "live_github: requires an explicitly configured disposable GitHub repository",
 ]

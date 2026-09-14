@@ -18,8 +18,18 @@ assert configuration["model_provider"] == "openai"
 assert configuration["forced_login_method"] == "chatgpt"
 assert configuration["web_search"] == "disabled" and configuration["notify"] == []
 assert configuration["project_doc_max_bytes"] == 0
-assert all(value is False for value in configuration["features"].values())
 PATHS = ["src/counter.py", "tests/test_counter.py"]
+
+
+def flatten(values, prefix=""):
+    result = {}
+    for key, value in values.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            result.update(flatten(value, path))
+        else:
+            result[path] = value
+    return result
 
 
 def receive(method):
@@ -55,7 +65,10 @@ def record(value):
 
 respond(receive("initialize"), {"userAgent": "offline-counter/0.153.4"})
 receive("initialized")
-respond(receive("account/read"), {"account": {"type": "chatgpt"}})
+respond(
+    receive("account/read"),
+    {"account": {"type": "chatgpt", "email": "codex@example.invalid", "planType": "plus"}},
+)
 respond(
     receive("model/list"),
     {"data": [{"id": model, "supportedReasoningEfforts": [{"reasoningEffort": effort}]}]},
@@ -65,10 +78,10 @@ thread = receive("thread/start")
 assert thread["params"]["environments"] == []
 assert thread["params"]["allowProviderModelFallback"] is False
 configured = dict(thread["params"]["config"])
-for feature, enabled in configuration["features"].items():
-    assert configured.pop("features." + feature) is enabled
-assert configured == {key: value for key, value in configuration.items() if key != "features"}
-advertised_tools = {tool["name"] for tool in thread["params"]["dynamicTools"]}
+assert configured == flatten(configuration)
+dynamic = thread["params"]["dynamicTools"]
+assert len(dynamic) == 1 and dynamic[0]["type"] == "namespace" and dynamic[0]["name"] == "forge"
+advertised_tools = {tool["name"] for tool in dynamic[0]["tools"]}
 respond(thread, {"thread": {"id": "counter-thread"}, "model": model})
 turn = receive("turn/start")
 params = turn["params"]
@@ -87,7 +100,8 @@ call_number = 80
 
 def call(name, arguments):
     global call_number
-    assert name in advertised_tools
+    wire_name = "forge_" + name.replace(".", "_").replace("-", "_")
+    assert wire_name in advertised_tools
     call_number += 1
     send(
         {
@@ -96,7 +110,8 @@ def call(name, arguments):
             "params": {
                 **identity,
                 "callId": str(call_number),
-                "tool": name,
+                "namespace": "forge",
+                "tool": wire_name,
                 "arguments": arguments,
             },
         }

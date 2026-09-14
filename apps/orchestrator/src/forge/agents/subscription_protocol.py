@@ -124,7 +124,7 @@ class ProviderToolCall:
         object.__setattr__(self, "arguments", freeze_context(self.arguments))
 
 
-def decode_tool_call(payload: object) -> ProviderToolCall:
+def decode_tool_call(payload: object, *, expected_namespace: str | None = None) -> ProviderToolCall:
     if not isinstance(payload, Mapping) or set(payload) - {
         "callId",
         "threadId",
@@ -134,7 +134,7 @@ def decode_tool_call(payload: object) -> ProviderToolCall:
         "namespace",
     }:
         raise ProtocolError("invalid tool callback shape")
-    if payload.get("namespace") is not None:
+    if payload.get("namespace") != expected_namespace:
         raise ProtocolError("unregistered tool namespace")
     try:
         return ProviderToolCall(

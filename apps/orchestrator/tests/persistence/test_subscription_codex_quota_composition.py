@@ -1,6 +1,7 @@
 """Pinned-shape fake Codex notifications reach durable production quota admission."""
 
 import asyncio
+import hashlib
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,7 +10,11 @@ from uuid import uuid4
 
 import pytest
 import test_subscription_planning_start as planning_fixture
-from forge.agents.codex_gateway import CodexCapabilityReport, CodexInstallation
+from forge.agents.codex_gateway import (
+    CodexCapabilityReport,
+    CodexInstallation,
+    codex_account_identity,
+)
 from forge.agents.codex_runtime import CodexRuntimeAdapter
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.runs import RunService
@@ -91,8 +96,10 @@ async def test_codex_notifications_suppress_restarted_concurrent_pollers_and_adm
         effort=primary.effort.value,
         quota_limit_id=pool,
         client_home=str(client_home),
-        account="test-account",
-        executable_digest="a" * 64,
+        account=codex_account_identity("codex@example.invalid"),
+        executable_digest=hashlib.sha256(
+            Path(sys.executable).resolve(strict=True).read_bytes()
+        ).hexdigest(),
         duration_seconds=10,
         script=(
             str(Path(__file__).parents[1] / "agents/codex_notification_peer.py"),

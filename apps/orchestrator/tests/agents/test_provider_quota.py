@@ -200,6 +200,9 @@ async def test_gateways_keep_exhaustion_when_client_stop_is_uncertain(
     gateway = claude_gateway("success") if provider == "claude" else codex_gateway("success")
 
     class Session:
+        def pinned_path(self, argument_placeholder):
+            return "fake-pinned-catalog"
+
         async def close(self, **kwargs):
             receipt = ClientProcessResult(
                 ClientProcessReceipt("fake-launch", 42, "fake-process", 0),

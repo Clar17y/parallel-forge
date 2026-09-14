@@ -10,7 +10,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
 
-from forge.agents.codex_gateway import CodexCapabilityReport, CodexInstallation
+from forge.agents.codex_gateway import (
+    CodexCapabilityReport,
+    CodexInstallation,
+    codex_account_identity,
+)
 from forge.agents.codex_runtime import CodexRuntimeAdapter
 from forge.domain.capability_evidence import (
     CapabilityEvidenceManifest,
@@ -58,8 +62,10 @@ async def main():
             client_home=str(root / "client-home"),
             model="gpt-6-astra",
             effort="low",
-            account="test-account",
-            executable_digest="a" * 64,
+            account=codex_account_identity("codex@example.invalid"),
+            executable_digest=hashlib.sha256(
+                Path(sys.executable).resolve(strict=True).read_bytes()
+            ).hexdigest(),
             script=(
                 str(Path(__file__).parents[1] / "agents/codex_notification_peer.py"),
                 "plan",

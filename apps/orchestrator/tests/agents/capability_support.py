@@ -24,6 +24,7 @@ def fake_capability_evidence(
     client_home: str,
     account: str,
     verifier_id: str,
+    verifier_version: str = "1",
 ) -> ResolvedCapabilityEvidence:
     observed = datetime(2026, 9, 13, tzinfo=UTC)
     identity = capability_identity(
@@ -37,7 +38,7 @@ def fake_capability_evidence(
         evidence_id=uuid5(NAMESPACE_URL, f"forge-fake:{identity.digest}:{verifier_id}"),
         identity=identity,
         verifier_id=verifier_id,
-        verifier_version="1",
+        verifier_version=verifier_version,
         observed_at=observed,
         expires_at=observed + timedelta(hours=1),
         proofs=tuple(
