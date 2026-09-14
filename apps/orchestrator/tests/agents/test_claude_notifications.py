@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from forge.agents.capability_verification import capability_scope
 from forge.agents.claude_gateway import _QuotaState
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
@@ -18,6 +19,7 @@ from test_claude_supervised import (
     _gateway,
     _report,
     _UncertainLifecycle,
+    _Verifier,
 )
 
 NOW = datetime(2026, 9, 13, 12, tzinfo=UTC)
@@ -164,9 +166,16 @@ async def test_partial_tool_and_uncertain_settlement_preserve_evidence():
 
 def test_quota_windows_are_an_exact_verified_installation_binding():
     installation = gateway("quota")._installation
-    assert _report(quota_limit_types=WINDOWS).admits(installation)
-    assert not _report().admits(installation)
-    assert not _report(quota_limit_types=frozenset({"seven_day_sonnet"})).admits(installation)
+    scope = capability_scope(_anthropic_request())
+
+    def bound(report):
+        return _Verifier(report).verify(installation, scope)
+
+    assert bound(_report(quota_limit_types=WINDOWS)).admits(installation, scope)
+    assert not bound(_report()).admits(installation, scope)
+    assert not bound(_report(quota_limit_types=frozenset({"seven_day_sonnet"}))).admits(
+        installation, scope
+    )
     for invalid in (
         "five_hour",
         {"five_hour"},

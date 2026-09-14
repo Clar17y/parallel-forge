@@ -83,6 +83,8 @@ def test_installation_requires_explicit_model_identity(tmp_path, model):
             cwd=str(tmp_path),
             home=str(tmp_path),
             model=model,
+            account="test-account",
+            executable_digest="c" * 64,
         )
 
 
@@ -94,6 +96,8 @@ def test_unimplemented_effort_is_not_silently_mapped(tmp_path, effort):
             cwd=str(tmp_path),
             home=str(tmp_path),
             model="gemini-test",
+            account="test-account",
+            executable_digest="c" * 64,
             effort=effort,
         )
 
@@ -115,5 +119,7 @@ def test_installation_cannot_add_flags_that_override_forge_controls(tmp_path, fl
             cwd=str(tmp_path),
             home=str(tmp_path),
             model="gemini-test",
+            account="test-account",
+            executable_digest="c" * 64,
             script=(flag, "--acp"),
         )

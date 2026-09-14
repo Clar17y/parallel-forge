@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +13,11 @@ from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
+from forge.agents.capability_verification import (
+    capability_report,
+    capability_scope,
+    validate_installation_identity,
+)
 from forge.agents.claude_protocol import ClaudeStreamCodec
 from forge.agents.client_process import (
     ClientLaunchSpec,
@@ -34,12 +39,18 @@ from forge.agents.subscription_protocol import (
     output_schema,
     tool_input_schema,
 )
+from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionGateway,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
+)
+from forge.domain.capability_evidence import (
+    CapabilityEvidenceScope,
+    ResolvedCapabilityEvidence,
+    capability_identity,
 )
 from forge.domain.provider_quota import (
     QuotaExhaustion,
@@ -62,6 +73,8 @@ class ClaudeInstallation:
     model: str
     effort: str
     client_home: str = field(repr=False)
+    account: str
+    executable_digest: str
     script: tuple[str, ...] = (
         "-p",
         "--input-format",
@@ -97,6 +110,7 @@ class ClaudeInstallation:
             or not self.quota_limit_types <= _ALLOWANCE_WINDOWS
         ):
             raise ValueError("Claude quota binding requires known allowance windows")
+        validate_installation_identity(self.account, self.executable_digest)
         object.__setattr__(self, "script", tuple(self.script))
         object.__setattr__(self, "cwd", str(Path(self.cwd).resolve(strict=True)))
         object.__setattr__(self, "client_home", str(Path(self.client_home).resolve(strict=True)))
@@ -114,8 +128,21 @@ class ClaudeCapabilityReport:
     allowance_only_enforced: bool = False
     quota_limit_types: frozenset[str] = frozenset()
     client_home: str | None = field(default=None, repr=False)
+    account: str | None = None
+    executable_digest: str | None = None
+    evidence: ResolvedCapabilityEvidence | None = field(default=None, repr=False)
 
-    def admits(self, installation: ClaudeInstallation) -> bool:
+    def admits(self, installation: ClaudeInstallation, scope: CapabilityEvidenceScope) -> bool:
+        try:
+            identity = capability_identity(
+                scope=scope,
+                client_version=_VERSION,
+                executable_digest=installation.executable_digest,
+                client_home=installation.client_home,
+                account=installation.account,
+            )
+        except TypeError, ValueError:
+            return False
         return (
             self.installed_version == _VERSION
             and self.subscription_auth is True
@@ -126,13 +153,20 @@ class ClaudeCapabilityReport:
             and self.strict_mcp is True
             and self.allowance_only_enforced is True
             and self.client_home == installation.client_home
+            and self.account == installation.account
+            and self.executable_digest == installation.executable_digest
             and type(self.quota_limit_types) is frozenset
             and self.quota_limit_types == installation.quota_limit_types
+            and isinstance(self.evidence, ResolvedCapabilityEvidence)
+            and self.evidence.matches(identity)
+            and self.evidence.permits(scope)
         )
 
 
 class ClaudeCapabilityVerifier(Protocol):
-    def verify(self, installation: ClaudeInstallation) -> ClaudeCapabilityReport: ...
+    def verify(
+        self, installation: ClaudeInstallation, scope: CapabilityEvidenceScope
+    ) -> ClaudeCapabilityReport | Awaitable[ClaudeCapabilityReport]: ...
 
 
 @dataclass(slots=True)
@@ -285,6 +319,7 @@ class ClaudeGateway(SubscriptionGateway):
     async def execute(self, request: SubscriptionInvocationRequest) -> SubscriptionInvocationResult:
         if type(request) is not SubscriptionInvocationRequest:
             raise TypeError("subscription request is required")
+        scope = capability_scope(request)
         started, usage, session, interrupted = monotonic(), _Usage(), None, False
         quota = _QuotaState(self._installation.quota_limit_types)
 
@@ -336,7 +371,11 @@ class ClaudeGateway(SubscriptionGateway):
                 or route.billing_mode is not BillingMode.ALLOWANCE_ONLY
             ):
                 result = failed(SubscriptionFailure.POLICY_DENIED)
-            elif not self._verifier.verify(self._installation).admits(self._installation) or (
+            elif not (
+                await capability_report(
+                    self._verifier.verify(self._installation, scope), ClaudeCapabilityReport
+                )
+            ).admits(self._installation, scope) or (
                 request.authorization.permitted_tools and self._broker is None
             ):
                 result = failed(SubscriptionFailure.UNAVAILABLE)
@@ -365,6 +404,8 @@ class ClaudeGateway(SubscriptionGateway):
             result = failed(SubscriptionFailure.DEADLINE)
         except ClientSettlementUncertain:
             result = failed(SubscriptionFailure.UNCERTAIN)
+        except CapabilityEvidenceSourceError:
+            result = failed(SubscriptionFailure.UNAVAILABLE)
         except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)
         except Exception:  # noqa: BLE001 - provider/verifier failures are sanitized

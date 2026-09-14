@@ -5,6 +5,7 @@ import sys
 from dataclasses import replace
 
 import pytest
+from forge.agents.capability_verification import capability_scope
 from forge.agents.claude_gateway import ClaudeGateway, ClaudeInstallation
 from forge.agents.client_process import ClientProcessSupervisor
 from forge.application.ports.subscription_gateway import SubscriptionFailure
@@ -51,6 +52,8 @@ async def test_claude_home_proof_mismatch_rejects_before_launch(tmp_path):
         model="claude-test",
         effort="medium",
         client_home=str(home),
+        account="test-account",
+        executable_digest="b" * 64,
     )
 
     class NoLaunch:
@@ -76,6 +79,8 @@ def test_client_home_requires_an_existing_absolute_directory(tmp_path, value):
             model="claude-test",
             effort="medium",
             client_home=value,
+            account="test-account",
+            executable_digest="b" * 64,
         )
 
 
@@ -89,6 +94,8 @@ def test_file_is_not_an_authentication_directory(tmp_path):
             model="claude-test",
             effort="medium",
             client_home=str(file),
+            account="test-account",
+            executable_digest="b" * 64,
         )
 
 
@@ -101,10 +108,13 @@ def test_home_is_canonical_and_omitted_from_representations(tmp_path):
         model="claude-test",
         effort="medium",
         client_home=str(home / ".." / home.name),
+        account="test-account",
+        executable_digest="b" * 64,
     )
     assert installation.client_home == str(home.resolve())
-    report = _report(client_home=str(home.resolve()))
-    assert report.admits(installation)
+    scope = capability_scope(_anthropic_request())
+    report = _Verifier(_report(client_home=str(home.resolve()))).verify(installation, scope)
+    assert report.admits(installation, scope)
     assert "dedicated-client-home" not in repr(installation) + repr(report)
 
 
@@ -119,4 +129,7 @@ def test_home_is_canonical_and_omitted_from_representations(tmp_path):
     ],
 )
 def test_home_binding_does_not_supply_other_missing_capabilities(changes):
-    assert not _report(**changes).admits(_gateway("success")._installation)
+    gateway = _gateway("success")
+    scope = capability_scope(_anthropic_request())
+    report = _Verifier(_report(**changes)).verify(gateway._installation, scope)
+    assert not report.admits(gateway._installation, scope)

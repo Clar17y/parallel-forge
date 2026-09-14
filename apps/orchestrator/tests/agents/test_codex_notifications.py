@@ -6,13 +6,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from forge.agents.capability_verification import capability_scope
 from forge.agents.codex_gateway import _TerminalError
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
 )
 from forge.domain.tool import ToolName
-from test_codex_gateway import _Broker, _gateway, _report
+from test_codex_gateway import _Broker, _gateway, _report, _Verifier
 from test_subscription_protocol import _request
 
 NOW = datetime(2026, 9, 13, 12, tzinfo=UTC)
@@ -169,8 +170,11 @@ def test_sparse_updates_never_shorten_already_observed_terminal_block():
 
 def test_quota_window_mapping_is_part_of_exact_capability_admission():
     installation = gateway("quota")._installation
-    assert not _report(quota_limit_id="another-pool").admits(installation)
-    assert _report(quota_limit_id="codex").admits(installation)
+    scope = capability_scope(_request())
+    other = _Verifier(_report(quota_limit_id="another-pool")).verify(installation, scope)
+    codex = _Verifier(_report(quota_limit_id="codex")).verify(installation, scope)
+    assert not other.admits(installation, scope)
+    assert codex.admits(installation, scope)
     for invalid in ("", "account@example.com", "untrusted/provider", 123):
         with pytest.raises(ValueError, match="opaque"):
             replace(installation, quota_limit_id=invalid)

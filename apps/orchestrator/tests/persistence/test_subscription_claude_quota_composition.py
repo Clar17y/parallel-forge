@@ -31,6 +31,8 @@ from test_subscription_attempt_runner_integration import request_for
 from test_subscription_quota import _factory
 from test_subscription_usage import _reservation
 
+from apps.orchestrator.tests.agents.capability_support import bind_fake_capability_report
+
 
 @pytest.mark.integration
 @pytest.mark.parametrize("known_reset", [True, False])
@@ -111,23 +113,41 @@ async def test_claude_specialist_exhaustion_survives_worker_recreation_and_singl
             allowance_only_enforced=True,
             quota_limit_types=windows,
             client_home=str(tmp_path.resolve()),
+            account="test-account",
+            executable_digest="b" * 64,
         )
-        adapter = ClaudeRuntimeAdapter(
-            ClaudeInstallation(
-                executable=sys.executable,
-                cwd=str(tmp_path),
-                model=specialist.model,
-                effort=specialist.effort.value,
-                client_home=str(tmp_path.resolve()),
-                duration_seconds=5,
-                quota_limit_types=windows,
-                script=(
-                    str(Path(__file__).parents[1] / "agents/claude_notification_peer.py"),
-                    "quota",
-                    str(int(reset.timestamp())),
-                ),
+        installation = ClaudeInstallation(
+            executable=sys.executable,
+            cwd=str(tmp_path),
+            model=specialist.model,
+            effort=specialist.effort.value,
+            client_home=str(tmp_path.resolve()),
+            account="test-account",
+            executable_digest="b" * 64,
+            duration_seconds=5,
+            quota_limit_types=windows,
+            script=(
+                str(Path(__file__).parents[1] / "agents/claude_notification_peer.py"),
+                "quota",
+                str(int(reset.timestamp())),
             ),
-            SimpleNamespace(verify=lambda _: report),
+        )
+
+        def verify(value, scope):
+            assert value == installation
+            return bind_fake_capability_report(
+                report,
+                scope=scope,
+                client_version="2.1.263",
+                executable_digest=value.executable_digest,
+                client_home=value.client_home,
+                account=value.account,
+                verifier_id="fake-claude-verification",
+            )
+
+        adapter = ClaudeRuntimeAdapter(
+            installation,
+            SimpleNamespace(verify=verify),
             now=lambda: clock[0],
         )
         client = AgentRuntimeFactory(subscription_adapters=(adapter,)).subscription_gateway_for(

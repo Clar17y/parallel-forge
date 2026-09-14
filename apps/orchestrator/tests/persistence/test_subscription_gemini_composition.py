@@ -26,6 +26,8 @@ from test_scheduler_acceptance import (  # noqa: F401
 from test_subscription_delegation_application import delegation_case
 from test_subscription_usage import _reservation
 
+from apps.orchestrator.tests.agents.capability_support import bind_fake_capability_report
+
 
 @pytest.mark.integration
 @pytest.mark.parametrize("scenario", ["production", "rpc_429"])
@@ -56,6 +58,8 @@ async def test_composed_google_specialist_preserves_primary_and_durable_settleme
         home=str(home),
         model=google.model,
         effort=google.effort.value,
+        account="test-account",
+        executable_digest="c" * 64,
         duration_seconds=10,
         script=(
             str(Path(__file__).parents[1] / "agents/gemini_acp_peer.py"),
@@ -64,12 +68,12 @@ async def test_composed_google_specialist_preserves_primary_and_durable_settleme
         ),
     )
 
-    def verify(value):
+    def verify(value, scope):
         assert value == installation
         verifications.append(value)
         # Only this report and client are fake. Registration and attempt binding
         # use the same implementation as a trusted production installation.
-        return GeminiCapabilityReport(
+        report = GeminiCapabilityReport(
             installed_version="0.59.0",
             client_home=value.home,
             subscription_auth=True,
@@ -79,6 +83,17 @@ async def test_composed_google_specialist_preserves_primary_and_durable_settleme
             billing_never=True,
             isolated_config=True,
             acp_mcp_supported=True,
+            account=value.account,
+            executable_digest=value.executable_digest,
+        )
+        return bind_fake_capability_report(
+            report,
+            scope=scope,
+            client_version="0.59.0",
+            executable_digest=value.executable_digest,
+            client_home=value.home,
+            account=value.account,
+            verifier_id="fake-gemini-verification",
         )
 
     handlers = compose_worker_handlers(

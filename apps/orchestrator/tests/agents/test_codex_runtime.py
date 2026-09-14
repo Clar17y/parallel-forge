@@ -11,7 +11,7 @@ from forge.agents.runtime_factory import AgentRuntimeFactory, RouteUnavailable
 from forge.application.ports.subscription_gateway import SubscriptionFailure
 from forge.domain.subscription import SpecialistPurpose
 from forge.domain.tool import ToolName
-from test_codex_gateway import _Broker, _gateway, _report
+from test_codex_gateway import _Broker, _gateway, _report, _Verifier
 from test_subscription_protocol import _request
 
 
@@ -62,9 +62,9 @@ async def test_construction_is_lazy_and_capability_changes_are_checked_for_every
     reports = [_report()]
     verified = []
 
-    def verify(installation):
+    def verify(installation, scope):
         verified.append(installation)
-        return reports[0]
+        return _Verifier(reports[0]).verify(installation, scope)
 
     adapter = CodexRuntimeAdapter(fake._installation, SimpleNamespace(verify=verify))
     factory = AgentRuntimeFactory(subscription_adapters=(adapter,))

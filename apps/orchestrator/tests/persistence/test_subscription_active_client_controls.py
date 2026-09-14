@@ -58,6 +58,8 @@ from test_subscription_counter_acceptance import (
 )
 from test_subscription_counter_docker import counter_runner_image  # noqa: F401
 
+from apps.orchestrator.tests.agents.capability_support import bind_fake_capability_report
+
 
 class ActiveClientScript(CounterScript):
     """Keep the established fake primary; supervise the actual fake Gemini peer."""
@@ -150,6 +152,23 @@ class ActiveClientScript(CounterScript):
 
                 # Explicit fake capability proof; the official runtime registry
                 # is not enabled by this fixture or by the local assertions.
+                installation = GeminiInstallation(
+                    executable=sys.executable,
+                    cwd=str(owner.root / "launches"),
+                    home=str(owner.root / "home"),
+                    model=WRITER.model,
+                    effort=WRITER.effort.value,
+                    account="test-account",
+                    executable_digest="c" * 64,
+                    duration_seconds=45,
+                    script=(
+                        str(Path(__file__).parents[1] / "agents/gemini_acp_peer.py"),
+                        "production_active_check_stop"
+                        if owner.run_check
+                        else "production_active_stop",
+                        "--acp",
+                    ),
+                )
                 report = GeminiCapabilityReport(
                     installed_version="0.59.0",
                     client_home=str((owner.root / "home").resolve()),
@@ -160,24 +179,25 @@ class ActiveClientScript(CounterScript):
                     billing_never=True,
                     isolated_config=True,
                     acp_mcp_supported=True,
+                    account=installation.account,
+                    executable_digest=installation.executable_digest,
                 )
+
+                def verify(value, scope):
+                    assert value == installation
+                    return bind_fake_capability_report(
+                        report,
+                        scope=scope,
+                        client_version="0.59.0",
+                        executable_digest=value.executable_digest,
+                        client_home=value.home,
+                        account=value.account,
+                        verifier_id="fake-gemini-verification",
+                    )
+
                 adapter = GeminiRuntimeAdapter(
-                    GeminiInstallation(
-                        executable=sys.executable,
-                        cwd=str(owner.root / "launches"),
-                        home=str(owner.root / "home"),
-                        model=WRITER.model,
-                        effort=WRITER.effort.value,
-                        duration_seconds=45,
-                        script=(
-                            str(Path(__file__).parents[1] / "agents/gemini_acp_peer.py"),
-                            "production_active_check_stop"
-                            if owner.run_check
-                            else "production_active_stop",
-                            "--acp",
-                        ),
-                    ),
-                    SimpleNamespace(verify=lambda _: report),
+                    installation,
+                    SimpleNamespace(verify=verify),
                 )
                 gateway = adapter.gateway_for(request, broker=Broker(), lifecycle=lifecycle)
                 # Observe real process/receipt boundaries without replacing

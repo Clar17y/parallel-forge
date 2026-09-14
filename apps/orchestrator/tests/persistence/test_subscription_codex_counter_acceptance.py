@@ -39,6 +39,8 @@ from test_subscription_counter_docker import (
     counter_runner_image,  # noqa: F401
 )
 
+from apps.orchestrator.tests.agents.capability_support import bind_fake_capability_report
+
 PRIMARY = RouteSpec(provider="openai", client="codex_app_server", model="gpt-6-astra")
 
 
@@ -71,6 +73,8 @@ class CodexCounterScript(CounterScript):
             client_home=str(home),
             model=PRIMARY.model,
             effort=PRIMARY.effort.value,
+            account="test-account",
+            executable_digest="a" * 64,
             duration_seconds=60,
             script=(str(Path(__file__).parents[1] / "agents/codex_counter_peer.py"),),
         )
@@ -83,8 +87,23 @@ class CodexCounterScript(CounterScript):
             model=PRIMARY.model,
             effort=PRIMARY.effort.value,
             client_home=str(home),
+            account=self.installation.account,
+            executable_digest=self.installation.executable_digest,
         )
-        self.verifier = SimpleNamespace(verify=lambda _: report)
+
+        def verify(installation, scope):
+            assert installation == self.installation
+            return bind_fake_capability_report(
+                report,
+                scope=scope,
+                client_version="0.153.4",
+                executable_digest=installation.executable_digest,
+                client_home=installation.client_home,
+                account=installation.account,
+                verifier_id="fake-codex-verification",
+            )
+
+        self.verifier = SimpleNamespace(verify=verify)
 
     def adapter(self, route):
         if route == PRIMARY:

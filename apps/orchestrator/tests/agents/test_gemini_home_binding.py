@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import pytest
+from forge.agents.capability_verification import capability_scope
 from forge.agents.gemini_gateway import GeminiCapabilityReport
 from forge.application.ports.subscription_gateway import SubscriptionFailure
 from test_gemini_gateway import _Broker, _gateway, _google_request, _Lifecycle
@@ -41,8 +42,9 @@ def test_home_is_canonical_and_not_exposed_in_capability_representations(tmp_pat
     gateway = _gateway(tmp_path, "no_tools")
     installation = gateway._installation
     noncanonical = replace(installation, home=str(tmp_path / "account-home/../account-home"))
-    report = gateway._verifier.verify(noncanonical)
-    assert noncanonical.home == installation.home and report.admits(noncanonical)
+    scope = capability_scope(_google_request())
+    report = gateway._verifier.verify(noncanonical, scope)
+    assert noncanonical.home == installation.home and report.admits(noncanonical, scope)
     assert installation.home not in repr(installation)
     assert installation.home not in repr(report)
 
@@ -63,6 +65,7 @@ def test_home_is_canonical_and_not_exposed_in_capability_representations(tmp_pat
 def test_home_binding_cannot_substitute_for_existing_capability_evidence(tmp_path, missing):
     gateway = _gateway(tmp_path, "no_tools")
     installation = gateway._installation
-    report = gateway._verifier.verify(installation)
-    assert report.admits(installation)
-    assert not replace(report, **missing).admits(installation)
+    scope = capability_scope(_google_request())
+    report = gateway._verifier.verify(installation, scope)
+    assert report.admits(installation, scope)
+    assert not replace(report, **missing).admits(installation, scope)

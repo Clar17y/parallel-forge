@@ -26,6 +26,8 @@ from sqlalchemy import func, select
 from test_scheduler_acceptance import _remove_disposable_subscription_rows  # noqa: F401
 from test_subscription_usage import _reservation
 
+from apps.orchestrator.tests.agents.capability_support import bind_fake_capability_report
+
 
 @pytest.mark.integration
 async def test_concrete_codex_registration_uses_bound_read_and_preserves_human_plan_gate(
@@ -67,6 +69,8 @@ async def test_concrete_codex_registration_uses_bound_read_and_preserves_human_p
         client_home=str(home),
         model=primary.model,
         effort=primary.effort.value,
+        account="test-account",
+        executable_digest="a" * 64,
         script=(
             str(Path(__file__).parents[1] / "agents/codex_notification_peer.py"),
             "plan",
@@ -87,7 +91,22 @@ async def test_concrete_codex_registration_uses_bound_read_and_preserves_human_p
         model=primary.model,
         effort=primary.effort.value,
         client_home=str(home),
+        account=installation.account,
+        executable_digest=installation.executable_digest,
     )
+
+    def verify(value, scope):
+        assert value == installation
+        return bind_fake_capability_report(
+            report,
+            scope=scope,
+            client_version="0.153.4",
+            executable_digest=value.executable_digest,
+            client_home=value.client_home,
+            account=value.account,
+            verifier_id="fake-codex-verification",
+        )
+
     handlers = compose_worker_handlers(
         Settings(
             data_root=tmp_path,
@@ -96,9 +115,7 @@ async def test_concrete_codex_registration_uses_bound_read_and_preserves_human_p
             subscription_attempt_budget=_reservation(),
         ),
         session_factory,
-        subscription_adapters=(
-            CodexRuntimeAdapter(installation, SimpleNamespace(verify=lambda _: report)),
-        ),
+        subscription_adapters=(CodexRuntimeAdapter(installation, SimpleNamespace(verify=verify)),),
     )
     try:
         worker = handlers.subscription_invocations("concrete-codex-primary")

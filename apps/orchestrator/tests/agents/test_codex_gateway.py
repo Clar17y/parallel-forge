@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from capability_support import fake_capability_evidence
 from forge.agents.codex_gateway import CodexCapabilityReport, CodexGateway, CodexInstallation
 from forge.agents.subscription_protocol import ProviderToolCall, tool_input_schema
+from forge.application.ports.capability_evidence import CapabilityEvidenceUnavailable
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
 )
+from forge.domain.capability_evidence import CapabilityEvidenceScope
 from forge.domain.tool import ToolName
 from test_subscription_protocol import _request
 
@@ -20,9 +23,24 @@ from test_subscription_protocol import _request
 @dataclass
 class _Verifier:
     report: CodexCapabilityReport
+    bind_evidence: bool = True
 
-    def verify(self, installation: CodexInstallation) -> CodexCapabilityReport:
-        return self.report
+    def verify(
+        self, installation: CodexInstallation, scope: CapabilityEvidenceScope
+    ) -> CodexCapabilityReport:
+        if not self.bind_evidence:
+            return self.report
+        return replace(
+            self.report,
+            evidence=fake_capability_evidence(
+                scope=scope,
+                client_version="0.153.4",
+                executable_digest=installation.executable_digest,
+                client_home=installation.client_home,
+                account=installation.account,
+                verifier_id="fake-codex-conformance",
+            ),
+        )
 
 
 class _Broker:
@@ -51,6 +69,8 @@ def _report(**changes: object) -> CodexCapabilityReport:
         "billing_allowance_enforced": True,
         "native_tools_isolated": True,
         "client_home": str(Path.cwd()),
+        "account": "test-account",
+        "executable_digest": "a" * 64,
     }
     values.update(changes)
     return CodexCapabilityReport(**values)  # type: ignore[arg-type]
@@ -144,6 +164,7 @@ def _gateway(
     report: CodexCapabilityReport | None = None,
     duration: float = 5,
     quota_limit_id: str | None = None,
+    bind_evidence: bool = True,
 ) -> CodexGateway:
     return CodexGateway(
         CodexInstallation(
@@ -152,11 +173,13 @@ def _gateway(
             model="gpt-5.6-luna",
             effort="medium",
             client_home=str(Path.cwd()),
+            account="test-account",
+            executable_digest="a" * 64,
             quota_limit_id=quota_limit_id,
             script=("-c", _script(scenario)),
             duration_seconds=duration,
         ),
-        _Verifier(report or _report(quota_limit_id=quota_limit_id)),
+        _Verifier(report or _report(quota_limit_id=quota_limit_id), bind_evidence),
         broker=broker,
     )
 
@@ -250,6 +273,44 @@ async def test_exact_capability_mismatch_never_launches(change: dict[str, Any]) 
     result = await _gateway("success", report=_report(**change)).execute(_request())
     assert result.failure is SubscriptionFailure.UNAVAILABLE
     assert result.decision is None
+
+
+@pytest.mark.asyncio
+async def test_capability_booleans_without_source_evidence_never_launch() -> None:
+    result = await _gateway("success", report=_report(evidence=None), bind_evidence=False).execute(
+        _request()
+    )
+    assert result.failure is SubscriptionFailure.UNAVAILABLE
+    assert result.decision is None
+
+
+@pytest.mark.asyncio
+async def test_async_evidence_verifier_is_awaited_before_launch() -> None:
+    gateway = _gateway("success")
+    fixture = gateway._verifier
+
+    class AsyncVerifier:
+        async def verify(self, installation, scope):
+            await asyncio.sleep(0)
+            return fixture.verify(installation, scope)
+
+    gateway._verifier = AsyncVerifier()
+    result = await gateway.execute(_request())
+    assert result.failure is None and result.launch_proof is not None
+
+
+@pytest.mark.asyncio
+async def test_unavailable_evidence_source_rejects_without_launch() -> None:
+    gateway = _gateway("success")
+
+    class MissingEvidence:
+        async def verify(self, _installation, _scope):
+            raise CapabilityEvidenceUnavailable("fixture evidence is stale")
+
+    gateway._verifier = MissingEvidence()
+    result = await gateway.execute(_request())
+    assert result.failure is SubscriptionFailure.UNAVAILABLE
+    assert result.launch_proof is None and result.decision is None
 
 
 @pytest.mark.asyncio

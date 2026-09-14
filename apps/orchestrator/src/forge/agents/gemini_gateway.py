@@ -5,11 +5,16 @@ from __future__ import annotations
 import asyncio
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
+from forge.agents.capability_verification import (
+    capability_report,
+    capability_scope,
+    validate_installation_identity,
+)
 from forge.agents.client_process import (
     ClientLaunchSpec,
     ClientProcessError,
@@ -24,11 +29,17 @@ from forge.agents.codex_gateway import ToolBroker
 from forge.agents.gemini_configuration import GeminiLaunchDirectory
 from forge.agents.gemini_session import GeminiResponseFailure, GeminiSession
 from forge.agents.subscription_protocol import ProtocolError
+from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
+)
+from forge.domain.capability_evidence import (
+    CapabilityEvidenceScope,
+    ResolvedCapabilityEvidence,
+    capability_identity,
 )
 from forge.domain.subscription import AuthMode, BillingMode
 
@@ -51,6 +62,8 @@ class GeminiInstallation:
     cwd: str
     home: str = field(repr=False)
     model: str
+    account: str
+    executable_digest: str
     effort: str | None = None
     script: tuple[str, ...] = ("--acp",)
     duration_seconds: float = 30.0
@@ -84,6 +97,7 @@ class GeminiInstallation:
             or self.duration_seconds <= 0
         ):
             raise ValueError("Gemini duration must be finite and positive")
+        validate_installation_identity(self.account, self.executable_digest)
         object.__setattr__(self, "script", tuple(self.script))
         object.__setattr__(self, "cwd", str(Path(self.cwd).resolve(strict=True)))
         object.__setattr__(self, "home", str(Path(self.home).resolve(strict=True)))
@@ -100,8 +114,21 @@ class GeminiCapabilityReport:
     isolated_config: bool = False
     acp_mcp_supported: bool = False
     client_home: str | None = field(default=None, repr=False)
+    account: str | None = None
+    executable_digest: str | None = None
+    evidence: ResolvedCapabilityEvidence | None = field(default=None, repr=False)
 
-    def admits(self, installation: GeminiInstallation) -> bool:
+    def admits(self, installation: GeminiInstallation, scope: CapabilityEvidenceScope) -> bool:
+        try:
+            identity = capability_identity(
+                scope=scope,
+                client_version=_VERSION,
+                executable_digest=installation.executable_digest,
+                client_home=installation.home,
+                account=installation.account,
+            )
+        except TypeError, ValueError:
+            return False
         return (
             self.installed_version == _VERSION
             and self.subscription_auth is True
@@ -112,11 +139,18 @@ class GeminiCapabilityReport:
             and self.isolated_config is True
             and self.acp_mcp_supported is True
             and self.client_home == installation.home
+            and self.account == installation.account
+            and self.executable_digest == installation.executable_digest
+            and isinstance(self.evidence, ResolvedCapabilityEvidence)
+            and self.evidence.matches(identity)
+            and self.evidence.permits(scope)
         )
 
 
 class GeminiCapabilityVerifier(Protocol):
-    def verify(self, installation: GeminiInstallation) -> GeminiCapabilityReport: ...
+    def verify(
+        self, installation: GeminiInstallation, scope: CapabilityEvidenceScope
+    ) -> GeminiCapabilityReport | Awaitable[GeminiCapabilityReport]: ...
 
 
 class GeminiGateway:
@@ -138,6 +172,7 @@ class GeminiGateway:
     async def execute(self, request: SubscriptionInvocationRequest) -> SubscriptionInvocationResult:
         if type(request) is not SubscriptionInvocationRequest:
             raise TypeError("subscription request is required")
+        scope = capability_scope(request)
         files = GeminiLaunchDirectory(self._installation.cwd, request.attempt.attempt_id)
         exchange = GeminiSession(request, self._broker, str(files.path))
         session: ClientProcessSession | None = None
@@ -165,7 +200,11 @@ class GeminiGateway:
                 or route.billing_mode is not BillingMode.ALLOWANCE_ONLY
             ):
                 result = failed(SubscriptionFailure.POLICY_DENIED)
-            elif not self._verifier.verify(self._installation).admits(self._installation) or (
+            elif not (
+                await capability_report(
+                    self._verifier.verify(self._installation, scope), GeminiCapabilityReport
+                )
+            ).admits(self._installation, scope) or (
                 request.authorization.permitted_tools and self._broker is None
             ):
                 result = failed(SubscriptionFailure.UNAVAILABLE)
@@ -215,6 +254,8 @@ class GeminiGateway:
                 failed(SubscriptionFailure.UNCERTAIN),
                 launch_proof=terminal_launch_proof(exc.result),
             )
+        except CapabilityEvidenceSourceError:
+            result = failed(SubscriptionFailure.UNAVAILABLE)
         except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)
         except Exception:  # noqa: BLE001 - verifier/client errors never expose raw provider data

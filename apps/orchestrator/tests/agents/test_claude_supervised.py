@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
+from capability_support import fake_capability_evidence
 from forge.agents.claude_gateway import (
     ClaudeCapabilityReport,
     ClaudeGateway,
@@ -19,6 +20,7 @@ from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
 )
+from forge.domain.capability_evidence import CapabilityEvidenceScope
 from forge.domain.subscription import AuthMode, BillingMode
 from forge.domain.tool import ToolName
 from test_subscription_protocol import _request
@@ -27,9 +29,24 @@ from test_subscription_protocol import _request
 @dataclass(frozen=True)
 class _Verifier:
     report: ClaudeCapabilityReport
+    bind_evidence: bool = True
 
-    def verify(self, _installation: ClaudeInstallation) -> ClaudeCapabilityReport:
-        return self.report
+    def verify(
+        self, installation: ClaudeInstallation, scope: CapabilityEvidenceScope
+    ) -> ClaudeCapabilityReport:
+        if not self.bind_evidence:
+            return self.report
+        return replace(
+            self.report,
+            evidence=fake_capability_evidence(
+                scope=scope,
+                client_version="2.1.263",
+                executable_digest=installation.executable_digest,
+                client_home=installation.client_home,
+                account=installation.account,
+                verifier_id="fake-claude-conformance",
+            ),
+        )
 
 
 class _Broker:
@@ -83,6 +100,8 @@ def _report(**changes: Any) -> ClaudeCapabilityReport:
         "allowance_only_enforced": True,
         "hooks_disabled": True,
         "client_home": str(Path.cwd().resolve()),
+        "account": "test-account",
+        "executable_digest": "b" * 64,
     }
     values.update(changes)
     return ClaudeCapabilityReport(**values)
@@ -117,6 +136,7 @@ def _gateway(
     report=None,
     duration: float = 5,
     lifecycle: _Lifecycle | None = None,
+    bind_evidence: bool = True,
 ):
     return ClaudeGateway(
         ClaudeInstallation(
@@ -125,10 +145,12 @@ def _gateway(
             model="claude-test",
             effort="medium",
             client_home=str(Path.cwd().resolve()),
+            account="test-account",
+            executable_digest="b" * 64,
             script=(str(Path(__file__).with_name("claude_stream_peer.py")), scenario),
             duration_seconds=duration,
         ),
-        _Verifier(report or _report()),
+        _Verifier(report or _report(), bind_evidence),
         broker=broker,
         supervisor=ClientProcessSupervisor(),
         lifecycle=lifecycle,

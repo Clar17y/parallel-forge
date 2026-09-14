@@ -1,19 +1,51 @@
 import asyncio
 import json
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
+from capability_support import fake_capability_evidence
+from forge.agents.capability_verification import capability_scope
 from forge.agents.client_process import ClientProcessSupervisor, ProcessIdentityStatus
 from forge.agents.gemini_gateway import GeminiCapabilityReport, GeminiGateway, GeminiInstallation
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
 )
+from forge.domain.capability_evidence import CapabilityEvidenceScope
+from forge.domain.subscription import (
+    AuthMode,
+    BillingMode,
+    ReasoningEffort,
+    RouteSpec,
+    SpecialistPurpose,
+)
 from forge.domain.tool import ToolName
 from test_subscription_protocol import _request
+
+
+@dataclass
+class _Verifier:
+    report: GeminiCapabilityReport
+    bind_evidence: bool = True
+
+    def verify(
+        self, installation: GeminiInstallation, scope: CapabilityEvidenceScope
+    ) -> GeminiCapabilityReport:
+        if not self.bind_evidence:
+            return self.report
+        return replace(
+            self.report,
+            evidence=fake_capability_evidence(
+                scope=scope,
+                client_version="0.59.0",
+                executable_digest=installation.executable_digest,
+                client_home=installation.home,
+                account=installation.account,
+                verifier_id="fake-gemini-conformance",
+            ),
+        )
 
 
 def test_capability_requires_exact_pinned_isolated_evidence():
@@ -22,7 +54,20 @@ def test_capability_requires_exact_pinned_isolated_evidence():
         cwd=str(Path.cwd()),
         home=str(Path.cwd()),
         model="gemini-3.8",
+        account="test-account",
+        executable_digest="c" * 64,
         effort="high",
+    )
+    scope = CapabilityEvidenceScope(
+        route=RouteSpec(
+            provider="google",
+            client="gemini_cli",
+            model="gemini-3.8",
+            effort=ReasoningEffort.HIGH,
+            auth_mode=AuthMode.SUBSCRIPTION,
+            billing_mode=BillingMode.ALLOWANCE_ONLY,
+        ),
+        role=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
     )
     denied = GeminiCapabilityReport(
         installed_version="0.59.0",
@@ -33,8 +78,11 @@ def test_capability_requires_exact_pinned_isolated_evidence():
         tools_disabled=True,
         billing_never=True,
         isolated_config=True,
+        account=installation.account,
+        executable_digest=installation.executable_digest,
     )
-    assert not denied.admits(installation)
+    denied = _Verifier(denied).verify(installation, scope)
+    assert not denied.admits(installation, scope)
     admitted = GeminiCapabilityReport(
         installed_version="0.59.0",
         client_home=installation.home,
@@ -45,8 +93,12 @@ def test_capability_requires_exact_pinned_isolated_evidence():
         billing_never=True,
         isolated_config=True,
         acp_mcp_supported=True,
+        account=installation.account,
+        executable_digest=installation.executable_digest,
     )
-    assert admitted.admits(installation)
+    assert not admitted.admits(installation, scope)
+    admitted = _Verifier(admitted).verify(installation, scope)
+    assert admitted.admits(installation, scope)
 
 
 async def test_supervised_gemini_uses_real_mcp_bridge_and_retains_launch_proof(tmp_path):
@@ -194,7 +246,16 @@ class _Broker:
         self.revoked = True
 
 
-def _gateway(tmp_path, scenario, *, broker=None, lifecycle=None, report=None, duration=10):
+def _gateway(
+    tmp_path,
+    scenario,
+    *,
+    broker=None,
+    lifecycle=None,
+    report=None,
+    duration=10,
+    bind_evidence=True,
+):
     home = tmp_path / "account-home"
     home.mkdir(exist_ok=True)
     report = report or GeminiCapabilityReport(
@@ -207,6 +268,8 @@ def _gateway(tmp_path, scenario, *, broker=None, lifecycle=None, report=None, du
         billing_never=True,
         isolated_config=True,
         acp_mcp_supported=True,
+        account="test-account",
+        executable_digest="c" * 64,
     )
     return GeminiGateway(
         GeminiInstallation(
@@ -214,11 +277,13 @@ def _gateway(tmp_path, scenario, *, broker=None, lifecycle=None, report=None, du
             cwd=str(tmp_path),
             home=str(home),
             model="gemini-test",
+            account="test-account",
+            executable_digest="c" * 64,
             effort="medium",
             script=(str(Path(__file__).with_name("gemini_acp_peer.py")), scenario, "--acp"),
             duration_seconds=duration,
         ),
-        SimpleNamespace(verify=lambda _: report),
+        _Verifier(report, bind_evidence),
         broker=broker,
         lifecycle=lifecycle,
     )
@@ -361,7 +426,10 @@ async def test_failed_durable_receipt_overrides_success_and_preserves_evidence(t
 async def test_unproved_capability_is_rejected_before_launch(tmp_path, field, value):
     lifecycle, broker = _Lifecycle(), _Broker()
     gateway = _gateway(tmp_path, "no_tools", broker=broker, lifecycle=lifecycle)
-    report = replace(gateway._verifier.verify(gateway._installation), **{field: value})
+    report = replace(
+        gateway._verifier.verify(gateway._installation, capability_scope(_google_request())),
+        **{field: value},
+    )
     result = await _gateway(
         tmp_path, "no_tools", broker=broker, lifecycle=lifecycle, report=report
     ).execute(_google_request())

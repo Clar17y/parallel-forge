@@ -7,13 +7,18 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
 from typing import Any, Protocol, cast
 
+from forge.agents.capability_verification import (
+    capability_report,
+    capability_scope,
+    validate_installation_identity,
+)
 from forge.agents.client_process import (
     ClientLaunchSpec,
     ClientProcessError,
@@ -36,11 +41,17 @@ from forge.agents.subscription_protocol import (
     tool_input_schema,
     tool_result_frame,
 )
+from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
+)
+from forge.domain.capability_evidence import (
+    CapabilityEvidenceScope,
+    ResolvedCapabilityEvidence,
+    capability_identity,
 )
 from forge.domain.provider_quota import (
     QuotaExhaustion,
@@ -86,12 +97,25 @@ class CodexCapabilityReport:
     effort: str | None = None
     quota_limit_id: str | None = None
     client_home: str | None = field(default=None, repr=False)
+    account: str | None = None
+    executable_digest: str | None = None
+    evidence: ResolvedCapabilityEvidence | None = field(default=None, repr=False)
 
     @classmethod
     def unavailable(cls, reason: str) -> CodexCapabilityReport:
         return cls(False, reason=reason)
 
-    def admits(self, installation: CodexInstallation) -> bool:
+    def admits(self, installation: CodexInstallation, scope: CapabilityEvidenceScope) -> bool:
+        try:
+            identity = capability_identity(
+                scope=scope,
+                client_version=_VERSION,
+                executable_digest=installation.executable_digest,
+                client_home=installation.client_home,
+                account=installation.account,
+            )
+        except TypeError, ValueError:
+            return False
         return (
             self.supported is True
             and self.installed_version == _VERSION
@@ -102,6 +126,11 @@ class CodexCapabilityReport:
             and self.effort == installation.effort
             and self.quota_limit_id == installation.quota_limit_id
             and self.client_home == installation.client_home
+            and self.account == installation.account
+            and self.executable_digest == installation.executable_digest
+            and isinstance(self.evidence, ResolvedCapabilityEvidence)
+            and self.evidence.matches(identity)
+            and self.evidence.permits(scope)
         )
 
 
@@ -112,6 +141,8 @@ class CodexInstallation:
     model: str
     effort: str
     client_home: str = field(repr=False)
+    account: str
+    executable_digest: str
     quota_limit_id: str | None = None
     script: tuple[str, ...] = ("app-server", "--stdio")
     duration_seconds: float = 30.0
@@ -151,6 +182,7 @@ class CodexInstallation:
             or re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,95}", self.quota_limit_id) is None
         ):
             raise ValueError("Codex quota limit requires an opaque provider identifier")
+        validate_installation_identity(self.account, self.executable_digest)
         if (
             type(self.duration_seconds) not in (int, float)
             or not math.isfinite(self.duration_seconds)
@@ -165,7 +197,9 @@ class CodexInstallation:
 
 
 class CodexCapabilityVerifier(Protocol):
-    def verify(self, installation: CodexInstallation) -> CodexCapabilityReport: ...
+    def verify(
+        self, installation: CodexInstallation, scope: CapabilityEvidenceScope
+    ) -> CodexCapabilityReport | Awaitable[CodexCapabilityReport]: ...
 
 
 class ToolBroker(Protocol):
@@ -317,6 +351,7 @@ class CodexGateway:
     async def execute(self, request: SubscriptionInvocationRequest) -> SubscriptionInvocationResult:
         if type(request) is not SubscriptionInvocationRequest:
             raise TypeError("subscription request is required")
+        scope = capability_scope(request)
         started, usage = monotonic(), _Usage()
         terminal_error = _TerminalError(self._installation.quota_limit_id)
         session: ClientProcessSession | None = None
@@ -379,7 +414,12 @@ class CodexGateway:
             ):
                 result = failed(SubscriptionFailure.POLICY_DENIED)
             elif (
-                not self._verifier.verify(self._installation).admits(self._installation)
+                not (
+                    await capability_report(
+                        self._verifier.verify(self._installation, scope),
+                        CodexCapabilityReport,
+                    )
+                ).admits(self._installation, scope)
                 or self._broker is not None
                 and not callable(getattr(self._broker, "revoke", None))
                 or self._broker is None
@@ -411,6 +451,8 @@ class CodexGateway:
             result = failed(SubscriptionFailure.DEADLINE)
         except ClientSettlementUncertain:
             result = failed(SubscriptionFailure.UNCERTAIN)
+        except CapabilityEvidenceSourceError:
+            result = failed(SubscriptionFailure.UNAVAILABLE)
         except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)
         except Exception:  # noqa: BLE001 - provider/verifier/broker errors must remain sanitized

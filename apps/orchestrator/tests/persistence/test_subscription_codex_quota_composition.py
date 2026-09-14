@@ -27,6 +27,8 @@ from test_scheduler_acceptance import _remove_disposable_subscription_rows  # no
 from test_subscription_usage import _reservation
 from test_task10_run_service_integration import StableInspector
 
+from apps.orchestrator.tests.agents.capability_support import bind_fake_capability_report
+
 
 @pytest.mark.integration
 @pytest.mark.parametrize("known_reset", [True, False])
@@ -89,6 +91,8 @@ async def test_codex_notifications_suppress_restarted_concurrent_pollers_and_adm
         effort=primary.effort.value,
         quota_limit_id=pool,
         client_home=str(client_home),
+        account="test-account",
+        executable_digest="a" * 64,
         duration_seconds=10,
         script=(
             str(Path(__file__).parents[1] / "agents/codex_notification_peer.py"),
@@ -99,12 +103,12 @@ async def test_codex_notifications_suppress_restarted_concurrent_pollers_and_adm
         ),
     )
 
-    def verify(value):
+    def verify(value, scope):
         assert value == installation
         verifications.append(value)
         # Only the capability source and client process are fake. The adapter
         # registration, gateway, broker and durable lifecycle are Forge's own.
-        return CodexCapabilityReport(
+        report = CodexCapabilityReport(
             supported=True,
             installed_version="0.153.4",
             account_kind="chatgpt",
@@ -114,6 +118,17 @@ async def test_codex_notifications_suppress_restarted_concurrent_pollers_and_adm
             effort=primary.effort.value,
             quota_limit_id=pool,
             client_home=str(client_home),
+            account=value.account,
+            executable_digest=value.executable_digest,
+        )
+        return bind_fake_capability_report(
+            report,
+            scope=scope,
+            client_version="0.153.4",
+            executable_digest=value.executable_digest,
+            client_home=value.client_home,
+            account=value.account,
+            verifier_id="fake-codex-verification",
         )
 
     settings = Settings(

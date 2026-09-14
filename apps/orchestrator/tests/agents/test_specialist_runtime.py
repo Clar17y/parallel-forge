@@ -5,6 +5,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from forge.agents.capability_verification import capability_scope
 from forge.agents.claude_runtime import ClaudeRuntimeAdapter
 from forge.agents.gemini_runtime import GeminiRuntimeAdapter
 from forge.agents.runtime_factory import AgentRuntimeFactory, RouteUnavailable
@@ -65,18 +66,18 @@ async def test_registration_keeps_concurrent_brokers_and_lifecycles_separate(spe
 
 async def test_binding_is_lazy_and_rechecks_changed_billing_proof(specialist):
     fake = specialist.fake
-    reports = [fake._verifier.verify(fake._installation)]
+    requests = [
+        specialist.request(tools=frozenset({ToolName.REPOSITORY_READ_FILE})) for _ in range(2)
+    ]
+    reports = [fake._verifier.verify(fake._installation, capability_scope(requests[0]))]
     verified = []
 
-    def verify(installation):
+    def verify(installation, scope):
         verified.append(installation)
         return reports[0]
 
     adapter = specialist.adapter_type(fake._installation, SimpleNamespace(verify=verify))
     factory = AgentRuntimeFactory(subscription_adapters=(adapter,))
-    requests = [
-        specialist.request(tools=frozenset({ToolName.REPOSITORY_READ_FILE})) for _ in range(2)
-    ]
     brokers, lifecycles = [specialist.broker(), specialist.broker()], [Lifecycle(), Lifecycle()]
     gateways = [
         factory.subscription_gateway_for(request, broker=broker, lifecycle=lifecycle)
