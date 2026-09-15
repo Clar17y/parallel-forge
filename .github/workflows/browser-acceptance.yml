@@ -1,7 +1,6 @@
 name: Browser acceptance
 
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       browser_only:

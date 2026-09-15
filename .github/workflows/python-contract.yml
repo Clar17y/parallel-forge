@@ -2,7 +2,6 @@ name: Python and runtime contracts
 run-name: Python and runtime contracts (${{ inputs.verification_scope || 'full' }})
 
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       verification_scope:
