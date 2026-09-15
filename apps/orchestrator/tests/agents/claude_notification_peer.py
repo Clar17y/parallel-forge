@@ -18,11 +18,105 @@ def send(value):
 scenario = sys.argv[1]
 reset = int(sys.argv[2])
 initialize = receive()
-assert initialize["request"] == {"subtype": "initialize", "hooks": None, "skills": []}
+assert initialize["request"] == {
+    "subtype": "initialize",
+    "hooks": None,
+    "sdkMcpServers": ["forge"],
+    "skills": [],
+    "title": "Forge bounded review",
+}
 send(
     {
         "type": "control_response",
         "response": {"subtype": "success", "request_id": "forge_initialize", "response": {}},
+    }
+)
+settings = receive()
+assert settings["request"] == {"subtype": "get_settings"}
+send(
+    {
+        "type": "control_request",
+        "request_id": "mcp-init",
+        "request": {
+            "subtype": "mcp_message",
+            "server_name": "forge",
+            "message": {
+                "jsonrpc": "2.0",
+                "id": "init",
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"},
+            },
+        },
+    }
+)
+assert receive()["response"]["request_id"] == "mcp-init"
+send(
+    {
+        "type": "control_request",
+        "request_id": "mcp-ready",
+        "request": {
+            "subtype": "mcp_message",
+            "server_name": "forge",
+            "message": {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        },
+    }
+)
+assert receive()["response"]["request_id"] == "mcp-ready"
+send(
+    {
+        "type": "control_request",
+        "request_id": "mcp-list",
+        "request": {
+            "subtype": "mcp_message",
+            "server_name": "forge",
+            "message": {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        },
+    }
+)
+assert receive()["response"]["request_id"] == "mcp-list"
+managed = {
+    "allowManagedHooksOnly": True,
+    "disableClaudeAiConnectors": True,
+    "disableCommandPluginSources": True,
+    "syncClaudeAiPlugins": False,
+    "syncClaudeAiSkills": False,
+}
+send(
+    {
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "forge_settings",
+            "response": {
+                "applied": {
+                    "advisor": None,
+                    "effort": "medium",
+                    "model": "claude-test",
+                    "ultracode": False,
+                },
+                "effective": managed,
+                "sources": [{"source": "policySettings", "settings": managed}],
+            },
+        },
+    }
+)
+allowed = next(value for value in sys.argv if value.startswith("--allowed-tools="))
+tools = ["StructuredOutput"]
+if allowed != "--allowed-tools=":
+    tools.insert(0, "mcp__forge__repository_read_file")
+send(
+    {
+        "type": "system",
+        "subtype": "init",
+        "session_id": sys.argv[sys.argv.index("--session-id") + 1],
+        "claude_code_version": "2.1.263",
+        "model": "claude-test",
+        "permissionMode": "dontAsk",
+        "tools": tools,
+        "slash_commands": [],
+        "skills": [],
+        "plugins": [],
+        "mcp_servers": [{"name": "forge", "status": "connected"}],
     }
 )
 user = receive()
@@ -41,19 +135,6 @@ def control(ident, message):
     )
 
 
-if scenario in {"partial_tool", "tool_after_quota"}:
-    control(
-        "init",
-        {
-            "jsonrpc": "2.0",
-            "id": "init",
-            "method": "initialize",
-            "params": {"protocolVersion": "2025-06-18"},
-        },
-    )
-    assert receive()["response"]["request_id"] == "init"
-
-
 def tool():
     control(
         "read",
@@ -61,7 +142,11 @@ def tool():
             "jsonrpc": "2.0",
             "id": "read",
             "method": "tools/call",
-            "params": {"name": "repository.read_file", "arguments": {"path": "README.md"}},
+            "params": {
+                "name": "repository.read_file",
+                "arguments": {"path": "README.md"},
+                "_meta": {"claudecode/toolUseId": "forge-call-1", "progressToken": 1},
+            },
         },
     )
 

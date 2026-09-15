@@ -1,6 +1,7 @@
 """Claude wire evidence reaches durable admission through the real attempt runner."""
 
 import asyncio
+import hashlib
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -102,6 +103,7 @@ async def test_claude_specialist_exhaustion_survives_worker_recreation_and_singl
         broker = NoTools()
         # Explicit test capability assertions, never evidence about installed
         # clients, signed-in accounts, billing enforcement or tool isolation.
+        executable_digest = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
         report = ClaudeCapabilityReport(
             installed_version="2.1.263",
             subscription_auth=True,
@@ -114,7 +116,7 @@ async def test_claude_specialist_exhaustion_survives_worker_recreation_and_singl
             quota_limit_types=windows,
             client_home=str(tmp_path.resolve()),
             account="test-account",
-            executable_digest="b" * 64,
+            executable_digest=executable_digest,
         )
         installation = ClaudeInstallation(
             executable=sys.executable,
@@ -123,7 +125,7 @@ async def test_claude_specialist_exhaustion_survives_worker_recreation_and_singl
             effort=specialist.effort.value,
             client_home=str(tmp_path.resolve()),
             account="test-account",
-            executable_digest="b" * 64,
+            executable_digest=executable_digest,
             duration_seconds=5,
             quota_limit_types=windows,
             script=(

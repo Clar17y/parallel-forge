@@ -1,3 +1,4 @@
+import json
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -96,10 +97,25 @@ def test_command_registers_only_sdk_forge_mcp_and_separates_system_prompt():
     request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
     command = _gateway()._command(request)
     assert "--verbose" in command and "--tools=" in command
+    assert {
+        "--restricted",
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-chrome",
+    } <= set(command)
+    assert command[command.index("--permission-prompts") + 1] == "none"
+    managed = json.loads(command[command.index("--managed-settings") + 1])
+    assert managed == {
+        "allowManagedHooksOnly": True,
+        "disableClaudeAiConnectors": True,
+        "disableCommandPluginSources": True,
+        "syncClaudeAiPlugins": False,
+        "syncClaudeAiSkills": False,
+    }
     assert command[command.index("--mcp-config") + 1] == '{"mcpServers":{"forge":{"type":"sdk"}}}'
     assert "--disallowed-tools" not in command
     assert command[command.index("--system-prompt") + 1] == request.trusted_system_prompt
-    assert "--allowed-tools=mcp__forge__repository.read_file" in command
+    assert "--allowed-tools=mcp__forge__repository_read_file" in command
 
 
 def test_verifier_failure_does_not_admit_route():

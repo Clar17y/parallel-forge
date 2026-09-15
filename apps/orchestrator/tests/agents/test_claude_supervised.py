@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -24,6 +25,8 @@ from forge.domain.capability_evidence import CapabilityEvidenceScope
 from forge.domain.subscription import AuthMode, BillingMode
 from forge.domain.tool import ToolName
 from test_subscription_protocol import _request
+
+_EXECUTABLE_DIGEST = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -101,7 +104,7 @@ def _report(**changes: Any) -> ClaudeCapabilityReport:
         "hooks_disabled": True,
         "client_home": str(Path.cwd().resolve()),
         "account": "test-account",
-        "executable_digest": "b" * 64,
+        "executable_digest": _EXECUTABLE_DIGEST,
     }
     values.update(changes)
     return ClaudeCapabilityReport(**values)
@@ -146,7 +149,7 @@ def _gateway(
             effort="medium",
             client_home=str(Path.cwd().resolve()),
             account="test-account",
-            executable_digest="b" * 64,
+            executable_digest=_EXECUTABLE_DIGEST,
             script=(str(Path(__file__).with_name("claude_stream_peer.py")), scenario),
             duration_seconds=duration,
         ),
@@ -171,17 +174,55 @@ async def test_real_supervisor_completes_official_control_mcp_and_terminal_excha
     assert result.launch_proof == terminal_launch_proof(lifecycle.result)
     assert result.failure is None and result.decision is not None
     assert result.decision.attempt_id == request.attempt.attempt_id
-    assert [(call.call_key, call.name, dict(call.arguments)) for call in broker.calls] == [
-        ("7", "repository.read_file", {"path": "README.md"})
+    assert [(call.name, dict(call.arguments)) for call in broker.calls] == [
+        ("repository.read_file", {"path": "README.md"})
     ]
+    assert len(broker.calls[0].call_key) == 64
     assert broker.revoked is True
     assert (result.telemetry.input_tokens, result.telemetry.output_tokens) == (13, 5)
 
 
 @pytest.mark.asyncio
+async def test_official_order_validates_settings_before_user_and_init_before_callback() -> None:
+    broker = _Broker()
+    result = await _gateway("official_order", broker=broker).execute(
+        _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    )
+
+    assert result.failure is None and len(broker.calls) == 1 and broker.revoked
+
+
+@pytest.mark.asyncio
+async def test_initialization_before_the_complete_handshake_fails_without_quota() -> None:
+    broker = _Broker()
+    result = await _gateway("init_before_handshake", broker=broker).execute(
+        _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    )
+
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.quota_exhaustion is None and broker.calls == [] and broker.revoked
+    assert result.telemetry.tool_call_count == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "scenario", ["eof", "malformed", "wrong_session", "wrong_initialize", "duplicate_request"]
+    "scenario",
+    ["callback_before_init", "terminal_before_init", "quota_before_init", "duplicate_late_init"],
 )
+async def test_only_init_is_admissible_before_post_user_processing(scenario: str) -> None:
+    broker = _Broker()
+    result = await _gateway(scenario, broker=broker).execute(
+        _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    )
+
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.quota_exhaustion is None and broker.calls == [] and broker.revoked
+    assert result.telemetry.input_tokens is None and result.telemetry.output_tokens is None
+    assert result.telemetry.tool_call_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["eof", "malformed", "wrong_session", "wrong_initialize"])
 async def test_eof_malformed_and_foreign_terminal_fail_closed(scenario: str) -> None:
     broker = _Broker()
     result = await _gateway(scenario, broker=broker).execute(
@@ -210,12 +251,11 @@ async def test_jsonrpc_integer_and_string_ids_are_distinct_tool_authorities() ->
         _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
     )
     assert result.failure is None
-    assert [
-        (type(call.call_key), call.call_key, call.arguments["path"]) for call in broker.calls
-    ] == [
-        (str, "7", "README.md"),
-        (str, '"7"', "OTHER.md"),
+    assert [(type(call.call_key), call.arguments["path"]) for call in broker.calls] == [
+        (str, "README.md"),
+        (str, "OTHER.md"),
     ]
+    assert len({call.call_key for call in broker.calls}) == 2
 
 
 @pytest.mark.asyncio

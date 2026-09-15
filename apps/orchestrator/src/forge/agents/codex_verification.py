@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac
-import os
-import stat
 from dataclasses import dataclass, field
-from pathlib import Path
 
+from forge.agents.capability_verification import stable_executable_digest
 from forge.agents.codex_gateway import (
     CODEX_CLIENT_VERSION,
     CODEX_ISOLATION_POLICY_DIGEST,
@@ -219,28 +216,7 @@ class CodexEvidenceVerifier:
 def codex_executable_digest(filename: str) -> str | None:
     """Hash one stable regular file without exposing filesystem diagnostics."""
 
-    try:
-        path = Path(filename).resolve(strict=True)
-        before = path.stat()
-        if not stat.S_ISREG(before.st_mode):
-            return None
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                digest.update(chunk)
-        after = path.stat()
-    except OSError:
-        return None
-
-    def identity(value: os.stat_result) -> tuple[int, int, int, int]:
-        return (
-            value.st_dev,
-            value.st_ino,
-            value.st_size,
-            value.st_mtime_ns,
-        )
-
-    return digest.hexdigest() if identity(before) == identity(after) else None
+    return stable_executable_digest(filename)
 
 
 __all__ = [

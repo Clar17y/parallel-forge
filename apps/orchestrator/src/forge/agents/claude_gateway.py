@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
+import os
+import platform
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -62,8 +66,295 @@ from forge.domain.subscription import AttemptTelemetry, AuthMode, BillingMode, T
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
 
-_VERSION = "2.1.263"
+CLAUDE_CLIENT_VERSION = "2.1.263"
 _ALLOWANCE_WINDOWS = frozenset({"five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"})
+_MANAGED_ISOLATION_SETTINGS: tuple[tuple[str, bool], ...] = (
+    ("allowManagedHooksOnly", True),
+    ("disableClaudeAiConnectors", True),
+    ("disableCommandPluginSources", True),
+    ("syncClaudeAiPlugins", False),
+    ("syncClaudeAiSkills", False),
+)
+_TOOL_ALIASES = {
+    tool: "mcp__forge__" + re.sub(r"[^A-Za-z0-9_-]", "_", tool.value) for tool in ToolName
+}
+
+
+class ClaudeConfigurationError(ValueError):
+    """The connected client does not retain Forge's exact isolation controls."""
+
+
+if len(set(_TOOL_ALIASES.values())) != len(_TOOL_ALIASES):  # pragma: no cover - enum invariant
+    raise RuntimeError("Claude tool aliases must be unique")
+CLAUDE_ISOLATION_POLICY_DIGEST = hashlib.sha256(
+    json.dumps(
+        {
+            "client_version": CLAUDE_CLIENT_VERSION,
+            "command_controls": (
+                "restricted",
+                "safe_mode",
+                "empty_native_tools",
+                "permission_prompts_none",
+                "strict_sdk_mcp",
+                "empty_setting_sources",
+                "disabled_slash_commands",
+                "disabled_chrome",
+                "managed_policy_root_bound_to_client_home",
+                "managed_policy_and_system_mcp_files_absent_before_launch",
+                "effective_settings_before_user_turn",
+                "exact_mcp_handshake_before_session_init",
+                "callbacks_after_configuration_admission",
+            ),
+            "managed_settings": _MANAGED_ISOLATION_SETTINGS,
+            "tool_aliases": sorted((tool.value, alias) for tool, alias in _TOOL_ALIASES.items()),
+            "initialize_controls": {
+                "hooks": None,
+                "sdkMcpServers": ["forge"],
+                "skills": [],
+                "title": "Forge bounded review",
+            },
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
+
+
+def claude_managed_policy_is_empty(client_home: str) -> bool:
+    """Reject every on-disk policy source that could still supply managed hooks."""
+
+    if type(client_home) is not str or not Path(client_home).is_absolute():
+        return False
+    try:
+        root = Path(client_home).resolve(strict=True)
+    except OSError:
+        return False
+    return root.is_dir() and all(not os.path.lexists(path) for path in _managed_policy_paths(root))
+
+
+def _claude_system_managed_mcp_paths() -> tuple[Path, ...]:
+    """Return pinned-client system policy locations; env overrides never relocate these."""
+
+    if os.name == "nt":
+        roots = (
+            os.environ.get("ProgramW6432"),
+            os.environ.get("ProgramFiles"),
+            r"C:\Program Files",
+        )
+        return tuple(
+            dict.fromkeys(
+                Path(root) / "ClaudeCode" / "managed-mcp.json"
+                for root in roots
+                if isinstance(root, str) and Path(root).is_absolute()
+            )
+        )
+    if platform.system() == "Darwin":
+        return (Path("/Library/Application Support/ClaudeCode/managed-mcp.json"),)
+    if platform.system() == "Linux":
+        return (Path("/etc/claude-code/managed-mcp.json"),)
+    return ()
+
+
+def _managed_policy_paths(client_home: Path) -> tuple[Path, ...]:
+    return (
+        client_home / "managed-settings.json",
+        client_home / "managed-settings.d",
+        client_home / "managed-mcp.json",
+        *_claude_system_managed_mcp_paths(),
+    )
+
+
+def claude_initialize_request() -> dict[str, object]:
+    """Return the closed SDK initialization controls shared by runtime and proof."""
+
+    return {
+        "subtype": "initialize",
+        "hooks": None,
+        "sdkMcpServers": ["forge"],
+        "skills": [],
+        "title": "Forge bounded review",
+    }
+
+
+def claude_managed_isolation_settings() -> dict[str, bool]:
+    """Return the exact managed policy accepted by the pinned client."""
+
+    return dict(_MANAGED_ISOLATION_SETTINGS)
+
+
+def claude_tool_alias(tool: ToolName) -> str:
+    """Return the exact model-facing name assigned by Claude to a Forge MCP tool."""
+
+    if not isinstance(tool, ToolName):
+        raise TypeError("Claude tool alias requires a known Forge tool")
+    return _TOOL_ALIASES[tool]
+
+
+def claude_configuration_matches(
+    init: Mapping[str, object],
+    settings: Mapping[str, object],
+    *,
+    model: str,
+    effort: str,
+    tools: frozenset[ToolName],
+    session_id: str,
+) -> bool:
+    """Require the effective client state to exactly match Forge's launch policy."""
+
+    return claude_settings_match(settings, model=model, effort=effort) and claude_init_matches(
+        init, model=model, tools=tools, session_id=session_id
+    )
+
+
+def claude_settings_match(settings: Mapping[str, object], *, model: str, effort: str) -> bool:
+    """Require the exact effective managed-policy response before a user turn."""
+
+    expected_applied = {"advisor": None, "effort": effort, "model": model, "ultracode": False}
+    required = claude_managed_isolation_settings()
+    applied, effective, sources = (
+        settings.get("applied"),
+        settings.get("effective"),
+        settings.get("sources"),
+    )
+    return (
+        isinstance(applied, Mapping)
+        and dict(applied) == expected_applied
+        and isinstance(effective, Mapping)
+        and dict(effective) == required
+        and isinstance(sources, list)
+        and len(sources) == 1
+        and isinstance(sources[0], Mapping)
+        and sources[0].get("source") == "policySettings"
+        and isinstance(sources[0].get("settings"), Mapping)
+        and dict(sources[0]["settings"]) == required
+    )
+
+
+def claude_init_matches(
+    init: Mapping[str, object], *, model: str, tools: frozenset[ToolName], session_id: str
+) -> bool:
+    """Require the exact post-turn client capability advertisement."""
+
+    expected_tools = {claude_tool_alias(tool) for tool in tools} | {"StructuredOutput"}
+    advertised = init.get("tools")
+    return (
+        init.get("session_id") == session_id
+        and init.get("claude_code_version") == CLAUDE_CLIENT_VERSION
+        and init.get("model") == model
+        and init.get("permissionMode") == "dontAsk"
+        and isinstance(advertised, list)
+        and all(type(tool) is str for tool in advertised)
+        and set(advertised) == expected_tools
+        and len(advertised) == len(expected_tools)
+        and init.get("slash_commands") == []
+        and init.get("skills") == []
+        and init.get("plugins") == []
+        and init.get("mcp_servers") == [{"name": "forge", "status": "connected"}]
+    )
+
+
+def _control_response_is(frame: Mapping[str, object], request_id: str) -> bool:
+    response = frame.get("response")
+    return isinstance(response, Mapping) and response.get("request_id") == request_id
+
+
+def _claude_mcp_message(frame: Mapping[str, object]) -> Mapping[str, object] | None:
+    request = frame.get("request")
+    message = request.get("message") if isinstance(request, Mapping) else None
+    if (
+        set(frame) != {"type", "request_id", "request"}
+        or frame.get("type") != "control_request"
+        or not isinstance(frame.get("request_id"), str)
+        or not frame["request_id"]
+        or not isinstance(request, Mapping)
+        or set(request) != {"subtype", "server_name", "message"}
+        or request.get("subtype") != "mcp_message"
+        or request.get("server_name") != "forge"
+        or not isinstance(message, Mapping)
+    ):
+        return None
+    return message
+
+
+def claude_setup_handshake_frame_is(frame: Mapping[str, object]) -> bool:
+    """Recognize only exact Forge MCP setup traffic before capability admission."""
+
+    if claude_preinit_handshake_frame_is(frame):
+        return True
+    message = _claude_mcp_message(frame)
+    if message is None:
+        return False
+    ident, params = message.get("id"), message.get("params")
+    return (
+        set(message) == {"jsonrpc", "id", "method", "params"}
+        and message.get("jsonrpc") == "2.0"
+        and message.get("method") == "initialize"
+        and isinstance(ident, (str, int))
+        and not isinstance(ident, bool)
+        and isinstance(params, Mapping)
+        and not set(params) - {"protocolVersion", "capabilities", "clientInfo"}
+        and isinstance(params.get("protocolVersion"), str)
+    )
+
+
+def claude_preinit_handshake_frame_is(frame: Mapping[str, object]) -> bool:
+    """Recognize only non-authoritative Forge MCP handshake envelopes."""
+
+    message = _claude_mcp_message(frame)
+    if message is None:
+        return False
+    return message == {"jsonrpc": "2.0", "method": "notifications/initialized"} or (
+        set(message) in ({"jsonrpc", "method", "id"}, {"jsonrpc", "method", "id", "params"})
+        and message.get("jsonrpc") == "2.0"
+        and message.get("method") == "tools/list"
+        and message.get("params", {}) == {}
+        and isinstance(message.get("id"), (str, int))
+        and not isinstance(message.get("id"), bool)
+    )
+
+
+def claude_launch_arguments(
+    installation: ClaudeInstallation,
+    *,
+    session_id: str,
+    system_prompt: str,
+    permitted_tools: frozenset[ToolName],
+    schema: Mapping[str, object],
+) -> tuple[str, ...]:
+    """Compose the one production-isolated Claude invocation shape."""
+
+    names = [claude_tool_alias(tool) for tool in ToolName if tool in permitted_tools]
+    return (
+        *installation.script,
+        "--verbose",
+        "--restricted",
+        "--safe-mode",
+        "--model",
+        installation.model,
+        "--effort",
+        installation.effort,
+        "--session-id",
+        session_id,
+        "--no-session-persistence",
+        "--system-prompt",
+        system_prompt,
+        "--tools=",
+        "--permission-mode",
+        "dontAsk",
+        "--permission-prompts",
+        "none",
+        "--disable-slash-commands",
+        "--no-chrome",
+        "--managed-settings",
+        json.dumps(claude_managed_isolation_settings(), separators=(",", ":")),
+        "--mcp-config",
+        json.dumps({"mcpServers": {"forge": {"type": "sdk"}}}, separators=(",", ":")),
+        "--strict-mcp-config",
+        "--setting-sources=",
+        "--json-schema",
+        json.dumps(schema, separators=(",", ":")),
+        "--allowed-tools=" + ",".join(names),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +427,7 @@ class ClaudeCapabilityReport:
         try:
             identity = capability_identity(
                 scope=scope,
-                client_version=_VERSION,
+                client_version=CLAUDE_CLIENT_VERSION,
                 executable_digest=installation.executable_digest,
                 client_home=installation.client_home,
                 account=installation.account,
@@ -144,7 +435,7 @@ class ClaudeCapabilityReport:
         except TypeError, ValueError:
             return False
         return (
-            self.installed_version == _VERSION
+            self.installed_version == CLAUDE_CLIENT_VERSION
             and self.subscription_auth is True
             and self.model == installation.model
             and self.effort == installation.effort
@@ -371,12 +662,14 @@ class ClaudeGateway(SubscriptionGateway):
                 or route.billing_mode is not BillingMode.ALLOWANCE_ONLY
             ):
                 result = failed(SubscriptionFailure.POLICY_DENIED)
-            elif not (
-                await capability_report(
-                    self._verifier.verify(self._installation, scope), ClaudeCapabilityReport
-                )
-            ).admits(self._installation, scope) or (
-                request.authorization.permitted_tools and self._broker is None
+            elif (
+                not (
+                    await capability_report(
+                        self._verifier.verify(self._installation, scope), ClaudeCapabilityReport
+                    )
+                ).admits(self._installation, scope)
+                or not claude_managed_policy_is_empty(self._installation.client_home)
+                or (request.authorization.permitted_tools and self._broker is None)
             ):
                 result = failed(SubscriptionFailure.UNAVAILABLE)
             else:
@@ -388,8 +681,14 @@ class ClaudeGateway(SubscriptionGateway):
                 spec = ClientLaunchSpec(
                     argv=(self._installation.executable, *self._command(request)),
                     cwd=self._installation.cwd,
-                    environment={"CLAUDE_CONFIG_DIR": self._installation.client_home},
-                    allowed_environment=frozenset({"CLAUDE_CONFIG_DIR"}),
+                    environment={
+                        "CLAUDE_CONFIG_DIR": self._installation.client_home,
+                        "CLAUDE_CODE_MANAGED_SETTINGS_PATH": self._installation.client_home,
+                    },
+                    allowed_environment=frozenset(
+                        {"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_MANAGED_SETTINGS_PATH"}
+                    ),
+                    executable_digest=self._installation.executable_digest,
                     duration_seconds=duration,
                 )
                 async with asyncio.timeout(duration):
@@ -404,7 +703,7 @@ class ClaudeGateway(SubscriptionGateway):
             result = failed(SubscriptionFailure.DEADLINE)
         except ClientSettlementUncertain:
             result = failed(SubscriptionFailure.UNCERTAIN)
-        except CapabilityEvidenceSourceError:
+        except CapabilityEvidenceSourceError, ClaudeConfigurationError:
             result = failed(SubscriptionFailure.UNAVAILABLE)
         except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)
@@ -444,33 +743,12 @@ class ClaudeGateway(SubscriptionGateway):
         return result
 
     def _command(self, request: SubscriptionInvocationRequest) -> tuple[str, ...]:
-        names = [
-            f"mcp__forge__{tool.value}"
-            for tool in ToolName
-            if tool in request.authorization.permitted_tools
-        ]
-        return (
-            *self._installation.script,
-            "--verbose",
-            "--model",
-            self._installation.model,
-            "--effort",
-            self._installation.effort,
-            "--session-id",
-            str(request.attempt.attempt_id),
-            "--no-session-persistence",
-            "--system-prompt",
-            request.trusted_system_prompt,
-            "--tools=",
-            "--permission-mode",
-            "dontAsk",
-            "--mcp-config",
-            json.dumps({"mcpServers": {"forge": {"type": "sdk"}}}, separators=(",", ":")),
-            "--strict-mcp-config",
-            "--setting-sources=",
-            "--json-schema",
-            json.dumps(output_schema(request), separators=(",", ":")),
-            "--allowed-tools=" + ",".join(names),
+        return claude_launch_arguments(
+            self._installation,
+            session_id=str(request.attempt.attempt_id),
+            system_prompt=request.trusted_system_prompt,
+            permitted_tools=request.authorization.permitted_tools,
+            schema=output_schema(request),
         )
 
     async def _exchange(
@@ -484,6 +762,7 @@ class ClaudeGateway(SubscriptionGateway):
         allowed = frozenset(tool.value for tool in request.authorization.permitted_tools)
         admitted: dict[str, tuple[ProviderToolCall, Mapping[str, object]]] = {}
         initialized = False
+        init: Mapping[str, object] | None = None
 
         async def call(value: ProviderToolCall) -> Mapping[str, object]:
             if (
@@ -521,7 +800,7 @@ class ClaudeGateway(SubscriptionGateway):
             {
                 "type": "control_request",
                 "request_id": "forge_initialize",
-                "request": {"subtype": "initialize", "hooks": None, "skills": []},
+                "request": claude_initialize_request(),
             }
         )
         for _ in range(64):
@@ -529,6 +808,8 @@ class ClaudeGateway(SubscriptionGateway):
             if not isinstance(first, Mapping):
                 raise ProtocolError("Claude ended during initialization")
             if first.get("type") == "control_request":
+                if not claude_setup_handshake_frame_is(first):
+                    raise ProtocolError("Claude emitted a callback before capability admission")
                 response = await codec.receive(json.dumps(first, allow_nan=False))
                 if response is None:
                     raise ProtocolError("invalid Claude initialization request")
@@ -547,7 +828,61 @@ class ClaudeGateway(SubscriptionGateway):
             break
         else:
             raise ProtocolError("too many Claude initialization frames")
-        initialized = True
+        await session.send(
+            {
+                "type": "control_request",
+                "request_id": "forge_settings",
+                "request": {"subtype": "get_settings"},
+            }
+        )
+        settings: Mapping[str, object] | None = None
+        for _ in range(128):
+            frame = await session.receive()
+            if not isinstance(frame, Mapping):
+                raise ProtocolError("Claude ended before reporting settings")
+            if frame.get("type") == "system" and frame.get("subtype") == "init":
+                if init is not None:
+                    raise ProtocolError("duplicate Claude initialization metadata")
+                if not codec.handshake_complete:
+                    raise ProtocolError("Claude initialized before MCP handshake completion")
+                init = frame
+                if settings is not None:
+                    break
+                continue
+            if frame.get("type") == "control_response" and _control_response_is(
+                frame, "forge_settings"
+            ):
+                response = frame["response"]
+                assert isinstance(response, Mapping)
+                value = response.get("response")
+                if response.get("subtype") != "success" or not isinstance(value, Mapping):
+                    raise ClaudeConfigurationError("Claude effective settings are unavailable")
+                settings = value
+                break
+            if not claude_setup_handshake_frame_is(frame):
+                raise ProtocolError("Claude emitted a callback before capability admission")
+            reply = await codec.receive(json.dumps(frame, allow_nan=False))
+            if reply is not None:
+                await session.send(reply)
+        else:
+            raise ProtocolError("too many Claude settings events")
+        if settings is None or not claude_settings_match(
+            settings,
+            model=self._installation.model,
+            effort=self._installation.effort,
+        ):
+            raise ClaudeConfigurationError("Claude effective isolation differs")
+        if init is not None:
+            if not codec.handshake_complete:
+                raise ProtocolError("Claude initialized before MCP handshake completion")
+            if not claude_init_matches(
+                init,
+                model=self._installation.model,
+                tools=request.authorization.permitted_tools,
+                session_id=thread,
+            ):
+                raise ClaudeConfigurationError("Claude effective isolation differs")
+            initialized = True
         context = {
             "task": TypeAdapter(type(request.task)).dump_python(request.task, mode="json"),
             "attempt_budget": TypeAdapter(type(request.budget)).dump_python(
@@ -567,6 +902,28 @@ class ClaudeGateway(SubscriptionGateway):
             }
         )
         while (frame := await session.receive()) is not None:
+            if not initialized:
+                if claude_preinit_handshake_frame_is(frame):
+                    reply = await codec.receive(json.dumps(frame, allow_nan=False))
+                    if reply is None:
+                        raise ProtocolError("invalid Claude initialization notification")
+                    await session.send(reply)
+                    continue
+                if frame.get("type") != "system" or frame.get("subtype") != "init":
+                    raise ProtocolError("Claude emitted an event before initialization metadata")
+                if not codec.handshake_complete:
+                    raise ProtocolError("Claude initialized before MCP handshake completion")
+                if not claude_init_matches(
+                    frame,
+                    model=self._installation.model,
+                    tools=request.authorization.permitted_tools,
+                    session_id=thread,
+                ):
+                    raise ClaudeConfigurationError("Claude effective isolation differs")
+                initialized = True
+                continue
+            if frame.get("type") == "system" and frame.get("subtype") == "init":
+                raise ProtocolError("duplicate Claude initialization metadata")
             raw = json.dumps(frame, allow_nan=False)
             reply = await codec.receive(raw)
             quota.notification(frame, self._now())
@@ -580,6 +937,8 @@ class ClaudeGateway(SubscriptionGateway):
             if reply is not None:
                 await session.send(reply)
             if codec.terminal is not None:
+                if not initialized:
+                    raise ProtocolError("Claude completed before initialization metadata")
                 terminal = codec.terminal
                 usage.observe(terminal.get("usage"))
                 usage.validate_budget(request.budget)
@@ -599,8 +958,16 @@ class ClaudeGateway(SubscriptionGateway):
 
 
 __all__ = [
+    "CLAUDE_CLIENT_VERSION",
+    "CLAUDE_ISOLATION_POLICY_DIGEST",
     "ClaudeCapabilityReport",
     "ClaudeCapabilityVerifier",
     "ClaudeGateway",
     "ClaudeInstallation",
+    "claude_initialize_request",
+    "claude_launch_arguments",
+    "claude_managed_isolation_settings",
+    "claude_managed_policy_is_empty",
+    "claude_setup_handshake_frame_is",
+    "claude_tool_alias",
 ]
