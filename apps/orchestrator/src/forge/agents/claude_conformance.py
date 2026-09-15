@@ -163,6 +163,9 @@ class ClaudeOfficialConformanceHarness:
         shell_marker = Path(installation.cwd) / ".forge-claude-shell-canary"
         if shell_marker.exists():
             raise ValueError("Claude native conformance marker already exists")
+        read_sentinel = Path(installation.cwd) / "README.md"
+        if not read_sentinel.is_file():
+            raise ValueError("Claude conformance requires a readable repository sentinel")
         markers = (*cast(tuple[Path, ...], self.side_effect_markers), shell_marker)
         session_id = str(uuid4())
         turn_id = str(uuid4())
@@ -187,7 +190,7 @@ class ClaudeOfficialConformanceHarness:
         init: Mapping[str, object] | None = None
         settings: Mapping[str, object] | None = None
         completed = False
-        async with _LoopbackMessages(_response_sequence(shell_marker)) as messages:
+        async with _LoopbackMessages(_response_sequence(shell_marker, read_sentinel)) as messages:
             spec = ClientLaunchSpec(
                 argv=(
                     installation.executable,
@@ -415,8 +418,8 @@ def _validate_configuration(
         raise ClaudeConformanceError("Claude initialized with an unisolated capability")
 
 
-def _response_sequence(shell_marker: Path) -> tuple[bytes, ...]:
-    forbidden = list(_forbidden_calls(shell_marker))
+def _response_sequence(shell_marker: Path, read_sentinel: Path) -> tuple[bytes, ...]:
+    forbidden = list(_forbidden_calls(shell_marker, read_sentinel))
     allowed = [
         (
             "forge-call-1",
@@ -524,9 +527,7 @@ def _inspect_requests(
         raise ClaudeConformanceError("Claude exposed a non-Forge model tool")
 
     denied = _tool_results(requests[1].body)
-    if set(denied) != {
-        f"forbidden-{index}" for index in range(1, len(_FORBIDDEN_TOOL_NAMES) + 1)
-    } or not all(result.get("is_error") is True for result in denied.values()):
+    if not _forbidden_denials_are_exact(denied):
         raise ClaudeConformanceError("Claude admitted a forbidden model tool")
     forwarded = _tool_results(requests[2].body).get("forge-call-1")
     content = forwarded.get("content") if isinstance(forwarded, Mapping) else None
@@ -554,8 +555,28 @@ def _inspect_requests(
     return tools_match, callback_forwarded, alternate_auth_isolated
 
 
+def _forbidden_denials_are_exact(denied: Mapping[str, Mapping[str, Any]]) -> bool:
+    expected_ids = {f"forbidden-{index}" for index in range(1, len(_FORBIDDEN_TOOL_NAMES) + 1)}
+    if set(denied) != expected_ids:
+        return False
+    for index, name in enumerate(_FORBIDDEN_TOOL_NAMES, start=1):
+        result = denied[f"forbidden-{index}"]
+        unavailable = f"<tool_use_error>Error: No such tool available: {name}"
+        if not name.startswith("mcp__"):
+            unavailable += f". {name} is disabled for this session, in subagents as well as here."
+        unavailable += "</tool_use_error>"
+        if (
+            result.get("type") != "tool_result"
+            or result.get("tool_use_id") != f"forbidden-{index}"
+            or result.get("is_error") is not True
+            or result.get("content") != unavailable
+        ):
+            return False
+    return True
+
+
 def _forbidden_calls(
-    shell_marker: Path,
+    shell_marker: Path, read_sentinel: Path
 ) -> tuple[tuple[str, str, Mapping[str, object]], ...]:
     command = (
         f'cmd.exe /d /c echo denied>"{shell_marker}"'
@@ -564,7 +585,7 @@ def _forbidden_calls(
     )
     arguments: tuple[Mapping[str, object], ...] = (
         {"command": command},
-        {"file_path": str(shell_marker)},
+        {"file_path": str(read_sentinel)},
         {"skill": "inherited-canary"},
         {"url": "http://127.0.0.1:9/forbidden", "prompt": "denied"},
         {"path": str(shell_marker)},

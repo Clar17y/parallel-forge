@@ -106,6 +106,10 @@ CLAUDE_ISOLATION_POLICY_DIGEST = hashlib.sha256(
                 "callbacks_after_configuration_admission",
             ),
             "managed_settings": _MANAGED_ISOLATION_SETTINGS,
+            "conformance_controls": (
+                "existing_read_sentinel",
+                "exact_forbidden_tool_unavailability",
+            ),
             "tool_aliases": sorted((tool.value, alias) for tool, alias in _TOOL_ALIASES.items()),
             "initialize_controls": {
                 "hooks": None,

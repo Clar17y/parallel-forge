@@ -13,6 +13,8 @@ from forge.agents.claude_conformance import (
     _await_initialization,
     _await_settings,
     _await_terminal,
+    _HttpRequest,
+    _inspect_requests,
     _LoopbackMessages,
     _validate_configuration,
     required_claude_live_scopes,
@@ -106,6 +108,65 @@ def test_applied_effort_drift_is_rejected(tmp_path) -> None:
 
     with pytest.raises(ClaudeConformanceError, match="unisolated capability"):
         _validate_configuration(init, settings, installation, scope, "session")
+
+
+def test_operational_tool_errors_do_not_prove_forbidden_tools_are_unavailable() -> None:
+    scope = required_claude_live_scopes()[0]
+    tools = [
+        {"type": "custom", "name": name}
+        for name in sorted(
+            {claude_tool_alias(tool) for tool in scope.tool_surface} | {"StructuredOutput"}
+        )
+    ]
+    base = {"model": scope.model, "tools": tools}
+
+    def request(body):
+        return _HttpRequest(
+            path="/v1/messages",
+            headers={"x-api-key": "forge-offline-conformance"},
+            body=body,
+        )
+
+    denied = {
+        **base,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": f"forbidden-{index}",
+                        "is_error": True,
+                        "content": "Error: file not found",
+                    }
+                    for index in range(1, 6)
+                ],
+            }
+        ],
+    }
+    forwarded = {
+        **base,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "forge-call-1",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps({"path": "README.md", "status": "succeeded"}),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ClaudeConformanceError, match="admitted a forbidden"):
+        _inspect_requests((request(base), request(denied), request(forwarded)), scope)
 
 
 async def test_late_initialization_requires_the_complete_mcp_handshake(monkeypatch) -> None:
