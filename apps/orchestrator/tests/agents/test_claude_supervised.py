@@ -26,6 +26,14 @@ from forge.domain.subscription import AuthMode, BillingMode
 from forge.domain.tool import ToolName
 from test_subscription_protocol import _request
 
+
+@pytest.fixture(autouse=True)
+def _supported_isolation_platform(monkeypatch):
+    monkeypatch.setattr(
+        "forge.agents.claude_gateway.claude_isolation_platform_supported", lambda: True
+    )
+
+
 _EXECUTABLE_DIGEST = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
 
 

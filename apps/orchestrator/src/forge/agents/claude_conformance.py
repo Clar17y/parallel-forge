@@ -11,14 +11,15 @@ from pathlib import Path
 from typing import Any, Self, cast
 from uuid import uuid4
 
+from forge.agents import claude_gateway
 from forge.agents.capability_verification import stable_executable_digest
 from forge.agents.claude_gateway import (
     CLAUDE_CLIENT_VERSION,
+    CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT,
     ClaudeInstallation,
     claude_configuration_matches,
     claude_initialize_request,
     claude_launch_arguments,
-    claude_managed_policy_is_empty,
     claude_preinit_handshake_frame_is,
     claude_settings_match,
     claude_setup_handshake_frame_is,
@@ -154,8 +155,8 @@ class ClaudeOfficialConformanceHarness:
             raise TypeError("Claude conformance requires an installation and scope")
         if (installation.model, installation.effort) != (scope.model, scope.effort):
             raise ValueError("Claude conformance scope differs from the installation")
-        if not claude_managed_policy_is_empty(installation.client_home):
-            raise ClaudeConformanceError("Claude managed policy is not empty")
+        if not await asyncio.to_thread(claude_gateway.claude_isolation_platform_supported):
+            raise ClaudeConformanceError("Claude isolation platform is unsupported")
         digest = await asyncio.to_thread(stable_executable_digest, installation.executable)
         if digest != installation.executable_digest:
             raise ClaudeConformanceError("Claude executable identity differs")
@@ -206,15 +207,15 @@ class ClaudeOfficialConformanceHarness:
                 environment={
                     "ANTHROPIC_API_KEY": _OFFLINE_API_KEY,
                     "ANTHROPIC_BASE_URL": messages.base_url,
-                    "CLAUDE_CODE_MANAGED_SETTINGS_PATH": installation.client_home,
                     "CLAUDE_CONFIG_DIR": installation.client_home,
+                    **CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT,
                 },
                 allowed_environment=frozenset(
                     {
                         "ANTHROPIC_API_KEY",
                         "ANTHROPIC_BASE_URL",
-                        "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
                         "CLAUDE_CONFIG_DIR",
+                        *CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT,
                     }
                 ),
                 executable_digest=installation.executable_digest,

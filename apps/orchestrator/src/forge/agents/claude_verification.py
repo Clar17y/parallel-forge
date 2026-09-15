@@ -6,13 +6,13 @@ import asyncio
 import hmac
 from dataclasses import dataclass, field
 
+from forge.agents import claude_gateway
 from forge.agents.capability_verification import stable_executable_digest
 from forge.agents.claude_gateway import (
     CLAUDE_CLIENT_VERSION,
     CLAUDE_ISOLATION_POLICY_DIGEST,
     ClaudeCapabilityReport,
     ClaudeInstallation,
-    claude_managed_policy_is_empty,
 )
 from forge.application.ports.capability_evidence import CapabilityEvidenceSource
 from forge.domain.capability_evidence import (
@@ -110,6 +110,8 @@ class ClaudeEvidenceVerifier:
             scope, CapabilityEvidenceScope
         ):
             raise TypeError("Claude installation and capability scope are required")
+        if not await asyncio.to_thread(claude_gateway.claude_isolation_platform_supported):
+            return ClaudeCapabilityReport()
         route = scope.route
         if (
             installation.script
@@ -121,7 +123,6 @@ class ClaudeEvidenceVerifier:
             or route.effort.value != installation.effort
             or route.auth_mode is not AuthMode.SUBSCRIPTION
             or route.billing_mode is not BillingMode.ALLOWANCE_ONLY
-            or not claude_managed_policy_is_empty(installation.client_home)
         ):
             return ClaudeCapabilityReport()
 
@@ -145,7 +146,6 @@ class ClaudeEvidenceVerifier:
         if (
             confirmed_digest is None
             or not hmac.compare_digest(confirmed_digest, actual_digest)
-            or not claude_managed_policy_is_empty(installation.client_home)
             or not isinstance(evidence, ResolvedCapabilityEvidence)
             or not evidence.matches(identity)
             or evidence.manifest.verifier_id != CLAUDE_VERIFIER_ID

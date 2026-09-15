@@ -1,12 +1,17 @@
 """Evidence-backed verification for the pinned official Claude client."""
 
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from capability_support import fake_capability_evidence
-from forge.agents.claude_gateway import CLAUDE_ISOLATION_POLICY_DIGEST, ClaudeInstallation
+from forge.agents.claude_gateway import (
+    CLAUDE_ISOLATION_POLICY_DIGEST,
+    ClaudeCapabilityReport,
+    ClaudeInstallation,
+)
 from forge.agents.claude_verification import (
     CLAUDE_VERIFIER_ID,
     CLAUDE_VERIFIER_VERSION,
@@ -16,6 +21,13 @@ from forge.agents.claude_verification import (
 from forge.domain.capability_evidence import CapabilityEvidenceScope
 from forge.domain.subscription import SPECIALIST_ALLOWED_TOOLS, RouteSpec, SpecialistPurpose
 from forge.domain.tool import ToolName
+
+
+@pytest.fixture(autouse=True)
+def _supported_isolation_platform(monkeypatch):
+    monkeypatch.setattr(
+        "forge.agents.claude_gateway.claude_isolation_platform_supported", lambda: True
+    )
 
 
 def _installation(tmp_path) -> tuple[ClaudeInstallation, str]:
@@ -93,8 +105,54 @@ async def test_concrete_verifier_hashes_the_executable_and_resolves_exact_eviden
     assert report.admits(installation, scope)
 
 
+async def test_unsupported_platform_does_not_resolve_evidence(tmp_path, monkeypatch) -> None:
+    installation, _ = _installation(tmp_path)
+    scope = required_claude_verification_scopes()[0].evidence_scope()
+    monkeypatch.setattr(
+        "forge.agents.claude_gateway.claude_isolation_platform_supported", lambda: False
+    )
+
+    class Source:
+        async def resolve(self, *_args, **_kwargs):
+            raise AssertionError("unsupported platform must not resolve evidence")
+
+    report = await ClaudeEvidenceVerifier(Source()).verify(installation, scope)
+
+    assert report == ClaudeCapabilityReport()
+
+
 def test_verifier_version_is_bound_to_the_isolation_policy() -> None:
     assert CLAUDE_VERIFIER_VERSION == f"1-{CLAUDE_ISOLATION_POLICY_DIGEST[:16]}"
+
+
+def test_claude_isolation_policy_digest_binds_exact_launch_environment() -> None:
+    from forge.agents import claude_gateway
+
+    assert claude_gateway.CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT == {
+        "CLAUDE_CODE_ENTRYPOINT": "local-agent",
+        "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1",
+    }
+    payload = claude_gateway._isolation_policy_digest_payload()
+    assert payload["launch_environment"] == [
+        ("CLAUDE_CODE_ENTRYPOINT", "local-agent"),
+        ("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "1"),
+    ]
+    expected_digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert claude_gateway.CLAUDE_ISOLATION_POLICY_DIGEST == expected_digest
+
+    forbidden_credential_keys = {
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+        "CCR_OAUTH_TOKEN_FILE",
+        "CLAUDE_CODE_USE_GATEWAY",
+        "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
+    }
+    assert not (set(claude_gateway.CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT) & forbidden_credential_keys)
+    production_keys = {"CLAUDE_CONFIG_DIR", *claude_gateway.CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT}
+    assert not (production_keys & forbidden_credential_keys)
 
 
 @pytest.mark.parametrize("change", ["script", "scope"])
@@ -135,8 +193,10 @@ async def test_executable_drift_is_denied_before_evidence_lookup(tmp_path) -> No
     assert not report.admits(installation, scope)
 
 
-async def test_managed_policy_drift_is_denied_before_evidence_lookup(tmp_path) -> None:
-    installation, _ = _installation(tmp_path)
+async def test_managed_policy_drift_does_not_gate_evidence_for_the_pinned_launch_root(
+    tmp_path,
+) -> None:
+    installation, digest = _installation(tmp_path)
     scope = required_claude_verification_scopes()[0].evidence_scope()
     (Path(installation.client_home) / "managed-settings.json").write_text(
         '{"hooks":{"SessionStart":[]}}', encoding="utf-8"
@@ -144,14 +204,16 @@ async def test_managed_policy_drift_is_denied_before_evidence_lookup(tmp_path) -
 
     class Source:
         async def resolve(self, identity, *, evidence_id=None):
-            raise AssertionError("changed managed policy must not reach the evidence source")
+            return _evidence(installation, scope, digest)
 
     report = await ClaudeEvidenceVerifier(Source()).verify(installation, scope)
 
-    assert not report.admits(installation, scope)
+    assert report.admits(installation, scope)
 
 
-async def test_managed_policy_change_during_evidence_lookup_is_denied(tmp_path) -> None:
+async def test_managed_policy_change_during_evidence_lookup_does_not_invalidate_evidence(
+    tmp_path,
+) -> None:
     installation, digest = _installation(tmp_path)
     scope = required_claude_verification_scopes()[0].evidence_scope()
 
@@ -162,7 +224,7 @@ async def test_managed_policy_change_during_evidence_lookup_is_denied(tmp_path) 
 
     report = await ClaudeEvidenceVerifier(Source()).verify(installation, scope)
 
-    assert not report.admits(installation, scope)
+    assert report.admits(installation, scope)
 
 
 async def test_executable_change_during_evidence_lookup_is_denied(tmp_path) -> None:
@@ -239,3 +301,75 @@ async def test_route_identity_drift_is_denied_before_evidence_lookup(tmp_path, r
     report = await ClaudeEvidenceVerifier(Source()).verify(installation, scope)
 
     assert not report.admits(installation, scope)
+
+
+async def test_verify_offloads_platform_probe_from_event_loop(tmp_path, monkeypatch) -> None:
+    import threading
+
+    probe_threads: list[threading.Thread] = []
+
+    def _probe() -> bool:
+        probe_threads.append(threading.current_thread())
+        return False
+
+    monkeypatch.setattr("forge.agents.claude_gateway.claude_isolation_platform_supported", _probe)
+    installation, _ = _installation(tmp_path)
+    scope = required_claude_verification_scopes()[0].evidence_scope()
+
+    class Source:
+        async def resolve(self, identity, *, evidence_id=None):
+            raise AssertionError("unsupported platform must not reach evidence lookup")
+
+    report = await ClaudeEvidenceVerifier(Source()).verify(installation, scope)
+    assert report == ClaudeCapabilityReport()
+    assert len(probe_threads) == 1
+    assert probe_threads[0] is not threading.main_thread()
+
+
+def test_claude_isolation_policy_digest_derives_from_canonical_initialization_request() -> None:
+    from forge.agents import claude_gateway
+
+    payload = claude_gateway._isolation_policy_digest_payload()
+    canonical_init = claude_gateway.claude_initialize_request()
+    assert payload["initialize_controls"] == canonical_init
+
+
+def test_claude_isolation_policy_digest_binds_canonical_fixed_launch_arguments() -> None:
+    from forge.agents import claude_gateway
+
+    payload = claude_gateway._isolation_policy_digest_payload()
+    assert "fixed_launch_arguments" in payload
+    fixed_args = payload["fixed_launch_arguments"]
+    assert "--restricted" in fixed_args
+    assert "--safe-mode" in fixed_args
+    assert "--disable-slash-commands" in fixed_args
+    assert "--no-chrome" in fixed_args
+    assert "--strict-mcp-config" in fixed_args
+    assert "--no-session-persistence" in fixed_args
+    assert "--permission-prompts" in fixed_args
+
+
+def test_claude_launch_arguments_correspond_to_digest_fixed_controls(tmp_path) -> None:
+    from forge.agents import claude_gateway
+
+    installation, _ = _installation(tmp_path)
+    actual = list(
+        claude_gateway.claude_launch_arguments(
+            installation,
+            session_id="actual-session",
+            system_prompt="actual-system-prompt",
+            permitted_tools=frozenset({ToolName.REPOSITORY_READ_FILE}),
+            schema={"type": "object"},
+        )
+    )
+    for flag, placeholder in (
+        ("--model", "<model>"),
+        ("--effort", "<effort>"),
+        ("--session-id", "<session_id>"),
+        ("--system-prompt", "<system_prompt>"),
+        ("--json-schema", "<schema>"),
+    ):
+        actual[actual.index(flag) + 1] = placeholder
+    actual[-1] = "--allowed-tools=<allowed_tools>"
+
+    assert tuple(actual) == claude_gateway.claude_canonical_fixed_launch_arguments()

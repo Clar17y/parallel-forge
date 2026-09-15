@@ -18,6 +18,7 @@ from test_claude_supervised import (
     _Broker,
     _gateway,
     _report,
+    _supported_isolation_platform,  # noqa: F401 - imported autouse fixture
     _UncertainLifecycle,
     _Verifier,
 )

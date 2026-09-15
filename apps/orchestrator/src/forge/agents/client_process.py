@@ -327,6 +327,57 @@ def _sealed_verified_file(path: str, digest: str, *, executable: bool) -> int:
             os.close(target)
 
 
+def linux_operational_pinning_supported() -> bool:
+    """Verify that the host kernel and seccomp operationally support sealed exec.
+
+    Exercises memfd creation, exact-byte copy/hash verification, executable mode,
+    F_ADD_SEALS, retained descriptor, /proc/self/fd path, pass_fds, and actual exec
+    used by _PosixProcess. Returns True only when a bounded probe child exits 0.
+    """
+    if sys.platform != "linux":
+        return False
+    if not hasattr(os, "memfd_create") or not Path("/proc/self/fd").is_dir():
+        return False
+
+    descriptor = -1
+    child: subprocess.Popen[bytes] | None = None
+    try:
+        executable_path = Path(sys.executable).resolve(strict=True)
+        if not executable_path.is_file():
+            return False
+        executable = str(executable_path)
+
+        hasher = hashlib.sha256()
+        with open(executable, "rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
+
+        descriptor = _sealed_verified_file(executable, digest, executable=True)
+        child = subprocess.Popen(
+            [executable, "-I", "-S", "-c", ""],
+            executable=f"/proc/self/fd/{descriptor}",
+            env={},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            pass_fds=(descriptor,),
+        )
+        return child.wait(timeout=3.0) == 0
+    except OSError, ValueError, subprocess.SubprocessError, ImportError:
+        return False
+    finally:
+        if child is not None and child.poll() is None:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                child.kill()
+            with contextlib.suppress(subprocess.SubprocessError, OSError):
+                child.wait(timeout=1.0)
+        if descriptor >= 0:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+
 def _resolved_pinned_argv(
     argv: tuple[str, ...], pins: tuple[ClientPinnedFile, ...], paths: Mapping[str, str]
 ) -> tuple[str, ...]:

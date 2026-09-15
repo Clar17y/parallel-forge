@@ -7,8 +7,9 @@ import hashlib
 import json
 import math
 import os
-import platform
 import re
+import stat
+import types
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -31,6 +32,7 @@ from forge.agents.client_process import (
     ClientProcessSupervisor,
     ClientProcessTimeout,
     ClientSettlementUncertain,
+    linux_operational_pinning_supported,
     terminal_launch_proof,
 )
 from forge.agents.codex_gateway import ToolBroker
@@ -78,6 +80,178 @@ _MANAGED_ISOLATION_SETTINGS: tuple[tuple[str, bool], ...] = (
 _TOOL_ALIASES = {
     tool: "mcp__forge__" + re.sub(r"[^A-Za-z0-9_-]", "_", tool.value) for tool in ToolName
 }
+_CLAUDE_FS_ROOT = Path("/")
+_CLAUDE_ETC_ROOT = Path("/etc")
+_CLAUDE_SYSTEM_ROOT = Path("/etc/claude-code")
+_CLAUDE_PROC_UID_MAP = Path("/proc/self/uid_map")
+_CLAUDE_PROC_GID_MAP = Path("/proc/self/gid_map")
+_CLAUDE_PROC_STATUS = Path("/proc/self/status")
+_CLAUDE_SYSTEM_POLICY_SURFACES = (
+    "managed-settings.json",
+    "managed-settings.d",
+    "managed-mcp.json",
+)
+CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT: types.MappingProxyType[str, str] = types.MappingProxyType(
+    {
+        "CLAUDE_CODE_ENTRYPOINT": "local-agent",
+        "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1",
+    }
+)
+_CLAUDE_COMMAND_CONTROLS = (
+    "restricted",
+    "safe_mode",
+    "empty_native_tools",
+    "permission_prompts_none",
+    "strict_sdk_mcp",
+    "empty_setting_sources",
+    "disabled_slash_commands",
+    "disabled_chrome",
+    "linux_protected_empty_fixed_managed_policy_root",
+    "trusted_host_fixed_root_policy_assumption",
+    "claude_code_entrypoint_local_agent",
+    "claude_code_provider_managed_by_host",
+    "effective_settings_before_user_turn",
+    "exact_mcp_handshake_before_session_init",
+    "callbacks_after_configuration_admission",
+)
+
+
+def _protected_root_directory(path: Path) -> bool:
+    try:
+        metadata = os.lstat(path)
+        return (
+            stat.S_ISDIR(metadata.st_mode)
+            and not stat.S_ISLNK(metadata.st_mode)
+            and metadata.st_uid == 0
+            and not metadata.st_mode & 0o022
+            and not os.access(path, os.W_OK, effective_ids=True)
+        )
+    except OSError:
+        return False
+
+
+def _path_strictly_absent(path: Path) -> bool:
+    try:
+        os.lstat(path)
+        return False
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def _linux_memfd_proc_available() -> bool:
+    return linux_operational_pinning_supported()
+
+
+def _linux_initial_id_map(path: Path) -> bool:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if len(lines) != 1:
+        return False
+    parts = lines[0].split()
+    if len(parts) != 3:
+        return False
+    try:
+        first, second, count = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return False
+    return first == 0 and second == 0 and count == 4294967295
+
+
+def _linux_status_credentials_and_capabilities(path: Path) -> bool:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    fields: dict[str, str] = {}
+    for line in content.splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            key = key.strip()
+            if key in fields:
+                return False
+            fields[key] = value.strip()
+
+    required_caps = ("CapInh", "CapPrm", "CapEff", "CapAmb")
+    for cap in required_caps:
+        if cap not in fields:
+            return False
+        try:
+            val = int(fields[cap], 16)
+        except ValueError:
+            return False
+        if val != 0:
+            return False
+
+    if "Uid" not in fields or "Gid" not in fields:
+        return False
+
+    try:
+        uids = [int(u) for u in fields["Uid"].split()]
+        gids = [int(g) for g in fields["Gid"].split()]
+    except ValueError:
+        return False
+
+    if len(uids) != 4 or len(gids) != 4:
+        return False
+
+    if any(u <= 0 for u in uids) or any(g <= 0 for g in gids):
+        return False
+
+    return len(set(uids)) == 1 and len(set(gids)) == 1
+
+
+def _linux_credentials_and_capabilities_supported(
+    status_path: Path = _CLAUDE_PROC_STATUS,
+) -> bool:
+    if not _linux_status_credentials_and_capabilities(status_path):
+        return False
+    if hasattr(os, "getresuid"):
+        res_uids = os.getresuid()
+        if any(u <= 0 for u in res_uids) or len(set(res_uids)) != 1:
+            return False
+    if hasattr(os, "getresgid"):
+        res_gids = os.getresgid()
+        if any(g <= 0 for g in res_gids) or len(set(res_gids)) != 1:
+            return False
+    return True
+
+
+def _claude_isolation_platform_supported() -> bool:
+    """Whether fixed Claude policy is race-free from this unprivileged process."""
+
+    return (
+        _linux_memfd_proc_available()
+        and _linux_initial_id_map(_CLAUDE_PROC_UID_MAP)
+        and _linux_initial_id_map(_CLAUDE_PROC_GID_MAP)
+        and _linux_credentials_and_capabilities_supported(_CLAUDE_PROC_STATUS)
+        and _protected_root_directory(_CLAUDE_FS_ROOT)
+        and _protected_root_directory(_CLAUDE_ETC_ROOT)
+        and (
+            _path_strictly_absent(_CLAUDE_SYSTEM_ROOT)
+            or (
+                _protected_root_directory(_CLAUDE_SYSTEM_ROOT)
+                and all(
+                    _path_strictly_absent(_CLAUDE_SYSTEM_ROOT / surface)
+                    for surface in _CLAUDE_SYSTEM_POLICY_SURFACES
+                )
+            )
+        )
+    )
+
+
+def claude_isolation_platform_supported() -> bool:
+    """Return the platform admission control used by Claude launch paths.
+
+    This public wrapper allows callers and test fixtures to intercept or verify
+    platform admission while keeping internal checks modular.
+    """
+
+    return _claude_isolation_platform_supported()
 
 
 class ClaudeConfigurationError(ValueError):
@@ -86,86 +260,6 @@ class ClaudeConfigurationError(ValueError):
 
 if len(set(_TOOL_ALIASES.values())) != len(_TOOL_ALIASES):  # pragma: no cover - enum invariant
     raise RuntimeError("Claude tool aliases must be unique")
-CLAUDE_ISOLATION_POLICY_DIGEST = hashlib.sha256(
-    json.dumps(
-        {
-            "client_version": CLAUDE_CLIENT_VERSION,
-            "command_controls": (
-                "restricted",
-                "safe_mode",
-                "empty_native_tools",
-                "permission_prompts_none",
-                "strict_sdk_mcp",
-                "empty_setting_sources",
-                "disabled_slash_commands",
-                "disabled_chrome",
-                "managed_policy_root_bound_to_client_home",
-                "managed_policy_and_system_mcp_files_absent_before_launch",
-                "effective_settings_before_user_turn",
-                "exact_mcp_handshake_before_session_init",
-                "callbacks_after_configuration_admission",
-            ),
-            "managed_settings": _MANAGED_ISOLATION_SETTINGS,
-            "conformance_controls": (
-                "existing_read_sentinel",
-                "exact_forbidden_tool_unavailability",
-            ),
-            "tool_aliases": sorted((tool.value, alias) for tool, alias in _TOOL_ALIASES.items()),
-            "initialize_controls": {
-                "hooks": None,
-                "sdkMcpServers": ["forge"],
-                "skills": [],
-                "title": "Forge bounded review",
-            },
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-).hexdigest()
-
-
-def claude_managed_policy_is_empty(client_home: str) -> bool:
-    """Reject every on-disk policy source that could still supply managed hooks."""
-
-    if type(client_home) is not str or not Path(client_home).is_absolute():
-        return False
-    try:
-        root = Path(client_home).resolve(strict=True)
-    except OSError:
-        return False
-    return root.is_dir() and all(not os.path.lexists(path) for path in _managed_policy_paths(root))
-
-
-def _claude_system_managed_mcp_paths() -> tuple[Path, ...]:
-    """Return pinned-client system policy locations; env overrides never relocate these."""
-
-    if os.name == "nt":
-        roots = (
-            os.environ.get("ProgramW6432"),
-            os.environ.get("ProgramFiles"),
-            r"C:\Program Files",
-        )
-        return tuple(
-            dict.fromkeys(
-                Path(root) / "ClaudeCode" / "managed-mcp.json"
-                for root in roots
-                if isinstance(root, str) and Path(root).is_absolute()
-            )
-        )
-    if platform.system() == "Darwin":
-        return (Path("/Library/Application Support/ClaudeCode/managed-mcp.json"),)
-    if platform.system() == "Linux":
-        return (Path("/etc/claude-code/managed-mcp.json"),)
-    return ()
-
-
-def _managed_policy_paths(client_home: Path) -> tuple[Path, ...]:
-    return (
-        client_home / "managed-settings.json",
-        client_home / "managed-settings.d",
-        client_home / "managed-mcp.json",
-        *_claude_system_managed_mcp_paths(),
-    )
 
 
 def claude_initialize_request() -> dict[str, object]:
@@ -184,6 +278,88 @@ def claude_managed_isolation_settings() -> dict[str, bool]:
     """Return the exact managed policy accepted by the pinned client."""
 
     return dict(_MANAGED_ISOLATION_SETTINGS)
+
+
+def _build_claude_launch_arguments(
+    *,
+    script: tuple[str, ...],
+    model: str,
+    effort: str,
+    session_id: str,
+    system_prompt: str,
+    schema_json: str,
+    allowed_tools: str,
+) -> tuple[str, ...]:
+    return (
+        *script,
+        "--verbose",
+        "--restricted",
+        "--safe-mode",
+        "--model",
+        model,
+        "--effort",
+        effort,
+        "--session-id",
+        session_id,
+        "--no-session-persistence",
+        "--system-prompt",
+        system_prompt,
+        "--tools=",
+        "--permission-mode",
+        "dontAsk",
+        "--permission-prompts",
+        "none",
+        "--disable-slash-commands",
+        "--no-chrome",
+        "--managed-settings",
+        json.dumps(claude_managed_isolation_settings(), separators=(",", ":")),
+        "--mcp-config",
+        json.dumps({"mcpServers": {"forge": {"type": "sdk"}}}, separators=(",", ":")),
+        "--strict-mcp-config",
+        "--setting-sources=",
+        "--json-schema",
+        schema_json,
+        "--allowed-tools=" + allowed_tools,
+    )
+
+
+def claude_canonical_fixed_launch_arguments() -> tuple[str, ...]:
+    """Return the canonical fixed launch argument sequence bound in the isolation digest."""
+
+    return _build_claude_launch_arguments(
+        script=("-p", "--input-format", "stream-json", "--output-format", "stream-json"),
+        model="<model>",
+        effort="<effort>",
+        session_id="<session_id>",
+        system_prompt="<system_prompt>",
+        schema_json="<schema>",
+        allowed_tools="<allowed_tools>",
+    )
+
+
+def _isolation_policy_digest_payload() -> dict[str, object]:
+    return {
+        "client_version": CLAUDE_CLIENT_VERSION,
+        "command_controls": _CLAUDE_COMMAND_CONTROLS,
+        "fixed_launch_arguments": claude_canonical_fixed_launch_arguments(),
+        "launch_environment": sorted(CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT.items()),
+        "managed_settings": _MANAGED_ISOLATION_SETTINGS,
+        "conformance_controls": (
+            "existing_read_sentinel",
+            "exact_forbidden_tool_unavailability",
+        ),
+        "tool_aliases": sorted((tool.value, alias) for tool, alias in _TOOL_ALIASES.items()),
+        "initialize_controls": claude_initialize_request(),
+    }
+
+
+CLAUDE_ISOLATION_POLICY_DIGEST = hashlib.sha256(
+    json.dumps(
+        _isolation_policy_digest_payload(),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
 
 
 def claude_tool_alias(tool: ToolName) -> str:
@@ -328,36 +504,14 @@ def claude_launch_arguments(
     """Compose the one production-isolated Claude invocation shape."""
 
     names = [claude_tool_alias(tool) for tool in ToolName if tool in permitted_tools]
-    return (
-        *installation.script,
-        "--verbose",
-        "--restricted",
-        "--safe-mode",
-        "--model",
-        installation.model,
-        "--effort",
-        installation.effort,
-        "--session-id",
-        session_id,
-        "--no-session-persistence",
-        "--system-prompt",
-        system_prompt,
-        "--tools=",
-        "--permission-mode",
-        "dontAsk",
-        "--permission-prompts",
-        "none",
-        "--disable-slash-commands",
-        "--no-chrome",
-        "--managed-settings",
-        json.dumps(claude_managed_isolation_settings(), separators=(",", ":")),
-        "--mcp-config",
-        json.dumps({"mcpServers": {"forge": {"type": "sdk"}}}, separators=(",", ":")),
-        "--strict-mcp-config",
-        "--setting-sources=",
-        "--json-schema",
-        json.dumps(schema, separators=(",", ":")),
-        "--allowed-tools=" + ",".join(names),
+    return _build_claude_launch_arguments(
+        script=installation.script,
+        model=installation.model,
+        effort=installation.effort,
+        session_id=session_id,
+        system_prompt=system_prompt,
+        schema_json=json.dumps(schema, separators=(",", ":")),
+        allowed_tools=",".join(names),
     )
 
 
@@ -667,12 +821,12 @@ class ClaudeGateway(SubscriptionGateway):
             ):
                 result = failed(SubscriptionFailure.POLICY_DENIED)
             elif (
-                not (
+                not await asyncio.to_thread(claude_isolation_platform_supported)
+                or not (
                     await capability_report(
                         self._verifier.verify(self._installation, scope), ClaudeCapabilityReport
                     )
                 ).admits(self._installation, scope)
-                or not claude_managed_policy_is_empty(self._installation.client_home)
                 or (request.authorization.permitted_tools and self._broker is None)
             ):
                 result = failed(SubscriptionFailure.UNAVAILABLE)
@@ -687,10 +841,10 @@ class ClaudeGateway(SubscriptionGateway):
                     cwd=self._installation.cwd,
                     environment={
                         "CLAUDE_CONFIG_DIR": self._installation.client_home,
-                        "CLAUDE_CODE_MANAGED_SETTINGS_PATH": self._installation.client_home,
+                        **CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT,
                     },
                     allowed_environment=frozenset(
-                        {"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_MANAGED_SETTINGS_PATH"}
+                        {"CLAUDE_CONFIG_DIR", *CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT}
                     ),
                     executable_digest=self._installation.executable_digest,
                     duration_seconds=duration,
@@ -963,15 +1117,17 @@ class ClaudeGateway(SubscriptionGateway):
 
 __all__ = [
     "CLAUDE_CLIENT_VERSION",
+    "CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT",
     "CLAUDE_ISOLATION_POLICY_DIGEST",
     "ClaudeCapabilityReport",
     "ClaudeCapabilityVerifier",
     "ClaudeGateway",
     "ClaudeInstallation",
+    "claude_canonical_fixed_launch_arguments",
     "claude_initialize_request",
+    "claude_isolation_platform_supported",
     "claude_launch_arguments",
     "claude_managed_isolation_settings",
-    "claude_managed_policy_is_empty",
     "claude_setup_handshake_frame_is",
     "claude_tool_alias",
 ]

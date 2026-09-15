@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from forge.agents.claude_gateway import (
     ClaudeGateway,
     ClaudeInstallation,
 )
+from forge.application.ports.subscription_gateway import SubscriptionFailure
 from forge.domain.capability_evidence import CapabilityEvidenceScope
 from forge.domain.subscription import (
     AuthMode,
@@ -20,6 +22,13 @@ from forge.domain.subscription import (
 )
 from forge.domain.tool import ToolName
 from test_subscription_protocol import _request
+
+
+@pytest.fixture(autouse=True)
+def _supported_isolation_platform(monkeypatch):
+    monkeypatch.setattr(
+        "forge.agents.claude_gateway.claude_isolation_platform_supported", lambda: True
+    )
 
 
 @dataclass
@@ -158,3 +167,41 @@ def test_all_verified_capabilities_admit_matching_installation():
 def test_capability_booleans_without_source_evidence_do_not_admit():
     installation = _gateway()._installation
     assert not _report(evidence=None).admits(installation, _scope())
+
+
+def _anthropic_request(*, tools: frozenset[ToolName] = frozenset()):
+    request = _request(tools=tools)
+    effective = replace(
+        request.task.route.effective,
+        provider="anthropic",
+        client="claude_code",
+        model="claude-test",
+        auth_mode=AuthMode.SUBSCRIPTION,
+        billing_mode=BillingMode.ALLOWANCE_ONLY,
+    )
+    binding = replace(request.task.route, requested=effective, effective=effective)
+    routes = tuple(
+        (purpose, binding if purpose is request.task.purpose else route)
+        for purpose, route in request.envelope.routes
+    )
+    return replace(
+        request,
+        task=replace(request.task, route=binding),
+        envelope=replace(request.envelope, routes=routes),
+    )
+
+
+async def test_execute_offloads_platform_probe_from_event_loop(monkeypatch) -> None:
+    probe_threads: list[threading.Thread] = []
+
+    def _probe() -> bool:
+        probe_threads.append(threading.current_thread())
+        return False
+
+    monkeypatch.setattr("forge.agents.claude_gateway.claude_isolation_platform_supported", _probe)
+    gateway = _gateway()
+    request = _anthropic_request()
+    result = await gateway.execute(request)
+    assert result.failure is SubscriptionFailure.UNAVAILABLE
+    assert len(probe_threads) == 1
+    assert probe_threads[0] is not threading.main_thread()

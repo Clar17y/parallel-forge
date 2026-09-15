@@ -12,7 +12,10 @@ from forge.agents.runtime_factory import AgentRuntimeFactory, RouteUnavailable
 from forge.application.ports.subscription_gateway import SubscriptionFailure
 from forge.domain.subscription import SpecialistPurpose
 from forge.domain.tool import ToolName
-from test_claude_supervised import _anthropic_request
+from test_claude_supervised import (
+    _anthropic_request,
+    _supported_isolation_platform,  # noqa: F401 - imported autouse fixture
+)
 from test_claude_supervised import _Broker as ClaudeBroker
 from test_claude_supervised import _gateway as claude_gateway
 from test_codex_runtime import Lifecycle
