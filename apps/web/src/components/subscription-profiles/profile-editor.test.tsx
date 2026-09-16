@@ -44,3 +44,18 @@ test('offers the agreed editable defaults only for a new profile', async () => {
   render(<ProfileEditor expectedVersion={1} initial={{ profile_id: 'profile-1', version: 1, default_billing_mode: 'allowance_only', approved_mappings: [], preferences: [defaultRolePreferences()[0]] }} onSave={save} />);
   expect(screen.queryByRole('button', { name: 'Use default role preferences' })).not.toBeInTheDocument();
 });
+
+test('uses the approved official Gemini model and separate effort for routine defaults', () => {
+  const routine = defaultRolePreferences().find(
+    preference => preference.purpose === 'routine_implementation',
+  );
+
+  expect(routine?.preferred_route).toEqual({
+    provider: 'google',
+    client: 'gemini_cli',
+    model: 'gemini-3.8-flash',
+    effort: 'medium',
+    auth_mode: 'subscription',
+    billing_mode: 'allowance_only',
+  });
+});
