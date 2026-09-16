@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from forge.api.schemas.subscription_quota import QuotaStatusResponse
+from forge.domain.subscription_feedback import SubscriptionTaskFeedbackRequest
 from forge.domain.subscription_task_controls import (
     SubscriptionTaskControlRequest,
     TaskControlAction,
@@ -20,6 +21,14 @@ class ProjectionModel(BaseModel):
 
 class TaskControlRequest(SubscriptionTaskControlRequest):
     """Parse JSON UUIDs while preserving strict optimistic-concurrency versions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
+    expected_run_version: int = Field(ge=0, strict=True)
+    expected_task_version: int = Field(ge=0, strict=True)
+
+
+class TaskFeedbackRequest(SubscriptionTaskFeedbackRequest):
+    """Parse a closed JSON body while keeping version integers strict."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
     expected_run_version: int = Field(ge=0, strict=True)

@@ -13,6 +13,7 @@ from forge.domain.subscription import (
     BudgetPool,
     DelegateDecision,
     ExecutionEnvelope,
+    ForwardFeedbackDecision,
     LogicalTaskContract,
     OperatorProfile,
     ReassignDecision,
@@ -37,6 +38,7 @@ type DecisionRecord = (
     | AcceptDecision
     | ReassignDecision
     | ReviewSelection
+    | ForwardFeedbackDecision
 )
 
 

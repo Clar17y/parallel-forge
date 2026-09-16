@@ -16,9 +16,15 @@ from forge.api.schemas.subscription_tasks import (
     SubscriptionAttemptPage,
     SubscriptionTaskPage,
     TaskControlRequest,
+    TaskFeedbackRequest,
 )
 from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.subscription_feedback import SubscriptionTaskFeedbackService
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
+from forge.domain.subscription_feedback import (
+    SubscriptionTaskFeedbackRequest,
+    TaskFeedbackReceipt,
+)
 from forge.domain.subscription_task_controls import (
     SubscriptionTaskControlRequest,
     TaskControlReceipt,
@@ -27,6 +33,35 @@ from forge.domain.subscription_task_controls import (
 
 def router_for() -> APIRouter:
     router = APIRouter()
+
+    @router.post(
+        "/runs/{run_id}/subscription-tasks/{task_id}/feedback",
+        response_model=TaskFeedbackReceipt,
+    )
+    async def submit_feedback(
+        run_id: UUID,
+        task_id: UUID,
+        body: TaskFeedbackRequest,
+        request: Request,
+        idempotency_key: str = Depends(require_idempotency_key),
+        actor: AuthenticatedActor = Depends(require_operator_mutation),
+    ) -> TaskFeedbackReceipt:
+        service = cast(
+            SubscriptionTaskFeedbackService | None,
+            getattr(request.app.state, "subscription_task_feedback_service", None),
+        )
+        if service is None:
+            raise HTTPException(503, "task feedback unavailable")
+        try:
+            return await service.submit(
+                run_id=run_id,
+                task_id=task_id,
+                actor=actor,
+                idempotency_key=idempotency_key,
+                request=SubscriptionTaskFeedbackRequest.model_validate(body.model_dump()),
+            )
+        except Exception as error:
+            raise translate_error(error) from None
 
     @router.post(
         "/runs/{run_id}/subscription-tasks/{task_id}/controls", response_model=TaskControlReceipt

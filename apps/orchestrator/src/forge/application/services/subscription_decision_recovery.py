@@ -77,6 +77,8 @@ class SubscriptionDecisionRecovery:
                         await self._decisions.apply_wait(candidate.attempt_id)
                     elif candidate.kind is PendingDecisionKind.REASSIGN:
                         await self._decisions.apply_reassignment(candidate.attempt_id)
+                    elif candidate.kind is PendingDecisionKind.FORWARD_FEEDBACK:
+                        await self._decisions.apply_feedback(candidate.attempt_id)
                     elif candidate.kind is PendingDecisionKind.SCOPE_REQUEST:
                         await self._decisions.apply_scope_request(candidate.attempt_id)
                     elif candidate.kind is PendingDecisionKind.SCOPE_RESPONSE:

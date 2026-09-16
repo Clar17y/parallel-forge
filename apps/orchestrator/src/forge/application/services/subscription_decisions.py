@@ -118,3 +118,9 @@ class SubscriptionDecisionApplication:
             result = await work.subscription_decisions.apply_reassignment(attempt_id)
             await work.commit()
             return result
+
+    async def apply_feedback(self, attempt_id: UUID) -> SubscriptionSettlement:
+        async with self._factory() as work:
+            result = await work.subscription_decisions.apply_feedback(attempt_id)
+            await work.commit()
+            return result

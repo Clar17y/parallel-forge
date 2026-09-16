@@ -5,6 +5,10 @@ from uuid import UUID, uuid4
 
 import pytest
 from forge.application.services.auth import AuthenticatedActor
+from forge.domain.subscription_feedback import (
+    SubscriptionTaskFeedbackRequest,
+    TaskFeedbackConflict,
+)
 from forge.domain.subscription_task_controls import (
     SubscriptionTaskControlRequest,
     TaskControlConflict,
@@ -40,6 +44,132 @@ class FakeTaskControls:
             reason=body.reason,
             pause_receipt_id=body.pause_receipt_id,
         )
+
+
+class FakeTaskFeedback:
+    def __init__(self):
+        self.calls = []
+        self.error = None
+
+    async def submit(self, **values):
+        self.calls.append(values)
+        if self.error:
+            raise self.error
+        body = values["request"]
+        assert isinstance(body, SubscriptionTaskFeedbackRequest)
+        assert isinstance(values["actor"], AuthenticatedActor)
+        primary_task_id = uuid4()
+        return {
+            "receipt_id": uuid4(),
+            "operator_id": values["actor"].actor_id,
+            "run_id": values["run_id"],
+            "task_id": values["task_id"],
+            "primary_task_id": primary_task_id,
+            "status": "pending_primary",
+            "run_version": body.expected_run_version,
+            "task_version": body.expected_task_version,
+            "primary_task_version": 7,
+            "feedback_digest": "a" * 64,
+            "binding_digest": "b" * 64,
+            "feedback_bytes": len(body.feedback.encode("utf-8")),
+            "observed_at": datetime(2026, 9, 16, tzinfo=UTC),
+        }
+
+
+@pytest.mark.asyncio
+async def test_worker_feedback_route_is_authenticated_versioned_and_idempotent(
+    task10_client, task10_route_context, route_headers
+):
+    service = FakeTaskFeedback()
+    task10_route_context.app.state.subscription_task_feedback_service = service
+    run_id, task_id = uuid4(), uuid4()
+    response = await task10_client.post(
+        f"/api/runs/{run_id}/subscription-tasks/{task_id}/feedback",
+        json={
+            "expected_run_version": 8,
+            "expected_task_version": 4,
+            "feedback": "Keep the parser change; add the missing replay assertion.",
+        },
+        headers={**route_headers, "Idempotency-Key": "worker-feedback-1"},
+    )
+    assert response.status_code == 200
+    assert "feedback" not in response.json()
+    assert "missing replay assertion" not in response.text
+    call = service.calls[0]
+    assert call["actor"] == task10_route_context.auth.actor
+    assert call["idempotency_key"] == "worker-feedback-1"
+    assert (call["run_id"], call["task_id"]) == (run_id, task_id)
+    assert call["request"].feedback == ("Keep the parser change; add the missing replay assertion.")
+
+
+@pytest.mark.asyncio
+async def test_anonymous_worker_feedback_never_reaches_the_service(
+    task10_client, task10_route_context, route_headers
+):
+    service = FakeTaskFeedback()
+    task10_route_context.app.state.subscription_task_feedback_service = service
+    task10_client.cookies.clear()
+    response = await task10_client.post(
+        f"/api/runs/{uuid4()}/subscription-tasks/{uuid4()}/feedback",
+        json={
+            "expected_run_version": 8,
+            "expected_task_version": 4,
+            "feedback": "Retain the partial work.",
+        },
+        headers={**route_headers, "Idempotency-Key": "anonymous-worker-feedback"},
+    )
+    assert response.status_code == 401 and not service.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"expected_task_version": "4"},
+        {"expected_run_version": True},
+        {"unexpected": "field"},
+        {"feedback": " "},
+        {"feedback": "é" * 2049},
+        {"feedback": "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"},
+    ],
+)
+async def test_worker_feedback_body_is_closed_bounded_and_credential_safe(
+    task10_client, task10_route_context, route_headers, change
+):
+    service = FakeTaskFeedback()
+    task10_route_context.app.state.subscription_task_feedback_service = service
+    response = await task10_client.post(
+        f"/api/runs/{uuid4()}/subscription-tasks/{uuid4()}/feedback",
+        json={
+            "expected_run_version": 8,
+            "expected_task_version": 4,
+            "feedback": "Retain the partial work.",
+            **change,
+        },
+        headers={**route_headers, "Idempotency-Key": "invalid-worker-feedback"},
+    )
+    assert response.status_code == 422 and not service.calls
+    assert "Bearer" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_worker_feedback_conflicts_do_not_expose_untrusted_text(
+    task10_client, task10_route_context, route_headers
+):
+    service = FakeTaskFeedback()
+    service.error = TaskFeedbackConflict("untrusted provider diagnostic must stay private")
+    task10_route_context.app.state.subscription_task_feedback_service = service
+    response = await task10_client.post(
+        f"/api/runs/{uuid4()}/subscription-tasks/{uuid4()}/feedback",
+        json={
+            "expected_run_version": 8,
+            "expected_task_version": 4,
+            "feedback": "Retain the partial work.",
+        },
+        headers={**route_headers, "Idempotency-Key": "conflicting-worker-feedback"},
+    )
+    assert response.status_code == 409
+    assert "untrusted provider diagnostic" not in response.text
 
 
 @pytest.mark.asyncio

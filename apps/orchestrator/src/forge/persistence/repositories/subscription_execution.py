@@ -58,6 +58,9 @@ from forge.persistence.repositories.subscription import (
     SubscriptionConflict,
 )
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
+from forge.persistence.repositories.subscription_feedback import (
+    PostgresSubscriptionFeedbackRepository,
+)
 from forge.persistence.repositories.subscription_launch import launches_confirmed
 from forge.persistence.repositories.subscription_quota import (
     PostgresSubscriptionQuotaRepository,
@@ -653,4 +656,17 @@ class PostgresSubscriptionExecutionRepository:
             )
         )
         await self._session.flush()
+        feedback = PostgresSubscriptionFeedbackRepository(self._session)
+        # Request delivery is proved by the stopped official-client launch; a
+        # concurrent pause/cancel may revoke the result but cannot undo receipt.
+        if launches_confirmed(
+            launches,
+            result.launch_proof,
+            require_decision=False,
+            worker_identity=attempt.lease_owner,
+        ):
+            await feedback.settle_delivery(identity.attempt_id)
+        if task.state == "terminal":
+            await feedback.requeue_undelivered(identity.run_id, identity.task_id)
+            await feedback.requeue_failed_primary(identity.run_id, identity.task_id)
         return SubscriptionSettlement(accepted, disposition)

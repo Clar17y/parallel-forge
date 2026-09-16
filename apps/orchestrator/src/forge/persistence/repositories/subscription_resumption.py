@@ -22,6 +22,7 @@ from forge.domain.subscription import (
     BoundScopeResponseDecision,
     DelegateDecision,
     ExecutionEnvelope,
+    ForwardFeedbackDecision,
     HandoffStatus,
     LogicalTaskContract,
     ReviewSelection,
@@ -377,6 +378,7 @@ def _pending_decision_is_admissible(
                     BoundScopeResponseDecision,
                     AcceptDecision,
                     ReviewSelection,
+                    ForwardFeedbackDecision,
                 ),
             )
             or not permitted_phase

@@ -20,6 +20,7 @@ from forge.application.ports.subscription import SubscriptionRepository
 from forge.application.ports.subscription_budget import SubscriptionBudgetRepository
 from forge.application.ports.subscription_decisions import SubscriptionDecisionRepository
 from forge.application.ports.subscription_execution import SubscriptionExecutionRepository
+from forge.application.ports.subscription_feedback import SubscriptionFeedbackRepository
 from forge.application.ports.subscription_plan_gate import SubscriptionPlanGateRepository
 from forge.application.ports.subscription_quota import SubscriptionQuotaRepository
 from forge.application.ports.tasks import TaskRepository
@@ -55,6 +56,7 @@ class UnitOfWork(Protocol):
     auth: AuthRepository
     releases: ReleaseRepository
     subscription_execution: SubscriptionExecutionRepository
+    subscription_feedback: SubscriptionFeedbackRepository
     subscription_budget: SubscriptionBudgetRepository
     subscription_decisions: SubscriptionDecisionRepository
     subscription: SubscriptionRepository

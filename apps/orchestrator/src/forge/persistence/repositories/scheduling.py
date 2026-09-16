@@ -26,6 +26,7 @@ from forge.domain.subscription import (
     CANDIDATE_READ_TOOLS,
     BoundReassignDecision,
     DelegateDecision,
+    ForwardFeedbackDecision,
     LogicalTaskContract,
     RouteBinding,
     RouteSpec,
@@ -1079,7 +1080,9 @@ class PostgresSchedulingRepository:
                 else await self._session.get(SubscriptionAttemptResult, latest)
             )
             if result is not None and not (
-                result.accepted and result.disposition in {"delegated", "waiting", "reassigned"}
+                result.accepted
+                and result.disposition
+                in {"delegated", "waiting", "reassigned", "feedback_forwarded"}
             ):
                 continue
             selected: tuple[UUID, ...] | None = None
@@ -1088,6 +1091,7 @@ class PostgresSchedulingRepository:
                     "waiting": "wait",
                     "delegated": "delegation",
                     "reassigned": "reassignment",
+                    "feedback_forwarded": "feedback-forward",
                 }[result.disposition]
                 record = await self._session.scalar(
                     select(SubscriptionDecisionRecord).where(
@@ -1119,6 +1123,23 @@ class PostgresSchedulingRepository:
                             or receipt.get("child_task_id") != str(decision.task_id)
                             or receipt.get("source_attempt_id") != str(decision.source_attempt_id)
                             or receipt.get("child_version") != decision.expected_task_version
+                        ):
+                            raise ValueError
+                        selected = (decision.task_id,)
+                    elif result.disposition == "feedback_forwarded":
+                        receipt = result.application_payload
+                        if (
+                            not isinstance(decision, ForwardFeedbackDecision)
+                            or decision.run_id != parent.run_id
+                            or record.record_type != "ForwardFeedbackDecision"
+                            or receipt is None
+                            or result.application_digest != canonical_digest(receipt)
+                            or receipt.get("kind") != "feedback_forwarded"
+                            or receipt.get("result_digest") != result.result_digest
+                            or receipt.get("target_task_id") != str(decision.task_id)
+                            or receipt.get("feedback_receipt_id")
+                            != str(decision.feedback_receipt_id)
+                            or receipt.get("feedback_digest") != decision.feedback_digest
                         ):
                             raise ValueError
                         selected = (decision.task_id,)

@@ -59,6 +59,7 @@ from forge.domain.subscription import (
     BoundScopeResponseDecision,
     DelegateDecision,
     ExecutionEnvelope,
+    ForwardFeedbackDecision,
     HandoffStatus,
     LogicalTaskContract,
     ReviewedTaskHandoff,
@@ -98,6 +99,9 @@ from forge.persistence.repositories.runs import PostgresRunRepository
 from forge.persistence.repositories.scheduling import PostgresSchedulingRepository
 from forge.persistence.repositories.subscription import PostgresSubscriptionRepository
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
+from forge.persistence.repositories.subscription_feedback import (
+    PostgresSubscriptionFeedbackRepository,
+)
 from forge.persistence.repositories.subscription_handoff_evidence import (
     PostgresSubscriptionHandoffEvidence,
 )
@@ -496,6 +500,7 @@ class PostgresSubscriptionDecisionRepository:
             (record_type == "DelegateDecision", "delegate"),
             (record_type == "WaitDecision", "wait"),
             (record_type == "BoundReassignDecision", "reassign"),
+            (record_type == "ForwardFeedbackDecision", "forward_feedback"),
             (record_type.in_(("TaskHandoff", "ReviewedTaskHandoff")), "handoff"),
             (record_type == "ScopeRequestDecision", "scope_request"),
             (record_type == "BoundScopeResponseDecision", "scope_response"),
@@ -572,6 +577,11 @@ class PostgresSubscriptionDecisionRepository:
 
     async def apply_reassignment(self, attempt_id: UUID) -> SubscriptionSettlement:
         result = await self._apply(attempt_id, decision_type=BoundReassignDecision)
+        assert isinstance(result, SubscriptionSettlement)
+        return result
+
+    async def apply_feedback(self, attempt_id: UUID) -> SubscriptionSettlement:
+        result = await self._apply(attempt_id, decision_type=ForwardFeedbackDecision)
         assert isinstance(result, SubscriptionSettlement)
         return result
 
@@ -1066,6 +1076,7 @@ class PostgresSubscriptionDecisionRepository:
             | ScopeRequestDecision
             | BoundScopeResponseDecision
             | BoundReassignDecision
+            | ForwardFeedbackDecision
             | ReviewSelection
         ],
         observation: HandoffObservation | None = None,
@@ -1089,6 +1100,8 @@ class PostgresSubscriptionDecisionRepository:
             prefix, disposition = "scope-response", "scope_responded"
         elif decision_type is BoundReassignDecision:
             prefix, disposition = "reassignment", "reassigned"
+        elif decision_type is ForwardFeedbackDecision:
+            prefix, disposition = "feedback-forward", "feedback_forwarded"
         elif decision_type is ReviewSelection:
             prefix, disposition = "review-selection", "candidate_prepared"
         elif decision_type is AcceptDecision:
@@ -1220,6 +1233,7 @@ class PostgresSubscriptionDecisionRepository:
                         ScopeRequestDecision,
                         BoundScopeResponseDecision,
                         BoundReassignDecision,
+                        ForwardFeedbackDecision,
                         ReviewSelection,
                     ),
                 )
@@ -1235,6 +1249,7 @@ class PostgresSubscriptionDecisionRepository:
                             AcceptDecision,
                             BoundScopeResponseDecision,
                             BoundReassignDecision,
+                            ForwardFeedbackDecision,
                             ReviewSelection,
                         ),
                     )
@@ -1613,6 +1628,17 @@ class PostgresSubscriptionDecisionRepository:
                     or result.application_digest != canonical_digest(reassignment[2])
                 ):
                     raise SubscriptionDecisionError("reassignment replay differs")
+            if isinstance(decision, ForwardFeedbackDecision) and not rejected:
+                try:
+                    await PostgresSubscriptionFeedbackRepository(
+                        self._session
+                    ).verify_forward_replay(
+                        attempt_id=attempt_id,
+                        decision=decision,
+                        application=result.application_payload,
+                    )
+                except Exception as error:
+                    raise SubscriptionDecisionError("feedback forwarding replay differs") from error
             if (
                 handoff_proposal
                 and receipt is not None
@@ -1888,6 +1914,32 @@ class PostgresSubscriptionDecisionRepository:
             return await self._finish(
                 task, scheduled, attempt, result, decision, key, "blocked", disposition
             )
+        if isinstance(decision, ForwardFeedbackDecision):
+            try:
+                feedback_receipt, primary_state = await PostgresSubscriptionFeedbackRepository(
+                    self._session
+                ).apply_forward(
+                    attempt_id=attempt_id,
+                    primary=parent,
+                    decision=decision,
+                    result_digest=result.result_digest,
+                )
+            except Exception as error:
+                raise SubscriptionDecisionError("feedback forwarding source differs") from error
+            outcome = await self._finish(
+                task,
+                scheduled,
+                attempt,
+                result,
+                decision,
+                key,
+                primary_state,
+                disposition,
+            )
+            result.application_payload = feedback_receipt
+            result.application_digest = canonical_digest(feedback_receipt)
+            await self._session.flush()
+            return outcome
         if isinstance(decision, BoundScopeResponseDecision):
             prepared = await self._scope_response_proof(
                 parent, envelope, decision, result.result_digest
@@ -2083,6 +2135,9 @@ class PostgresSubscriptionDecisionRepository:
             )
             await PostgresSchedulingRepository(self._session).reconcile_expired(
                 run_id, task.id, retry=False
+            )
+            await PostgresSubscriptionFeedbackRepository(self._session).requeue_undelivered(
+                run_id, task.id
             )
             await self._wake_selected_review_parent(task, selected_candidate)
             if not await PostgresSubscriptionHandoffFence(self._session).release(observation):
@@ -2330,6 +2385,7 @@ class PostgresSubscriptionDecisionRepository:
         | ScopeRequestDecision
         | BoundScopeResponseDecision
         | BoundReassignDecision
+        | ForwardFeedbackDecision
         | ReviewSelection,
         key: str,
     ) -> SubscriptionSettlement:
@@ -2390,11 +2446,16 @@ class PostgresSubscriptionDecisionRepository:
         | ScopeRequestDecision
         | BoundScopeResponseDecision
         | BoundReassignDecision
+        | ForwardFeedbackDecision
         | ReviewSelection,
         key: str,
         state: str,
         disposition: str,
     ) -> SubscriptionSettlement:
+        if state == "blocked" and await PostgresSubscriptionFeedbackRepository(
+            self._session
+        ).has_pending_primary(task.run_id, task.id):
+            state = "queued"
         await PostgresSubscriptionRepository(self._session).record_decision(
             decision, idempotency_key=key
         )

@@ -188,6 +188,81 @@ def test_bound_reassignment_preserves_historical_record_encoding() -> None:
             replace(bound, expected_task_version=version)
 
 
+def test_pending_feedback_allows_only_exact_primary_forwarding() -> None:
+    from forge.agents.subscription_protocol import output_schema
+    from forge.domain.subscription import ForwardFeedbackDecision
+
+    request = _request(purpose=SpecialistPurpose.PRIMARY)
+    child = replace(
+        request.task,
+        task_id=uuid4(),
+        parent_task_id=request.task.task_id,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        route=request.envelope.route_for(SpecialistPurpose.ROUTINE_IMPLEMENTATION),
+    )
+    receipt_id = uuid4()
+    pending = {
+        "receipt_id": str(receipt_id),
+        "operator_id": str(uuid4()),
+        "run_id": str(request.task.run_id),
+        "primary_task_id": str(request.task.task_id),
+        "task_id": str(child.task_id),
+        "observed_run_version": 8,
+        "observed_task_version": 4,
+        "observed_primary_version": 7,
+        "feedback": "Keep the partial parser work and add the replay assertion.",
+        "feedback_digest": "a" * 64,
+        "binding_digest": "b" * 64,
+        "feedback_bytes": 58,
+    }
+    request = replace(
+        request,
+        known_tasks=(child,),
+        untrusted_context={"pending_worker_feedback": pending},
+    )
+    choices = output_schema(request)["properties"]["decision"]["anyOf"]
+    assert [choice["properties"]["kind"]["const"] for choice in choices] == ["forward_feedback"]
+    assert set(choices[0]["properties"]) == {
+        "kind",
+        "task_id",
+        "feedback_receipt_id",
+        "feedback_digest",
+    }
+    payload = {
+        "kind": "forward_feedback",
+        "task_id": str(child.task_id),
+        "feedback_receipt_id": str(receipt_id),
+        "feedback_digest": "a" * 64,
+    }
+    decision = decode_final(payload, request).decision
+    assert isinstance(decision, ForwardFeedbackDecision)
+    assert decision.task_id == child.task_id and decision.feedback_receipt_id == receipt_id
+    with pytest.raises(ProtocolError, match="forwarded exactly"):
+        decode_final(
+            {
+                "kind": "wait",
+                "waiting_on_task_ids": [str(child.task_id)],
+                "reason": "Delay feedback",
+            },
+            request,
+        )
+    with pytest.raises(ProtocolError, match="durable request"):
+        decode_final(dict(payload, feedback_digest="b" * 64), request)
+    with pytest.raises(ProtocolError, match="unknown decision target"):
+        decode_final(dict(payload, task_id=str(uuid4())), request)
+    with pytest.raises(ProtocolError, match="invalid structured decision"):
+        decode_final(
+            {
+                **payload,
+                "feedback": "rewritten text",
+                "owned_paths": ["expanded"],
+                "route": {"provider": "foreign"},
+                "tool": "repository_write_file",
+            },
+            request,
+        )
+
+
 @pytest.mark.parametrize("state", [state for state in RunState if state is not RunState.PLANNING])
 def test_non_planning_primary_rejects_plan_decision(state: RunState) -> None:
     request = replace(_request(purpose=SpecialistPurpose.PRIMARY), run_state=state)

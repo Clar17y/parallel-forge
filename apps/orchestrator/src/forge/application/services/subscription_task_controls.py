@@ -172,6 +172,9 @@ class SubscriptionTaskControlService:
             changed = await work.task_controls.apply(
                 run_id, task_id, body, pause=pause, receipt_id=mutation.id
             )
+            feedback = getattr(work, "subscription_feedback", None)
+            if body.action == "cancel" and feedback is not None:
+                await feedback.close_cancelled(run_id, task_id)
             receipt = TaskControlReceipt(
                 receipt_id=mutation.id,
                 run_id=run_id,

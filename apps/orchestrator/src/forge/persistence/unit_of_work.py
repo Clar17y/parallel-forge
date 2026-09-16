@@ -38,6 +38,9 @@ from forge.persistence.repositories.subscription_decisions import (
 from forge.persistence.repositories.subscription_execution import (
     PostgresSubscriptionExecutionRepository,
 )
+from forge.persistence.repositories.subscription_feedback import (
+    PostgresSubscriptionFeedbackRepository,
+)
 from forge.persistence.repositories.subscription_plan_gate import (
     PostgresSubscriptionPlanGateRepository,
 )
@@ -85,6 +88,7 @@ class PostgresUnitOfWork:
         self.evidence: EvidenceRepository
         self.releases: PostgresReleaseRepository
         self.subscription_execution: PostgresSubscriptionExecutionRepository
+        self.subscription_feedback: PostgresSubscriptionFeedbackRepository
         self.subscription_budget: PostgresSubscriptionBudgetRepository
         self.subscription_decisions: PostgresSubscriptionDecisionRepository
         self.subscription: PostgresSubscriptionRepository
@@ -138,6 +142,7 @@ class PostgresUnitOfWork:
         self.subscription_execution = PostgresSubscriptionExecutionRepository(
             self._session, quota=self.quota
         )
+        self.subscription_feedback = PostgresSubscriptionFeedbackRepository(self._session)
         self.subscription_budget = PostgresSubscriptionBudgetRepository(self._session)
         self.subscription_decisions = PostgresSubscriptionDecisionRepository(self._session)
         self.subscription = PostgresSubscriptionRepository(self._session)

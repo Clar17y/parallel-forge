@@ -34,6 +34,7 @@ from forge.domain.subscription import (
     BoundReassignDecision,
     BoundScopeResponseDecision,
     DelegateDecision,
+    ForwardFeedbackDecision,
     ReviewSelection,
     RouteSpec,
     ScopeRequestDecision,
@@ -161,6 +162,8 @@ class SubscriptionInvocationWorker:
                 application = await self._decisions.apply_wait(admission.attempt.attempt_id)
             elif isinstance(decision, BoundReassignDecision):
                 application = await self._decisions.apply_reassignment(admission.attempt.attempt_id)
+            elif isinstance(decision, ForwardFeedbackDecision):
+                application = await self._decisions.apply_feedback(admission.attempt.attempt_id)
             elif isinstance(decision, ScopeRequestDecision):
                 application = await self._decisions.apply_scope_request(
                     admission.attempt.attempt_id
