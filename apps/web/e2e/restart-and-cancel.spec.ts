@@ -18,10 +18,12 @@ test("persists the exact cancel command across worker restart and retains resour
 
   const restart = await restartWorker();
   expect(restart.newPid).not.toBe(restart.oldPid);
-  await expect(page.locator("header").filter({ hasText: "CANCELLED" })).toBeVisible({ timeout: 120_000 });
+  await expect(page.locator('[aria-label="Current run status"]')).toHaveAttribute("data-run-state", "CANCELLED", { timeout: 120_000 });
   await expect.poll(async () => (await cancelCommandFor(runId)).status).toBe("COMPLETED");
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await expect(page.getByRole("region", { name: "Run activity" }).getByRole("heading", { name: "run.cancelled", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await page.locator("summary").filter({ hasText: "Repository & evidence identifiers" }).click();
   const branch = page.locator("dt").filter({ hasText: /^Branch$/ }).locator("+ dd");
   const retainedBranch = await branch.innerText();
   expect(retainedBranch).not.toContain("Not yet created");

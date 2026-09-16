@@ -83,7 +83,7 @@ function Attempts({ runId, taskId }: { runId: string; taskId: string }) {
   return <div className="space-y-3 border-t border-slate-300 pt-3">
     <button type="button" onClick={attempts.refresh}>Refresh attempts</button>
     {attempts.value.attempts.length === 0 ? <p>No attempts on this page.</p> :
-      attempts.value.attempts.map(attempt => <article key={attempt.attempt_id} className="space-y-2 rounded bg-[#202731] p-3">
+      attempts.value.attempts.map(attempt => <article key={attempt.attempt_id} className="space-y-2 rounded bg-[var(--surface-muted)] p-3">
         <h3 className="font-semibold">Attempt {attempt.attempt_number} · {attempt.state}</h3>
         <p>Requested: {routeLabel(attempt.requested_route)}</p>
         <p>Effective: {routeLabel(attempt.effective_route)}</p>

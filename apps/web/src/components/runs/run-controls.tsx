@@ -129,8 +129,9 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
     finally { busy.current = false; if (!signal.aborted) setPending(false); }
   }
 
-  return <section aria-label="Run controls">
-    {projection.available_commands.filter(command => labels[command.name]).map(command => <button key={command.name}
+  return <section className="run-actions" aria-label="Run controls">
+    {projection.available_commands.filter(command => labels[command.name]).map(command => <button key={command.name} className="button" data-command={command.name}
+      data-variant={command.name.startsWith('approve_') ? 'primary' : ['cancel', 'teardown_run_resources'].includes(command.name) ? 'danger' : 'secondary'}
       disabled={disabled || pending} onClick={event => void prepare(command.name, event.currentTarget)}>{labels[command.name]}</button>)}
     {pending && <p role="status">Checking current run evidence…</p>}
     {message && <p role="alert">{message}</p>}
