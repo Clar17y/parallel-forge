@@ -1,6 +1,7 @@
 """Claude wire evidence reaches durable admission through the real attempt runner."""
 
 import asyncio
+import hashlib
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -22,6 +23,9 @@ from forge.persistence.models.subscription_quota import SubscriptionQuotaObserva
 from forge.worker.subscription_broker import DurableClientProcessLifecycle
 from forge.worker.subscription_runtime import SubscriptionAttemptRunner
 from sqlalchemy import func, select
+from test_claude_supervised import (  # noqa: F401 - imported autouse fixture
+    _supported_isolation_platform,
+)
 from test_scheduler_acceptance import (  # noqa: F401
     _admit_run,
     _enqueue,
@@ -102,6 +106,7 @@ async def test_claude_specialist_exhaustion_survives_worker_recreation_and_singl
         broker = NoTools()
         # Explicit test capability assertions, never evidence about installed
         # clients, signed-in accounts, billing enforcement or tool isolation.
+        executable_digest = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
         report = ClaudeCapabilityReport(
             installed_version="2.1.263",
             subscription_auth=True,
@@ -114,7 +119,7 @@ async def test_claude_specialist_exhaustion_survives_worker_recreation_and_singl
             quota_limit_types=windows,
             client_home=str(tmp_path.resolve()),
             account="test-account",
-            executable_digest="b" * 64,
+            executable_digest=executable_digest,
         )
         installation = ClaudeInstallation(
             executable=sys.executable,
@@ -123,7 +128,7 @@ async def test_claude_specialist_exhaustion_survives_worker_recreation_and_singl
             effort=specialist.effort.value,
             client_home=str(tmp_path.resolve()),
             account="test-account",
-            executable_digest="b" * 64,
+            executable_digest=executable_digest,
             duration_seconds=5,
             quota_limit_types=windows,
             script=(

@@ -10,6 +10,9 @@ from forge.domain.provider_quota import (
     classify_claude_error,
     classify_codex_error,
 )
+from test_claude_supervised import (  # noqa: F401 - imported autouse fixture
+    _supported_isolation_platform,
+)
 from test_subscription_protocol import _request
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)

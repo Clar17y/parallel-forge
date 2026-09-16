@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import stat
 from collections.abc import Awaitable
+from pathlib import Path
 from typing import Any
 
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
@@ -40,4 +44,31 @@ def validate_installation_identity(account: Any, executable_digest: Any) -> None
     validate_capability_installation_identity(account, executable_digest)
 
 
-__all__ = ["capability_report", "capability_scope", "validate_installation_identity"]
+def stable_executable_digest(filename: str) -> str | None:
+    """Hash one stable regular file without exposing filesystem diagnostics."""
+
+    try:
+        path = Path(filename).resolve(strict=True)
+        before = path.stat()
+        if not stat.S_ISREG(before.st_mode):
+            return None
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        after = path.stat()
+    except OSError:
+        return None
+
+    def identity(value: os.stat_result) -> tuple[int, int, int, int]:
+        return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
+
+    return digest.hexdigest() if identity(before) == identity(after) else None
+
+
+__all__ = [
+    "capability_report",
+    "capability_scope",
+    "stable_executable_digest",
+    "validate_installation_identity",
+]

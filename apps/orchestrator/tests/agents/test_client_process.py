@@ -674,3 +674,189 @@ def test_posix_identity_failure_reaps_new_child(monkeypatch) -> None:
                 child.wait(timeout=2)
             for stream in (child.stdin, child.stdout, child.stderr):
                 stream.close()
+
+
+def test_linux_operational_pinning_rejects_non_linux():
+    from forge.agents.client_process import linux_operational_pinning_supported
+
+    assert not linux_operational_pinning_supported() or sys.platform == "linux"
+
+
+def test_linux_operational_pinning_rejects_missing_memfd_or_proc_dir(monkeypatch):
+    from forge.agents import client_process as transport
+
+    monkeypatch.setattr(transport.sys, "platform", "linux")
+    monkeypatch.delattr(transport.os, "memfd_create", raising=False)
+    monkeypatch.setattr(transport.Path, "is_dir", lambda self: True)
+    assert not transport.linux_operational_pinning_supported()
+
+    monkeypatch.setattr(transport.os, "memfd_create", lambda *args, **kwargs: 1, raising=False)
+    monkeypatch.setattr(
+        transport.Path,
+        "is_dir",
+        lambda self: self.as_posix() != "/proc/self/fd",
+    )
+    assert not transport.linux_operational_pinning_supported()
+
+
+def test_linux_operational_pinning_success_mechanics(monkeypatch):
+    from forge.agents import client_process as transport
+
+    popen_calls = []
+    closed_fds = []
+
+    class MockChild:
+        def __init__(self):
+            self.killed = False
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    child = MockChild()
+
+    def mock_popen(argv, **kwargs):
+        popen_calls.append({"argv": argv, "kwargs": kwargs})
+        return child
+
+    def mock_close(fd):
+        closed_fds.append(fd)
+
+    fake_fd = 77
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(transport.sys, "platform", "linux")
+    monkeypatch.setattr(
+        transport.os, "memfd_create", lambda *args, **kwargs: fake_fd, raising=False
+    )
+    monkeypatch.setattr(
+        transport.Path,
+        "is_dir",
+        lambda self: True if self.as_posix() == "/proc/self/fd" else original_is_dir(self),
+    )
+    monkeypatch.setattr(
+        transport, "_sealed_verified_file", lambda path, digest, executable: fake_fd
+    )
+    monkeypatch.setattr(transport.subprocess, "Popen", mock_popen)
+    monkeypatch.setattr(transport.os, "close", mock_close)
+
+    assert transport.linux_operational_pinning_supported() is True
+    assert len(popen_calls) == 1
+    call = popen_calls[0]
+    executable_path = str(Path(sys.executable).resolve(strict=True))
+    assert call["argv"] == [executable_path, "-I", "-S", "-c", ""]
+    assert call["kwargs"]["executable"] == f"/proc/self/fd/{fake_fd}"
+    assert call["kwargs"]["env"] == {}
+    assert call["kwargs"]["stdin"] == transport.subprocess.DEVNULL
+    assert call["kwargs"]["stdout"] == transport.subprocess.DEVNULL
+    assert call["kwargs"]["stderr"] == transport.subprocess.DEVNULL
+    assert call["kwargs"]["close_fds"] is True
+    assert call["kwargs"]["pass_fds"] == (fake_fd,)
+    assert closed_fds == [fake_fd]
+
+
+@pytest.mark.parametrize("stage", ["memfd_create", "fchmod_seal", "popen", "nonzero", "timeout"])
+def test_linux_operational_pinning_failure_modes_and_cleanup(monkeypatch, stage):
+    import subprocess
+
+    from forge.agents import client_process as transport
+
+    fake_fd = 88
+    closed_fds = []
+
+    def mock_close(fd):
+        closed_fds.append(fd)
+
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(transport.sys, "platform", "linux")
+    monkeypatch.setattr(
+        transport.os, "memfd_create", lambda *args, **kwargs: fake_fd, raising=False
+    )
+    monkeypatch.setattr(
+        transport.Path,
+        "is_dir",
+        lambda self: True if self.as_posix() == "/proc/self/fd" else original_is_dir(self),
+    )
+    monkeypatch.setattr(transport.os, "close", mock_close)
+
+    if stage == "memfd_create":
+
+        def fail_memfd(*args, **kwargs):
+            raise PermissionError(13, "memfd_create denied by seccomp")
+
+        monkeypatch.setattr(transport, "_sealed_verified_file", fail_memfd)
+        assert transport.linux_operational_pinning_supported() is False
+        assert closed_fds == []
+
+    elif stage == "fchmod_seal":
+
+        def fail_seal(*args, **kwargs):
+            raise OSError("F_ADD_SEALS denied by seccomp")
+
+        monkeypatch.setattr(transport, "_sealed_verified_file", fail_seal)
+        assert transport.linux_operational_pinning_supported() is False
+        assert closed_fds == []
+
+    elif stage == "popen":
+        monkeypatch.setattr(
+            transport, "_sealed_verified_file", lambda path, digest, executable: fake_fd
+        )
+
+        def fail_popen(*args, **kwargs):
+            raise PermissionError(13, "execve on /proc/self/fd denied by seccomp")
+
+        monkeypatch.setattr(transport.subprocess, "Popen", fail_popen)
+        assert transport.linux_operational_pinning_supported() is False
+        assert closed_fds == [fake_fd]
+
+    elif stage == "nonzero":
+        monkeypatch.setattr(
+            transport, "_sealed_verified_file", lambda path, digest, executable: fake_fd
+        )
+
+        class NonZeroChild:
+            def wait(self, timeout=None):
+                return 1
+
+            def poll(self):
+                return 1
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(transport.subprocess, "Popen", lambda *args, **kwargs: NonZeroChild())
+        assert transport.linux_operational_pinning_supported() is False
+        assert closed_fds == [fake_fd]
+
+    elif stage == "timeout":
+        monkeypatch.setattr(
+            transport, "_sealed_verified_file", lambda path, digest, executable: fake_fd
+        )
+
+        class TimeoutChild:
+            def __init__(self):
+                self.killed = False
+                self.reaped = False
+
+            def wait(self, timeout=None):
+                if not self.killed:
+                    raise subprocess.TimeoutExpired(cmd="probe", timeout=timeout or 3.0)
+                self.reaped = True
+                return -9
+
+            def poll(self):
+                return None if not self.killed else -9
+
+            def kill(self):
+                self.killed = True
+
+        child = TimeoutChild()
+        monkeypatch.setattr(transport.subprocess, "Popen", lambda *args, **kwargs: child)
+        assert transport.linux_operational_pinning_supported() is False
+        assert child.killed is True
+        assert child.reaped is True
+        assert closed_fds == [fake_fd]
