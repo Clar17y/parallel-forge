@@ -28,6 +28,10 @@ from forge.settings import Settings
 from forge.worker.composition import WorkerCompositionError, WorkerHandlers, compose_worker_handlers
 from forge.worker.startup import run_startup_recovery
 from forge.worker.startup_intervention import StartupInterventionRecovery
+from forge.worker.subscription_installations import (
+    load_subscription_installations,
+    production_subscription_verifiers,
+)
 from forge.worker.subscription_invocation import SubscriptionInvocationWorker
 from forge.worker.subscription_status import SubscriptionRuntimeReporter
 
@@ -38,7 +42,7 @@ async def run_worker(
     settings: Settings | None = None,
     *,
     adapters: Mapping[str, OperationAdapter] | None = None,
-    subscription_adapters: Iterable[SubscriptionRuntimeAdapter] = (),
+    subscription_adapters: Iterable[SubscriptionRuntimeAdapter] | None = None,
     handlers: Mapping[str, CommandHandler] | None = None,
     stop_event: asyncio.Event | None = None,
     poll_interval: float = 1.0,
@@ -47,16 +51,20 @@ async def run_worker(
 ) -> None:
     """Build PostgreSQL dependencies, recover intents, then poll durably.
 
-    Subscription registrations come from trusted host composition. Each adapter
-    retains its own capability checks; registration grants no account, billing
-    or tool authority. Explicit handlers own their own runtime dependencies.
+    Explicit registrations come from trusted host composition. When omitted, the
+    public worker resolves the closed operator manifest with code-owned verifiers.
+    Registration grants no account, billing or tool authority, and each adapter
+    rechecks current evidence for every invocation. Explicit handlers own their
+    own runtime dependencies.
     """
 
     if poll_interval <= 0 or poll_interval > 1:
         raise ValueError("worker idle poll interval must be between zero and one second")
     _validate_decision_retry_interval(decision_retry_interval)
-    subscription_adapters = tuple(subscription_adapters)
-    if handlers is not None and subscription_adapters:
+    supplied_subscription_adapters = (
+        None if subscription_adapters is None else tuple(subscription_adapters)
+    )
+    if handlers is not None and supplied_subscription_adapters:
         raise ValueError("subscription adapters require worker-owned composition")
     settings = settings or Settings(process_role="worker")
     stop_event = stop_event or asyncio.Event()
@@ -68,6 +76,18 @@ async def run_worker(
     status_reporter: SubscriptionRuntimeReporter | None = None
     polls: list[asyncio.Task[None]] = []
     try:
+        if supplied_subscription_adapters is not None:
+            resolved_subscription_adapters = supplied_subscription_adapters
+        elif (
+            handlers is not None
+            or getattr(settings, "subscription_installations_path", None) is None
+        ):
+            resolved_subscription_adapters = ()
+        else:
+            resolved_subscription_adapters = load_subscription_installations(
+                settings,
+                production_subscription_verifiers(factory, settings.artifact_root),
+            )
         commands = PostgresCommandRepository(factory)
         operations = PostgresOperationRepository(factory)
         recovery = RecoveryService(operations)
@@ -79,7 +99,7 @@ async def run_worker(
             await intervention.wait_for_owners()
             if handlers is None:
                 effective_handlers = compose_worker_handlers(
-                    settings, factory, subscription_adapters=subscription_adapters
+                    settings, factory, subscription_adapters=resolved_subscription_adapters
                 )
                 if isinstance(effective_handlers, WorkerHandlers):
                     owned_handlers = effective_handlers

@@ -1,6 +1,7 @@
 """Trusted registrations use the public worker's actual recovery, poll and drain path."""
 
 import asyncio
+import hashlib
 import json
 import sys
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ from forge.agents.client_process import (
     ClientProcessSupervisor,
     terminal_launch_proof,
 )
+from forge.agents.codex_gateway import codex_account_identity
 from forge.application.services.projects import PolicyUpdateRequest, ProjectService
 from forge.application.services.runs import RunService
 from forge.domain.approval import ApprovalGate
@@ -75,12 +77,61 @@ async def test_registered_worker_processes_preserve_quota_and_human_gate(
     (tmp_path / "repo/README.md").write_text(
         "Bound input through the normal worker", encoding="utf-8"
     )
-    (tmp_path / "isolated-client").mkdir()
-    (tmp_path / "client-home").mkdir()
+    client_cwd = tmp_path / "isolated-client"
+    client_cwd.mkdir()
+    client_home = tmp_path / "client-home"
+    client_home.mkdir()
+    app_server = client_cwd / "app-server"
+    app_server.mkdir()
+    peer = Path(__file__).parents[1] / "agents/codex_notification_peer.py"
+    (app_server / "__main__.py").write_text(
+        "import runpy\n"
+        "import sys\n"
+        'sys.argv = [sys.argv[0], "plan", "gpt-6-astra", "low", "0", *sys.argv[2:]]\n'
+        f"runpy.run_path({str(peer)!r}, run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    executable = Path(sys.executable).resolve(strict=True)
+    executable_digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    account = codex_account_identity("codex@example.invalid")
+    (tmp_path / "subscription-installations.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "installations": [
+                    {
+                        "client": "codex_app_server",
+                        "executable": str(executable),
+                        "cwd": str(client_cwd),
+                        "home": str(client_home),
+                        "model": "gpt-6-astra",
+                        "effort": "low",
+                        "account": account,
+                        "executable_digest": executable_digest,
+                        "quota": {
+                            "account": "local",
+                            "pool": "subscription-allowance_only",
+                        },
+                        "quota_limit_id": "codex",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     store = SubscriptionRuntimeStatusStore(session_factory)
     clients, terminals = [], []
 
     async def start(registered):
+        source_root = Path(__file__).resolve().parents[2] / "src"
+        environment = {
+            "FORGE_DATABASE_URL": migrated_database_url,
+            "PYTHONPATH": str(source_root),
+        }
+        if registered:
+            environment["FORGE_SUBSCRIPTION_INSTALLATIONS_PATH"] = str(
+                tmp_path / "subscription-installations.json"
+            )
         session = await ClientProcessSupervisor().start(
             ClientLaunchSpec(
                 argv=(
@@ -90,8 +141,8 @@ async def test_registered_worker_processes_preserve_quota_and_human_gate(
                     "registered" if registered else "empty",
                 ),
                 cwd=tmp_path,
-                environment={"FORGE_DATABASE_URL": migrated_database_url},
-                allowed_environment=frozenset({"FORGE_DATABASE_URL"}),
+                environment=environment,
+                allowed_environment=frozenset(environment),
                 duration_seconds=45,
             )
         )
@@ -112,15 +163,35 @@ async def test_registered_worker_processes_preserve_quota_and_human_gate(
             clients.remove(session)
 
     async def wait_for(state, active_workers):
-        async with asyncio.timeout(20):
-            while True:
-                async with factory() as work:
-                    current = await work.runs.get(run.id)
-                status = await store.status()
-                workers = [row for row in status["workers"] if row["state"] == "current"]
-                if current.state is state and len(workers) == active_workers:
-                    return current, workers
-                await asyncio.sleep(0.025)
+        deadline = asyncio.get_running_loop().time() + 20
+        while asyncio.get_running_loop().time() < deadline:
+            async with factory() as work:
+                current = await work.runs.get(run.id)
+            status = await store.status()
+            workers = [row for row in status["workers"] if row["state"] == "current"]
+            if current.state is state and len(workers) == active_workers:
+                return current, workers
+            await asyncio.sleep(0.025)
+        async with session_factory() as session:
+            attempts = list((await session.scalars(select(SubscriptionAttempt))).all())
+            results = list((await session.scalars(select(SubscriptionAttemptResult))).all())
+            launches = list((await session.scalars(select(SubscriptionClientLaunch))).all())
+        diagnostics = {
+            "attempts": [(item.status, item.route_payload) for item in attempts],
+            "results": [
+                (
+                    item.disposition,
+                    item.result_payload.get("failure"),
+                    item.result_payload.get("failure_detail"),
+                )
+                for item in results
+            ],
+            "launches": [item.state for item in launches],
+        }
+        raise AssertionError(
+            f"worker outcome timed out: state={current.state.value}, workers={workers!r}, "
+            f"diagnostics={diagnostics!r}"
+        )
 
     async def assert_durable(expected_attempts):
         async with factory() as work:
@@ -197,7 +268,9 @@ async def test_registered_worker_processes_preserve_quota_and_human_gate(
             "provider_attempts": 0 if blocked else 1,
             "worker_registrations": status,
             "worker_processes": terminals,
-            "provider_and_capability_source": "fake Codex peer and explicit test report",
+            "provider_and_capability_source": (
+                "fake fixed-script Codex peer and code-owned test verifier"
+            ),
             "repository_inspector": "StableInspector fixture",
             "review": "selected-primary source self-review",
         }

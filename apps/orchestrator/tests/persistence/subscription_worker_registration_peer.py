@@ -1,21 +1,15 @@
-"""A real Forge worker process with explicitly fake Codex/capability dependencies."""
+"""A real Forge worker process using the operator installation loader."""
 
 import asyncio
 import hashlib
 import json
 import sys
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
 
-from forge.agents.codex_gateway import (
-    CodexCapabilityReport,
-    CodexInstallation,
-    codex_account_identity,
-)
-from forge.agents.codex_runtime import CodexRuntimeAdapter
+from forge.agents.codex_gateway import CodexCapabilityReport
 from forge.domain.capability_evidence import (
     CapabilityEvidenceManifest,
     CapabilityProof,
@@ -26,7 +20,8 @@ from forge.domain.capability_evidence import (
 )
 from forge.domain.subscription import TaskBudget
 from forge.settings import Settings
-from forge.worker.main import run_worker
+from forge.worker import main as worker_main
+from forge.worker.subscription_installations import SubscriptionVerifierDependencies
 from sqlalchemy.engine import make_url
 
 
@@ -54,47 +49,15 @@ async def main():
     database = make_url(settings.database_url).database
     assert database and database.startswith("forge_test_") and len(database) == 43
     assert all(char in "0123456789abcdef" for char in database[11:])
-    adapters = ()
     if registered:
-        installation = CodexInstallation(
-            executable=sys.executable,
-            cwd=str(root / "isolated-client"),
-            client_home=str(root / "client-home"),
-            model="gpt-6-astra",
-            effort="low",
-            account=codex_account_identity("codex@example.invalid"),
-            executable_digest=hashlib.sha256(
-                Path(sys.executable).resolve(strict=True).read_bytes()
-            ).hexdigest(),
-            script=(
-                str(Path(__file__).parents[1] / "agents/codex_notification_peer.py"),
-                "plan",
-                "gpt-6-astra",
-                "low",
-                "0",
-            ),
-            duration_seconds=10,
-        )
-        report = CodexCapabilityReport(
-            supported=True,
-            installed_version="0.153.4",
-            account_kind="chatgpt",
-            billing_allowance_enforced=True,
-            native_tools_isolated=True,
-            model=installation.model,
-            effort=installation.effort,
-            client_home=installation.client_home,
-            account=installation.account,
-            executable_digest=installation.executable_digest,
-        )
 
-        def verify(value, scope):
+        def verify(installation, scope):
             identity = capability_identity(
                 scope=scope,
                 client_version="0.153.4",
-                executable_digest=value.executable_digest,
-                client_home=value.client_home,
-                account=value.account,
+                executable_digest=installation.executable_digest,
+                client_home=installation.client_home,
+                account=installation.account,
             )
             observed = datetime(2026, 9, 13, tzinfo=UTC)
             manifest = CapabilityEvidenceManifest(
@@ -110,17 +73,31 @@ async def main():
                 ),
             )
             wire = encode_capability_evidence(manifest)
-            evidence = ResolvedCapabilityEvidence(
-                manifest=manifest,
-                artifact_digest=hashlib.sha256(wire).hexdigest(),
-                revision=1,
+            return CodexCapabilityReport(
+                supported=True,
+                installed_version="0.153.4",
+                account_kind="chatgpt",
+                billing_allowance_enforced=True,
+                native_tools_isolated=True,
+                model=installation.model,
+                effort=installation.effort,
+                quota_limit_id=installation.quota_limit_id,
+                client_home=installation.client_home,
+                account=installation.account,
+                executable_digest=installation.executable_digest,
+                evidence=ResolvedCapabilityEvidence(
+                    manifest=manifest,
+                    artifact_digest=hashlib.sha256(wire).hexdigest(),
+                    revision=1,
+                ),
             )
-            return replace(report, evidence=evidence)
 
-        adapters = (CodexRuntimeAdapter(installation, SimpleNamespace(verify=verify)),)
+        worker_main.production_subscription_verifiers = lambda *_args: (
+            SubscriptionVerifierDependencies(codex=SimpleNamespace(verify=verify))
+        )
     stop = asyncio.Event()
     worker = asyncio.create_task(
-        run_worker(settings, subscription_adapters=adapters, stop_event=stop, poll_interval=0.05)
+        worker_main.run_worker(settings, stop_event=stop, poll_interval=0.05)
     )
     print(json.dumps({"operation": "worker-starting", "registered": registered}), flush=True)
     incoming = asyncio.create_task(asyncio.to_thread(sys.stdin.readline))
