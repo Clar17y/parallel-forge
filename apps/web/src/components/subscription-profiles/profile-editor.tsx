@@ -9,7 +9,7 @@ const defaultPreference = (purpose: Preference['purpose'] = 'primary'): Preferen
 const route = (provider: string, client: string, model: string, effort: Route['effort']): Route => ({ provider, client, model, effort, auth_mode: 'subscription', billing_mode: 'allowance_only' });
 export const defaultRolePreferences = (): Preference[] => [
  { purpose: 'primary', preferred_route: route('openai', 'codex_app_server', 'gpt-6-astra', 'low'), fallback_routes: [] },
- { purpose: 'routine_implementation', preferred_route: route('google', 'gemini_cli', 'gemini-3.8-flash-medium', 'medium'), fallback_routes: [route('openai', 'codex_app_server', 'gpt-5.6-luna', 'medium')] },
+ { purpose: 'routine_implementation', preferred_route: route('google', 'gemini_cli', 'gemini-3.8-flash', 'medium'), fallback_routes: [route('openai', 'codex_app_server', 'gpt-5.6-luna', 'medium')] },
  { purpose: 'complex_implementation', preferred_route: route('openai', 'codex_app_server', 'gpt-5.6-terra', 'low'), fallback_routes: [] },
  { purpose: 'independent_review', preferred_route: route('anthropic', 'claude_code', 'claude-opus-5', 'medium'), fallback_routes: [route('openai', 'codex_app_server', 'gpt-6-astra', 'low')] },
  { purpose: 'planning', preferred_route: route('openai', 'codex_app_server', 'gpt-5.6-sol', 'low'), fallback_routes: [] },
