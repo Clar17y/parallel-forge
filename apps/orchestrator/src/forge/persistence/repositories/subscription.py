@@ -29,6 +29,7 @@ from forge.domain.subscription import (
     BudgetPool,
     DelegateDecision,
     ExecutionEnvelope,
+    ForwardFeedbackDecision,
     LogicalTaskContract,
     OperatorProfile,
     ReassignDecision,
@@ -105,6 +106,7 @@ _RECORDS = (
     AcceptDecision,
     ReassignDecision,
     ReviewSelection,
+    ForwardFeedbackDecision,
 )
 
 T = TypeVar("T")
@@ -1256,7 +1258,13 @@ class PostgresSubscriptionRepository:
         task_id = (
             None
             if isinstance(
-                record, (AcceptDecision, BoundScopeResponseDecision, BoundReassignDecision)
+                record,
+                (
+                    AcceptDecision,
+                    BoundScopeResponseDecision,
+                    BoundReassignDecision,
+                    ForwardFeedbackDecision,
+                ),
             )
             else getattr(record, "task_id", None)
         )

@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-CURRENT_REVISION = "20260912_0021"
+CURRENT_REVISION = "20260916_0023"
 V01_TABLES = {
     "recovery_barrier",
     "api_mutations",
@@ -58,6 +58,7 @@ V01_TABLES = {
     "evaluation_baselines",
 }
 EXPECTED_TABLES = V01_TABLES | {
+    "capability_evidence",
     "project_subscription_profiles",
     "subscription_profile_versions",
     "subscription_envelopes",
@@ -83,6 +84,7 @@ EXPECTED_TABLES = V01_TABLES | {
     "subscription_quota_observations",
     "subscription_quota_admissions",
     "subscription_task_stops",
+    "subscription_task_feedback",
     "subscription_worker_status",
 }
 

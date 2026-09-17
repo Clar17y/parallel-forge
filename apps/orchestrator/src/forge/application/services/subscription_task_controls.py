@@ -11,6 +11,7 @@ from uuid import UUID
 from forge.application.ports.audit import AuditRepository
 from forge.application.ports.mutations import ApiMutationRecord, MutationRepository
 from forge.application.ports.runs import RunRepository
+from forge.application.ports.subscription_feedback import SubscriptionFeedbackRepository
 from forge.application.ports.subscription_task_controls import SubscriptionTaskControlRepository
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.subscription_profiles import LocalOperatorProfileActor, ProfileActor
@@ -31,6 +32,8 @@ class TaskControlUnitOfWork(Protocol):
     def runs(self) -> RunRepository: ...
     @property
     def task_controls(self) -> SubscriptionTaskControlRepository: ...
+    @property
+    def subscription_feedback(self) -> SubscriptionFeedbackRepository: ...
     @property
     def mutations(self) -> MutationRepository: ...
     @property
@@ -172,6 +175,8 @@ class SubscriptionTaskControlService:
             changed = await work.task_controls.apply(
                 run_id, task_id, body, pause=pause, receipt_id=mutation.id
             )
+            if body.action == "cancel":
+                await work.subscription_feedback.close_cancelled(run_id, task_id)
             receipt = TaskControlReceipt(
                 receipt_id=mutation.id,
                 run_id=run_id,

@@ -45,6 +45,7 @@ from forge.persistence.models.subscription import (
     SubscriptionTask,
     SubscriptionTaskDependency,
 )
+from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
 from forge.persistence.models.subscription_handoff import SubscriptionHandoffFence
 from forge.persistence.models.subscription_plan_gate import SubscriptionPlanGate
 from forge.persistence.models.subscription_quota import (
@@ -114,6 +115,7 @@ __all__ = [
     "SubscriptionSchedulerRun",
     "SubscriptionTask",
     "SubscriptionTaskDependency",
+    "SubscriptionTaskFeedback",
     "SubscriptionTaskStop",
     "SubscriptionWorkerStatus",
     "Task",

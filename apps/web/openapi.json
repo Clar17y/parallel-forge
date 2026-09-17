@@ -6232,6 +6232,130 @@
         "title": "TaskCreateRequest",
         "type": "object"
       },
+      "TaskFeedbackReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "binding_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Binding Digest",
+            "type": "string"
+          },
+          "feedback_bytes": {
+            "maximum": 4096.0,
+            "minimum": 1.0,
+            "title": "Feedback Bytes",
+            "type": "integer"
+          },
+          "feedback_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Feedback Digest",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "operator_id": {
+            "format": "uuid",
+            "title": "Operator Id",
+            "type": "string"
+          },
+          "primary_task_id": {
+            "format": "uuid",
+            "title": "Primary Task Id",
+            "type": "string"
+          },
+          "primary_task_version": {
+            "minimum": 0.0,
+            "title": "Primary Task Version",
+            "type": "integer"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_version": {
+            "minimum": 0.0,
+            "title": "Run Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskFeedbackStatus"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_version": {
+            "minimum": 0.0,
+            "title": "Task Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "operator_id",
+          "run_id",
+          "primary_task_id",
+          "task_id",
+          "status",
+          "run_version",
+          "task_version",
+          "primary_task_version",
+          "feedback_digest",
+          "binding_digest",
+          "feedback_bytes",
+          "observed_at"
+        ],
+        "title": "TaskFeedbackReceipt",
+        "type": "object"
+      },
+      "TaskFeedbackRequest": {
+        "additionalProperties": false,
+        "description": "Parse a closed JSON body while keeping version integers strict.",
+        "properties": {
+          "expected_run_version": {
+            "minimum": 0.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "expected_task_version": {
+            "minimum": 0.0,
+            "title": "Expected Task Version",
+            "type": "integer"
+          },
+          "feedback": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Feedback",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_run_version",
+          "expected_task_version",
+          "feedback"
+        ],
+        "title": "TaskFeedbackRequest",
+        "type": "object"
+      },
+      "TaskFeedbackStatus": {
+        "enum": [
+          "pending_primary",
+          "forwarded",
+          "delivered",
+          "closed"
+        ],
+        "type": "string"
+      },
       "TaskResponse": {
         "additionalProperties": false,
         "description": "Exact task source fields and their deterministic derived values.",
@@ -8761,6 +8885,82 @@
           }
         ],
         "summary": "Control Task"
+      }
+    },
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/feedback": {
+      "post": {
+        "operationId": "submit_feedback_api_runs__run_id__subscription_tasks__task_id__feedback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskFeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskFeedbackReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Submit Feedback"
       }
     },
     "/api/runs/{run_id}/usage": {

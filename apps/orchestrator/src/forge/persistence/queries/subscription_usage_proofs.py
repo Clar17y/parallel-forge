@@ -22,6 +22,7 @@ from forge.domain.subscription import (
     BoundScopeResponseDecision,
     DelegateDecision,
     ExecutionEnvelope,
+    ForwardFeedbackDecision,
     HandoffStatus,
     LogicalTaskContract,
     ReassignDecision,
@@ -54,6 +55,7 @@ RECORD_PREFIXES = {
     "ScopeRequestDecision": "scope-request",
     "BoundScopeResponseDecision": "scope-response",
     "BoundReassignDecision": "reassignment",
+    "ForwardFeedbackDecision": "feedback-forward",
     "ReviewSelection": "review-selection",
     "AcceptDecision": "acceptance",
 }
@@ -65,6 +67,7 @@ _EXPECTED_DISPOSITIONS = {
     "ScopeRequestDecision": {"scope_requested"},
     "BoundScopeResponseDecision": {"scope_responded"},
     "BoundReassignDecision": {"reassigned"},
+    "ForwardFeedbackDecision": {"feedback_forwarded"},
     "ReviewSelection": {"candidate_prepared", "review_selected"},
     "AcceptDecision": {"task_accepted", "acceptance_prepared"},
 }
@@ -196,6 +199,7 @@ def historical_source(
                     ReassignDecision,
                     AcceptDecision,
                     ReviewSelection,
+                    ForwardFeedbackDecision,
                 ),
             ):
                 raise TypeError
@@ -296,6 +300,10 @@ def _digest(value: object) -> bool:
     )
 
 
+def _nonnegative_int(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
 def _uuid(value: object) -> bool:
     return isinstance(value, str) and str(UUID(value)) == value and UUID(value).int != 0
 
@@ -347,6 +355,27 @@ def _application_matches(
             and receipt["request_attempt_id"] == str(decision.request_attempt_id)
             and _digest(receipt["request_result_digest"])
             and all(path in updated.owned_paths for path in decision.granted_paths)
+        )
+    if isinstance(decision, ForwardFeedbackDecision):
+        return (
+            receipt.get("kind") == "feedback_forwarded"
+            and receipt.get("result_digest") == result.result_digest
+            and receipt.get("feedback_receipt_id") == str(decision.feedback_receipt_id)
+            and receipt.get("feedback_digest") == decision.feedback_digest
+            and receipt.get("target_task_id") == str(decision.task_id)
+            and _digest(receipt.get("binding_digest"))
+            and _nonnegative_int(receipt.get("observed_run_version"))
+            and _nonnegative_int(receipt.get("observed_task_version"))
+            and receipt.get("delivery")
+            in {
+                "retained",
+                "queued",
+                "paused",
+                "after_current_attempt",
+                "accepted",
+                "cancelled",
+                "budget_exhausted",
+            }
         )
     if receipt.get("result_digest") != result.result_digest:
         return False

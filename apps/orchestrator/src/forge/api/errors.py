@@ -12,6 +12,7 @@ from forge.application.services.runs import (
     RunServiceError,
 )
 from forge.application.services.tasks import TaskServiceError
+from forge.domain.subscription_feedback import TaskFeedbackConflict
 from forge.domain.subscription_task_controls import TaskControlConflict
 from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.mutations import (
@@ -56,6 +57,7 @@ _CONFLICT = (
     SubscriptionConflict,
     RunCommandValidationError,
     TaskControlConflict,
+    TaskFeedbackConflict,
 )
 _UNPROCESSABLE = (RepositoryInspectionError, RunCreationError)
 _UNAVAILABLE = (ProjectServiceError, TaskServiceError, RunServiceError, SQLAlchemyError)

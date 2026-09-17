@@ -656,6 +656,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Feedback */
+        post: operations["submit_feedback_api_runs__run_id__subscription_tasks__task_id__feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/usage": {
         parameters: {
             query?: never;
@@ -3018,6 +3035,66 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** TaskFeedbackReceipt */
+        TaskFeedbackReceipt: {
+            /** Binding Digest */
+            binding_digest: string;
+            /** Feedback Bytes */
+            feedback_bytes: number;
+            /** Feedback Digest */
+            feedback_digest: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /**
+             * Operator Id
+             * Format: uuid
+             */
+            operator_id: string;
+            /**
+             * Primary Task Id
+             * Format: uuid
+             */
+            primary_task_id: string;
+            /** Primary Task Version */
+            primary_task_version: number;
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run Version */
+            run_version: number;
+            status: components["schemas"]["TaskFeedbackStatus"];
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+            /** Task Version */
+            task_version: number;
+        };
+        /**
+         * TaskFeedbackRequest
+         * @description Parse a closed JSON body while keeping version integers strict.
+         */
+        TaskFeedbackRequest: {
+            /** Expected Run Version */
+            expected_run_version: number;
+            /** Expected Task Version */
+            expected_task_version: number;
+            /** Feedback */
+            feedback: string;
+        };
+        /** @enum {string} */
+        TaskFeedbackStatus: "pending_primary" | "forwarded" | "delivered" | "closed";
         /**
          * TaskResponse
          * @description Exact task source fields and their deterministic derived values.
@@ -4396,6 +4473,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskControlReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_feedback_api_runs__run_id__subscription_tasks__task_id__feedback_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskFeedbackReceipt"];
                 };
             };
             /** @description Validation Error */

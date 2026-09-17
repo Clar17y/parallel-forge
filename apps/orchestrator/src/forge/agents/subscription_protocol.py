@@ -21,6 +21,7 @@ from forge.domain.subscription import (
     BoundReassignDecision,
     BoundScopeResponseDecision,
     DelegateDecision,
+    ForwardFeedbackDecision,
     LogicalTaskContract,
     ReassignDecision,
     ReviewedTaskHandoff,
@@ -156,9 +157,27 @@ _DECISIONS: dict[str, type[Any]] = {
     "accept": AcceptDecision,
     "reassign": BoundReassignDecision,
     "review_selection": ReviewSelection,
+    "forward_feedback": ForwardFeedbackDecision,
 }
 _PRIMARY_KINDS = frozenset(
-    {"plan", "delegate", "wait", "scope_response", "accept", "reassign", "review_selection"}
+    {
+        "plan",
+        "delegate",
+        "wait",
+        "scope_response",
+        "accept",
+        "reassign",
+        "review_selection",
+        "forward_feedback",
+    }
+)
+_CHILD_TARGET_KINDS = frozenset(
+    {
+        "accept",
+        "reassign",
+        "scope_response",
+        "forward_feedback",
+    }
 )
 
 
@@ -210,6 +229,9 @@ def decode_final(
     kind = payload.pop("kind", None)
     if not isinstance(kind, str):
         raise ProtocolError("missing decision kind")
+    pending_feedback = request.untrusted_context.get("pending_worker_feedback")
+    if pending_feedback is not None and kind != "forward_feedback":
+        raise ProtocolError("pending worker feedback must be forwarded exactly")
     if kind in _PRIMARY_KINDS and request.task.purpose is not SpecialistPurpose.PRIMARY:
         raise ProtocolError("only the primary may make this decision")
     if not _phase_allows(kind, request):
@@ -223,7 +245,7 @@ def decode_final(
     target = request.task
     target_id = payload.pop("task_id", str(request.task.task_id))
     if target_id != str(request.task.task_id):
-        if kind not in {"accept", "reassign", "scope_response"}:
+        if kind not in _CHILD_TARGET_KINDS:
             raise ProtocolError("foreign decision task")
         matches = [task for task in request.known_tasks if str(task.task_id) == target_id]
         if len(matches) != 1:
@@ -301,6 +323,17 @@ def decode_final(
             )
             if len(observed) != 1 or observed[0].get("version") != decision.expected_task_version:
                 raise ProtocolError("reassignment must name the observed task version")
+        if isinstance(decision, ForwardFeedbackDecision) and (
+            target.parent_task_id != request.task.task_id
+            or target.purpose is SpecialistPurpose.PRIMARY
+            or not isinstance(pending_feedback, Mapping)
+            or pending_feedback.get("run_id") != str(decision.run_id)
+            or pending_feedback.get("primary_task_id") != str(request.task.task_id)
+            or pending_feedback.get("task_id") != str(decision.task_id)
+            or pending_feedback.get("receipt_id") != str(decision.feedback_receipt_id)
+            or pending_feedback.get("feedback_digest") != decision.feedback_digest
+        ):
+            raise ProtocolError("feedback forwarding does not match the durable request")
         if isinstance(decision, ReviewSelection) and decision.reviewer_route is not None:
             approved = request.envelope.route_for(SpecialistPurpose.INDEPENDENT_REVIEW)
             if decision.reviewer_route not in (
@@ -314,6 +347,9 @@ def decode_final(
 def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
     """Advertise complete fields; runtime validation additionally binds authority."""
     variants = dict(_DECISIONS)
+    feedback_only = request.untrusted_context.get("pending_worker_feedback") is not None
+    if feedback_only:
+        variants = {"forward_feedback": ForwardFeedbackDecision}
     if request.task.purpose is SpecialistPurpose.INDEPENDENT_REVIEW:
         variants["handoff"] = ReviewedTaskHandoff
     variants = {key: value for key, value in variants.items() if _phase_allows(key, request)}
@@ -326,14 +362,18 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
         definitions.update(schema.pop("$defs", {}))
         props = schema["properties"]
         for authority in ("run_id", "task_id", "attempt_id"):
-            if authority == "task_id" and kind in {"accept", "reassign", "scope_response"}:
+            if authority == "task_id" and kind in _CHILD_TARGET_KINDS:
                 continue
             props.pop(authority, None)
         props["kind"] = {"const": kind, "type": "string"}
         schema["required"] = [key for key in schema.get("required", []) if key in props] + ["kind"]
         schema["additionalProperties"] = False
         choices.append(schema)
-    if request.task.purpose is SpecialistPurpose.PRIMARY and _phase_allows("plan", request):
+    if (
+        not feedback_only
+        and request.task.purpose is SpecialistPurpose.PRIMARY
+        and _phase_allows("plan", request)
+    ):
         plan = TypeAdapter(ScopedPlanOutput).json_schema()
         definitions.update(plan.pop("$defs", {}))
         choices.append(
@@ -344,7 +384,11 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
                 "additionalProperties": False,
             }
         )
-    if request.task.purpose is SpecialistPurpose.PRIMARY and _phase_allows("delegate", request):
+    if (
+        not feedback_only
+        and request.task.purpose is SpecialistPurpose.PRIMARY
+        and _phase_allows("delegate", request)
+    ):
         child = TypeAdapter(LogicalTaskContract).json_schema()
         definitions.update(child.pop("$defs", {}))
         for authority in ("run_id", "parent_task_id", "route"):

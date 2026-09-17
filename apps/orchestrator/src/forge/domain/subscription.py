@@ -1314,6 +1314,22 @@ class BoundReassignDecision(ReassignDecision):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ForwardFeedbackDecision:
+    """Primary acknowledgement forwarding one exact durable operator receipt."""
+
+    run_id: UUID
+    task_id: UUID
+    feedback_receipt_id: UUID
+    feedback_digest: str
+
+    def __post_init__(self) -> None:
+        _validate_non_nil_uuid(self.run_id, "run_id")
+        _validate_non_nil_uuid(self.task_id, "task_id")
+        _validate_non_nil_uuid(self.feedback_receipt_id, "feedback_receipt_id")
+        _validate_sha256_digest(self.feedback_digest, "feedback_digest")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewSelection:
     """Candidate-bound review selection decision including explicit no-review reason."""
 
@@ -1396,6 +1412,7 @@ _RECORD_TYPES: Mapping[str, type[object]] = MappingProxyType(
             AcceptDecision,
             ReassignDecision,
             BoundReassignDecision,
+            ForwardFeedbackDecision,
             ReviewSelection,
         )
     }
@@ -1585,6 +1602,7 @@ __all__ = [
     "DelegateDecision",
     "ExecutionEnvelope",
     "FailureReason",
+    "ForwardFeedbackDecision",
     "HandoffStatus",
     "LogicalTaskContract",
     "ModelMapping",

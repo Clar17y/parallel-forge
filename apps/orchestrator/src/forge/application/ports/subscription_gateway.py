@@ -20,6 +20,7 @@ from forge.domain.subscription import (
     BrokerAuthorizationBinding,
     DelegateDecision,
     ExecutionEnvelope,
+    ForwardFeedbackDecision,
     LogicalTaskContract,
     ReassignDecision,
     ReviewSelection,
@@ -42,6 +43,7 @@ type SubscriptionDecision = (
     | AcceptDecision
     | ReassignDecision
     | ReviewSelection
+    | ForwardFeedbackDecision
 )
 
 
@@ -225,6 +227,7 @@ class SubscriptionInvocationResult:
                 AcceptDecision,
                 ReassignDecision,
                 ReviewSelection,
+                ForwardFeedbackDecision,
             ),
         ):
             raise TypeError("decision must be a typed subscription decision")

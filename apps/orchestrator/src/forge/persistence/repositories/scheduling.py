@@ -26,6 +26,7 @@ from forge.domain.subscription import (
     CANDIDATE_READ_TOOLS,
     BoundReassignDecision,
     DelegateDecision,
+    ForwardFeedbackDecision,
     LogicalTaskContract,
     RouteBinding,
     RouteSpec,
@@ -54,6 +55,7 @@ from forge.persistence.models.subscription import (
     SubscriptionOperationBinding,
     SubscriptionTask,
 )
+from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
 from forge.persistence.models.subscription_handoff import SubscriptionHandoffFence
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.models.subscription_usage import SubscriptionAttemptConsumption
@@ -181,6 +183,51 @@ class PostgresSchedulingRepository:
             reservation_ceiling=reservation_ceiling,
         )
 
+    async def _feedback_priority_fence(self, run_id: UUID) -> frozenset[UUID]:
+        """Protect accepted feedback from lower-priority work until it settles."""
+        pending_primary = set(
+            await self._session.scalars(
+                select(SubscriptionTaskFeedback.primary_task_id).where(
+                    SubscriptionTaskFeedback.run_id == run_id,
+                    SubscriptionTaskFeedback.state == "pending_primary",
+                )
+            )
+        )
+        forwarded: set[UUID] = set()
+        if not pending_primary:
+            forwarded = set(
+                await self._session.scalars(
+                    select(SubscriptionTaskFeedback.task_id).where(
+                        SubscriptionTaskFeedback.run_id == run_id,
+                        SubscriptionTaskFeedback.state == "forwarded",
+                    )
+                )
+            )
+        protected = pending_primary | forwarded
+        if not protected:
+            return frozenset()
+        scheduled = (
+            await self._session.scalars(
+                select(SubscriptionScheduledTask).where(SubscriptionScheduledTask.run_id == run_id)
+            )
+        ).all()
+        by_task = {row.task_id: row for row in scheduled}
+        pending = list(protected)
+        while pending:
+            row = by_task.get(pending.pop())
+            if row is None:
+                continue
+            for dependency_id in row.dependency_task_ids:
+                dependency = by_task.get(dependency_id)
+                if (
+                    dependency is not None
+                    and dependency.state != "terminal"
+                    and dependency_id not in protected
+                ):
+                    protected.add(dependency_id)
+                    pending.append(dependency_id)
+        return frozenset(protected)
+
     async def _claim_ready(
         self,
         owner: str,
@@ -251,6 +298,7 @@ class PostgresSchedulingRepository:
         global_active = await self._active_count()
         selected_route: RouteBinding | None = None
         selected_logical: SubscriptionTask | None = None
+        feedback_fences: dict[UUID, frozenset[UUID]] = {}
         for candidate in candidates:
             # Atomic attempt admission continues by locking this run. Acquire it
             # before scheduler rows, matching broker/usage lock order, and skip
@@ -288,6 +336,13 @@ class PostgresSchedulingRepository:
                 if source_run is None or not run_allows_subscription_attempt(
                     source_run.state, source_run.pending_gate
                 ):
+                    continue
+                if candidate.run_id not in feedback_fences:
+                    feedback_fences[candidate.run_id] = await self._feedback_priority_fence(
+                        candidate.run_id
+                    )
+                feedback_fence = feedback_fences[candidate.run_id]
+                if feedback_fence and candidate.task_id not in feedback_fence:
                     continue
                 # Do not repeatedly select a task that execution admission must
                 # reject: rolling that lease back would starve unrelated worktrees.
@@ -1079,7 +1134,9 @@ class PostgresSchedulingRepository:
                 else await self._session.get(SubscriptionAttemptResult, latest)
             )
             if result is not None and not (
-                result.accepted and result.disposition in {"delegated", "waiting", "reassigned"}
+                result.accepted
+                and result.disposition
+                in {"delegated", "waiting", "reassigned", "feedback_forwarded"}
             ):
                 continue
             selected: tuple[UUID, ...] | None = None
@@ -1088,6 +1145,7 @@ class PostgresSchedulingRepository:
                     "waiting": "wait",
                     "delegated": "delegation",
                     "reassigned": "reassignment",
+                    "feedback_forwarded": "feedback-forward",
                 }[result.disposition]
                 record = await self._session.scalar(
                     select(SubscriptionDecisionRecord).where(
@@ -1119,6 +1177,23 @@ class PostgresSchedulingRepository:
                             or receipt.get("child_task_id") != str(decision.task_id)
                             or receipt.get("source_attempt_id") != str(decision.source_attempt_id)
                             or receipt.get("child_version") != decision.expected_task_version
+                        ):
+                            raise ValueError
+                        selected = (decision.task_id,)
+                    elif result.disposition == "feedback_forwarded":
+                        receipt = result.application_payload
+                        if (
+                            not isinstance(decision, ForwardFeedbackDecision)
+                            or decision.run_id != parent.run_id
+                            or record.record_type != "ForwardFeedbackDecision"
+                            or receipt is None
+                            or result.application_digest != canonical_digest(receipt)
+                            or receipt.get("kind") != "feedback_forwarded"
+                            or receipt.get("result_digest") != result.result_digest
+                            or receipt.get("target_task_id") != str(decision.task_id)
+                            or receipt.get("feedback_receipt_id")
+                            != str(decision.feedback_receipt_id)
+                            or receipt.get("feedback_digest") != decision.feedback_digest
                         ):
                             raise ValueError
                         selected = (decision.task_id,)

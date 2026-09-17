@@ -44,6 +44,7 @@ class PendingDecisionKind(StrEnum):
     DELEGATE = "delegate"
     WAIT = "wait"
     REASSIGN = "reassign"
+    FORWARD_FEEDBACK = "forward_feedback"
     HANDOFF = "handoff"
     SCOPE_REQUEST = "scope_request"
     SCOPE_RESPONSE = "scope_response"
@@ -237,3 +238,4 @@ class SubscriptionDecisionRepository(Protocol):
     async def apply_wait(self, attempt_id: UUID) -> SubscriptionSettlement: ...
 
     async def apply_reassignment(self, attempt_id: UUID) -> SubscriptionSettlement: ...
+    async def apply_feedback(self, attempt_id: UUID) -> SubscriptionSettlement: ...

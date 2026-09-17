@@ -470,4 +470,12 @@ class PostgresSubscriptionBudgetRepository:
                 return False
         self._session.add(SubscriptionRepairDebit(attempt_id=attempt_id))
         await self._session.flush()
+        # A repair reserves its next provider attempt immediately. Reconcile any
+        # accepted, unbound feedback under the same run lock so that consuming
+        # the final cumulative slot cannot leave a receipt pending forever.
+        from forge.persistence.repositories.subscription_feedback import (
+            PostgresSubscriptionFeedbackRepository,
+        )
+
+        await PostgresSubscriptionFeedbackRepository(self._session).close_exhausted(run_id)
         return True
