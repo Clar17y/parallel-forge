@@ -37,25 +37,35 @@ const descriptions: Record<State, RunDescription> = {
 
 type EventItem = components['schemas']['EventItem'];
 
+export type RemediationOrigin = 'remote' | 'local' | 'unrecorded';
+
 // Remote repair is admitted only by a recorded PR observation, and the event that
 // opens the current remediation names that context. Local remediation transitions
 // (review findings, evidence drift, requested changes) never carry it.
 function remoteObservationContext(event: EventItem | undefined): boolean {
   const payload = event?.payload;
-  if (!payload) return false;
-  const digest = payload.observation_digest;
-  return payload.disposition === 'remediate'
+  if (!payload || typeof payload !== 'object') return false;
+  const rec = payload as Record<string, unknown>;
+  const digest = rec.observation_digest;
+  return rec.disposition === 'remediate'
     || (typeof digest === 'string' && /^[0-9a-f]{64}$/.test(digest));
 }
 
-export function remoteRepairRecorded(projection: Projection): boolean {
+export function remediationOrigin(projection: Projection): RemediationOrigin {
   const events = Array.isArray(projection?.latest_events) ? projection.latest_events : [];
-  // A resume event records the restored phase without a target, so a paused and
+  // A resume event records restored_state and no target, so a paused and
   // resumed repair keeps the transition that actually opened it.
-  const transition = [...events].sort((a, b) => b.sequence - a.sequence)
-    .find(event => event?.payload?.target === 'REMEDIATING');
-  if (!transition) return false;
-  return events.some(event => event?.run_version === transition.run_version && remoteObservationContext(event));
+  const transition = [...events]
+    .sort((a, b) => (b.sequence ?? 0) - (a.sequence ?? 0))
+    .find(event => {
+      const payload = event?.payload;
+      return typeof payload === 'object' && payload !== null && (payload as Record<string, unknown>).target === 'REMEDIATING';
+    });
+  if (!transition) return 'unrecorded';
+  const isRemote = events.some(
+    event => event?.run_version === transition.run_version && remoteObservationContext(event),
+  );
+  return isRemote ? 'remote' : 'local';
 }
 
 export function describeRunState(projection: Projection): RunDescription {
@@ -63,12 +73,23 @@ export function describeRunState(projection: Projection): RunDescription {
     title: 'Recovery needs attention', tone: 'danger',
     description: 'An earlier operation has an unresolved outcome. Resume and resource teardown are held until its evidence is reconciled. Review the activity before taking further action.',
   };
-  if (projection.run.state === 'REMEDIATING' && remoteRepairRecorded(projection)) {
-    return {
-      title: 'Repairing observed PR findings',
-      description: 'Remediation is triggered by a recorded pull request observation. A repaired candidate still requires fresh validation and review.',
-      tone: 'warning',
-    };
+  if (projection.run.state === 'REMEDIATING') {
+    const origin = remediationOrigin(projection);
+    if (origin === 'remote') {
+      return {
+        title: 'Repairing observed PR findings',
+        description: 'Remediation is triggered by a recorded pull request observation. A repaired candidate still requires fresh validation and review.',
+        tone: 'warning',
+      };
+    }
+    if (origin === 'unrecorded') {
+      return {
+        title: 'Repairing recorded findings',
+        description: 'The retained event window no longer shows which evidence opened this repair. Review the latest checks, the GitHub observation and activity before relying on either remediation budget.',
+        tone: 'warning',
+      };
+    }
+    return descriptions.REMEDIATING;
   }
   return descriptions[projection.run.state] ?? { title: readableLabel(projection.run.state), description: 'Inspect the recorded state and available controls.', tone: 'neutral' };
 }
@@ -123,11 +144,21 @@ export function workflowSteps(p: Projection): WorkflowStep[] {
   const reviewed = !!candidate && p.review.head_sha === candidate && !!p.review.evidence_digest && p.review.evidence_digest === p.candidate.review_evidence_digest;
   const published = !!candidate && p.pull_request?.head_sha === candidate;
   const observed = !!candidate && p.remote_observation?.head_sha === candidate && p.remote_observation.checks.length > 0;
-  const isRemoteRepair = effectiveState === 'REMEDIATING' && remoteRepairRecorded(p);
+  const origin = effectiveState === 'REMEDIATING' ? remediationOrigin(p) : null;
+  const buildLabel = origin === 'remote' || origin === 'unrecorded' ? 'Repair & revalidate' : 'Build & validate';
+  const currentDetail = p.recovery_hold
+    ? 'Recovery held'
+    : suspended
+      ? 'Paused here'
+      : origin === 'remote'
+        ? 'Remote repair'
+        : origin === 'unrecorded'
+          ? 'Repair in progress'
+          : 'Current phase';
   const records: Array<[string, string, boolean, string]> = [
     ['plan', 'Plan', !!p.plan.approval_id, 'Approval recorded'],
     // A commit alone does not prove that implementation or its checks passed.
-    ['build', isRemoteRepair ? 'Repair & revalidate' : 'Build & validate', false, candidate ? 'Candidate recorded' : 'No candidate'],
+    ['build', buildLabel, false, candidate ? 'Candidate recorded' : 'No candidate'],
     ['review', 'Review', reviewed, 'Review recorded'],
     ['publish', 'Publish PR', published, 'PR recorded'],
     // This is observation presence, deliberately not a required-check verdict.
@@ -137,7 +168,7 @@ export function workflowSteps(p: Projection): WorkflowStep[] {
   return records.map(([key, label, recorded, detail]) => ({
     key, label, recorded, current: key === current,
     detail: key === current
-      ? (p.recovery_hold ? 'Recovery held' : suspended ? 'Paused here' : isRemoteRepair ? 'Remote repair' : 'Current phase')
+      ? currentDetail
       : recorded || key === 'build' ? detail : 'Not recorded',
   }));
 }

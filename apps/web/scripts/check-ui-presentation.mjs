@@ -2,7 +2,7 @@
 // Run: node --test scripts/check-ui-presentation.mjs (from apps/web).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeRunState, localCheckDisplay, remoteCheckDisplay, workflowSteps, nextGateMessage, remoteRepairRecorded } from '../src/components/runs/run-presentation.ts';
+import { describeRunState, localCheckDisplay, remoteCheckDisplay, workflowSteps, nextGateMessage, remediationOrigin } from '../src/components/runs/run-presentation.ts';
 
 const head = 'a'.repeat(40);
 const otherHead = 'b'.repeat(40);
@@ -108,7 +108,7 @@ test('every current backend run state has explicit presentation without inventin
   const titles = {
     CREATED: 'Run created', PLANNING: 'Preparing a plan', AWAITING_PLAN_APPROVAL: 'Plan approval needed',
     PREPARING_WORKTREE: 'Preparing the workspace', IMPLEMENTING: 'Implementation phase',
-    VALIDATING: 'Validating the candidate', REVIEWING: 'Review phase', REMEDIATING: 'Repairing local findings',
+    VALIDATING: 'Validating the candidate', REVIEWING: 'Review phase', REMEDIATING: 'Repairing recorded findings',
     AWAITING_PR_APPROVAL: 'PR publication approval needed', PUBLISHING_PR: 'Publishing the approved candidate',
     MONITORING_PR: 'Monitoring the pull request', AWAITING_HUMAN_INTERVENTION: 'Human attention required',
     AWAITING_MERGE_APPROVAL: 'Merge approval needed', MERGING: 'Merge operation in progress',
@@ -125,23 +125,51 @@ test('presentation does not modify the projection or manufacture approval comman
   p.remote_observation = { head_sha: head, checks: [remote()] };
   p.run.state = 'REMEDIATING';
   p.latest_events = [
-    { sequence: 1, run_version: 3, actor_class: 'worker', event_type: 'pr.observation_recorded', occurred_at: '2026-01-01T00:00:00Z', payload: { disposition: 'remediate', observation_digest: hex64 } },
-    { sequence: 2, run_version: 3, actor_class: 'worker', event_type: 'run.state_changed', occurred_at: '2026-01-01T00:00:01Z', payload: { target: 'REMEDIATING' } },
+    {
+      sequence: 1,
+      run_version: 3,
+      actor_class: 'worker',
+      event_type: 'run.pr_observed',
+      occurred_at: '2026-01-01T00:00:00Z',
+      payload: {
+        source_command_id: 'cmd-1',
+        pull_request_id: 'pr-1',
+        poll: 1,
+        observation_digest: hex64,
+        reason: 'Checks failed',
+        disposition: 'remediate',
+        target: 'REMEDIATING',
+      },
+    },
   ];
   const snapshot = structuredClone(p);
-  describeRunState(p); workflowSteps(p); nextGateMessage(p); remoteRepairRecorded(p);
+  describeRunState(p); workflowSteps(p); nextGateMessage(p); remediationOrigin(p);
   remoteCheckDisplay(p.remote_observation.checks[0], head, head);
   assert.deepEqual(p, snapshot);
 });
 
-test('remote repair yields remote title and repair & revalidate step while plain remediation stays unchanged', () => {
+test('remote repair yields the remote title and repair step, while an unrecorded origin claims neither budget', () => {
   const p = fixture();
   p.run.state = 'REMEDIATING';
   p.latest_events = [
-    { sequence: 1, run_version: 3, actor_class: 'worker', event_type: 'pr.observation_recorded', occurred_at: '2026-01-01T00:00:00Z', payload: { disposition: 'remediate', observation_digest: hex64 } },
-    { sequence: 2, run_version: 3, actor_class: 'worker', event_type: 'run.state_changed', occurred_at: '2026-01-01T00:00:01Z', payload: { target: 'REMEDIATING' } },
+    {
+      sequence: 1,
+      run_version: 3,
+      actor_class: 'worker',
+      event_type: 'run.pr_observed',
+      occurred_at: '2026-01-01T00:00:00Z',
+      payload: {
+        source_command_id: 'cmd-1',
+        pull_request_id: 'pr-1',
+        poll: 1,
+        observation_digest: hex64,
+        reason: 'Checks failed',
+        disposition: 'remediate',
+        target: 'REMEDIATING',
+      },
+    },
   ];
-  assert.equal(remoteRepairRecorded(p), true);
+  assert.equal(remediationOrigin(p), 'remote');
   const desc = describeRunState(p);
   assert.equal(desc.title, 'Repairing observed PR findings');
   assert.equal(desc.tone, 'warning');
@@ -154,26 +182,53 @@ test('remote repair yields remote title and repair & revalidate step while plain
   assert.equal(currentStep.label, 'Repair & revalidate');
   assert.equal(currentStep.detail, 'Remote repair');
 
-  // Plain REMEDIATING without events keeps existing presentation
+  // Plain REMEDIATING without events is unrecorded: 'Repairing recorded findings'
   const pPlain = fixture();
   pPlain.run.state = 'REMEDIATING';
-  assert.equal(remoteRepairRecorded(pPlain), false);
-  assert.equal(describeRunState(pPlain).title, 'Repairing local findings');
+  assert.equal(remediationOrigin(pPlain), 'unrecorded');
+  assert.equal(describeRunState(pPlain).title, 'Repairing recorded findings');
   const plainStep = workflowSteps(pPlain).find(s => s.current);
   assert.equal(plainStep.key, 'build');
-  assert.equal(plainStep.label, 'Build & validate');
-  assert.equal(plainStep.detail, 'Current phase');
+  assert.equal(plainStep.label, 'Repair & revalidate');
+  assert.equal(plainStep.detail, 'Repair in progress');
 });
 
 test('a later local remediation transition is presented as local even when older remote repair event remains in window', () => {
   const p = fixture();
   p.run.state = 'REMEDIATING';
   p.latest_events = [
-    { sequence: 1, run_version: 3, actor_class: 'worker', event_type: 'pr.observation_recorded', occurred_at: '2026-01-01T00:00:00Z', payload: { disposition: 'remediate', observation_digest: hex64 } },
-    { sequence: 2, run_version: 3, actor_class: 'worker', event_type: 'run.state_changed', occurred_at: '2026-01-01T00:00:01Z', payload: { target: 'REMEDIATING' } },
-    { sequence: 3, run_version: 4, actor_class: 'worker', event_type: 'run.review_decided', occurred_at: '2026-01-01T00:00:02Z', payload: { target: 'REMEDIATING' } },
+    {
+      sequence: 1,
+      run_version: 3,
+      actor_class: 'worker',
+      event_type: 'run.pr_observed',
+      occurred_at: '2026-01-01T00:00:00Z',
+      payload: {
+        source_command_id: 'cmd-1',
+        pull_request_id: 'pr-1',
+        poll: 1,
+        observation_digest: hex64,
+        reason: 'Checks failed',
+        disposition: 'remediate',
+        target: 'REMEDIATING',
+      },
+    },
+    {
+      sequence: 2,
+      run_version: 4,
+      actor_class: 'worker',
+      event_type: 'run.review_decided',
+      occurred_at: '2026-01-01T00:00:02Z',
+      payload: {
+        approval_id: 'app-1',
+        validation_evidence_set_id: 'ves-1',
+        target: 'REMEDIATING',
+        semantic_attempt: 1,
+        local_remediation_count: 1,
+      },
+    },
   ];
-  assert.equal(remoteRepairRecorded(p), false);
+  assert.equal(remediationOrigin(p), 'local');
   assert.equal(describeRunState(p).title, 'Repairing local findings');
   const buildStep = workflowSteps(p).find(s => s.current);
   assert.equal(buildStep.key, 'build');
@@ -186,10 +241,24 @@ test('a paused run in remote repair reports Run paused with Repair & revalidate 
   p.run.state = 'PAUSED';
   p.run.suspended_state = 'REMEDIATING';
   p.latest_events = [
-    { sequence: 1, run_version: 3, actor_class: 'worker', event_type: 'pr.observation_recorded', occurred_at: '2026-01-01T00:00:00Z', payload: { disposition: 'remediate', observation_digest: hex64 } },
-    { sequence: 2, run_version: 3, actor_class: 'worker', event_type: 'run.state_changed', occurred_at: '2026-01-01T00:00:01Z', payload: { target: 'REMEDIATING' } },
+    {
+      sequence: 1,
+      run_version: 3,
+      actor_class: 'worker',
+      event_type: 'run.pr_observed',
+      occurred_at: '2026-01-01T00:00:00Z',
+      payload: {
+        source_command_id: 'cmd-1',
+        pull_request_id: 'pr-1',
+        poll: 1,
+        observation_digest: hex64,
+        reason: 'Checks failed',
+        disposition: 'remediate',
+        target: 'REMEDIATING',
+      },
+    },
   ];
-  assert.equal(remoteRepairRecorded(p), true);
+  assert.equal(remediationOrigin(p), 'remote');
   assert.equal(describeRunState(p).title, 'Run paused');
   const buildStep = workflowSteps(p).find(s => s.current);
   assert.equal(buildStep.key, 'build');
@@ -200,14 +269,14 @@ test('a paused run in remote repair reports Run paused with Repair & revalidate 
   p.run.state = 'REMEDIATING';
   p.run.suspended_state = null;
   p.latest_events.push({
-    sequence: 3,
+    sequence: 2,
     run_version: 4,
     actor_class: 'operator',
     event_type: 'run.resumed',
     occurred_at: '2026-01-01T00:00:02Z',
-    payload: {},
+    payload: { restored_state: 'REMEDIATING' },
   });
-  assert.equal(remoteRepairRecorded(p), true);
+  assert.equal(remediationOrigin(p), 'remote');
   assert.equal(describeRunState(p).title, 'Repairing observed PR findings');
   const resumedStep = workflowSteps(p).find(s => s.current);
   assert.equal(resumedStep.key, 'build');
@@ -215,3 +284,60 @@ test('a paused run in remote repair reports Run paused with Repair & revalidate 
   assert.equal(resumedStep.detail, 'Remote repair');
 });
 
+test('a same-version event that carries only a 64-hex observation_digest and target REMEDIATING is classified remote', () => {
+  const p = fixture();
+  p.run.state = 'REMEDIATING';
+  p.latest_events = [
+    {
+      sequence: 1,
+      run_version: 5,
+      actor_class: 'worker',
+      event_type: 'run.subscription_remote_repair_requested',
+      occurred_at: '2026-01-01T00:00:00Z',
+      payload: {
+        observation_digest: hex64,
+        target: 'REMEDIATING',
+      },
+    },
+  ];
+  assert.equal(remediationOrigin(p), 'remote');
+  assert.equal(describeRunState(p).title, 'Repairing observed PR findings');
+  const buildStep = workflowSteps(p).find(s => s.current);
+  assert.equal(buildStep.key, 'build');
+  assert.equal(buildStep.label, 'Repair & revalidate');
+  assert.equal(buildStep.detail, 'Remote repair');
+});
+
+test('a window containing only tool_call.completed events at current run version results in unrecorded classification', () => {
+  const p = fixture();
+  p.run.state = 'REMEDIATING';
+  p.latest_events = [
+    {
+      sequence: 51,
+      run_version: 5,
+      actor_class: 'worker',
+      event_type: 'tool_call.completed',
+      occurred_at: '2026-01-01T00:00:10Z',
+      payload: { tool_name: 'read_file', output_digest: hex64 },
+    },
+    {
+      sequence: 52,
+      run_version: 5,
+      actor_class: 'worker',
+      event_type: 'tool_call.completed',
+      occurred_at: '2026-01-01T00:00:11Z',
+      payload: { tool_name: 'edit_file', output_digest: hex64 },
+    },
+  ];
+  assert.equal(remediationOrigin(p), 'unrecorded');
+  const desc = describeRunState(p);
+  assert.equal(desc.title, 'Repairing recorded findings');
+  assert.equal(desc.tone, 'warning');
+  assert.match(desc.description, /retained event window no longer shows/i);
+  assert.match(desc.description, /either remediation budget/i);
+
+  const buildStep = workflowSteps(p).find(s => s.current);
+  assert.equal(buildStep.key, 'build');
+  assert.equal(buildStep.label, 'Repair & revalidate');
+  assert.equal(buildStep.detail, 'Repair in progress');
+});

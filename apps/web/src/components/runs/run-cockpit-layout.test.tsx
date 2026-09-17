@@ -111,7 +111,8 @@ test('rerendering with a new tasks element does not retrigger deep link selectio
   expect(screen.getByRole('button', { name: 'Tasks' })).toHaveAttribute('aria-pressed', 'false');
 });
 
-test('status heading and authority disclosure distinguish remote repair from local remediation', () => {
+test('status heading and authority disclosure distinguish remote repair, local remediation, and unrecorded repair', () => {
+  const hex64 = 'c'.repeat(64);
   const remoteP = projection();
   remoteP.run.state = 'REMEDIATING';
   remoteP.budgets.remote_remediation_remaining = 2;
@@ -120,45 +121,71 @@ test('status heading and authority disclosure distinguish remote repair from loc
       sequence: 1,
       run_version: 4,
       actor_class: 'worker',
-      event_type: 'pr.observation_recorded',
+      event_type: 'run.pr_observed',
       occurred_at: '2026-01-01T00:00:00Z',
-      payload: { disposition: 'remediate', observation_digest: 'c'.repeat(64) },
-    },
-    {
-      sequence: 2,
-      run_version: 4,
-      actor_class: 'worker',
-      event_type: 'run.state_changed',
-      occurred_at: '2026-01-01T00:00:01Z',
-      payload: { target: 'REMEDIATING' },
+      payload: {
+        source_command_id: 'cmd-1',
+        pull_request_id: 'pr-1',
+        poll: 1,
+        observation_digest: hex64,
+        reason: 'Checks failed',
+        disposition: 'remediate',
+        target: 'REMEDIATING',
+      },
     },
   ];
 
-  const { unmount } = render(<RunCockpit initial={remoteP} />);
+  const { unmount: unmountRemote } = render(<RunCockpit initial={remoteP} />);
   expect(within(screen.getByRole('region', { name: 'Current run status' })).getByRole('heading', { name: 'Repairing observed PR findings' })).toBeInTheDocument();
   expect(screen.getByRole('region', { name: 'Current autonomy' })).toHaveTextContent(
-    'Forge may repair the pull request with 2 remote repair attempts remaining. Publishing or merging still requires exact human approval.',
+    'Forge may repair the pull request and push the repaired candidate under the existing publication approval after fresh validation and review (2 remote repair attempts remaining). Merging still requires exact human approval.',
   );
-  unmount();
+  unmountRemote();
 
   const localP = projection();
   localP.run.state = 'REMEDIATING';
   localP.budgets.local_remediation_remaining = 1;
   localP.latest_events = [
     {
-      sequence: 3,
+      sequence: 2,
       run_version: 5,
       actor_class: 'worker',
       event_type: 'run.review_decided',
       occurred_at: '2026-01-01T00:00:02Z',
-      payload: { target: 'REMEDIATING' },
+      payload: {
+        approval_id: 'app-1',
+        validation_evidence_set_id: 'ves-1',
+        target: 'REMEDIATING',
+        semantic_attempt: 1,
+        local_remediation_count: 1,
+      },
     },
   ];
 
-  render(<RunCockpit initial={localP} />);
+  const { unmount: unmountLocal } = render(<RunCockpit initial={localP} />);
   expect(within(screen.getByRole('region', { name: 'Current run status' })).getByRole('heading', { name: 'Repairing local findings' })).toBeInTheDocument();
   expect(screen.getByRole('region', { name: 'Current autonomy' })).toHaveTextContent(
     'Forge may repair local findings within the remaining 1 remediation attempts.',
+  );
+  unmountLocal();
+
+  const unrecordedP = projection();
+  unrecordedP.run.state = 'REMEDIATING';
+  unrecordedP.latest_events = [
+    {
+      sequence: 3,
+      run_version: 6,
+      actor_class: 'worker',
+      event_type: 'tool_call.completed',
+      occurred_at: '2026-01-01T00:00:03Z',
+      payload: { tool_name: 'test' },
+    },
+  ];
+
+  render(<RunCockpit initial={unrecordedP} />);
+  expect(within(screen.getByRole('region', { name: 'Current run status' })).getByRole('heading', { name: 'Repairing recorded findings' })).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'Current autonomy' })).toHaveTextContent(
+    'Forge may repair recorded findings. The event history does not show whether this repair came from the pull request observation or from local findings. Merging still requires exact human approval.',
   );
 });
 
