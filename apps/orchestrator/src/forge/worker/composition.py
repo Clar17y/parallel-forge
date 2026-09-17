@@ -116,6 +116,7 @@ from forge.persistence.repositories.subscription_runtime_status import (
     SubscriptionRuntimeStatusStore,
 )
 from forge.persistence.unit_of_work import PostgresUnitOfWork
+from forge.ranking.configuration import SearchRankingConfiguration
 from forge.release.credentials import LocalGitHubCredentialResolver
 from forge.release.git_adoption import ManagedBaseAdoption
 from forge.release.git_push import ManagedPush
@@ -230,6 +231,18 @@ def load_pricing_catalog(path: Path | str) -> PricingCatalog:
         raise WorkerCompositionError("pricing catalog is invalid") from None
 
 
+def _search_objective(request: AgentRequest) -> str | None:
+    """Return the agent's own task text, used only to rank its search results.
+
+    The text is untrusted prose.  It reaches a ranker as data to compare
+    against, never as instructions, and it confers no authority of any kind.
+    """
+
+    task = getattr(getattr(request, "context", None), "original_task", None)
+    content = getattr(task, "content", None)
+    return content if isinstance(content, str) and content.strip() else None
+
+
 class BoundPlanningGateway:
     """Derive durable request bindings in a short UoW, then invoke gateway outside DB tx."""
 
@@ -248,7 +261,9 @@ class BoundPlanningGateway:
             Callable[[_PerRequestToolProvider], AgentGateway] | None
         ) = None,
         runtime_factory: AgentRuntimeFactory | None = None,
+        search_ranking: SearchRankingConfiguration | None = None,
     ) -> None:
+        self._search_ranking = search_ranking or SearchRankingConfiguration()
         self._unit_of_work_factory = unit_of_work_factory
         self._artifact_store = artifact_store
         self._prompt_loader = prompt_loader
@@ -361,11 +376,16 @@ class BoundPlanningGateway:
             root=repo_path,
             secret_paths=secret_paths,
         )
+        ranking = self._search_ranking
         tool_service = ControlledToolService(
             unit_of_work_factory=self._unit_of_work_factory,
             artifact_store=self._artifact_store,
             repository_reader=reader,
             redactor=self._redactor,
+            search_ranker=ranking.ranker,
+            search_ranking_mode=ranking.mode,
+            search_ranking_top_k=ranking.top_k,
+            search_objective=_search_objective(request),
         )
         adk_tools = build_adk_tools(tool_service, tool_context)
         tool_names = tuple(ToolName(t.name) for t in adk_tools)
@@ -480,6 +500,9 @@ def compose_worker_handlers(
             prompt_loader=prompt_loader,
             redactor=shared_redactor,
             runtime_factory=runtime_factory,
+            search_ranking=SearchRankingConfiguration.from_settings(
+                settings, redactor=shared_redactor
+            ),
         )
     else:
         runtime_factory = AgentRuntimeFactory(subscription_adapters=subscription_adapters)
@@ -489,6 +512,7 @@ def compose_worker_handlers(
         settings, session_factory, artifact_store, shared_redactor, clock
     )
     delivery_gateway = resolved_gateway
+    delivery_ranking = SearchRankingConfiguration.from_settings(settings, redactor=shared_redactor)
     if agent_gateway is None:
 
         async def delivery_tools(
@@ -519,6 +543,10 @@ def compose_worker_handlers(
                 worktree=tree,
                 runner_factory=delivery_dependencies if developer else None,
                 command_environment=environment,
+                search_ranker=delivery_ranking.ranker,
+                search_ranking_mode=delivery_ranking.mode,
+                search_ranking_top_k=delivery_ranking.top_k,
+                search_objective=_search_objective(request),
             )
 
         def delivery_provider(tools: _PerRequestToolProvider) -> AgentGateway:
