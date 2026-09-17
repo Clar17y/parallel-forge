@@ -35,11 +35,41 @@ const descriptions: Record<State, RunDescription> = {
   CANCELLED: { title: 'Run cancelled', description: 'Resources and evidence remain available until explicit teardown.', tone: 'neutral' },
 };
 
+type EventItem = components['schemas']['EventItem'];
+
+// Remote repair is admitted only by a recorded PR observation, and the event that
+// opens the current remediation names that context. Local remediation transitions
+// (review findings, evidence drift, requested changes) never carry it.
+function remoteObservationContext(event: EventItem | undefined): boolean {
+  const payload = event?.payload;
+  if (!payload) return false;
+  const digest = payload.observation_digest;
+  return payload.disposition === 'remediate'
+    || (typeof digest === 'string' && /^[0-9a-f]{64}$/.test(digest));
+}
+
+export function remoteRepairRecorded(projection: Projection): boolean {
+  const events = Array.isArray(projection?.latest_events) ? projection.latest_events : [];
+  // A resume event records the restored phase without a target, so a paused and
+  // resumed repair keeps the transition that actually opened it.
+  const transition = [...events].sort((a, b) => b.sequence - a.sequence)
+    .find(event => event?.payload?.target === 'REMEDIATING');
+  if (!transition) return false;
+  return events.some(event => event?.run_version === transition.run_version && remoteObservationContext(event));
+}
+
 export function describeRunState(projection: Projection): RunDescription {
   if (projection.recovery_hold) return {
     title: 'Recovery needs attention', tone: 'danger',
     description: 'An earlier operation has an unresolved outcome. Resume and resource teardown are held until its evidence is reconciled. Review the activity before taking further action.',
   };
+  if (projection.run.state === 'REMEDIATING' && remoteRepairRecorded(projection)) {
+    return {
+      title: 'Repairing observed PR findings',
+      description: 'Remediation is triggered by a recorded pull request observation. A repaired candidate still requires fresh validation and review.',
+      tone: 'warning',
+    };
+  }
   return descriptions[projection.run.state] ?? { title: readableLabel(projection.run.state), description: 'Inspect the recorded state and available controls.', tone: 'neutral' };
 }
 
@@ -87,15 +117,17 @@ export type WorkflowStep = { key: string; label: string; detail: string; current
 
 export function workflowSteps(p: Projection): WorkflowStep[] {
   const suspended = p.run.state === 'PAUSED';
-  const current = phase[suspended ? p.run.suspended_state ?? p.run.state : p.run.state];
+  const effectiveState = suspended ? p.run.suspended_state ?? p.run.state : p.run.state;
+  const current = phase[effectiveState];
   const candidate = p.candidate.commit;
   const reviewed = !!candidate && p.review.head_sha === candidate && !!p.review.evidence_digest && p.review.evidence_digest === p.candidate.review_evidence_digest;
   const published = !!candidate && p.pull_request?.head_sha === candidate;
   const observed = !!candidate && p.remote_observation?.head_sha === candidate && p.remote_observation.checks.length > 0;
+  const isRemoteRepair = effectiveState === 'REMEDIATING' && remoteRepairRecorded(p);
   const records: Array<[string, string, boolean, string]> = [
     ['plan', 'Plan', !!p.plan.approval_id, 'Approval recorded'],
     // A commit alone does not prove that implementation or its checks passed.
-    ['build', 'Build & validate', false, candidate ? 'Candidate recorded' : 'No candidate'],
+    ['build', isRemoteRepair ? 'Repair & revalidate' : 'Build & validate', false, candidate ? 'Candidate recorded' : 'No candidate'],
     ['review', 'Review', reviewed, 'Review recorded'],
     ['publish', 'Publish PR', published, 'PR recorded'],
     // This is observation presence, deliberately not a required-check verdict.
@@ -104,7 +136,9 @@ export function workflowSteps(p: Projection): WorkflowStep[] {
   ];
   return records.map(([key, label, recorded, detail]) => ({
     key, label, recorded, current: key === current,
-    detail: key === current ? (p.recovery_hold ? 'Recovery held' : suspended ? 'Paused here' : 'Current phase') : recorded || key === 'build' ? detail : 'Not recorded',
+    detail: key === current
+      ? (p.recovery_hold ? 'Recovery held' : suspended ? 'Paused here' : isRemoteRepair ? 'Remote repair' : 'Current phase')
+      : recorded || key === 'build' ? detail : 'Not recorded',
   }));
 }
 

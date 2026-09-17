@@ -2,10 +2,11 @@
 // Run: node --test scripts/check-ui-presentation.mjs (from apps/web).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeRunState, localCheckDisplay, remoteCheckDisplay, workflowSteps, nextGateMessage } from '../src/components/runs/run-presentation.ts';
+import { describeRunState, localCheckDisplay, remoteCheckDisplay, workflowSteps, nextGateMessage, remoteRepairRecorded } from '../src/components/runs/run-presentation.ts';
 
 const head = 'a'.repeat(40);
 const otherHead = 'b'.repeat(40);
+const hex64 = 'c'.repeat(64);
 const fixture = () => ({
   run: { state: 'IMPLEMENTING', suspended_state: null }, recovery_hold: false,
   plan: { approval_id: null }, candidate: { commit: head, review_evidence_digest: null },
@@ -122,8 +123,95 @@ test('every current backend run state has explicit presentation without inventin
 test('presentation does not modify the projection or manufacture approval commands', () => {
   const p = fixture(); p.next_gate = 'merge';
   p.remote_observation = { head_sha: head, checks: [remote()] };
+  p.run.state = 'REMEDIATING';
+  p.latest_events = [
+    { sequence: 1, run_version: 3, actor_class: 'worker', event_type: 'pr.observation_recorded', occurred_at: '2026-01-01T00:00:00Z', payload: { disposition: 'remediate', observation_digest: hex64 } },
+    { sequence: 2, run_version: 3, actor_class: 'worker', event_type: 'run.state_changed', occurred_at: '2026-01-01T00:00:01Z', payload: { target: 'REMEDIATING' } },
+  ];
   const snapshot = structuredClone(p);
-  describeRunState(p); workflowSteps(p); nextGateMessage(p);
+  describeRunState(p); workflowSteps(p); nextGateMessage(p); remoteRepairRecorded(p);
   remoteCheckDisplay(p.remote_observation.checks[0], head, head);
   assert.deepEqual(p, snapshot);
 });
+
+test('remote repair yields remote title and repair & revalidate step while plain remediation stays unchanged', () => {
+  const p = fixture();
+  p.run.state = 'REMEDIATING';
+  p.latest_events = [
+    { sequence: 1, run_version: 3, actor_class: 'worker', event_type: 'pr.observation_recorded', occurred_at: '2026-01-01T00:00:00Z', payload: { disposition: 'remediate', observation_digest: hex64 } },
+    { sequence: 2, run_version: 3, actor_class: 'worker', event_type: 'run.state_changed', occurred_at: '2026-01-01T00:00:01Z', payload: { target: 'REMEDIATING' } },
+  ];
+  assert.equal(remoteRepairRecorded(p), true);
+  const desc = describeRunState(p);
+  assert.equal(desc.title, 'Repairing observed PR findings');
+  assert.equal(desc.tone, 'warning');
+  assert.match(desc.description, /recorded pull request observation/i);
+  assert.match(desc.description, /fresh validation and review/i);
+
+  const steps = workflowSteps(p);
+  const currentStep = steps.find(s => s.current);
+  assert.equal(currentStep.key, 'build');
+  assert.equal(currentStep.label, 'Repair & revalidate');
+  assert.equal(currentStep.detail, 'Remote repair');
+
+  // Plain REMEDIATING without events keeps existing presentation
+  const pPlain = fixture();
+  pPlain.run.state = 'REMEDIATING';
+  assert.equal(remoteRepairRecorded(pPlain), false);
+  assert.equal(describeRunState(pPlain).title, 'Repairing local findings');
+  const plainStep = workflowSteps(pPlain).find(s => s.current);
+  assert.equal(plainStep.key, 'build');
+  assert.equal(plainStep.label, 'Build & validate');
+  assert.equal(plainStep.detail, 'Current phase');
+});
+
+test('a later local remediation transition is presented as local even when older remote repair event remains in window', () => {
+  const p = fixture();
+  p.run.state = 'REMEDIATING';
+  p.latest_events = [
+    { sequence: 1, run_version: 3, actor_class: 'worker', event_type: 'pr.observation_recorded', occurred_at: '2026-01-01T00:00:00Z', payload: { disposition: 'remediate', observation_digest: hex64 } },
+    { sequence: 2, run_version: 3, actor_class: 'worker', event_type: 'run.state_changed', occurred_at: '2026-01-01T00:00:01Z', payload: { target: 'REMEDIATING' } },
+    { sequence: 3, run_version: 4, actor_class: 'worker', event_type: 'run.review_decided', occurred_at: '2026-01-01T00:00:02Z', payload: { target: 'REMEDIATING' } },
+  ];
+  assert.equal(remoteRepairRecorded(p), false);
+  assert.equal(describeRunState(p).title, 'Repairing local findings');
+  const buildStep = workflowSteps(p).find(s => s.current);
+  assert.equal(buildStep.key, 'build');
+  assert.equal(buildStep.label, 'Build & validate');
+  assert.equal(buildStep.detail, 'Current phase');
+});
+
+test('a paused run in remote repair reports Run paused with Repair & revalidate step, and resume does not clear classification', () => {
+  const p = fixture();
+  p.run.state = 'PAUSED';
+  p.run.suspended_state = 'REMEDIATING';
+  p.latest_events = [
+    { sequence: 1, run_version: 3, actor_class: 'worker', event_type: 'pr.observation_recorded', occurred_at: '2026-01-01T00:00:00Z', payload: { disposition: 'remediate', observation_digest: hex64 } },
+    { sequence: 2, run_version: 3, actor_class: 'worker', event_type: 'run.state_changed', occurred_at: '2026-01-01T00:00:01Z', payload: { target: 'REMEDIATING' } },
+  ];
+  assert.equal(remoteRepairRecorded(p), true);
+  assert.equal(describeRunState(p).title, 'Run paused');
+  const buildStep = workflowSteps(p).find(s => s.current);
+  assert.equal(buildStep.key, 'build');
+  assert.equal(buildStep.label, 'Repair & revalidate');
+  assert.equal(buildStep.detail, 'Paused here');
+
+  // Resume event without a target does not clear the remote classification
+  p.run.state = 'REMEDIATING';
+  p.run.suspended_state = null;
+  p.latest_events.push({
+    sequence: 3,
+    run_version: 4,
+    actor_class: 'operator',
+    event_type: 'run.resumed',
+    occurred_at: '2026-01-01T00:00:02Z',
+    payload: {},
+  });
+  assert.equal(remoteRepairRecorded(p), true);
+  assert.equal(describeRunState(p).title, 'Repairing observed PR findings');
+  const resumedStep = workflowSteps(p).find(s => s.current);
+  assert.equal(resumedStep.key, 'build');
+  assert.equal(resumedStep.label, 'Repair & revalidate');
+  assert.equal(resumedStep.detail, 'Remote repair');
+});
+

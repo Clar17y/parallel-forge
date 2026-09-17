@@ -110,3 +110,55 @@ test('rerendering with a new tasks element does not retrigger deep link selectio
   expect(screen.getByRole('button', { name: 'Overview' })).toHaveAttribute('aria-pressed', 'true');
   expect(screen.getByRole('button', { name: 'Tasks' })).toHaveAttribute('aria-pressed', 'false');
 });
+
+test('status heading and authority disclosure distinguish remote repair from local remediation', () => {
+  const remoteP = projection();
+  remoteP.run.state = 'REMEDIATING';
+  remoteP.budgets.remote_remediation_remaining = 2;
+  remoteP.latest_events = [
+    {
+      sequence: 1,
+      run_version: 4,
+      actor_class: 'worker',
+      event_type: 'pr.observation_recorded',
+      occurred_at: '2026-01-01T00:00:00Z',
+      payload: { disposition: 'remediate', observation_digest: 'c'.repeat(64) },
+    },
+    {
+      sequence: 2,
+      run_version: 4,
+      actor_class: 'worker',
+      event_type: 'run.state_changed',
+      occurred_at: '2026-01-01T00:00:01Z',
+      payload: { target: 'REMEDIATING' },
+    },
+  ];
+
+  const { unmount } = render(<RunCockpit initial={remoteP} />);
+  expect(within(screen.getByRole('region', { name: 'Current run status' })).getByRole('heading', { name: 'Repairing observed PR findings' })).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'Current autonomy' })).toHaveTextContent(
+    'Forge may repair the pull request with 2 remote repair attempts remaining. Publishing or merging still requires exact human approval.',
+  );
+  unmount();
+
+  const localP = projection();
+  localP.run.state = 'REMEDIATING';
+  localP.budgets.local_remediation_remaining = 1;
+  localP.latest_events = [
+    {
+      sequence: 3,
+      run_version: 5,
+      actor_class: 'worker',
+      event_type: 'run.review_decided',
+      occurred_at: '2026-01-01T00:00:02Z',
+      payload: { target: 'REMEDIATING' },
+    },
+  ];
+
+  render(<RunCockpit initial={localP} />);
+  expect(within(screen.getByRole('region', { name: 'Current run status' })).getByRole('heading', { name: 'Repairing local findings' })).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'Current autonomy' })).toHaveTextContent(
+    'Forge may repair local findings within the remaining 1 remediation attempts.',
+  );
+});
+
