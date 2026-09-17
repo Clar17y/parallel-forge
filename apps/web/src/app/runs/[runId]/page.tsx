@@ -10,5 +10,5 @@ export default function RunPage() {
   const projection = useApi<components['schemas']['RunProjection']>(`/runs/${runId}/projection`);
   if (projection.loading) return <p role="status">Loading run…</p>;
   if (!projection.value) return <p role="alert">Run unavailable. <button onClick={projection.refresh}>Retry</button></p>;
-  return <><RunCockpit key={runId} initial={projection.value} /><TaskInspector key={`tasks-${runId}`} runId={runId} /></>;
+  return <RunCockpit key={runId} initial={projection.value} tasks={<TaskInspector key={`tasks-${runId}`} runId={runId} />} />;
 }

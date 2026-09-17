@@ -29,7 +29,9 @@ async function state(page, run, expected) {
   await expect.poll(async () => (await api(page, `/runs/${run}`)).state, { timeout: 20000 }).toBe(expected);
 }
 async function header(page, expected) {
-  await expect(page.locator('header').filter({ hasText: expected })).toBeVisible({ timeout: 20000 });
+  const status = page.locator('[aria-label="Current run status"]');
+  await expect(status).toBeVisible({ timeout: 20000 });
+  await expect(status).toHaveAttribute('data-run-state', expected);
   await expect(page.getByText('Events: connected', { exact: true })).toBeVisible();
 }
 async function confirm(page, name) {
@@ -135,6 +137,8 @@ try {
     await page.goto(new URL(`/runs/${original}`, web).href);
     await header(page, 'PLANNING');
     const inspector = page.getByRole('region', { name: 'Subscription tasks', exact: true });
+    await page.getByRole('button', { name: 'Tasks', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Tasks', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(inspector).toContainText('Status: unknown');
     await expect(inspector).toContainText('gpt-6-astra · low · subscription · allowance_only');
     await inspector.getByRole('button', { name: /^Inspect primary task / }).click();
