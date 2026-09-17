@@ -103,7 +103,9 @@ def upgrade() -> None:
             "(state = 'delivered' AND primary_attempt_id IS NOT NULL "
             "AND application_digest IS NOT NULL AND delivery_attempt_id IS NOT NULL "
             "AND delivered_at IS NOT NULL AND closed_reason IS NULL) OR "
-            "(state = 'closed' AND primary_attempt_id IS NOT NULL "
+            "(state = 'closed' "
+            "AND (primary_attempt_id IS NOT NULL "
+            "OR closed_reason IN ('cancelled','budget_exhausted')) "
             "AND application_digest IS NOT NULL AND delivery_attempt_id IS NULL "
             "AND delivered_at IS NULL AND closed_reason IS NOT NULL)",
             name="subscription_feedback_lifecycle",

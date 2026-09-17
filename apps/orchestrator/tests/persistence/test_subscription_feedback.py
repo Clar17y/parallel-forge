@@ -6,6 +6,8 @@ from uuid import uuid4
 import pytest
 from forge.agents.subscription_protocol import decode_final
 from forge.api.schemas.subscription_usage import SubscriptionUsagePage
+from forge.application.handlers.run_controls import CancelRunHandler
+from forge.application.ports.commands import CommandLane
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInvocationResult,
@@ -18,12 +20,16 @@ from forge.application.services.subscription_feedback import SubscriptionTaskFee
 from forge.application.services.subscription_requests import SubscriptionRequestBuilder
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
 from forge.artifacts.filesystem import FilesystemArtifactStore
+from forge.domain.run import RunState
 from forge.domain.subscription import (
+    AttemptTelemetry,
     ForwardFeedbackDecision,
     HandoffStatus,
+    ScopeRequestDecision,
     SpecialistPurpose,
     TaskBudget,
     TaskHandoff,
+    WaitDecision,
 )
 from forge.domain.subscription_feedback import (
     StoredTaskFeedback,
@@ -31,12 +37,21 @@ from forge.domain.subscription_feedback import (
     TaskFeedbackConflict,
 )
 from forge.domain.subscription_task_controls import SubscriptionTaskControlRequest
-from forge.persistence.models import OperatorAuditEvent
-from forge.persistence.models.scheduling import SubscriptionScheduledTask
-from forge.persistence.models.subscription import SubscriptionTask
+from forge.persistence.models import ApiMutation, OperatorAuditEvent
+from forge.persistence.models.scheduling import (
+    SubscriptionScheduledEffect,
+    SubscriptionScheduledTask,
+)
+from forge.persistence.models.subscription import (
+    SubscriptionAttempt,
+    SubscriptionOperationBinding,
+    SubscriptionTask,
+)
 from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
+from forge.persistence.models.subscription_task_stops import SubscriptionTaskStop
 from forge.persistence.queries.subscription_usage import SubscriptionUsageQuery
 from forge.persistence.repositories.mutations import MutationConflict
+from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
 from forge.persistence.repositories.subscription_feedback import MAX_FEEDBACK_PER_TASK
 from forge.worker.subscription_invocation import (
     SubscriptionInvocationSession,
@@ -55,7 +70,14 @@ def _actor() -> AuthenticatedActor:
     return AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
 
 
-async def _delegated_case(session_factory, tmp_path, *, child_attempts=3, primary_attempts=8):
+async def _delegated_case(
+    session_factory,
+    tmp_path,
+    *,
+    child_attempts=3,
+    primary_attempts=8,
+    primary_duration_seconds=1800,
+):
     factory, delegated, children, _ = await delegation_case(
         session_factory,
         tmp_path,
@@ -65,7 +87,11 @@ async def _delegated_case(session_factory, tmp_path, *, child_attempts=3, primar
                 budget=replace(child.budget, max_provider_attempts=child_attempts),
             ),
         ),
-        primary_budget=TaskBudget(max_provider_attempts=primary_attempts, max_repairs=0),
+        primary_budget=TaskBudget(
+            max_duration_seconds=primary_duration_seconds,
+            max_provider_attempts=primary_attempts,
+            max_repairs=0,
+        ),
     )
     applied = await SubscriptionDecisionApplication(factory).apply_delegation(
         delegated.attempt.attempt_id
@@ -80,7 +106,62 @@ async def _delegated_case(session_factory, tmp_path, *, child_attempts=3, primar
         return factory, delegated, child, run.version, row.version, usage.consumed.provider_attempts
 
 
-async def _forward_pending(factory, session_factory, child, receipt, tmp_path):
+async def _delegated_pair_case(
+    session_factory,
+    tmp_path,
+    *,
+    primary_attempts=4,
+    primary_repairs=0,
+    primary_duration_seconds=1800,
+    target_depends_on_sibling=False,
+    child_repairs=0,
+):
+    def pair(child, _parent):
+        budget = replace(
+            child.budget,
+            max_provider_attempts=3,
+            max_repairs=child_repairs,
+        )
+        sibling_id = uuid4()
+        return (
+            replace(
+                child,
+                budget=budget,
+                max_repairs=child_repairs,
+                dependency_task_ids=(sibling_id,) if target_depends_on_sibling else (),
+            ),
+            replace(
+                child,
+                task_id=sibling_id,
+                budget=budget,
+                max_repairs=child_repairs,
+                owned_paths=("apps/other",),
+            ),
+        )
+
+    factory, delegated, children, _ = await delegation_case(
+        session_factory,
+        tmp_path,
+        pair,
+        primary_budget=TaskBudget(
+            max_duration_seconds=primary_duration_seconds,
+            max_provider_attempts=primary_attempts,
+            max_repairs=primary_repairs,
+        ),
+    )
+    applied = await SubscriptionDecisionApplication(factory).apply_delegation(
+        delegated.attempt.attempt_id
+    )
+    assert applied.accepted
+    target, sibling = children
+    async with factory() as work:
+        run = await work.runs.get(target.run_id)
+        row = await work.session.get(SubscriptionTask, target.task_id)
+        assert row is not None
+        return factory, delegated, target, sibling, run.version, row.version
+
+
+async def _forward_pending(factory, session_factory, child, receipt, tmp_path, *, telemetry=None):
     executor = SubscriptionDecisionExecutor(factory)
     primary = await executor.admit_next("feedback-primary", _reservation())
     assert primary is not None and primary.task.task_id == receipt.primary_task_id
@@ -101,7 +182,7 @@ async def _forward_pending(factory, session_factory, child, receipt, tmp_path):
             SubscriptionInvocationResult(
                 attempt=primary.attempt,
                 decision=decision,
-                telemetry=_known(),
+                telemetry=_known() if telemetry is None else telemetry,
                 launch_proof=proof,
             ),
         )
@@ -111,6 +192,68 @@ async def _forward_pending(factory, session_factory, child, receipt, tmp_path):
     ).reconcile_all()
     assert recovery.applied == 1 and recovery.deferred == recovery.unsupported == 0
     return primary, request
+
+
+async def _cancel_run(factory, command_repository, run_id, *, key):
+    async with factory() as work:
+        run = await work.runs.get(run_id)
+    await command_repository.enqueue(
+        run_id=run_id,
+        command_type="cancel",
+        idempotency_key=key,
+        expected_run_version=run.version,
+        actor_id=uuid4(),
+        payload={},
+    )
+    command = await command_repository.claim_next(
+        worker_id=key,
+        lease_seconds=30,
+        lane=CommandLane.CONTROL,
+    )
+    assert command is not None and command.run_id == run_id
+    async with factory() as work:
+        await CancelRunHandler()(command, work)
+
+
+async def _unlaunched_cancel_case(session_factory, tmp_path, *, case_key):
+    factory, _, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path
+    )
+    actor = _actor()
+    feedback_request = SubscriptionTaskFeedbackRequest(
+        expected_run_version=run_version,
+        expected_task_version=task_version,
+        feedback="Close this undelivered receipt when cancellation stops the bound worker.",
+    )
+    feedback = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=actor,
+        idempotency_key=f"{case_key}-feedback",
+        request=feedback_request,
+    )
+    await _forward_pending(factory, session_factory, child, feedback, tmp_path)
+    executor = SubscriptionDecisionExecutor(factory)
+    worker = await executor.admit_next(f"{case_key}-worker", _reservation())
+    assert worker is not None and worker.task.task_id == child.task_id
+    await SubscriptionRequestBuilder(factory).build(worker)
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, feedback.receipt_id)
+        assert row.state == "forwarded" and row.delivery_attempt_id == worker.attempt.attempt_id
+    cancelled = await SubscriptionTaskControlService(factory).control(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=actor,
+        idempotency_key=f"{case_key}-worker",
+        request=SubscriptionTaskControlRequest(
+            action="cancel",
+            expected_run_version=run_version,
+            expected_task_version=worker.task_version,
+            reason="Cancellation supersedes unproved delivery.",
+        ),
+    )
+    assert cancelled.status == "cancel_requested"
+    return factory, child, actor, feedback_request, feedback, cancelled, executor, worker
 
 
 @pytest.mark.integration
@@ -297,6 +440,47 @@ async def test_feedback_survives_restart_and_reaches_exact_worker_without_new_ta
 
 
 @pytest.mark.integration
+async def test_feedback_replay_rejects_a_foreign_operator_in_the_stored_receipt(
+    session_factory, tmp_path
+):
+    factory, _, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path
+    )
+    actor = _actor()
+    request = SubscriptionTaskFeedbackRequest(
+        expected_run_version=run_version,
+        expected_task_version=task_version,
+        feedback="Keep the replay receipt bound to the authenticated operator.",
+    )
+    service = SubscriptionTaskFeedbackService(factory)
+    receipt = await service.submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=actor,
+        idempotency_key="feedback-foreign-operator-replay",
+        request=request,
+    )
+    async with factory() as work:
+        mutation = await work.session.get(ApiMutation, receipt.receipt_id)
+        assert mutation is not None and isinstance(mutation.response_payload, dict)
+        payload = dict(mutation.response_payload)
+        stored_receipt = dict(payload["receipt"])
+        stored_receipt["operator_id"] = str(uuid4())
+        payload["receipt"] = stored_receipt
+        mutation.response_payload = payload
+        await work.commit()
+
+    with pytest.raises(TaskFeedbackConflict, match="stored task feedback receipt differs"):
+        await service.submit(
+            run_id=child.run_id,
+            task_id=child.task_id,
+            actor=actor,
+            idempotency_key="feedback-foreign-operator-replay",
+            request=request,
+        )
+
+
+@pytest.mark.integration
 async def test_fake_primary_and_worker_clients_deliver_feedback_through_worker_runtime(
     session_factory, tmp_path
 ):
@@ -451,6 +635,232 @@ async def test_feedback_arriving_after_primary_request_survives_that_attempt_fai
     assert pending["receipt_id"] == str(receipt.receipt_id)
     assert pending["feedback"] == (
         "Preserve this request after the in-flight primary attempt fails."
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("valid_wait", [True, False])
+async def test_late_feedback_closes_after_final_primary_decision_application(
+    session_factory, tmp_path, valid_wait
+):
+    factory, delegated, child, _, _, _ = await _delegated_case(
+        session_factory, tmp_path, primary_attempts=4
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    worker = await executor.admit_next("worker-before-final-primary", _reservation())
+    assert worker is not None and worker.task.task_id == child.task_id
+    worker_proof = await record_stopped_launch(session_factory, worker)
+    assert (
+        await executor.settle(
+            worker,
+            SubscriptionInvocationResult(
+                attempt=worker.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=worker_proof,
+            ),
+        )
+    ).disposition == "failed"
+    primary = await executor.admit_next("final-primary-before-feedback", _reservation())
+    assert primary is not None and primary.task.task_id == delegated.task.task_id
+    built_before_feedback = await SubscriptionRequestBuilder(factory).build(primary)
+    assert built_before_feedback.untrusted_context["pending_worker_feedback"] is None
+
+    async with factory() as work:
+        run = await work.runs.get(child.run_id)
+        target = await work.session.get(SubscriptionTask, child.task_id)
+        run_version, task_version = run.version, target.version
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=_actor(),
+        idempotency_key=f"late-final-primary-decision-{valid_wait}",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Close this receipt after the in-flight final decision is applied.",
+        ),
+    )
+    decision = WaitDecision(
+        run_id=child.run_id,
+        task_id=primary.task.task_id,
+        waiting_on_task_ids=(child.task_id if valid_wait else uuid4(),),
+        reason="Finish the already-started primary investigation.",
+    )
+    primary_proof = await record_stopped_launch(session_factory, primary)
+    assert (
+        await executor.settle(
+            primary,
+            SubscriptionInvocationResult(
+                attempt=primary.attempt,
+                decision=decision,
+                telemetry=_known(),
+                launch_proof=primary_proof,
+            ),
+        )
+    ).disposition == "decision_pending"
+    applied = await SubscriptionDecisionApplication(factory).apply_wait(primary.attempt.attempt_id)
+    assert applied.accepted is valid_wait
+    assert applied.disposition == ("waiting" if valid_wait else "decision_rejected")
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        primary_task = await work.session.get(SubscriptionTask, receipt.primary_task_id)
+        assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+        assert row.primary_attempt_id is None
+        assert row.application_digest is not None
+        assert primary_task.state == ("queued" if valid_wait else "terminal")
+    assert await executor.admit_next("after-final-primary-decision", _reservation()) is None
+
+
+@pytest.mark.integration
+async def test_late_unbound_feedback_closes_on_the_terminal_primary_budget_boundary(
+    session_factory, tmp_path, monkeypatch
+):
+    factory, delegated, child, _, _, _ = await _delegated_case(session_factory, tmp_path)
+    executor = SubscriptionDecisionExecutor(factory)
+    worker = await executor.admit_next("worker-before-budget-boundary", _reservation())
+    assert worker is not None and worker.task.task_id == child.task_id
+    worker_proof = await record_stopped_launch(session_factory, worker)
+    assert (
+        await executor.settle(
+            worker,
+            SubscriptionInvocationResult(
+                attempt=worker.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=worker_proof,
+            ),
+        )
+    ).disposition == "failed"
+    primary = await executor.admit_next("primary-before-budget-boundary", _reservation())
+    assert primary is not None and primary.task.task_id == delegated.task.task_id
+    await SubscriptionRequestBuilder(factory).build(primary)
+
+    async with factory() as work:
+        run = await work.runs.get(child.run_id)
+        target = await work.session.get(SubscriptionTask, child.task_id)
+        run_version, task_version = run.version, target.version
+    actor = _actor()
+    request = SubscriptionTaskFeedbackRequest(
+        expected_run_version=run_version,
+        expected_task_version=task_version,
+        feedback="Close this late receipt when shared primary capacity is consumed.",
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=actor,
+        idempotency_key="late-primary-budget-boundary",
+        request=request,
+    )
+    original_fit = PostgresSubscriptionBudgetRepository.fit_reservation
+
+    async def exhausted_primary(repository, run_id, task_id, budget):
+        if (run_id, task_id) == (child.run_id, primary.task.task_id):
+            return None
+        return await original_fit(repository, run_id, task_id, budget)
+
+    monkeypatch.setattr(PostgresSubscriptionBudgetRepository, "fit_reservation", exhausted_primary)
+    proof = await record_stopped_launch(session_factory, primary)
+    assert (
+        await executor.settle(
+            primary,
+            SubscriptionInvocationResult(
+                attempt=primary.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=proof,
+            ),
+        )
+    ).disposition == "failed"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        target_attempts = await work.session.scalar(
+            select(func.count())
+            .select_from(SubscriptionAttempt)
+            .where(SubscriptionAttempt.task_row_id == child.task_id)
+        )
+        assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+        assert row.primary_attempt_id == primary.attempt.attempt_id
+        assert row.application_digest is not None
+        assert row.delivery_attempt_id is None and row.delivered_at is None
+        assert target_attempts == 1
+    assert (
+        await SubscriptionTaskFeedbackService(factory).submit(
+            run_id=child.run_id,
+            task_id=child.task_id,
+            actor=actor,
+            idempotency_key="late-primary-budget-boundary",
+            request=request,
+        )
+    ) == receipt
+
+
+@pytest.mark.integration
+async def test_final_unbuilt_primary_replaces_terminal_forwarding_binding_at_budget_exhaustion(
+    session_factory, tmp_path
+):
+    factory, _, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path, primary_attempts=4
+    )
+    actor = _actor()
+    request = SubscriptionTaskFeedbackRequest(
+        expected_run_version=run_version,
+        expected_task_version=task_version,
+        feedback="Close against the final primary even when its request was never built.",
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=actor,
+        idempotency_key="terminal-unbuilt-primary-feedback",
+        request=request,
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    first = await executor.admit_next("forwarding-primary", _reservation())
+    assert first is not None and first.task.task_id == receipt.primary_task_id
+    await SubscriptionRequestBuilder(factory).build(first)
+    first_proof = await record_stopped_launch(session_factory, first)
+    assert (
+        await executor.settle(
+            first,
+            SubscriptionInvocationResult(
+                attempt=first.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=first_proof,
+            ),
+        )
+    ).disposition == "failed"
+    final = await executor.admit_next("unbuilt-final-primary", _reservation())
+    assert final is not None and final.task.task_id == receipt.primary_task_id
+    final_proof = await record_stopped_launch(session_factory, final)
+    assert (
+        await executor.settle(
+            final,
+            SubscriptionInvocationResult(
+                attempt=final.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=final_proof,
+            ),
+        )
+    ).disposition == "failed"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+        assert row.primary_attempt_id == final.attempt.attempt_id
+        assert row.application_digest is not None
+        assert row.delivery_attempt_id is None and row.delivered_at is None
+    assert (
+        await SubscriptionTaskFeedbackService(factory).submit(
+            run_id=child.run_id,
+            task_id=child.task_id,
+            actor=actor,
+            idempotency_key="terminal-unbuilt-primary-feedback",
+            request=request,
+        )
+        == receipt
     )
 
 
@@ -902,6 +1312,836 @@ async def test_settled_worker_feedback_reuses_logical_task_and_partial_work(
 
 
 @pytest.mark.integration
+async def test_pending_feedback_fences_same_run_tasks_until_primary_route_recovers(
+    session_factory, tmp_path, monkeypatch
+):
+    from forge.persistence.repositories.subscription_quota import (
+        PostgresSubscriptionQuotaRepository,
+    )
+
+    factory, delegated, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path, primary_attempts=3
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-primary-priority-fence",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Preserve the final run attempt while the primary route recovers.",
+        ),
+    )
+    original = PostgresSubscriptionQuotaRepository.route_for_task
+
+    async def primary_unavailable(repository, logical, *, eligible_routes=None):
+        if logical.id == delegated.task.task_id:
+            return None
+        return await original(repository, logical, eligible_routes=eligible_routes)
+
+    executor = SubscriptionDecisionExecutor(factory)
+    with monkeypatch.context() as patch:
+        patch.setattr(PostgresSubscriptionQuotaRepository, "route_for_task", primary_unavailable)
+        assert await executor.admit_next("ordinary-task-must-wait", _reservation()) is None
+    primary = await executor.admit_next("feedback-primary-after-route-recovery", _reservation())
+    assert primary is not None and primary.task.task_id == delegated.task.task_id
+    request = await SubscriptionRequestBuilder(factory).build(primary)
+    assert request.untrusted_context["pending_worker_feedback"]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+    async with factory() as work:
+        child_attempts = await work.session.scalar(
+            select(func.count())
+            .select_from(SubscriptionAttempt)
+            .where(SubscriptionAttempt.task_row_id == child.task_id)
+        )
+        assert child_attempts == 0
+
+
+@pytest.mark.integration
+async def test_forwarded_feedback_fences_sibling_until_worker_route_recovers(
+    session_factory, tmp_path, monkeypatch
+):
+    from forge.persistence.repositories.subscription_quota import (
+        PostgresSubscriptionQuotaRepository,
+    )
+
+    factory, _, target, sibling, run_version, task_version = await _delegated_pair_case(
+        session_factory, tmp_path
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=target.run_id,
+        task_id=target.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-worker-priority-fence",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Preserve the final run attempt while this worker route recovers.",
+        ),
+    )
+    await _forward_pending(factory, session_factory, target, receipt, tmp_path)
+    original = PostgresSubscriptionQuotaRepository.route_for_task
+
+    async def target_unavailable(repository, logical, *, eligible_routes=None):
+        if logical.id == target.task_id:
+            return None
+        return await original(repository, logical, eligible_routes=eligible_routes)
+
+    executor = SubscriptionDecisionExecutor(factory)
+    with monkeypatch.context() as patch:
+        patch.setattr(PostgresSubscriptionQuotaRepository, "route_for_task", target_unavailable)
+        assert await executor.admit_next("sibling-must-wait", _reservation()) is None
+    worker = await executor.admit_next("feedback-worker-after-route-recovery", _reservation())
+    assert worker is not None and worker.task.task_id == target.task_id
+    request = await SubscriptionRequestBuilder(factory).build(worker)
+    assert request.untrusted_context["operator_feedback"][0]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+    async with factory() as work:
+        sibling_attempts = await work.session.scalar(
+            select(func.count())
+            .select_from(SubscriptionAttempt)
+            .where(SubscriptionAttempt.task_row_id == sibling.task_id)
+        )
+        assert sibling_attempts == 0
+
+
+@pytest.mark.integration
+async def test_feedback_priority_fence_allows_the_target_dependency(session_factory, tmp_path):
+    factory, _, target, sibling, run_version, task_version = await _delegated_pair_case(
+        session_factory,
+        tmp_path,
+        primary_attempts=5,
+        target_depends_on_sibling=True,
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=target.run_id,
+        task_id=target.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-dependency-priority-fence",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Wait for the declared dependency without admitting unrelated work.",
+        ),
+    )
+    await _forward_pending(factory, session_factory, target, receipt, tmp_path)
+    dependency = await SubscriptionDecisionExecutor(factory).admit_next(
+        "feedback-target-dependency", _reservation()
+    )
+    assert dependency is not None and dependency.task.task_id == sibling.task_id
+
+
+@pytest.mark.integration
+async def test_feedback_fence_survives_the_primary_decision_recovery_window(
+    session_factory, tmp_path
+):
+    factory, delegated, child, sibling, run_version, task_version = await _delegated_pair_case(
+        session_factory, tmp_path, primary_attempts=5
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-decision-recovery-fence",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Do not admit another task before this forwarding decision is applied.",
+        ),
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    primary = await executor.admit_next("feedback-primary-awaits-application", _reservation())
+    assert primary is not None and primary.task.task_id == delegated.task.task_id
+    request = await SubscriptionRequestBuilder(factory).build(primary)
+    decision = decode_final(
+        {
+            "kind": "forward_feedback",
+            "task_id": str(child.task_id),
+            "feedback_receipt_id": str(receipt.receipt_id),
+            "feedback_digest": receipt.feedback_digest,
+        },
+        request,
+    ).decision
+    proof = await record_stopped_launch(session_factory, primary)
+    settled = await executor.settle(
+        primary,
+        SubscriptionInvocationResult(
+            attempt=primary.attempt,
+            decision=decision,
+            telemetry=_known(),
+            launch_proof=proof,
+        ),
+    )
+    assert settled.disposition == "decision_pending"
+    assert await executor.admit_next("decision-application-gap", _reservation()) is None
+
+    recovery = await SubscriptionDecisionRecovery(
+        factory, FilesystemArtifactStore(tmp_path / "recovery-gap-artifacts")
+    ).reconcile_all()
+    assert recovery.applied == 1
+    worker = await executor.admit_next("feedback-after-application", _reservation())
+    assert worker is not None and worker.task.task_id == child.task_id
+    worker_request = await SubscriptionRequestBuilder(factory).build(worker)
+    assert worker_request.untrusted_context["operator_feedback"][0]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+    async with factory() as work:
+        sibling_attempts = await work.session.scalar(
+            select(func.count())
+            .select_from(SubscriptionAttempt)
+            .where(SubscriptionAttempt.task_row_id == sibling.task_id)
+        )
+        assert sibling_attempts == 0
+
+
+@pytest.mark.integration
+async def test_dependency_exhaustion_closes_forwarded_feedback(session_factory, tmp_path):
+    factory, _, target, sibling, run_version, task_version = await _delegated_pair_case(
+        session_factory,
+        tmp_path,
+        primary_attempts=4,
+        target_depends_on_sibling=True,
+    )
+    actor = _actor()
+    request = SubscriptionTaskFeedbackRequest(
+        expected_run_version=run_version,
+        expected_task_version=task_version,
+        feedback="Close this receipt if the dependency consumes the final run attempt.",
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=target.run_id,
+        task_id=target.task_id,
+        actor=actor,
+        idempotency_key="feedback-dependency-exhaustion",
+        request=request,
+    )
+    await _forward_pending(factory, session_factory, target, receipt, tmp_path)
+    executor = SubscriptionDecisionExecutor(factory)
+    dependency = await executor.admit_next("feedback-final-dependency", _reservation())
+    assert dependency is not None and dependency.task.task_id == sibling.task_id
+    proof = await record_stopped_launch(session_factory, dependency)
+    assert (
+        await executor.settle(
+            dependency,
+            SubscriptionInvocationResult(
+                attempt=dependency.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=proof,
+            ),
+        )
+    ).disposition == "failed"
+
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        target_attempts = await work.session.scalar(
+            select(func.count())
+            .select_from(SubscriptionAttempt)
+            .where(SubscriptionAttempt.task_row_id == target.task_id)
+        )
+        assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+        assert row.delivery_attempt_id is None and target_attempts == 0
+    assert await executor.admit_next("feedback-after-exhaustion", _reservation()) is None
+    assert (
+        await SubscriptionTaskFeedbackService(factory).submit(
+            run_id=target.run_id,
+            task_id=target.task_id,
+            actor=actor,
+            idempotency_key="feedback-dependency-exhaustion",
+            request=request,
+        )
+        == receipt
+    )
+
+
+@pytest.mark.integration
+async def test_outstanding_dependency_reservation_does_not_close_feedback(
+    session_factory, tmp_path
+):
+    factory, _, target, sibling, run_version, task_version = await _delegated_pair_case(
+        session_factory,
+        tmp_path,
+        primary_attempts=5,
+        primary_duration_seconds=11,
+        target_depends_on_sibling=True,
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=target.run_id,
+        task_id=target.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-temporary-dependency-reservation",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Wait for the dependency reservation to settle before judging capacity.",
+        ),
+    )
+    await _forward_pending(factory, session_factory, target, receipt, tmp_path)
+    executor = SubscriptionDecisionExecutor(factory)
+    dependency = await executor.admit_next("feedback-reserved-dependency", _reservation())
+    assert dependency is not None and dependency.task.task_id == sibling.task_id
+
+    async with factory() as work:
+        assert await work.subscription_feedback.close_exhausted(target.run_id) == 0
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "forwarded" and row.closed_reason is None
+        await work.commit()
+
+    proof = await record_stopped_launch(session_factory, dependency)
+    assert (
+        await executor.settle(
+            dependency,
+            SubscriptionInvocationResult(
+                attempt=dependency.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=proof,
+            ),
+        )
+    ).disposition == "failed"
+    worker = await executor.admit_next("feedback-after-dependency-refund", _reservation())
+    assert worker is not None and worker.task.task_id == target.task_id
+    request = await SubscriptionRequestBuilder(factory).build(worker)
+    assert request.untrusted_context["operator_feedback"][0]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+
+
+@pytest.mark.integration
+async def test_forwarding_waits_for_refundable_dependency_capacity(session_factory, tmp_path):
+    factory, _, target, sibling, run_version, task_version = await _delegated_pair_case(
+        session_factory,
+        tmp_path,
+        primary_attempts=5,
+        primary_duration_seconds=12,
+        target_depends_on_sibling=True,
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    dependency = await executor.admit_next("dependency-before-feedback", _reservation())
+    assert dependency is not None and dependency.task.task_id == sibling.task_id
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=target.run_id,
+        task_id=target.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-while-dependency-reserved",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Retain this feedback while the dependency holds refundable capacity.",
+        ),
+    )
+    await _forward_pending(
+        factory,
+        session_factory,
+        target,
+        receipt,
+        tmp_path,
+        telemetry=_known(duration_ms=1500),
+    )
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "forwarded" and row.closed_reason is None
+
+    proof = await record_stopped_launch(session_factory, dependency)
+    assert (
+        await executor.settle(
+            dependency,
+            SubscriptionInvocationResult(
+                attempt=dependency.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=proof,
+            ),
+        )
+    ).disposition == "failed"
+    worker = await executor.admit_next("feedback-after-forwarding-refund", _reservation())
+    assert worker is not None and worker.task.task_id == target.task_id
+    request = await SubscriptionRequestBuilder(factory).build(worker)
+    assert request.untrusted_context["operator_feedback"][0]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+
+
+@pytest.mark.integration
+async def test_feedback_submission_waits_for_active_attempt_capacity(session_factory, tmp_path):
+    factory, _, child, _, _, _ = await _delegated_case(
+        session_factory,
+        tmp_path,
+        primary_attempts=5,
+        primary_duration_seconds=11,
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    active = await executor.admit_next("worker-before-capacity-feedback", _reservation())
+    assert active is not None and active.task.task_id == child.task_id
+    await SubscriptionRequestBuilder(factory).build(active)
+    async with factory() as work:
+        run = await work.runs.get(child.run_id)
+        task = await work.session.get(SubscriptionTask, child.task_id)
+        assert task is not None
+        run_version, task_version = run.version, task.version
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-waits-for-active-capacity",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Retain this request until the active reservation settles.",
+        ),
+    )
+    assert receipt.status == "pending_primary"
+
+    proof = await record_stopped_launch(session_factory, active)
+    assert (
+        await executor.settle(
+            active,
+            SubscriptionInvocationResult(
+                attempt=active.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=proof,
+            ),
+        )
+    ).disposition == "failed"
+    await _forward_pending(factory, session_factory, child, receipt, tmp_path)
+    worker = await executor.admit_next("worker-after-capacity-refund", _reservation())
+    assert worker is not None and worker.task.task_id == child.task_id
+    request = await SubscriptionRequestBuilder(factory).build(worker)
+    assert request.untrusted_context["operator_feedback"][0]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("active_duration_ms", "capacity_restored"),
+    [(1, True), (10_500, False)],
+)
+async def test_failed_primary_reconciles_after_other_attempt_capacity(
+    session_factory, tmp_path, active_duration_ms, capacity_restored
+):
+    factory, _, first, second, _, _ = await _delegated_pair_case(
+        session_factory,
+        tmp_path,
+        primary_attempts=6,
+        primary_duration_seconds=12,
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    active = await executor.admit_next("worker-during-primary-failure", _reservation())
+    assert active is not None
+    await SubscriptionRequestBuilder(factory).build(active)
+    target = second if active.task.task_id == first.task_id else first
+    async with factory() as work:
+        run = await work.runs.get(target.run_id)
+        target_row = await work.session.get(SubscriptionTask, target.task_id)
+        assert target_row is not None
+        run_version, task_version = run.version, target_row.version
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=target.run_id,
+        task_id=target.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-primary-failure-with-active-capacity",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Retry forwarding after the other active reservation settles.",
+        ),
+    )
+    primary = await executor.admit_next("failing-feedback-primary", _reservation())
+    assert primary is not None and primary.task.task_id == receipt.primary_task_id
+    await SubscriptionRequestBuilder(factory).build(primary)
+    primary_proof = await record_stopped_launch(session_factory, primary)
+    assert (
+        await executor.settle(
+            primary,
+            SubscriptionInvocationResult(
+                attempt=primary.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(duration_ms=1500),
+                launch_proof=primary_proof,
+            ),
+        )
+    ).disposition == "failed"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        primary_row = await work.session.get(SubscriptionTask, receipt.primary_task_id)
+        assert row.state == "pending_primary" and row.closed_reason is None
+        assert primary_row is not None and primary_row.state == "queued"
+
+    active_proof = await record_stopped_launch(session_factory, active)
+    assert (
+        await executor.settle(
+            active,
+            SubscriptionInvocationResult(
+                attempt=active.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(duration_ms=active_duration_ms),
+                launch_proof=active_proof,
+            ),
+        )
+    ).disposition == "failed"
+    if not capacity_restored:
+        async with factory() as work:
+            row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+            assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+            assert row.primary_attempt_id == primary.attempt.attempt_id
+        return
+    retry = await executor.admit_next("feedback-primary-after-capacity-refund", _reservation())
+    assert retry is not None and retry.task.task_id == receipt.primary_task_id
+    request = await SubscriptionRequestBuilder(factory).build(retry)
+    assert request.untrusted_context["pending_worker_feedback"]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+
+
+@pytest.mark.integration
+async def test_failed_delivery_waits_for_other_attempt_capacity(session_factory, tmp_path):
+    factory, _, first, second, _, _ = await _delegated_pair_case(
+        session_factory,
+        tmp_path,
+        primary_attempts=7,
+        primary_duration_seconds=12,
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    active = await executor.admit_next("sibling-during-delivery-failure", _reservation())
+    assert active is not None
+    await SubscriptionRequestBuilder(factory).build(active)
+    target = second if active.task.task_id == first.task_id else first
+    async with factory() as work:
+        run = await work.runs.get(target.run_id)
+        target_row = await work.session.get(SubscriptionTask, target.task_id)
+        assert target_row is not None
+        run_version, task_version = run.version, target_row.version
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=target.run_id,
+        task_id=target.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-delivery-failure-with-active-capacity",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Retry delivery after the other active reservation settles.",
+        ),
+    )
+    await _forward_pending(factory, session_factory, target, receipt, tmp_path)
+    delivery = await executor.admit_next("failing-feedback-delivery", _reservation())
+    assert delivery is not None and delivery.task.task_id == target.task_id
+    request = await SubscriptionRequestBuilder(factory).build(delivery)
+    assert request.untrusted_context["operator_feedback"][0]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+    assert (
+        await executor.settle(
+            delivery,
+            SubscriptionInvocationResult(
+                attempt=delivery.attempt,
+                failure=SubscriptionFailure.UNAVAILABLE,
+                telemetry=_known(duration_ms=1500),
+            ),
+        )
+    ).disposition == "failed"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        target_row = await work.session.get(SubscriptionTask, target.task_id)
+        assert row.state == "forwarded" and row.delivery_attempt_id is None
+        assert target_row is not None and target_row.state == "queued"
+
+    active_proof = await record_stopped_launch(session_factory, active)
+    assert (
+        await executor.settle(
+            active,
+            SubscriptionInvocationResult(
+                attempt=active.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=active_proof,
+            ),
+        )
+    ).disposition == "failed"
+    retry = await executor.admit_next("feedback-delivery-after-capacity-refund", _reservation())
+    assert retry is not None and retry.task.task_id == target.task_id
+    retry_request = await SubscriptionRequestBuilder(factory).build(retry)
+    assert retry_request.untrusted_context["operator_feedback"][0]["receipt_id"] == str(
+        receipt.receipt_id
+    )
+
+
+@pytest.mark.integration
+async def test_last_primary_attempt_closes_feedback_before_worker_delivery(
+    session_factory, tmp_path
+):
+    factory, _, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path, primary_attempts=3
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-primary-consumes-final-attempt",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Close this receipt if forwarding consumes the final run attempt.",
+        ),
+    )
+    await _forward_pending(factory, session_factory, child, receipt, tmp_path)
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+        assert row.delivery_attempt_id is None
+
+
+@pytest.mark.integration
+async def test_unbound_pending_feedback_closes_after_uncertain_budget_exhaustion(
+    session_factory, tmp_path
+):
+    factory, _, child, _, _, _ = await _delegated_case(
+        session_factory, tmp_path, primary_attempts=4
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    worker = await executor.admit_next("worker-before-feedback", _reservation())
+    assert worker is not None and worker.task.task_id == child.task_id
+    await SubscriptionRequestBuilder(factory).build(worker)
+    proof = await record_stopped_launch(session_factory, worker)
+    async with factory() as work:
+        run = await work.runs.get(child.run_id)
+        task = await work.session.get(SubscriptionTask, child.task_id)
+        assert task is not None
+        run_version, task_version = run.version, task.version
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-unbound-uncertain-exhaustion",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Close safely if an earlier uncertain attempt exhausts admission policy.",
+        ),
+    )
+    assert (
+        await executor.settle(
+            worker,
+            SubscriptionInvocationResult(
+                attempt=worker.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=AttemptTelemetry(),
+                launch_proof=proof,
+            ),
+        )
+    ).disposition == "failed"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+        assert row.primary_attempt_id is None and row.application_digest is not None
+
+
+@pytest.mark.integration
+async def test_repair_debit_cannot_strand_unbound_pending_feedback(session_factory, tmp_path):
+    factory, _, repair_task, feedback_target, _, _ = await _delegated_pair_case(
+        session_factory,
+        tmp_path,
+        primary_attempts=4,
+        primary_repairs=1,
+        child_repairs=1,
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    worker = await executor.admit_next("repair-before-feedback", _reservation())
+    assert worker is not None and worker.task.task_id == repair_task.task_id
+    await SubscriptionRequestBuilder(factory).build(worker)
+    proof = await record_stopped_launch(session_factory, worker)
+    oversized_scope = ScopeRequestDecision(
+        run_id=worker.task.run_id,
+        task_id=worker.task.task_id,
+        requested_paths=tuple(f"apps/repair-{index}" for index in range(65)),
+        reason="This invalid request deterministically consumes the final repair slot.",
+    )
+    assert (
+        await executor.settle(
+            worker,
+            SubscriptionInvocationResult(
+                attempt=worker.attempt,
+                decision=oversized_scope,
+                telemetry=_known(),
+                launch_proof=proof,
+            ),
+        )
+    ).disposition == "decision_pending"
+    async with factory() as work:
+        run = await work.runs.get(feedback_target.run_id)
+        target = await work.session.get(SubscriptionTask, feedback_target.task_id)
+        assert target is not None
+        run_version, task_version = run.version, target.version
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=feedback_target.run_id,
+        task_id=feedback_target.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-before-final-repair-debit",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Close explicitly if an already-pending repair consumes the last slot.",
+        ),
+    )
+    rejected = await SubscriptionDecisionApplication(factory).apply_scope_request(
+        worker.attempt.attempt_id
+    )
+    assert rejected.disposition == "decision_repair_queued"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+        assert row.primary_attempt_id is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("stage", ["pending", "forwarded"])
+async def test_run_cancellation_closes_unbound_feedback(
+    session_factory, tmp_path, command_repository, stage
+):
+    factory, _, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path
+    )
+    actor = _actor()
+    request = SubscriptionTaskFeedbackRequest(
+        expected_run_version=run_version,
+        expected_task_version=task_version,
+        feedback=f"Close this {stage} receipt when its run is cancelled.",
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=actor,
+        idempotency_key=f"feedback-run-cancel-{stage}",
+        request=request,
+    )
+    if stage == "forwarded":
+        await _forward_pending(factory, session_factory, child, receipt, tmp_path)
+
+    await _cancel_run(
+        factory,
+        command_repository,
+        child.run_id,
+        key=f"cancel-run-with-{stage}-feedback",
+    )
+    async with factory() as work:
+        run = await work.runs.get(child.run_id)
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert run.state is RunState.CANCELLED
+        assert row.state == "closed" and row.closed_reason == "cancelled"
+        assert row.delivery_attempt_id is None and row.application_digest is not None
+    assert (
+        await SubscriptionTaskFeedbackService(factory).submit(
+            run_id=child.run_id,
+            task_id=child.task_id,
+            actor=actor,
+            idempotency_key=f"feedback-run-cancel-{stage}",
+            request=request,
+        )
+        == receipt
+    )
+
+
+@pytest.mark.integration
+async def test_run_cancellation_preserves_launched_feedback_delivery(
+    session_factory, tmp_path, command_repository
+):
+    factory, _, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-run-cancel-launched",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Retain the delivery proof even if the run is cancelled.",
+        ),
+    )
+    await _forward_pending(factory, session_factory, child, receipt, tmp_path)
+    executor = SubscriptionDecisionExecutor(factory)
+    worker = await executor.admit_next("feedback-worker-before-run-cancel", _reservation())
+    assert worker is not None and worker.task.task_id == child.task_id
+    await SubscriptionRequestBuilder(factory).build(worker)
+    proof = await record_stopped_launch(session_factory, worker)
+    await _cancel_run(
+        factory,
+        command_repository,
+        child.run_id,
+        key="cancel-run-after-feedback-launch",
+    )
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "forwarded"
+        assert row.delivery_attempt_id == worker.attempt.attempt_id
+
+    settled = await executor.settle(
+        worker,
+        SubscriptionInvocationResult(
+            attempt=worker.attempt,
+            failure=SubscriptionFailure.UNAVAILABLE,
+            telemetry=_known(tool_call_count=0),
+            launch_proof=proof,
+        ),
+    )
+    assert settled.disposition == "stale"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "delivered" and row.closed_reason is None
+        assert row.delivery_attempt_id == worker.attempt.attempt_id
+
+
+@pytest.mark.integration
+async def test_run_cancellation_closes_bound_feedback_without_a_launch(
+    session_factory, tmp_path, command_repository
+):
+    factory, _, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path
+    )
+    receipt = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=_actor(),
+        idempotency_key="feedback-run-cancel-unlaunched",
+        request=SubscriptionTaskFeedbackRequest(
+            expected_run_version=run_version,
+            expected_task_version=task_version,
+            feedback="Close after cancellation if the bound request never launched.",
+        ),
+    )
+    await _forward_pending(factory, session_factory, child, receipt, tmp_path)
+    executor = SubscriptionDecisionExecutor(factory)
+    worker = await executor.admit_next("feedback-unlaunched-before-run-cancel", _reservation())
+    assert worker is not None and worker.task.task_id == child.task_id
+    await SubscriptionRequestBuilder(factory).build(worker)
+    await _cancel_run(
+        factory,
+        command_repository,
+        child.run_id,
+        key="cancel-run-before-feedback-launch",
+    )
+    assert (
+        await executor.settle(
+            worker,
+            SubscriptionInvocationResult(
+                attempt=worker.attempt,
+                failure=SubscriptionFailure.UNAVAILABLE,
+                telemetry=_known(tool_call_count=0),
+            ),
+        )
+    ).disposition == "stale"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, receipt.receipt_id)
+        assert row.state == "closed" and row.closed_reason == "cancelled"
+        assert row.delivery_attempt_id is None and row.delivered_at is None
+
+
+@pytest.mark.integration
 async def test_feedback_never_resets_an_exhausted_cumulative_task_budget(session_factory, tmp_path):
     factory, _, child, _, _, _ = await _delegated_case(session_factory, tmp_path, child_attempts=1)
     executor = SubscriptionDecisionExecutor(factory)
@@ -1048,6 +2288,216 @@ async def test_undelivered_feedback_closes_if_the_active_attempt_exhausts_budget
         assert row.delivery_attempt_id is None
         assert usage.consumed.provider_attempts == 1
         assert usage.consumed.repairs == 0
+
+
+@pytest.mark.integration
+async def test_cancel_recovery_closes_feedback_bound_to_an_unlaunched_worker(
+    session_factory, tmp_path
+):
+    (
+        factory,
+        child,
+        actor,
+        feedback_request,
+        feedback,
+        _,
+        executor,
+        worker,
+    ) = await _unlaunched_cancel_case(session_factory, tmp_path, case_key="cancel-bound-unlaunched")
+    assert (
+        await executor.settle(
+            worker,
+            SubscriptionInvocationResult(
+                attempt=worker.attempt,
+                failure=SubscriptionFailure.UNAVAILABLE,
+                telemetry=_known(tool_call_count=0),
+            ),
+        )
+    ).disposition == "stale"
+    assert (await SubscriptionTaskControlService(factory).reconcile_all()).stopped == 1
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, feedback.receipt_id)
+        task = await work.session.get(SubscriptionTask, child.task_id)
+        attempts = await work.session.scalar(
+            select(func.count())
+            .select_from(SubscriptionAttempt)
+            .where(SubscriptionAttempt.task_row_id == child.task_id)
+        )
+        assert row.state == "closed" and row.closed_reason == "cancelled"
+        assert row.delivery_attempt_id is None and row.delivered_at is None
+        assert task.state == "terminal" and attempts == 1
+    assert (
+        await SubscriptionTaskFeedbackService(factory).submit(
+            run_id=child.run_id,
+            task_id=child.task_id,
+            actor=actor,
+            idempotency_key="cancel-bound-unlaunched-feedback",
+            request=feedback_request,
+        )
+        == feedback
+    )
+
+
+@pytest.mark.integration
+async def test_paused_run_recovery_closes_feedback_bound_to_an_unlaunched_worker(
+    session_factory, tmp_path
+):
+    factory, child, _, _, feedback, _, executor, worker = await _unlaunched_cancel_case(
+        session_factory, tmp_path, case_key="paused-cancel-unlaunched"
+    )
+    async with factory() as work:
+        run = await work.runs.get(child.run_id)
+        await work.runs.pause(run.id, run.version, "run.paused", {}, actor_class="operator")
+        await work.commit()
+    assert (
+        await executor.settle(
+            worker,
+            SubscriptionInvocationResult(
+                attempt=worker.attempt,
+                failure=SubscriptionFailure.UNAVAILABLE,
+                telemetry=_known(tool_call_count=0),
+            ),
+        )
+    ).disposition == "stale"
+    report = await SubscriptionTaskControlService(factory).reconcile_all()
+    assert report.stopped == 1 and report.deferred == 0
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, feedback.receipt_id)
+        task = await work.session.get(SubscriptionTask, child.task_id)
+        attempt = await work.session.get(SubscriptionAttempt, worker.attempt.attempt_id)
+        assert row.state == "closed" and row.closed_reason == "cancelled"
+        assert task.state == "terminal" and attempt.status == "terminal"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("barrier", ["operation", "effect", "attempt"])
+async def test_unlaunched_cancel_recovery_defers_unresolved_work(
+    session_factory, tmp_path, barrier
+):
+    factory, child, _, _, _, cancelled, executor, worker = await _unlaunched_cancel_case(
+        session_factory, tmp_path, case_key=f"guard-{barrier}-unlaunched"
+    )
+    assert (
+        await executor.settle(
+            worker,
+            SubscriptionInvocationResult(
+                attempt=worker.attempt,
+                failure=SubscriptionFailure.UNAVAILABLE,
+                telemetry=_known(tool_call_count=0),
+            ),
+        )
+    ).disposition == "stale"
+    async with factory() as work:
+        attempt = await work.session.get(SubscriptionAttempt, worker.attempt.attempt_id)
+        assert attempt is not None
+        if barrier == "operation":
+            work.session.add(
+                SubscriptionOperationBinding(
+                    attempt_id=attempt.id,
+                    provider_call_key="unreceipted-operation",
+                    durable_operation_id=uuid4(),
+                    payload={"schema_version": 1},
+                )
+            )
+        elif barrier == "effect":
+            assert (
+                attempt.lease_owner is not None
+                and attempt.lease_generation is not None
+                and attempt.candidate_epoch is not None
+            )
+            work.session.add(
+                SubscriptionScheduledEffect(
+                    id=uuid4(),
+                    run_id=child.run_id,
+                    task_id=child.task_id,
+                    lease_owner=attempt.lease_owner,
+                    lease_generation=attempt.lease_generation,
+                    candidate_epoch=attempt.candidate_epoch,
+                    whole_worktree_exclusive=False,
+                )
+            )
+        else:
+            work.session.add(
+                SubscriptionAttempt(
+                    id=uuid4(),
+                    run_id=attempt.run_id,
+                    task_row_id=attempt.task_row_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    idempotency_key="unresolved-other-attempt",
+                    route_payload=attempt.route_payload,
+                )
+            )
+        await work.commit()
+    report = await SubscriptionTaskControlService(factory).reconcile_all()
+    assert report.stopped == 0 and report.deferred == 1
+    async with factory() as work:
+        task = await work.session.get(SubscriptionTask, child.task_id)
+        attempt = await work.session.get(SubscriptionAttempt, worker.attempt.attempt_id)
+        stop = await work.session.get(SubscriptionTaskStop, cancelled.receipt_id)
+        assert task.state == "reconciling" and attempt.status == "reconciling"
+        assert stop.state == "requested"
+
+
+@pytest.mark.integration
+async def test_final_primary_failure_closes_bound_pending_feedback_without_a_worker_retry(
+    session_factory, tmp_path
+):
+    factory, _, child, run_version, task_version, _ = await _delegated_case(
+        session_factory, tmp_path, primary_attempts=3
+    )
+    actor = _actor()
+    feedback_request = SubscriptionTaskFeedbackRequest(
+        expected_run_version=run_version,
+        expected_task_version=task_version,
+        feedback="Close this receipt if its only forwarding primary attempt fails.",
+    )
+    feedback = await SubscriptionTaskFeedbackService(factory).submit(
+        run_id=child.run_id,
+        task_id=child.task_id,
+        actor=actor,
+        idempotency_key="final-primary-failure-feedback",
+        request=feedback_request,
+    )
+    executor = SubscriptionDecisionExecutor(factory)
+    primary = await executor.admit_next("only-feedback-primary", _reservation())
+    assert primary is not None and primary.task.task_id == feedback.primary_task_id
+    await SubscriptionRequestBuilder(factory).build(primary)
+    proof = await record_stopped_launch(session_factory, primary)
+    assert (
+        await executor.settle(
+            primary,
+            SubscriptionInvocationResult(
+                attempt=primary.attempt,
+                failure=SubscriptionFailure.PROTOCOL,
+                telemetry=_known(),
+                launch_proof=proof,
+            ),
+        )
+    ).disposition == "failed"
+    async with factory() as work:
+        row = await work.session.get(SubscriptionTaskFeedback, feedback.receipt_id)
+        primary_task = await work.session.get(SubscriptionTask, feedback.primary_task_id)
+        target = await work.session.get(SubscriptionTask, child.task_id)
+        target_attempts = await work.session.scalar(
+            select(func.count())
+            .select_from(SubscriptionAttempt)
+            .where(SubscriptionAttempt.task_row_id == child.task_id)
+        )
+        assert row.state == "closed" and row.closed_reason == "budget_exhausted"
+        assert row.primary_attempt_id == primary.attempt.attempt_id
+        assert row.delivery_attempt_id is None and row.delivered_at is None
+        assert primary_task.state == "terminal" and target.state == "queued"
+        assert target_attempts == 0
+    assert (
+        await SubscriptionTaskFeedbackService(factory).submit(
+            run_id=child.run_id,
+            task_id=child.task_id,
+            actor=actor,
+            idempotency_key="final-primary-failure-feedback",
+            request=feedback_request,
+        )
+        == feedback
+    )
 
 
 @pytest.mark.integration

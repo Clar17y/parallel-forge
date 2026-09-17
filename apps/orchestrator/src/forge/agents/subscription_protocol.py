@@ -171,6 +171,14 @@ _PRIMARY_KINDS = frozenset(
         "forward_feedback",
     }
 )
+_CHILD_TARGET_KINDS = frozenset(
+    {
+        "accept",
+        "reassign",
+        "scope_response",
+        "forward_feedback",
+    }
+)
 
 
 def _child(payload: object, request: SubscriptionInvocationRequest) -> LogicalTaskContract:
@@ -237,7 +245,7 @@ def decode_final(
     target = request.task
     target_id = payload.pop("task_id", str(request.task.task_id))
     if target_id != str(request.task.task_id):
-        if kind not in {"accept", "reassign", "scope_response", "forward_feedback"}:
+        if kind not in _CHILD_TARGET_KINDS:
             raise ProtocolError("foreign decision task")
         matches = [task for task in request.known_tasks if str(task.task_id) == target_id]
         if len(matches) != 1:
@@ -354,12 +362,7 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
         definitions.update(schema.pop("$defs", {}))
         props = schema["properties"]
         for authority in ("run_id", "task_id", "attempt_id"):
-            if authority == "task_id" and kind in {
-                "accept",
-                "reassign",
-                "scope_response",
-                "forward_feedback",
-            }:
+            if authority == "task_id" and kind in _CHILD_TARGET_KINDS:
                 continue
             props.pop(authority, None)
         props["kind"] = {"const": kind, "type": "string"}

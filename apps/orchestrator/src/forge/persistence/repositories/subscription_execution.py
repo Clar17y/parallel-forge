@@ -659,7 +659,7 @@ class PostgresSubscriptionExecutionRepository:
         feedback = PostgresSubscriptionFeedbackRepository(self._session)
         # Request delivery is proved by the stopped official-client launch; a
         # concurrent pause/cancel may revoke the result but cannot undo receipt.
-        if launches_confirmed(
+        if launches and launches_confirmed(
             launches,
             result.launch_proof,
             require_decision=False,
@@ -668,5 +668,9 @@ class PostgresSubscriptionExecutionRepository:
             await feedback.settle_delivery(identity.attempt_id)
         if task.state == "terminal":
             await feedback.requeue_undelivered(identity.run_id, identity.task_id)
-            await feedback.requeue_failed_primary(identity.run_id, identity.task_id)
+            await feedback.requeue_failed_primary(
+                identity.run_id, identity.task_id, identity.attempt_id
+            )
+        await feedback.close_run_cancelled(identity.run_id)
+        await feedback.close_exhausted(identity.run_id)
         return SubscriptionSettlement(accepted, disposition)

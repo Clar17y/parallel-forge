@@ -56,6 +56,10 @@ class SubscriptionFeedbackRepository(Protocol):
 
     async def close_cancelled(self, run_id: UUID, task_id: UUID) -> int: ...
 
+    async def close_run_cancelled(self, run_id: UUID) -> int: ...
+
+    async def close_exhausted(self, run_id: UUID) -> int: ...
+
 
 __all__ = [
     "FeedbackInvocationContext",

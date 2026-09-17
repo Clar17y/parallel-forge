@@ -42,6 +42,7 @@ from forge.persistence.models.scheduling import (
 )
 from forge.persistence.models.subscription import (
     SubscriptionAttempt,
+    SubscriptionClientLaunch,
     SubscriptionEnvelope,
     SubscriptionOperationBinding,
     SubscriptionTask,
@@ -57,6 +58,9 @@ from forge.persistence.repositories.runs import PostgresRunRepository
 from forge.persistence.repositories.scheduling import PostgresSchedulingRepository
 from forge.persistence.repositories.subscription import PostgresSubscriptionRepository
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
+from forge.persistence.repositories.subscription_feedback import (
+    PostgresSubscriptionFeedbackRepository,
+)
 from forge.persistence.repositories.subscription_task_stop_receipts import (
     load_control,
     pending_decision_task_version,
@@ -550,6 +554,9 @@ class PostgresSubscriptionTaskControlRepository:
             }
             result.application_digest = canonical_digest(result.application_payload)
             await self._scheduler.reconcile_expired(stop.run_id, task.id, retry=False)
+            await PostgresSubscriptionFeedbackRepository(self._session).close_cancelled(
+                stop.run_id, task.id
+            )
 
     async def pending_stops(
         self, after_id: UUID | None, limit: int
@@ -586,9 +593,17 @@ class PostgresSubscriptionTaskControlRepository:
             return False
         proof = stored.proof
         assert isinstance(proof, AttemptTaskControlProof)
-        source = await self._retained_source(
-            run, stop.attempt_id, pending=proof.source.kind == "pending"
-        )
+        try:
+            source = await self._retained_source(
+                run, stop.attempt_id, pending=proof.source.kind == "pending"
+            )
+        except TaskControlConflict:
+            if stored.receipt.action != "cancel" or not await self._cancel_unlaunched(
+                run, stop, proof
+            ):
+                raise
+            await self._session.flush()
+            return True
         await self._check_stopped_current(
             run, source, stop, proof, cancel=stored.receipt.action == "cancel"
         )
@@ -602,6 +617,98 @@ class PostgresSubscriptionTaskControlRepository:
             cancel=stored.receipt.action == "cancel",
         )
         await self._session.flush()
+        return True
+
+    async def _cancel_unlaunched(
+        self, run: Run, stop: SubscriptionTaskStop, proof: AttemptTaskControlProof
+    ) -> bool:
+        """Terminalize a cancelled attempt only when durable evidence proves no launch began."""
+        if proof.source.kind != "active":
+            return False
+        task = await self._session.get(
+            SubscriptionTask, stop.task_id, with_for_update=True, populate_existing=True
+        )
+        scheduled = await self._session.get(
+            SubscriptionScheduledTask, stop.task_id, with_for_update=True, populate_existing=True
+        )
+        attempt = await self._session.get(
+            SubscriptionAttempt, stop.attempt_id, with_for_update=True, populate_existing=True
+        )
+        result = await self._session.get(
+            SubscriptionAttemptResult, stop.attempt_id, with_for_update=True, populate_existing=True
+        )
+        if task is None or scheduled is None or attempt is None or result is None:
+            return False
+        scheduler = await self._session.get(
+            SubscriptionSchedulerRun, run.id, with_for_update=True, populate_existing=True
+        )
+        if scheduler is None:
+            return False
+        current = await self._proof(run, task, self._contract(task), scheduled, scheduler)
+        if run.state == "PAUSED" and run.suspended_state == proof.run_state.value:
+            current = current.model_copy(update={"run_state": proof.run_state})
+        if (
+            current.model_dump() != proof.model_dump(exclude={"source"})
+            or task.state != "reconciling"
+            or scheduled.state != "reconciling"
+            or attempt.status != "reconciling"
+            or task.version != stop.stop_task_version + 1
+            or task.cancel_requested is not True
+            or scheduled.cancel_requested is not True
+            or task.pause_requested
+            or scheduled.pause_requested
+            or result.accepted
+            or result.disposition != "stale"
+            or result.application_payload is not None
+            or result.application_digest is not None
+            or await self._session.scalar(
+                select(SubscriptionClientLaunch.id)
+                .where(SubscriptionClientLaunch.attempt_id == attempt.id)
+                .limit(1)
+            )
+            is not None
+            or await self._session.scalar(
+                select(ToolCall.id)
+                .where(
+                    ToolCall.run_id == run.id,
+                    ToolCall.subscription_task_id == task.id,
+                    ToolCall.status.in_(("PENDING", "RUNNING")),
+                )
+                .limit(1)
+            )
+            is not None
+            or await self._session.scalar(
+                select(SubscriptionOperationBinding.id)
+                .where(
+                    SubscriptionOperationBinding.attempt_id == attempt.id,
+                    SubscriptionOperationBinding.receipt_payload.is_(None),
+                )
+                .limit(1)
+            )
+            is not None
+            or await self._session.scalar(
+                select(SubscriptionScheduledEffect.id)
+                .where(
+                    SubscriptionScheduledEffect.run_id == run.id,
+                    SubscriptionScheduledEffect.task_id == task.id,
+                    SubscriptionScheduledEffect.state.in_(("admitted", "reconciling")),
+                )
+                .limit(1)
+            )
+            is not None
+            or await self._session.scalar(
+                select(SubscriptionAttempt.id)
+                .where(
+                    SubscriptionAttempt.task_row_id == task.id,
+                    SubscriptionAttempt.id != attempt.id,
+                    SubscriptionAttempt.status != "terminal",
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            return False
+        await self._mark_stopped(stop, proof, result, task, scheduled, attempt, cancel=True)
         return True
 
     async def _check_stopped_current(

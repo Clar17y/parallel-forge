@@ -341,6 +341,8 @@ async def _execute(command: CommandEnvelope, work: UnitOfWork, *, target: RunSta
             work, command, run.version, event_type, payload
         ):
             raise CommandRecoveryRequired("control command replay requires recovery")
+        if target is RunState.CANCELLED:
+            await work.subscription_feedback.close_run_cancelled(run.id)
         await work.commit()
         return
     if run.version != command.expected_run_version:
@@ -364,6 +366,7 @@ async def _execute(command: CommandEnvelope, work: UnitOfWork, *, target: RunSta
             actor_class="operator",
             actor_id=command.actor_id,
         )
+        await work.subscription_feedback.close_run_cancelled(run.id)
     await work.commit()
 
 

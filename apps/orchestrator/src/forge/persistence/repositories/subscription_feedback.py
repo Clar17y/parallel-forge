@@ -33,12 +33,17 @@ from forge.persistence.models.run import Run
 from forge.persistence.models.scheduling import SubscriptionScheduledTask
 from forge.persistence.models.subscription import (
     SubscriptionAttempt,
+    SubscriptionClientLaunch,
     SubscriptionDecisionRecord,
     SubscriptionEnvelope,
     SubscriptionTask,
 )
 from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
+from forge.persistence.models.subscription_usage import (
+    SubscriptionAttemptConsumption,
+    SubscriptionAttemptReservation,
+)
 from forge.persistence.repositories.scheduling import PostgresSchedulingRepository
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
 
@@ -90,9 +95,43 @@ def _context(row: SubscriptionTaskFeedback) -> dict[str, object]:
     return payload
 
 
+def _close_before_forwarding(row: SubscriptionTaskFeedback, reason: str) -> None:
+    application: dict[str, object] = {
+        "schema_version": 1,
+        "kind": "feedback_closed_before_forwarding",
+        "feedback_receipt_id": str(row.id),
+        "feedback_digest": row.feedback_digest,
+        "binding_digest": _binding_digest(row),
+        "reason": reason,
+    }
+    if row.primary_attempt_id is not None:
+        application["primary_attempt_id"] = str(row.primary_attempt_id)
+    row.state = "closed"
+    row.closed_reason = reason
+    row.application_digest = canonical_digest(application)
+
+
 class PostgresSubscriptionFeedbackRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def _has_unsettled_reservation(self, run_id: UUID) -> bool:
+        return (
+            await self._session.scalar(
+                select(SubscriptionAttemptReservation.attempt_id)
+                .outerjoin(
+                    SubscriptionAttemptConsumption,
+                    SubscriptionAttemptConsumption.attempt_id
+                    == SubscriptionAttemptReservation.attempt_id,
+                )
+                .where(
+                    SubscriptionAttemptReservation.run_id == run_id,
+                    SubscriptionAttemptConsumption.attempt_id.is_(None),
+                )
+                .limit(1)
+            )
+            is not None
+        )
 
     async def verify_receipt(
         self,
@@ -108,6 +147,7 @@ class PostgresSubscriptionFeedbackRepository:
         if (
             row is None
             or row.actor_id != actor_id
+            or receipt.operator_id != actor_id
             or row.request_digest != request_digest
             or row.run_id != receipt.run_id
             or row.primary_task_id != receipt.primary_task_id
@@ -244,14 +284,12 @@ class PostgresSubscriptionFeedbackRepository:
             or not frozen_envelope.permits_route(primary_contract.purpose, primary_contract.route)
         ):
             raise TaskFeedbackConflict("feedback execution envelope is absent")
-        if (
-            await PostgresSubscriptionBudgetRepository(self._session).fit_reservation(
-                run_id,
-                primary.id,
-                replace(primary_contract.budget, max_provider_attempts=1, max_repairs=0),
-            )
-            is None
-        ):
+        primary_budget = await PostgresSubscriptionBudgetRepository(self._session).fit_reservation(
+            run_id,
+            primary.id,
+            replace(primary_contract.budget, max_provider_attempts=1, max_repairs=0),
+        )
+        if primary_budget is None and not await self._has_unsettled_reservation(run_id):
             raise TaskFeedbackConflict("primary cumulative budget is exhausted")
         feedback_digest = _digest(request.feedback)
         feedback_bytes = len(request.feedback.encode("utf-8"))
@@ -425,14 +463,19 @@ class PostgresSubscriptionFeedbackRepository:
 
         delivery = "retained"
         accepted = await self._target_is_accepted(primary.run_id, target.task_id)
+        cancelled = target_row.cancel_requested or scheduled.cancel_requested
         settled = (
             target_row.state == "terminal"
             and scheduled.state == "terminal"
             and not target_row.pause_requested
             and not scheduled.pause_requested
         )
+        active = target_row.state == "running" or scheduled.state in {
+            "leased",
+            "reconciling",
+        }
         remaining_budget = None
-        if not (target_row.cancel_requested or scheduled.cancel_requested or accepted) and settled:
+        if not (accepted or cancelled or active):
             remaining_budget = await PostgresSubscriptionBudgetRepository(
                 self._session
             ).fit_reservation(
@@ -440,14 +483,21 @@ class PostgresSubscriptionFeedbackRepository:
                 target.task_id,
                 replace(target.budget, max_provider_attempts=1, max_repairs=0),
             )
-        will_close = (
-            target_row.cancel_requested
-            or scheduled.cancel_requested
-            or accepted
-            or (settled and remaining_budget is None)
+        capacity_pending = (
+            not (accepted or cancelled or active)
+            and remaining_budget is None
+            and await self._has_unsettled_reservation(primary.run_id)
         )
+        closed_reason = None
+        if accepted:
+            closed_reason = "accepted"
+        elif cancelled:
+            closed_reason = "cancelled"
+        elif not active and remaining_budget is None and not capacity_pending:
+            closed_reason = "budget_exhausted"
+
         primary_budget = None
-        if will_close:
+        if closed_reason is not None:
             primary_budget = await PostgresSubscriptionBudgetRepository(
                 self._session
             ).fit_reservation(
@@ -455,14 +505,9 @@ class PostgresSubscriptionFeedbackRepository:
                 primary.task_id,
                 replace(primary.budget, max_provider_attempts=1, max_repairs=0),
             )
-        if target_row.cancel_requested or scheduled.cancel_requested or accepted:
             row.state = "closed"
-            row.closed_reason = "accepted" if accepted else "cancelled"
-            delivery = row.closed_reason
-        elif settled and remaining_budget is None:
-            row.state = "closed"
-            row.closed_reason = "budget_exhausted"
-            delivery = row.closed_reason
+            row.closed_reason = closed_reason
+            delivery = closed_reason
         else:
             row.state = "forwarded"
             if settled:
@@ -486,16 +531,6 @@ class PostgresSubscriptionFeedbackRepository:
             "delivery": delivery,
         }
         row.application_digest = canonical_digest(receipt)
-        remaining = await self._session.scalar(
-            select(SubscriptionTaskFeedback.id)
-            .where(
-                SubscriptionTaskFeedback.run_id == primary.run_id,
-                SubscriptionTaskFeedback.primary_task_id == primary.task_id,
-                SubscriptionTaskFeedback.state == "pending_primary",
-                SubscriptionTaskFeedback.id != row.id,
-            )
-            .limit(1)
-        )
         scope_pending = await PostgresSchedulingRepository(self._session).has_scope_request(
             primary.run_id,
             tuple(
@@ -510,9 +545,7 @@ class PostgresSubscriptionFeedbackRepository:
         await self._session.flush()
         return receipt, (
             "queued"
-            if (row.state == "closed" and primary_budget is not None)
-            or remaining is not None
-            or scope_pending
+            if (row.state == "closed" and primary_budget is not None) or scope_pending
             else "blocked"
         )
 
@@ -605,6 +638,156 @@ class PostgresSubscriptionFeedbackRepository:
             await self._session.flush()
         return closed
 
+    async def close_run_cancelled(self, run_id: UUID) -> int:
+        run = await self._session.get(Run, run_id, with_for_update=True, populate_existing=True)
+        if run is None or run.state != RunState.CANCELLED.value:
+            return 0
+        rows = list(
+            await self._session.scalars(
+                select(SubscriptionTaskFeedback)
+                .where(
+                    SubscriptionTaskFeedback.run_id == run_id,
+                    SubscriptionTaskFeedback.state.in_(("pending_primary", "forwarded")),
+                )
+                .order_by(SubscriptionTaskFeedback.created_at, SubscriptionTaskFeedback.id)
+                .with_for_update()
+            )
+        )
+        closed = 0
+        for row in rows:
+            if row.state == "forwarded" and row.delivery_attempt_id is not None:
+                delivery = await self._session.get(
+                    SubscriptionAttempt,
+                    row.delivery_attempt_id,
+                    with_for_update=True,
+                    populate_existing=True,
+                )
+                if delivery is None:
+                    raise TaskFeedbackConflict("feedback delivery attempt is absent")
+                if delivery.status != "terminal":
+                    result = await self._session.get(
+                        SubscriptionAttemptResult,
+                        delivery.id,
+                        with_for_update=True,
+                        populate_existing=True,
+                    )
+                    launched = await self._session.scalar(
+                        select(SubscriptionClientLaunch.id)
+                        .where(SubscriptionClientLaunch.attempt_id == delivery.id)
+                        .limit(1)
+                    )
+                    if result is None or result.disposition != "stale" or launched is not None:
+                        continue
+                row.delivery_attempt_id = None
+            if row.state == "pending_primary":
+                _close_before_forwarding(row, "cancelled")
+            else:
+                row.state = "closed"
+                row.closed_reason = "cancelled"
+            closed += 1
+        if closed:
+            await self._session.flush()
+        return closed
+
+    async def close_exhausted(self, run_id: UUID) -> int:
+        run = await self._session.get(Run, run_id, with_for_update=True, populate_existing=True)
+        if run is None or run.state == RunState.CANCELLED.value:
+            return 0
+        if await self._has_unsettled_reservation(run_id):
+            return 0
+        rows = list(
+            await self._session.scalars(
+                select(SubscriptionTaskFeedback)
+                .where(
+                    SubscriptionTaskFeedback.run_id == run_id,
+                    SubscriptionTaskFeedback.state.in_(("pending_primary", "forwarded")),
+                )
+                .order_by(SubscriptionTaskFeedback.created_at, SubscriptionTaskFeedback.id)
+                .with_for_update()
+            )
+        )
+        grouped: dict[tuple[bool, UUID], list[SubscriptionTaskFeedback]] = {}
+        for row in rows:
+            primary = row.state == "pending_primary"
+            if primary and row.primary_attempt_id is not None:
+                prior = await self._session.get(
+                    SubscriptionAttempt,
+                    row.primary_attempt_id,
+                    with_for_update=True,
+                    populate_existing=True,
+                )
+                if (
+                    prior is None
+                    or prior.run_id != run_id
+                    or prior.task_row_id != row.primary_task_id
+                ):
+                    raise TaskFeedbackConflict("feedback primary attempt is absent")
+                if prior.status != "terminal":
+                    # A live primary attempt still owns forwarding or failure recovery.
+                    continue
+            if not primary and row.delivery_attempt_id is not None:
+                delivery = await self._session.get(
+                    SubscriptionAttempt,
+                    row.delivery_attempt_id,
+                    with_for_update=True,
+                    populate_existing=True,
+                )
+                if delivery is None:
+                    raise TaskFeedbackConflict("feedback delivery attempt is absent")
+                if delivery.status != "terminal":
+                    continue
+            task_id = row.primary_task_id if primary else row.task_id
+            grouped.setdefault((primary, task_id), []).append(row)
+
+        closed = 0
+        budget = PostgresSubscriptionBudgetRepository(self._session)
+        for (primary, task_id), candidates in grouped.items():
+            task = await self._session.get(
+                SubscriptionTask, task_id, with_for_update=True, populate_existing=True
+            )
+            scheduled = await self._session.get(
+                SubscriptionScheduledTask,
+                task_id,
+                with_for_update=True,
+                populate_existing=True,
+            )
+            try:
+                contract = None if task is None else decode_subscription_record(task.payload)
+            except TypeError, ValueError:
+                contract = None
+            if (
+                task is None
+                or scheduled is None
+                or not isinstance(contract, LogicalTaskContract)
+                or task.run_id != run_id
+                or scheduled.run_id != run_id
+                or contract.run_id != run_id
+                or contract.task_id != task_id
+                or (contract.parent_task_id is None) != primary
+                or (contract.purpose is SpecialistPurpose.PRIMARY) != primary
+            ):
+                raise TaskFeedbackConflict("feedback budget authority differs")
+            if task.state == "running" or scheduled.state in {"leased", "reconciling"}:
+                continue
+            remaining = await budget.fit_reservation(
+                run_id,
+                task_id,
+                replace(contract.budget, max_provider_attempts=1, max_repairs=0),
+            )
+            if remaining is not None:
+                continue
+            for row in candidates:
+                if primary:
+                    _close_before_forwarding(row, "budget_exhausted")
+                else:
+                    row.delivery_attempt_id = None
+                    row.state = "closed"
+                    row.closed_reason = "budget_exhausted"
+                closed += 1
+        if closed:
+            await self._session.flush()
+        return closed
+
     async def has_pending_primary(self, run_id: UUID, primary_task_id: UUID) -> bool:
         return (
             await self._session.scalar(
@@ -619,9 +802,11 @@ class PostgresSubscriptionFeedbackRepository:
             is not None
         )
 
-    async def requeue_failed_primary(self, run_id: UUID, primary_task_id: UUID) -> bool:
+    async def requeue_failed_primary(
+        self, run_id: UUID, primary_task_id: UUID, attempt_id: UUID
+    ) -> bool:
         pending = await self._session.scalar(
-            select(SubscriptionTaskFeedback.id)
+            select(SubscriptionTaskFeedback)
             .where(
                 SubscriptionTaskFeedback.run_id == run_id,
                 SubscriptionTaskFeedback.primary_task_id == primary_task_id,
@@ -668,8 +853,64 @@ class PostgresSubscriptionFeedbackRepository:
             primary_task_id,
             replace(contract.budget, max_provider_attempts=1, max_repairs=0),
         )
+        capacity_pending = remaining is None and await self._has_unsettled_reservation(run_id)
         if remaining is None:
-            return False
+            if pending.primary_attempt_id not in (None, attempt_id):
+                prior = await self._session.get(
+                    SubscriptionAttempt,
+                    pending.primary_attempt_id,
+                    with_for_update=True,
+                    populate_existing=True,
+                )
+                if (
+                    prior is None
+                    or prior.run_id != run_id
+                    or prior.task_row_id != primary_task_id
+                    or prior.status != "terminal"
+                ):
+                    return False
+            attempt = await self._session.get(
+                SubscriptionAttempt,
+                attempt_id,
+                with_for_update=True,
+                populate_existing=True,
+            )
+            result = (
+                None
+                if attempt is None
+                else await self._session.get(
+                    SubscriptionAttemptResult,
+                    attempt.id,
+                    with_for_update=True,
+                    populate_existing=True,
+                )
+            )
+            if (
+                attempt is None
+                or result is None
+                or attempt.run_id != run_id
+                or attempt.task_row_id != primary_task_id
+                or attempt.status != "terminal"
+                or result.disposition not in {"failed", "handoff"}
+            ):
+                return False
+            if not capacity_pending:
+                application = {
+                    "schema_version": 1,
+                    "kind": "feedback_forwarding_closed",
+                    "feedback_receipt_id": str(pending.id),
+                    "feedback_digest": pending.feedback_digest,
+                    "binding_digest": _binding_digest(pending),
+                    "primary_attempt_id": str(attempt.id),
+                    "primary_result_digest": result.result_digest,
+                    "reason": "budget_exhausted",
+                }
+                pending.primary_attempt_id = attempt.id
+                pending.state = "closed"
+                pending.closed_reason = "budget_exhausted"
+                pending.application_digest = canonical_digest(application)
+                await self._session.flush()
+                return False
         task.state = scheduled.state = "queued"
         task.version += 1
         await self._session.flush()
@@ -732,9 +973,12 @@ class PostgresSubscriptionFeedbackRepository:
                 task_id,
                 replace(contract.budget, max_provider_attempts=1, max_repairs=0),
             )
+        capacity_pending = (
+            not cancelled and remaining is None and await self._has_unsettled_reservation(run_id)
+        )
         for row in rows:
             row.delivery_attempt_id = None
-        if cancelled or remaining is None:
+        if cancelled or (remaining is None and not capacity_pending):
             reason = "cancelled" if cancelled else "budget_exhausted"
             for row in rows:
                 row.state = "closed"

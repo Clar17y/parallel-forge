@@ -2432,6 +2432,7 @@ class PostgresSubscriptionDecisionRepository:
             task.run_id, task.id, retry=repair
         )
         await self._session.flush()
+        await PostgresSubscriptionFeedbackRepository(self._session).close_exhausted(task.run_id)
         return SubscriptionSettlement(False, result.disposition)
 
     async def _finish(
@@ -2452,10 +2453,6 @@ class PostgresSubscriptionDecisionRepository:
         state: str,
         disposition: str,
     ) -> SubscriptionSettlement:
-        if state == "blocked" and await PostgresSubscriptionFeedbackRepository(
-            self._session
-        ).has_pending_primary(task.run_id, task.id):
-            state = "queued"
         await PostgresSubscriptionRepository(self._session).record_decision(
             decision, idempotency_key=key
         )
@@ -2474,4 +2471,9 @@ class PostgresSubscriptionDecisionRepository:
         attempt.status = "terminal"
         result.accepted, result.disposition = True, disposition
         await self._session.flush()
+        feedback = PostgresSubscriptionFeedbackRepository(self._session)
+        await feedback.close_exhausted(task.run_id)
+        if state == "blocked" and await feedback.has_pending_primary(task.run_id, task.id):
+            task.state = scheduled.state = "queued"
+            await self._session.flush()
         return SubscriptionSettlement(True, disposition)

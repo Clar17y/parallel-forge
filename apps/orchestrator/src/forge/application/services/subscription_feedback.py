@@ -56,6 +56,7 @@ def _stored(receipt: ApiMutationRecord, run_id: UUID, task_id: UUID) -> StoredTa
         stored = StoredTaskFeedback.model_validate_json(json.dumps(receipt.response_payload))
         if (
             stored.receipt.receipt_id != receipt.id
+            or stored.receipt.operator_id != receipt.actor_id
             or stored.receipt.run_id != run_id
             or stored.receipt.task_id != task_id
         ):

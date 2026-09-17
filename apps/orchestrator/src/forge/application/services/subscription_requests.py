@@ -4,7 +4,6 @@ from collections.abc import Callable
 from secrets import token_urlsafe
 
 from forge.application.ports.subscription_execution import SubscriptionAdmission
-from forge.application.ports.subscription_feedback import FeedbackInvocationContext
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.domain.agent import PolicySummary
@@ -126,12 +125,7 @@ class SubscriptionRequestBuilder:
             if resource != expected_resource:
                 raise ValueError("invocation resource differs from run")
             known = await work.subscription.invocation_tasks(run.id, admission.task.task_id)
-            feedback_repository = getattr(work, "subscription_feedback", None)
-            feedback = (
-                await feedback_repository.invocation_context(admission)
-                if feedback_repository is not None
-                else FeedbackInvocationContext()
-            )
+            feedback = await work.subscription_feedback.invocation_context(admission)
             if feedback.pending_primary is not None:
                 tools = frozenset()
             outcomes = await work.subscription.invocation_outcomes(
