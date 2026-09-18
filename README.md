@@ -53,6 +53,15 @@ and web checks; PostgreSQL and Docker must be available. Browser acceptance is a
 separate `npm run test:e2e` command covering the approval flow, restart/cancellation
 and keyboard/accessibility behavior.
 
+For a reproducible, evidence-recording local run, use
+`npm run verify:local -- list` and then
+`npm run verify:local -- run <selection> [--focused TARGET ...]`. That harness
+runs one explicit selection at a time, uses frozen dependencies and an ephemeral
+isolated PostgreSQL instance for the Linux selections, makes no live provider call,
+and records candidate identity, exact commands, outcomes and owned-container
+cleanup under `.llm-output/local-verification/`. See
+[reproducible local verification](docs/local-verification.md).
+
 ## Development status and roadmap
 
 Tasks 1–29 are implemented, including release/queue recovery, dashboard/resource

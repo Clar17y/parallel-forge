@@ -34,6 +34,11 @@ class SupervisorCancelled(SupervisorError):
     """Raised when supervisor execution is cancelled via signal or stop_event."""
 
 
+# One immutable-addressing rule shared by the development supervisor and the
+# local verification harness, per the repository's runner-image requirement.
+IMMUTABLE_IMAGE_DIGEST_PATTERN = re.compile(r"\Asha256:[0-9a-f]{64}\Z", re.ASCII)
+
+
 @dataclass(frozen=True)
 class WebConfig:
     """Resolved and validated configuration for the Next.js web process."""
@@ -46,7 +51,9 @@ class WebConfig:
         """Build isolated web child environment excluding root/provider secrets."""
         env = dict(base_env if base_env is not None else os.environ)
         for key in tuple(env):
-            if key == "DATABASE_URL" or (key.startswith("FORGE_") and not key.startswith("FORGE_E2E_")):
+            if key == "DATABASE_URL" or (
+                key.startswith("FORGE_") and not key.startswith("FORGE_E2E_")
+            ):
                 del env[key]
 
         env["FORGE_WEB_ORIGIN"] = self.web_origin
@@ -203,7 +210,7 @@ def _create_windows_job_object() -> Any:
             kernel32.CloseHandle(job)
             raise SupervisorError(f"SetInformationJobObject failed with error {err}")
         return job
-    except (ImportError, AttributeError, OSError):
+    except ImportError, AttributeError, OSError:
         return None
 
 
@@ -361,6 +368,10 @@ class DefaultCommandRunner:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "text": True,
+            # Tool output is UTF-8 (docker, git, pytest); a non-UTF-8 byte must not
+            # crash the reader thread or silently truncate the captured result.
+            "encoding": "utf-8",
+            "errors": "backslashreplace",
         }
 
         if sys.platform == "win32":
@@ -448,6 +459,8 @@ class DefaultCommandRunner:
             "cwd": str(cwd) if cwd else None,
             "env": env,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "backslashreplace",
         }
 
         if sys.platform == "win32":
@@ -519,16 +532,13 @@ class DevSupervisor:
     ) -> CommandResult:
         """Run a command with cancellation check before and after."""
         self._check_cancelled()
-        try:
-            res = self.runner.run(
-                cmd,
-                cwd=cwd,
-                env=env,
-                timeout=timeout,
-                stop_event=self.stop_event,  # type: ignore[call-arg]
-            )
-        except TypeError:
-            res = self.runner.run(cmd, cwd=cwd, env=env, timeout=timeout)
+        res = self.runner.run(
+            cmd,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            stop_event=self.stop_event,  # type: ignore[call-arg]
+        )
         self._check_cancelled()
         return res
 
@@ -536,9 +546,7 @@ class DevSupervisor:
         """Verify Python 3.14 runtime."""
         info = version_info or sys.version_info
         if (info[0], info[1]) != (3, 14):
-            raise PrerequisiteError(
-                f"Python 3.14 is required. Found Python {info[0]}.{info[1]}."
-            )
+            raise PrerequisiteError(f"Python 3.14 is required. Found Python {info[0]}.{info[1]}.")
 
     def verify_node_version(self) -> None:
         """Verify Node 24 runtime."""
@@ -547,9 +555,7 @@ class DevSupervisor:
             raise PrerequisiteError(f"Node.js is not available: {res.stderr.strip()}")
         version = res.stdout.strip()
         if not version.startswith("v24."):
-            raise PrerequisiteError(
-                f"Node 24 is required. Found Node {version}."
-            )
+            raise PrerequisiteError(f"Node 24 is required. Found Node {version}.")
 
     def verify_postgres_health(self) -> None:
         """Verify PostgreSQL container health scoped to repository compose file."""
@@ -573,7 +579,7 @@ class DevSupervisor:
                 items = json.loads(output)
             else:
                 items = [json.loads(line) for line in output.splitlines() if line.strip()]
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             raise PrerequisiteError(f"Failed to parse docker compose ps output: {output}")
 
         if not items:
@@ -653,7 +659,9 @@ class DevSupervisor:
             cwd=self.repo_root,
         )
         if res.returncode != 0:
-            raise SupervisorError(f"Alembic migration failed: {res.stderr.strip() or res.stdout.strip()}")
+            raise SupervisorError(
+                f"Alembic migration failed: {res.stderr.strip() or res.stdout.strip()}"
+            )
 
     def build_and_inspect_runner_image(self) -> str:
         """Build the Docker runner image and inspect its immutable digest."""
@@ -685,8 +693,7 @@ class DevSupervisor:
             raise SupervisorError(f"Docker inspect failed: {inspect_res.stderr.strip()}")
 
         image_id = inspect_res.stdout.strip()
-        digest_pattern = re.compile(r"\Asha256:[0-9a-f]{64}\Z", re.ASCII)
-        if not digest_pattern.match(image_id):
+        if not IMMUTABLE_IMAGE_DIGEST_PATTERN.match(image_id):
             raise SupervisorError(
                 f"Runner image inspect must return an immutable digest (sha256:hex), got: {image_id}"
             )
@@ -736,10 +743,8 @@ class DevSupervisor:
                 api_internal_origin=str(data["api_internal_origin"]),
                 web_port=int(data["web_port"]),
             )
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            raise ConfigurationError(
-                "Invalid local development web configuration."
-            ) from None
+        except json.JSONDecodeError, KeyError, TypeError, ValueError:
+            raise ConfigurationError("Invalid local development web configuration.") from None
 
     def start_processes(
         self,
@@ -749,16 +754,21 @@ class DevSupervisor:
         """Spawn separate forge-api, forge-worker, and Next.js processes."""
         self.log("Starting Forge processes...")
         resolved_web_config = (
-            web_config
-            if web_config is not None
-            else self.resolve_web_configuration()
+            web_config if web_config is not None else self.resolve_web_configuration()
         )
 
         api_cmd = ["uv", "run", "--frozen", "forge-api"]
         worker_cmd = ["uv", "run", "--frozen", "forge-worker"]
         web_cmd = [
-            "npm", "exec", "--workspace", "apps/web", "--", "next", "dev",
-            "--hostname", str(urlsplit(resolved_web_config.web_origin).hostname),
+            "npm",
+            "exec",
+            "--workspace",
+            "apps/web",
+            "--",
+            "next",
+            "dev",
+            "--hostname",
+            str(urlsplit(resolved_web_config.web_origin).hostname),
         ]
 
         worker_env = os.environ.copy()
@@ -775,9 +785,7 @@ class DevSupervisor:
                 self.runner.spawn("worker", worker_cmd, cwd=self.repo_root, env=worker_env)
             )
             self._check_cancelled()
-            spawned.append(
-                self.runner.spawn("web", web_cmd, cwd=self.repo_root, env=web_env)
-            )
+            spawned.append(self.runner.spawn("web", web_cmd, cwd=self.repo_root, env=web_env))
             self.log("All processes started (forge-api, forge-worker, web).")
             return spawned
         except BaseException:
@@ -850,7 +858,7 @@ class DevSupervisor:
                 web_config=web_config,
             )
             return self.supervise(processes)
-        except (SupervisorCancelled, KeyboardInterrupt):
+        except SupervisorCancelled, KeyboardInterrupt:
             self.log("Supervisor cancelled.")
             if processes:
                 self.cleanup(processes)
@@ -883,7 +891,7 @@ def main() -> int:
     except SupervisorError as err:
         print(f"[dev error] Supervisor failed: {err}", file=sys.stderr)
         return 1
-    except (SupervisorCancelled, KeyboardInterrupt):
+    except SupervisorCancelled, KeyboardInterrupt:
         return 0
 
 

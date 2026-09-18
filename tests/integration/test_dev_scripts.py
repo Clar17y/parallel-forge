@@ -20,6 +20,7 @@ from scripts.dev import (
     RESOLVE_WEB_CONFIG_CODE,
     CommandResult,
     ConfigurationError,
+    DefaultCommandRunner,
     DevSupervisor,
     ManagedProcess,
     PrerequisiteError,
@@ -373,6 +374,18 @@ def test_ctrl_c_graceful_shutdown() -> None:
     assert api_proc.terminated or api_proc.killed
     assert worker_proc.terminated or worker_proc.killed
     assert web_proc.terminated or web_proc.killed
+
+
+def test_default_runner_captures_non_utf8_tool_output() -> None:
+    """Tool output is not guaranteed to be valid UTF-8; capture must not crash."""
+    runner = DefaultCommandRunner()
+    script = "import sys; sys.stdout.buffer.write(b'caf\\x81 decoded\\n')"
+
+    result = runner.run([sys.executable, "-c", script], timeout=60)
+
+    assert result.returncode == 0
+    assert "caf" in result.stdout
+    assert "decoded" in result.stdout
 
 
 def test_package_json_scripts_contract() -> None:
