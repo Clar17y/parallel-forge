@@ -44,6 +44,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -58,6 +59,7 @@ if str(REPO_ROOT) not in sys.path:
 
 # Imported after the repository root above is placed on sys.path.
 from scripts.dev import (
+    IMMUTABLE_IMAGE_DIGEST_PATTERN,
     CommandResult,
     CommandRunner,
     ConfigurationError,
@@ -65,6 +67,7 @@ from scripts.dev import (
     PrerequisiteError,
     SupervisorCancelled,
     SupervisorError,
+    redact_secrets,
 )
 
 EVIDENCE_RELATIVE_ROOT = Path(".llm-output") / "local-verification"
@@ -76,7 +79,10 @@ SANDBOX_UID = 10001
 CONTROLLER_INIT_PROCESS_NAMES = frozenset({"docker-init", "tini"})
 CONTROLLER_MOUNT_TARGET = "/workspace"
 CONTROLLER_PYTHONPATH = f"{CONTROLLER_MOUNT_TARGET}/apps/orchestrator/src"
-POSTGRES_IMAGE = "postgres:17"
+# Pinned by repository digest: the harness claims reproducibility, so the
+# database the tests actually run against must not float with a tag. Refresh
+# with `docker image inspect postgres:17 --format '{{index .RepoDigests 0}}'`.
+POSTGRES_IMAGE = "postgres@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675"
 POSTGRES_PORT = 5435
 POSTGRES_DATABASE = "forge"
 POSTGRES_USER = "forge"
@@ -89,6 +95,15 @@ CONTROLLER_MARKERS = "not live_provider and not live_github and not docker"
 HOST_MARKERS = "not integration and not live_provider and not live_github and not docker"
 PYTEST_CACHE_OFF = ("-p", "no:cacheprovider")
 PYTEST_NO_TESTS_COLLECTED = 5
+# DefaultCommandRunner overloads returncode with non-exit sentinels: -1 timeout
+# or launch failure, -2 cancellation, 127 launch failure. They must never be
+# recorded as a test outcome, because nothing is known about the tests then.
+RUNNER_TIMEOUT_RETURN_CODE = -1
+RUNNER_CANCELLED_RETURN_CODE = -2
+RUNNER_LAUNCH_FAILURE_RETURN_CODE = 127
+# `docker run` reports its own failures on these codes; only 125/126 are
+# unambiguous here because this harness always requests a pytest entry point.
+DOCKER_RUN_FAILURE_RETURN_CODES = frozenset({125, 126})
 
 EXIT_PASSED = 0
 EXIT_FAILED = 1
@@ -114,7 +129,6 @@ _ALLOWED_ENVIRONMENT_PREFIXES = ("FORGE_E2E_",)
 _SECRET_ENVIRONMENT_PATTERN = re.compile(
     r"(API_?KEYS?|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD)", re.IGNORECASE
 )
-_IMMUTABLE_IMAGE_PATTERN = re.compile(r"\Asha256:[0-9a-f]{64}\Z", re.ASCII)
 _CONTROLLER_NAME_PATTERN = re.compile(r"\Aforge-verify-[a-z0-9.-]+\Z", re.ASCII)
 
 # Executed inside the controller container. It proves the identity, the PID 1
@@ -147,13 +161,35 @@ def _first_line(result: CommandResult) -> str:
     for stream in (result.stderr, result.stdout):
         for line in stream.splitlines():
             if line.strip():
-                return line.strip()
+                return redact_secrets(line.strip())
     return f"exit code {result.returncode}"
 
 
 def slugify(value: str) -> str:
     """Return a filesystem- and container-name-safe slug."""
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def classify_runner_exit(returncode: int) -> str | None:
+    """Name a runner sentinel, or return None for a real process exit code."""
+    if returncode == RUNNER_TIMEOUT_RETURN_CODE:
+        return "timed_out"
+    if returncode == RUNNER_CANCELLED_RETURN_CODE:
+        return "cancelled"
+    if returncode == RUNNER_LAUNCH_FAILURE_RETURN_CODE:
+        return "launch_failed"
+    return None
+
+
+def parse_probe_integer(values: dict[str, Any], key: str) -> int:
+    """Read one integer probe field, failing closed on malformed output."""
+    raw = values.get(key)
+    try:
+        return int(str(raw))
+    except TypeError, ValueError:
+        raise SupervisorError(
+            f"controller identity probe returned a malformed {key}: {raw!r}"
+        ) from None
 
 
 def is_reserved_environment_name(name: str) -> bool:
@@ -195,6 +231,9 @@ class Selection:
     summary: str
     container: bool
     broad: bool
+    # Container selections run inside an image that ships its own Node, so only the
+    # host selections that actually invoke Node require it on this machine.
+    requires_node: bool = True
     steps: tuple[Step, ...] = ()
     pytest_step: PytestStep | None = None
 
@@ -289,6 +328,7 @@ SELECTIONS: dict[str, Selection] = {
         ),
         container=True,
         broad=True,
+        requires_node=False,
         pytest_step=PytestStep(
             name="Deterministic backend selection",
             prefix=("python", "-m", "pytest"),
@@ -305,6 +345,7 @@ SELECTIONS: dict[str, Selection] = {
         ),
         container=True,
         broad=False,
+        requires_node=False,
         pytest_step=PytestStep(
             name="Focused recovery boundaries",
             prefix=("python", "-m", "pytest"),
@@ -317,7 +358,7 @@ SELECTIONS: dict[str, Selection] = {
 
 
 def _validate_target(target: str) -> str:
-    """Reject any focused target that could escape the mounted workspace."""
+    """Reject any focused target that could escape or silently widen the selection."""
     if not target.strip():
         raise ConfigurationError("focused targets must not be empty")
     if target.startswith("-"):
@@ -325,9 +366,23 @@ def _validate_target(target: str) -> str:
     probe = target.split("::", 1)[0]
     posix = PurePosixPath(probe)
     windows = PureWindowsPath(probe)
-    if posix.is_absolute() or windows.is_absolute() or ".." in posix.parts or ".." in windows.parts:
+    if (
+        posix.is_absolute()
+        or windows.is_absolute()
+        # A drive-relative Windows path (`\Windows\x`) is not "absolute" but still
+        # resolves outside the repository.
+        or windows.root
+        or windows.drive
+        or ".." in posix.parts
+        or ".." in windows.parts
+    ):
         raise ConfigurationError(
             f"focused target {target!r} must be a repository-relative path without '..'"
+        )
+    if not [part for part in posix.parts if part not in {".", ""}]:
+        raise ConfigurationError(
+            f"focused target {target!r} must name a path inside the repository; "
+            "a repository-root target would run the whole selection"
         )
     return target
 
@@ -364,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout",
         type=float,
         metavar="SECONDS",
-        help="override the selection's default step timeout",
+        help="override the selection's pytest step timeout; not valid without one",
     )
     run.add_argument(
         "--image",
@@ -400,6 +455,21 @@ def build_request(namespace: argparse.Namespace) -> RunRequest:
         )
     if namespace.timeout is not None and namespace.timeout <= 0:
         raise ConfigurationError("--timeout must be a positive number of seconds")
+    # A focused run replaces targets, never the environment the targets need, so a
+    # selection that declares both a container and fixed setup steps is invalid
+    # rather than silently running the tests against an unprepared controller.
+    if selection.container and selection.steps:
+        raise ConfigurationError(
+            f"selection {selection.name!r} combines a controller container with fixed setup "
+            "steps, which this harness does not execute"
+        )
+    # The override tunes the pytest step; applying it to unrelated fixed steps (for
+    # example a production web build) turns a legitimate run into a timeout, and it
+    # means nothing for selections that have no pytest step at all.
+    if namespace.timeout is not None and selection.pytest_step is None:
+        raise ConfigurationError(
+            f"selection {selection.name!r} has no pytest step; --timeout is not valid"
+        )
     return RunRequest(
         selection=selection.name,
         focused=focused,
@@ -449,31 +519,27 @@ class LocalVerificationHarness:
     ) -> CommandResult:
         """Run one command, honouring cancellation on both sides of the call."""
         self._check_cancelled()
-        try:
-            result = self.runner.run(
-                argv,
-                cwd=cwd,
-                env=env,
-                timeout=timeout,
-                stop_event=self.stop_event,
-            )
-        except TypeError:
-            result = self.runner.run(argv, cwd=cwd, env=env, timeout=timeout)
-        self._check_cancelled()
+        result = self.runner.run(
+            argv,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            stop_event=self.stop_event,
+        )
+        # Cancellation is checked before the next command and by the recorded step
+        # that observes the runner's cancelled sentinel. Re-checking here would
+        # discard a completed result that the run record must keep.
         return result
 
     def run_teardown_cmd(self, argv: list[str], *, timeout: float) -> CommandResult:
         """Run an owned-resource teardown command that must survive cancellation."""
-        try:
-            return self.runner.run(
-                argv,
-                cwd=self.repo_root,
-                env=None,
-                timeout=timeout,
-                stop_event=None,
-            )
-        except TypeError:
-            return self.runner.run(argv, cwd=self.repo_root, env=None, timeout=timeout)
+        return self.runner.run(
+            argv,
+            cwd=self.repo_root,
+            env=None,
+            timeout=timeout,
+            stop_event=None,
+        )
 
     def _git(self, args: tuple[str, ...]) -> str:
         result = self.run_cmd(["git", *args], cwd=self.repo_root, timeout=120)
@@ -510,7 +576,7 @@ class LocalVerificationHarness:
             raise PrerequisiteError(f"{label} is not available: {_first_line(result)}")
         return result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
 
-    def host_toolchain(self, *, require_docker: bool) -> dict[str, Any]:
+    def host_toolchain(self, *, require_docker: bool, require_node: bool) -> dict[str, Any]:
         """Verify the required host toolchain for a selection."""
         if sys.version_info[:2] != (3, 14):
             raise PrerequisiteError(
@@ -519,12 +585,15 @@ class LocalVerificationHarness:
         toolchain: dict[str, Any] = {
             "platform": sys.platform,
             "python": ".".join(str(part) for part in sys.version_info[:3]),
-            "node": self._required_version(["node", "--version"], "Node.js"),
-            "npm": self._required_version(["npm", "--version"], "npm"),
             "uv": self._required_version(["uv", "--version"], "uv"),
+            "node": None,
+            "npm": None,
         }
-        if not toolchain["node"].startswith("v24."):
-            raise PrerequisiteError(f"Node 24 is required. Found Node {toolchain['node']}.")
+        if require_node:
+            toolchain["node"] = self._required_version(["node", "--version"], "Node.js")
+            if not toolchain["node"].startswith("v24."):
+                raise PrerequisiteError(f"Node 24 is required. Found Node {toolchain['node']}.")
+            toolchain["npm"] = self._required_version(["npm", "--version"], "npm")
         if require_docker:
             toolchain["docker_client"] = self._required_version(
                 ["docker", "--version"], "the Docker CLI"
@@ -552,11 +621,16 @@ class LocalVerificationHarness:
 
     def image_inputs_digest(self) -> str:
         """Digest the exact build inputs that produce the controller image."""
-        payload = "".join(
-            f"{name}\0{(self.repo_root / name).read_text(encoding='utf-8')}\0"
-            for name in CONTROLLER_IMAGE_INPUTS
-        )
-        return _digest(payload)
+        parts: list[str] = []
+        for name in CONTROLLER_IMAGE_INPUTS:
+            try:
+                content = (self.repo_root / name).read_text(encoding="utf-8")
+            except OSError as error:
+                raise PrerequisiteError(
+                    f"controller image input {name} is unreadable: {error}"
+                ) from None
+            parts.append(f"{name}\0{content}\0")
+        return _digest("".join(parts))
 
     def resolve_image_id(self, reference: str) -> str:
         """Return an immutable image ID, or an empty string when it is absent."""
@@ -573,7 +647,7 @@ class LocalVerificationHarness:
         """Resolve or build the controller image and bind it to its build inputs."""
         if override:
             image_id = self.resolve_image_id(override)
-            if not _IMMUTABLE_IMAGE_PATTERN.match(image_id):
+            if not IMMUTABLE_IMAGE_DIGEST_PATTERN.match(image_id):
                 raise PrerequisiteError(
                     f"--image {override!r} did not resolve to an immutable image ID"
                 )
@@ -583,7 +657,7 @@ class LocalVerificationHarness:
         reference = f"{CONTROLLER_IMAGE_REPOSITORY}:{inputs_digest[:16]}"
         image_id = self.resolve_image_id(reference)
         built = False
-        if not _IMMUTABLE_IMAGE_PATTERN.match(image_id):
+        if not IMMUTABLE_IMAGE_DIGEST_PATTERN.match(image_id):
             self.log(f"building controller image {reference} from Dockerfile.verify...")
             build = self.run_cmd(
                 [
@@ -604,7 +678,7 @@ class LocalVerificationHarness:
                 raise SupervisorError(f"controller image build failed: {_first_line(build)}")
             image_id = self.resolve_image_id(reference)
             built = True
-        if not _IMMUTABLE_IMAGE_PATTERN.match(image_id):
+        if not IMMUTABLE_IMAGE_DIGEST_PATTERN.match(image_id):
             raise SupervisorError(
                 "controller image inspection must return an immutable sha256 image ID, got "
                 f"{image_id or '<empty>'}"
@@ -645,7 +719,13 @@ class LocalVerificationHarness:
         result = self.run_cmd(argv, cwd=self.repo_root, timeout=300)
         if result.returncode != 0:
             raise SupervisorError(f"PostgreSQL container failed to start: {_first_line(result)}")
-        return {"name": name, "container_id": result.stdout.strip()[:12]}, argv
+        # The executed argv keeps the fixture password; the recorded one does not,
+        # so the record never publishes a value its own environment filter reserves.
+        recorded_argv = [
+            argument.replace(f"PASSWORD={POSTGRES_PASSWORD}", "PASSWORD=[REDACTED]")
+            for argument in argv
+        ]
+        return {"name": name, "container_id": result.stdout.strip()[:12]}, recorded_argv
 
     def wait_for_postgres(
         self, name: str, *, timeout: float = POSTGRES_READY_TIMEOUT_SECONDS
@@ -736,6 +816,10 @@ class LocalVerificationHarness:
         image_id: str,
         log_dir: Path,
     ) -> dict[str, Any]:
+        if CONTROLLER_UID == SANDBOX_UID:
+            raise SupervisorError(
+                f"the controller identity must differ from the sandbox identity ({CONTROLLER_UID})"
+            )
         argv = self.controller_argv(
             controller_name,
             postgres_name,
@@ -759,16 +843,14 @@ class LocalVerificationHarness:
             key, separator, value = line.partition("=")
             if separator:
                 values[key.strip()] = value.strip()
-        uid = int(values.get("uid", "-1"))
-        gid = int(values.get("gid", "-1"))
+        uid = parse_probe_integer(values, "uid")
+        gid = parse_probe_integer(values, "gid")
         init_process = values.get("init", "")
         python = values.get("python", "")
         if uid != CONTROLLER_UID or gid != CONTROLLER_UID:
             raise SupervisorError(
                 f"controller must run as UID/GID {CONTROLLER_UID}, observed {uid}/{gid}"
             )
-        if uid == SANDBOX_UID:
-            raise SupervisorError(f"controller identity must differ from sandbox UID {SANDBOX_UID}")
         if init_process not in CONTROLLER_INIT_PROCESS_NAMES:
             raise SupervisorError(
                 "controller must start an init reaper as PID 1, observed "
@@ -818,6 +900,7 @@ class LocalVerificationHarness:
             }
         )
         removals: list[list[str]] = []
+        rm_notes: list[str] = []
         for name in owned:
             if not _CONTROLLER_NAME_PATTERN.match(name):
                 errors.append(f"refusing to remove unexpected container name {name!r}")
@@ -827,8 +910,11 @@ class LocalVerificationHarness:
             result = self.run_teardown_cmd(argv, timeout=300)
             if result.returncode == 0:
                 removed.append(name)
-            elif "No such container" not in f"{result.stderr}{result.stdout}":
-                errors.append(f"docker rm {name} failed: {_first_line(result)}")
+            else:
+                # Docker's error text is not a stable interface to match on, and the
+                # sweep below is what actually proves absence. A container that
+                # survived still appears as a leftover and fails the run.
+                rm_notes.append(f"docker rm {name}: {_first_line(result)}")
         verify_argv = ["docker", "ps", "--all", "--format", "{{.Names}}"]
         verified = self.run_teardown_cmd(verify_argv, timeout=120)
         if verified.returncode != 0:
@@ -838,8 +924,10 @@ class LocalVerificationHarness:
             names = [line.strip() for line in verified.stdout.splitlines() if line.strip()]
         leftovers = sorted(name for name in names if name.startswith(prefix))
         return {
+            "applicable": True,
             "attempted": True,
             "containers_removed": removed,
+            "rm_notes": rm_notes,
             "leftovers": leftovers,
             "errors": errors,
             "removal_argv": removals,
@@ -866,10 +954,21 @@ class LocalVerificationHarness:
         stderr_path = log_dir / f"{stem}.stderr.log"
         self.log(f"{name} (timeout {timeout:.0f}s)")
         started = time.monotonic()
-        result = self.run_cmd(argv, cwd=cwd, env=env, timeout=timeout)
+        interrupted = False
+        try:
+            result = self.run_cmd(argv, cwd=cwd, env=env, timeout=timeout)
+        except SupervisorCancelled:
+            # The interrupted step is usually the long one and therefore the most
+            # interesting; record it before propagating the shutdown signal.
+            result = CommandResult(
+                returncode=RUNNER_CANCELLED_RETURN_CODE,
+                stdout="",
+                stderr="step interrupted by the verification harness shutdown signal",
+            )
+            interrupted = True
         duration = round(time.monotonic() - started, 3)
-        stdout_path.write_text(result.stdout, encoding="utf-8", errors="replace")
-        stderr_path.write_text(result.stderr, encoding="utf-8", errors="replace")
+        stdout_path.write_text(redact_secrets(result.stdout), encoding="utf-8", errors="replace")
+        stderr_path.write_text(redact_secrets(result.stderr), encoding="utf-8", errors="replace")
         step: dict[str, Any] = {
             "name": name,
             "argv": list(argv),
@@ -879,10 +978,86 @@ class LocalVerificationHarness:
             "stdout_log": f"logs/{stdout_path.name}",
             "stderr_log": f"logs/{stderr_path.name}",
         }
+        sentinel = classify_runner_exit(result.returncode)
+        if sentinel == "timed_out" and duration < timeout:
+            # The runner also uses -1 for a launch failure that never started the
+            # command, which is an environment error rather than a timeout.
+            sentinel = "launch_failed"
+        if container is not None and result.returncode in DOCKER_RUN_FAILURE_RETURN_CODES:
+            # `docker run` refused the container: no test process ever started.
+            sentinel = "launch_failed"
+        if sentinel is not None:
+            step["outcome"] = sentinel
         if container is not None:
             step["container"] = container
         record["steps"].append(step)
         self.log(f"{name}: exit {result.returncode} in {duration:.1f}s")
+        if interrupted or sentinel == "cancelled":
+            raise SupervisorCancelled(f"{name} was interrupted by the shutdown signal")
+        return result
+
+    @staticmethod
+    def _step_failure(result: CommandResult, step: dict[str, Any]) -> tuple[str, int] | None:
+        """Classify a step result without ever reporting a runner sentinel as a pass."""
+        if result.returncode == 0:
+            return None
+        recorded = step.get("outcome")
+        if recorded == "timed_out":
+            return ("timed_out", EXIT_ENVIRONMENT)
+        if recorded is not None:
+            return ("environment_error", EXIT_ENVIRONMENT)
+        return ("failed", EXIT_FAILED)
+
+    @staticmethod
+    def _record_pytest_step(
+        record: dict[str, Any],
+        *,
+        pytest_argv: list[str],
+        junit_artifact: str | None,
+        result: CommandResult,
+    ) -> None:
+        """Share the pytest bookkeeping both selection paths must agree on."""
+        record["run"]["pytest_argv"] = pytest_argv
+        record["run"]["junit_artifact"] = junit_artifact
+        if result.returncode == PYTEST_NO_TESTS_COLLECTED:
+            raise ConfigurationError(
+                "the requested selection matched no tests; check the focused targets"
+            )
+
+    def _run_pytest_step(
+        self,
+        record: dict[str, Any],
+        *,
+        log_dir: Path,
+        step: PytestStep,
+        targets: tuple[str, ...],
+        timeout: float,
+        env: dict[str, str] | None,
+        junit_artifact: str | None,
+        junit_argument: str | None,
+        wrap_argv: Callable[[list[str]], list[str]],
+        container: dict[str, Any] | None,
+    ) -> CommandResult:
+        """Run one pytest step; the host and container paths differ only in wrapping."""
+        pytest_argv = [*step.prefix, *targets, *step.suffix]
+        if junit_argument is not None:
+            pytest_argv.append(f"--junitxml={junit_argument}")
+        result = self.execute_step(
+            record,
+            log_dir=log_dir,
+            name=step.name,
+            argv=wrap_argv(pytest_argv),
+            cwd=self.repo_root,
+            env=env,
+            timeout=timeout,
+            container=container,
+        )
+        self._record_pytest_step(
+            record,
+            pytest_argv=pytest_argv,
+            junit_artifact=junit_artifact,
+            result=result,
+        )
         return result
 
     def run_selection(self, request: RunRequest) -> int:
@@ -902,7 +1077,7 @@ class LocalVerificationHarness:
                 "id": run_id,
                 "selection": selection.name,
                 "summary": selection.summary,
-                "mode": "focused" if request.focused else "full",
+                "mode": "focused" if request.focused else "default",
                 "targets": list(targets),
                 "started_at": _timestamp(started),
                 "evidence_dir": str(evidence_dir),
@@ -918,11 +1093,17 @@ class LocalVerificationHarness:
             },
             "steps": [],
             "cleanup": {
+                "applicable": selection.container,
                 "attempted": False,
                 "containers_removed": [],
+                "rm_notes": [],
                 "leftovers": [],
                 "errors": [],
-                "verified_absent": False,
+                "removal_argv": [],
+                "verification_argv": [],
+                # Nothing to reclaim for a host selection, so absence is not a claim
+                # that cleanup ran; `applicable` carries that distinction.
+                "verified_absent": not selection.container,
             },
         }
         outcome = "environment_error"
@@ -933,11 +1114,15 @@ class LocalVerificationHarness:
             record["policy"]["redacted_environment_names"] = filtered_names
             record["candidate"] = self.candidate_identity()
             record["environment"] = {
-                "host": self.host_toolchain(require_docker=selection.container)
+                "host": self.host_toolchain(
+                    require_docker=selection.container,
+                    require_node=selection.requires_node,
+                )
             }
 
             if selection.container:
-                assert selection.pytest_step is not None
+                if selection.pytest_step is None:
+                    raise SupervisorError(f"selection {selection.name!r} has no pytest step")
                 image = self.ensure_controller_image(request.image)
                 record["environment"]["controller_image"] = image
                 postgres, postgres_argv = self.start_postgres(run_id)
@@ -965,23 +1150,25 @@ class LocalVerificationHarness:
                 )
                 step = selection.pytest_step
                 junit_name = f"junit-{slugify(step.name)}.xml"
-                pytest_argv = [*step.prefix, *targets, *step.suffix]
                 # JUnit output is written through the mounted workspace so the host
                 # keeps the structured per-test outcomes next to the raw logs.
                 container_evidence = self._container_evidence_path(evidence_dir)
-                if container_evidence is not None:
-                    pytest_argv.append(f"--junitxml={container_evidence}/{junit_name}")
-                timeout = request.timeout or step.timeout
-                result = self.execute_step(
+                result = self._run_pytest_step(
                     record,
                     log_dir=log_dir,
-                    name=step.name,
-                    argv=self.controller_argv(
-                        controller_name, postgres["name"], image["id"], pytest_argv
-                    ),
-                    cwd=self.repo_root,
+                    step=step,
+                    targets=targets,
+                    timeout=request.timeout or step.timeout,
                     env=None,
-                    timeout=timeout,
+                    junit_artifact=junit_name if container_evidence is not None else None,
+                    junit_argument=(
+                        f"{container_evidence}/{junit_name}"
+                        if container_evidence is not None
+                        else None
+                    ),
+                    wrap_argv=lambda argv: self.controller_argv(
+                        controller_name, postgres["name"], image["id"], argv
+                    ),
                     container={
                         "image": image["id"],
                         "user": CONTROLLER_USER,
@@ -990,20 +1177,12 @@ class LocalVerificationHarness:
                         "mount": f"{self.repo_root}:{CONTROLLER_MOUNT_TARGET}",
                     },
                 )
-                record["run"]["pytest_argv"] = pytest_argv
-                record["run"]["junit_artifact"] = (
-                    junit_name if container_evidence is not None else None
+                outcome, exit_code = self._step_failure(result, record["steps"][-1]) or (
+                    "passed",
+                    EXIT_PASSED,
                 )
-                if result.returncode == PYTEST_NO_TESTS_COLLECTED:
-                    raise ConfigurationError(
-                        "the requested selection matched no tests; check the focused targets"
-                    )
-                if result.returncode == 0:
-                    outcome, exit_code = "passed", EXIT_PASSED
-                else:
-                    outcome, exit_code = "failed", EXIT_FAILED
             else:
-                failed = False
+                failure: tuple[str, int] | None = None
                 for step in selection.steps:
                     result = self.execute_step(
                         record,
@@ -1012,37 +1191,32 @@ class LocalVerificationHarness:
                         argv=list(step.argv),
                         cwd=self.repo_root,
                         env=child_env,
-                        timeout=request.timeout or step.timeout,
+                        timeout=step.timeout,
                     )
-                    if result.returncode != 0:
-                        failed = True
+                    failure = self._step_failure(result, record["steps"][-1])
+                    if failure is not None:
                         break
-                if not failed and selection.pytest_step is not None:
+                if failure is None and selection.pytest_step is not None:
                     step = selection.pytest_step
                     junit_name = f"junit-{slugify(step.name)}.xml"
-                    pytest_argv = [
-                        *step.prefix,
-                        *targets,
-                        *step.suffix,
-                        f"--junitxml={evidence_dir / junit_name}",
-                    ]
-                    result = self.execute_step(
+                    result = self._run_pytest_step(
                         record,
                         log_dir=log_dir,
-                        name=step.name,
-                        argv=pytest_argv,
-                        cwd=self.repo_root,
-                        env=child_env,
+                        step=step,
+                        targets=targets,
                         timeout=request.timeout or step.timeout,
+                        env=child_env,
+                        junit_artifact=junit_name,
+                        junit_argument=str(evidence_dir / junit_name),
+                        wrap_argv=lambda argv: argv,
+                        container=None,
                     )
-                    record["run"]["pytest_argv"] = pytest_argv
-                    record["run"]["junit_artifact"] = junit_name
-                    failed = result.returncode != 0
-                outcome, exit_code = ("failed", EXIT_FAILED) if failed else ("passed", EXIT_PASSED)
+                    failure = self._step_failure(result, record["steps"][-1])
+                outcome, exit_code = failure or ("passed", EXIT_PASSED)
         except ConfigurationError as error:
             outcome, exit_code = "configuration_error", EXIT_CONFIGURATION
             record["error"] = {"kind": "configuration", "message": str(error)}
-            print(f"[verify] {error}", file=self.stderr, flush=True)
+            print(f"[verify] configuration error: {error}", file=self.stderr, flush=True)
         except SupervisorCancelled as error:
             outcome, exit_code = "cancelled", EXIT_CANCELLED
             record["error"] = {"kind": "cancelled", "message": str(error)}
@@ -1055,11 +1229,44 @@ class LocalVerificationHarness:
             outcome, exit_code = "environment_error", EXIT_ENVIRONMENT
             record["error"] = {"kind": "environment", "message": str(error)}
             print(f"[verify] harness error: {error}", file=self.stderr, flush=True)
+        except Exception as error:  # noqa: BLE001 - a run must always leave a record
+            # The harness contract is that a run always leaves a record. An
+            # unexpected defect is recorded as an environment error rather than
+            # escaping as a traceback with no evidence.
+            outcome, exit_code = "internal_error", EXIT_ENVIRONMENT
+            record["error"] = {
+                "kind": "internal",
+                "message": f"{type(error).__name__}: {error}",
+            }
+            print(
+                f"[verify] internal harness error: {type(error).__name__}: {error}",
+                file=self.stderr,
+                flush=True,
+            )
         finally:
+            if self.stop_event.is_set() and outcome != "cancelled":
+                outcome, exit_code = "cancelled", EXIT_CANCELLED
             if selection.container:
-                cleanup = self.cleanup(run_id)
+                try:
+                    cleanup = self.cleanup(run_id)
+                except Exception as error:  # noqa: BLE001 - a run must leave a record
+                    # Teardown runs after every other handler, so an unexpected
+                    # failure here must not be the one path that writes nothing.
+                    cleanup = {
+                        "applicable": True,
+                        "attempted": True,
+                        "containers_removed": [],
+                        "rm_notes": [],
+                        "leftovers": [],
+                        "errors": [f"cleanup raised {type(error).__name__}: {error}"],
+                        "removal_argv": [],
+                        "verification_argv": [],
+                        "verified_absent": False,
+                    }
                 record["cleanup"] = cleanup
                 if not cleanup["verified_absent"]:
+                    # A surviving owned container is the diagnosis the operator
+                    # needs, so it outranks the cancellation verdict above.
                     exit_code = EXIT_ENVIRONMENT
                     outcome = "cleanup_failed"
                     print(
@@ -1068,16 +1275,23 @@ class LocalVerificationHarness:
                         file=self.stderr,
                         flush=True,
                     )
-            if self.stop_event.is_set() and outcome != "cancelled":
-                outcome, exit_code = "cancelled", EXIT_CANCELLED
             finished = _utc_now()
             record["run"]["finished_at"] = _timestamp(finished)
             record["run"]["duration_seconds"] = round((finished - started).total_seconds(), 3)
             record["run"]["outcome"] = outcome
             record["run"]["exit_code"] = exit_code
-            (evidence_dir / "run.json").write_text(
-                json.dumps(record, indent=2) + "\n", encoding="utf-8"
-            )
+            try:
+                (evidence_dir / "run.json").write_text(
+                    json.dumps(record, indent=2) + "\n", encoding="utf-8"
+                )
+            except OSError as error:
+                print(
+                    f"[verify] could not write the evidence record: {error}",
+                    file=self.stderr,
+                    flush=True,
+                )
+                if exit_code == EXIT_PASSED:
+                    exit_code = EXIT_ENVIRONMENT
         self.log(
             f"{outcome} (exit {exit_code}); candidate {record.get('candidate', {}).get('head', '?')[:12]}; "
             f"evidence {evidence_dir}"

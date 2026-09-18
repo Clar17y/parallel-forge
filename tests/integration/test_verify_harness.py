@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,10 @@ class FakeCommandRunner:
         uid: int = CONTROLLER_UID,
         leftover: bool = False,
         cancel_after: int | None = None,
+        cancel_on_pytest: bool = False,
+        rm_exit_code: int = 0,
+        probe_stdout_override: str | None = None,
+        sleep_seconds: float = 0.0,
     ) -> None:
         self.calls: list[dict[str, Any]] = []
         self.controller_exit = controller_exit
@@ -57,6 +62,10 @@ class FakeCommandRunner:
         self.uid = uid
         self.leftover = leftover
         self.cancel_after = cancel_after
+        self.cancel_on_pytest = cancel_on_pytest
+        self.rm_exit_code = rm_exit_code
+        self.probe_stdout_override = probe_stdout_override
+        self.sleep_seconds = sleep_seconds
         self.owned_names: list[str] = []
 
     @property
@@ -83,9 +92,17 @@ class FakeCommandRunner:
             and stop_event is not None
         ):
             stop_event.set()
+        if self.cancel_on_pytest and "pytest" in command:
+            if stop_event is not None:
+                stop_event.set()
+            return CommandResult(-2, "", "Command cancelled")
+        if self.sleep_seconds and "pytest" in command:
+            time.sleep(self.sleep_seconds)
         return self._dispatch(command)
 
     def _probe_stdout(self) -> str:
+        if self.probe_stdout_override is not None:
+            return self.probe_stdout_override
         return (
             f"uid={self.uid}\n"
             f"gid={self.uid}\n"
@@ -109,6 +126,10 @@ class FakeCommandRunner:
         if argv[:2] == ["docker", "exec"]:
             return CommandResult(0, "", "")
         if argv[:2] == ["docker", "rm"]:
+            if self.rm_exit_code:
+                return CommandResult(
+                    self.rm_exit_code, "", "Error response from daemon: removal failed\n"
+                )
             self.owned_names.append(argv[-1])
             return CommandResult(0, f"{argv[-1]}\n", "")
         if argv[:2] == ["docker", "ps"]:
@@ -356,7 +377,7 @@ def test_host_selection_records_steps_without_containers(
 
     assert exit_code == EXIT_PASSED
     assert record["run"]["outcome"] == "passed"
-    assert record["run"]["mode"] == "full"
+    assert record["run"]["mode"] == "default"
     assert record["cleanup"]["attempted"] is False
     assert [step["name"] for step in record["steps"]] == [
         "Sync locked Python dependencies",
@@ -423,4 +444,173 @@ def test_setup_failure_before_controller_still_cleans_up(fake_repo: Path) -> Non
     assert exit_code == EXIT_ENVIRONMENT
     assert record["run"]["outcome"] == "environment_error"
     assert record["cleanup"]["attempted"] is True
+    assert record["cleanup"]["verified_absent"] is True
+
+
+def test_timed_out_step_is_not_recorded_as_a_test_failure(fake_repo: Path) -> None:
+    """A runner timeout sentinel means nothing is known about the tests."""
+    runner = FakeCommandRunner(controller_exit=-1, sleep_seconds=0.05)
+    exit_code, record, _ = run_harness(
+        fake_repo, runner, RunRequest(selection="recovery", timeout=0.01)
+    )
+
+    assert exit_code == EXIT_ENVIRONMENT
+    assert record["run"]["outcome"] == "timed_out"
+    assert record["steps"][-1]["outcome"] == "timed_out"
+    assert record["cleanup"]["verified_absent"] is True
+
+
+def test_instant_runner_failure_is_not_reported_as_a_timeout(fake_repo: Path) -> None:
+    """The runner also uses -1 for a launch that never started the command."""
+    runner = FakeCommandRunner(controller_exit=-1)
+    exit_code, record, _ = run_harness(fake_repo, runner, RunRequest(selection="recovery"))
+
+    assert exit_code == EXIT_ENVIRONMENT
+    assert record["run"]["outcome"] == "environment_error"
+    assert record["steps"][-1]["outcome"] == "launch_failed"
+
+
+def test_docker_refusal_is_not_reported_as_a_test_failure(fake_repo: Path) -> None:
+    """`docker run` exits 125 when the daemon refuses to start the container."""
+    runner = FakeCommandRunner(controller_exit=125)
+    exit_code, record, _ = run_harness(fake_repo, runner, RunRequest(selection="recovery"))
+
+    assert exit_code == EXIT_ENVIRONMENT
+    assert record["run"]["outcome"] == "environment_error"
+    assert record["steps"][-1]["outcome"] == "launch_failed"
+
+
+def test_launch_failure_is_recorded_as_an_environment_error(fake_repo: Path) -> None:
+    runner = FakeCommandRunner(controller_exit=127)
+    exit_code, record, _ = run_harness(fake_repo, runner, RunRequest(selection="recovery"))
+
+    assert exit_code == EXIT_ENVIRONMENT
+    assert record["run"]["outcome"] == "environment_error"
+    assert record["steps"][-1]["outcome"] == "launch_failed"
+
+
+def test_interrupted_step_is_still_recorded(fake_repo: Path) -> None:
+    """The step the operator interrupted must not vanish from the record."""
+    runner = FakeCommandRunner(cancel_on_pytest=True)
+    exit_code, record, _ = run_harness(fake_repo, runner, RunRequest(selection="recovery"))
+
+    assert exit_code == EXIT_CANCELLED
+    assert record["run"]["outcome"] == "cancelled"
+    interrupted = record["steps"][-1]
+    assert interrupted["name"] == "Focused recovery boundaries"
+    assert interrupted["outcome"] == "cancelled"
+    assert interrupted["exit_code"] == -2
+    assert record["cleanup"]["verified_absent"] is True
+
+
+def test_cleanup_failure_outranks_cancellation(fake_repo: Path) -> None:
+    """A surviving owned container is the diagnosis, even if a signal stopped the run."""
+    runner = FakeCommandRunner(cancel_after=3, leftover=True)
+    exit_code, record, _ = run_harness(fake_repo, runner, RunRequest(selection="recovery"))
+
+    assert exit_code == EXIT_ENVIRONMENT
+    assert record["run"]["outcome"] == "cleanup_failed"
+    assert record["cleanup"]["verified_absent"] is False
+
+
+def test_failed_removal_is_not_a_cleanup_failure_when_the_container_is_gone(
+    fake_repo: Path,
+) -> None:
+    runner = FakeCommandRunner(rm_exit_code=1)
+    exit_code, record, _ = run_harness(fake_repo, runner, RunRequest(selection="recovery"))
+
+    assert exit_code == EXIT_PASSED
+    assert record["cleanup"]["verified_absent"] is True
+    assert record["cleanup"]["containers_removed"] == []
+    assert record["cleanup"]["rm_notes"]
+
+
+def test_host_selection_maps_an_empty_selection_to_a_configuration_error(
+    fake_repo: Path,
+) -> None:
+    class NoTestsRunner(FakeCommandRunner):
+        def _dispatch(self, argv: list[str]) -> CommandResult:
+            if "pytest" in argv:
+                return CommandResult(5, "", "no tests ran\n")
+            return super()._dispatch(argv)
+
+    exit_code, record, _ = run_harness(
+        fake_repo, NoTestsRunner(), RunRequest(selection="unit", focused=("tests/missing.py",))
+    )
+
+    assert exit_code == EXIT_CONFIGURATION
+    assert record["run"]["outcome"] == "configuration_error"
+
+
+@pytest.mark.parametrize("target", ["\\Windows\\x.py", "C:/x.py", ".", "./"])
+def test_focused_targets_reject_repo_roots_and_drive_relative_paths(target: str) -> None:
+    with pytest.raises(ConfigurationError):
+        build_request(parse("run", "backend", f"--focused={target}"))
+
+
+def test_focused_target_accepts_a_directory_target() -> None:
+    request = build_request(parse("run", "backend", "--focused", "apps/orchestrator/tests"))
+    assert request.focused == ("apps/orchestrator/tests",)
+
+
+def test_timeout_is_rejected_for_a_selection_without_a_pytest_step() -> None:
+    with pytest.raises(ConfigurationError):
+        build_request(parse("run", "web", "--timeout", "300"))
+
+
+def test_container_selection_with_setup_steps_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A container selection whose setup steps would be skipped must fail closed."""
+    from scripts.verify import Selection, Step
+
+    monkeypatch.setitem(
+        SELECTIONS,
+        "container-with-steps",
+        Selection(
+            name="container-with-steps",
+            summary="test-only selection",
+            container=True,
+            broad=False,
+            steps=(Step("Setup", ("python", "-c", "pass"), 60.0),),
+            pytest_step=SELECTIONS["recovery"].pytest_step,
+        ),
+    )
+
+    with pytest.raises(ConfigurationError):
+        build_request(parse("run", "container-with-steps"))
+
+
+def test_missing_controller_image_input_is_a_prerequisite_error(fake_repo: Path) -> None:
+    (fake_repo / "uv.lock").unlink()
+    exit_code, record, _ = run_harness(
+        fake_repo, FakeCommandRunner(), RunRequest(selection="recovery")
+    )
+
+    assert exit_code == EXIT_ENVIRONMENT
+    assert record["error"]["kind"] == "prerequisite"
+
+
+def test_malformed_identity_probe_is_an_environment_error(fake_repo: Path) -> None:
+    runner = FakeCommandRunner(probe_stdout_override="uid=unknown\ngid=unknown\ninit=docker-init\n")
+    exit_code, record, _ = run_harness(fake_repo, runner, RunRequest(selection="recovery"))
+
+    assert exit_code == EXIT_ENVIRONMENT
+    assert record["run"]["outcome"] == "environment_error"
+    assert record["error"]["kind"] == "environment"
+
+
+def test_unexpected_harness_defect_is_recorded(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def explode(self: LocalVerificationHarness) -> dict[str, Any]:
+        raise ValueError("unexpected defect")
+
+    monkeypatch.setattr(LocalVerificationHarness, "candidate_identity", explode)
+    exit_code, record, _ = run_harness(
+        fake_repo, FakeCommandRunner(), RunRequest(selection="recovery")
+    )
+
+    assert exit_code == EXIT_ENVIRONMENT
+    assert record["run"]["outcome"] == "internal_error"
+    assert record["error"]["kind"] == "internal"
+    assert "unexpected defect" in record["error"]["message"]
     assert record["cleanup"]["verified_absent"] is True
