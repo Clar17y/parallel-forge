@@ -247,6 +247,10 @@ _DEFAULT_SEARCH_RANKING_TOP_K = 15
 # Ranking runs inside one agent tool call, so it is bounded well below the
 # provider turn budget and always fails open when it exceeds this.
 _SEARCH_RANKING_TIMEOUT_SECONDS = 20.0
+# The lowest normalized score meaning "at least in the same area of the
+# codebase". Below this, no match is worth keeping over any other, so the
+# ranking is recorded but never applied.
+_MIN_APPLIED_RELEVANCE = 1.0 / 3.0
 _WRITE_RESULT_ARTIFACT_MAX_BYTES = 64 * 1024
 _TERMINAL_TOOL_STATUSES = frozenset(
     {
@@ -2911,6 +2915,16 @@ class ControlledToolService:
                 "duration_ms": ranking.duration_ms,
             }
         )
+        # Collapsing a tail is only worth its cost when something actually
+        # cleared the bar.  When a search finds nothing relevant to the task,
+        # withholding matches trades evidence away for no relevance at all, so
+        # the complete reader result stands.
+        if max((item.relevance for item in ranking.ranked), default=0.0) < _MIN_APPLIED_RELEVANCE:
+            telemetry["status"] = "below_floor"
+            if mode is SearchRankingMode.SHADOW:
+                telemetry["would_return_count"] = total
+                telemetry["would_return_paths"] = _distinct_paths(matches, order)
+            return metadata
         kept, omitted = order[: self._search_ranking_top_k], order[self._search_ranking_top_k :]
         if mode is SearchRankingMode.SHADOW:
             telemetry["would_return_count"] = len(kept)

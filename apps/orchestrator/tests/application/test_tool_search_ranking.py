@@ -180,6 +180,66 @@ async def test_a_failing_ranker_fails_open_with_every_match(
     assert result.metadata["ranking"]["applied"] is False
 
 
+class _FlatRanker:
+    """Score every match the same, to exercise the relevance floor."""
+
+    def __init__(self, relevance: float) -> None:
+        self._relevance = relevance
+
+    async def rank(self, request: SearchRankingRequest) -> SearchRanking:
+        return SearchRanking(
+            ranked=tuple(
+                RankedMatch(index=index, relevance=self._relevance, confidence=0.9)
+                for index in range(len(request.matches))
+            ),
+            model="jev-latest",
+            request_id=None,
+            input_tokens=10,
+            output_tokens=1,
+            duration_ms=5,
+        )
+
+
+async def test_nothing_is_withheld_when_no_match_clears_the_relevance_floor(
+    tmp_path: Path,
+) -> None:
+    """An unrelated search must not trade matches away for no relevance."""
+
+    _repository(tmp_path)
+    service, _ = _service(tmp_path, _FlatRanker(0.2), top_k=1)
+
+    result = await _search(service)
+
+    assert len(result.metadata["matches"]) == 3
+    assert "omitted_matches" not in result.metadata
+    ranking = result.metadata["ranking"]
+    assert ranking["status"] == "below_floor" and ranking["applied"] is False
+    assert ranking["returned_count"] == 3
+
+
+async def test_a_match_at_the_floor_still_allows_the_tail_to_collapse(
+    tmp_path: Path,
+) -> None:
+    _repository(tmp_path)
+    service, _ = _service(tmp_path, _FlatRanker(1 / 3), top_k=1)
+
+    result = await _search(service)
+
+    assert len(result.metadata["matches"]) == 1
+    assert result.metadata["ranking"]["applied"] is True
+
+
+async def test_shadow_mode_projects_no_saving_below_the_floor(tmp_path: Path) -> None:
+    _repository(tmp_path)
+    service, _ = _service(tmp_path, _FlatRanker(0.2), mode=SearchRankingMode.SHADOW, top_k=1)
+
+    result = await _search(service)
+
+    ranking = result.metadata["ranking"]
+    assert ranking["status"] == "below_floor"
+    assert ranking["would_return_count"] == 3
+
+
 async def test_the_ranker_receives_the_objective_and_only_authorized_matches(
     tmp_path: Path,
 ) -> None:
