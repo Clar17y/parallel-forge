@@ -142,6 +142,7 @@ CONTROLLER_PROBE_CODE = (
     "print('python=' + '.'.join(str(part) for part in sys.version_info[:3]))\n"
     "print('pytest=' + md.version('pytest'))\n"
     "print('uv_lock_present=%s' % os.path.exists('/workspace/uv.lock'))\n"
+    "print('dotenv_empty=%s' % (not os.path.exists('/workspace/.env') or os.path.getsize('/workspace/.env') == 0))\n"
 )
 
 
@@ -201,6 +202,20 @@ def is_reserved_environment_name(name: str) -> bool:
     if name.startswith(_RESERVED_ENVIRONMENT_PREFIXES):
         return True
     return bool(_SECRET_ENVIRONMENT_PATTERN.search(name))
+
+
+def is_root_dotenv_secret(name: str) -> bool:
+    """Return True when a repository-root entry name is .env or a secret variant.
+
+    Excludes repository-root .env and other root .env.* secret variants from
+    projection into controller containers, while preserving the tracked
+    .env.example fixture.
+    """
+    if name == ".env":
+        return True
+    if name.startswith(".env.") and name != ".env.example":
+        return True
+    return bool(name.startswith((".env-", ".env_")))
 
 
 @dataclass(frozen=True)
@@ -547,6 +562,83 @@ class LocalVerificationHarness:
             raise SupervisorError(f"git {' '.join(args)} failed: {_first_line(result)}")
         return result.stdout
 
+    def _file_content_digest(self, relative_path: str, *, status: str = "") -> str:
+        """Hash one working-tree path's raw bytes safely without persisting contents."""
+        target = self.repo_root / relative_path
+        if not target.is_symlink() and not target.exists():
+            if "D" in status:
+                return "missing"
+            raise SupervisorError(
+                f"working-tree path {relative_path!r} is missing, raced away, or unreadable"
+            )
+        if target.is_symlink():
+            try:
+                dest = os.readlink(target)
+                return f"symlink:{dest}"
+            except OSError as error:
+                raise SupervisorError(f"could not read symlink {relative_path}: {error}") from None
+        if target.is_dir():
+            return "directory"
+        hasher = hashlib.sha256()
+        try:
+            with target.open("rb") as handle:
+                while chunk := handle.read(65536):
+                    hasher.update(chunk)
+        except OSError as error:
+            raise SupervisorError(
+                f"could not read working-tree file {relative_path}: {error}"
+            ) from None
+        return hasher.hexdigest()
+
+    def _parse_worktree_status(self, raw_status: str) -> list[tuple[str, str, str | None]]:
+        """Parse git status --porcelain=v1 -z entries safely."""
+        tokens = raw_status.split("\0")
+        entries: list[tuple[str, str, str | None]] = []
+        idx = 0
+        while idx < len(tokens):
+            token = tokens[idx]
+            if not token:
+                idx += 1
+                continue
+            if len(token) < 4 or token[2] != " ":
+                raise SupervisorError(f"malformed git status entry: {token!r}")
+            status = token[:2]
+            path = token[3:]
+            orig_path: str | None = None
+            if "R" in status or "C" in status:
+                idx += 1
+                if idx < len(tokens):
+                    orig_path = tokens[idx]
+            entries.append((status, path, orig_path))
+            idx += 1
+        return entries
+
+    def _compute_worktree_digest(self, raw_status: str) -> str:
+        """Digest working-tree status and actual file bytes without leaking secrets."""
+        entries = self._parse_worktree_status(raw_status)
+        if not entries:
+            return _digest("")
+        entries.sort(key=lambda item: item[1])
+        hasher = hashlib.sha256()
+        for status, path, orig_path in entries:
+            if re.search(r"\\x[0-9a-fA-F]{2}", path) or (
+                orig_path and re.search(r"\\x[0-9a-fA-F]{2}", orig_path)
+            ):
+                raise SupervisorError(
+                    f"working-tree path {path!r} contains decode-mangled bytes; "
+                    "refusing to compute candidate identity"
+                )
+            file_digest = self._file_content_digest(path, status=status)
+            hasher.update(status.encode("utf-8", errors="surrogateescape"))
+            hasher.update(b"\0")
+            hasher.update(path.encode("utf-8", errors="surrogateescape"))
+            hasher.update(b"\0")
+            hasher.update((orig_path or "").encode("utf-8", errors="surrogateescape"))
+            hasher.update(b"\0")
+            hasher.update(file_digest.encode("utf-8"))
+            hasher.update(b"\0")
+        return hasher.hexdigest()
+
     def candidate_identity(self) -> dict[str, Any]:
         """Record the candidate commit plus the aggregate working-tree input state."""
         tracked = self._git(("ls-files", "-s"))
@@ -556,7 +648,7 @@ class LocalVerificationHarness:
             "branch": self._git(("rev-parse", "--abbrev-ref", "HEAD")).strip(),
             "dirty": bool(worktree.strip("\0").strip()),
             "tracked_tree_digest": _digest(tracked),
-            "worktree_digest": _digest(worktree),
+            "worktree_digest": self._compute_worktree_digest(worktree),
             "tracked_file_count": len([line for line in tracked.splitlines() if line.strip()]),
         }
 
@@ -765,14 +857,180 @@ class LocalVerificationHarness:
                 )
             time.sleep(1.0)
 
+    def empty_dotenv_path(self) -> Path:
+        """Return the path to a guaranteed empty regular file used to mask .env in containers."""
+        path = self.evidence_root / ".empty-dotenv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink():
+            raise SupervisorError(f"dotenv mask at {path} is a symlink; refusing to mount it")
+        if path.exists() and not path.is_file():
+            raise SupervisorError(
+                f"dotenv mask at {path} is not a regular file; refusing to mount it"
+            )
+        try:
+            path.write_bytes(b"")
+        except OSError as error:
+            raise SupervisorError(f"could not create empty dotenv mask: {error}") from None
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != 0:
+            raise SupervisorError(f"dotenv mask at {path} is not a zero-byte regular file")
+        return path
+
+    def workspace_projection(self) -> list[tuple[Path, str]]:
+        """Build a deterministic workspace projection from Git candidate inputs.
+
+        Binds existing top-level candidate entries to /workspace/<name> paths so
+        /workspace itself remains container-owned, ensuring a nested file mask at
+        /workspace/.env cannot create or alter a host repo_root/.env.
+        """
+        tracked_raw = self._git(("ls-files", "-z"))
+        status_raw = self._git(("status", "--porcelain=v1", "-z", "--untracked-files=all"))
+
+        tracked_paths = [p for p in tracked_raw.split("\0") if p]
+        status_entries = self._parse_worktree_status(status_raw)
+
+        for path in tracked_paths:
+            if re.search(r"\\x[0-9a-fA-F]{2}", path):
+                raise SupervisorError(
+                    f"tracked path {path!r} contains decode-mangled bytes; "
+                    "refusing to build workspace projection"
+                )
+        for status, path, orig_path in status_entries:
+            if re.search(r"\\x[0-9a-fA-F]{2}", path) or (
+                orig_path and re.search(r"\\x[0-9a-fA-F]{2}", orig_path)
+            ):
+                raise SupervisorError(
+                    f"working-tree path {path!r} contains decode-mangled bytes; "
+                    "refusing to build workspace projection"
+                )
+
+        deleted_paths: set[str] = set()
+        working_paths: list[str] = []
+        for status, path, orig_path in status_entries:
+            if "D" in status:
+                deleted_paths.add(path)
+                if orig_path:
+                    deleted_paths.add(orig_path)
+            if status == "??" or status[1] in ("R", "C"):
+                working_paths.append(path)
+            if status[1] == "R" and orig_path:
+                deleted_paths.add(orig_path)
+
+        all_candidate_paths = sorted(set(tracked_paths) | set(working_paths))
+
+        for path in all_candidate_paths:
+            posix_path = PurePosixPath(path.replace("\\", "/"))
+            if posix_path.is_absolute() or ".." in posix_path.parts:
+                raise SupervisorError(
+                    f"candidate path {path!r} is absolute or escapes repository root; "
+                    "refusing to build workspace projection"
+                )
+            win_path = PureWindowsPath(path)
+            if win_path.is_absolute() or win_path.drive:
+                raise SupervisorError(
+                    f"candidate path {path!r} is absolute or specifies a drive; "
+                    "refusing to build workspace projection"
+                )
+
+            host_file = self.repo_root / path
+            if not host_file.exists() and not host_file.is_symlink() and path not in deleted_paths:
+                raise SupervisorError(
+                    f"candidate source entry {path!r} is missing from the working tree and not explained by deletion"
+                )
+
+        top_candidates: set[str] = set()
+        for path in all_candidate_paths:
+            posix_path = PurePosixPath(path.replace("\\", "/"))
+            if not posix_path.parts:
+                continue
+            top_candidates.add(posix_path.parts[0])
+
+        projected: list[tuple[Path, str]] = []
+        for top_name in sorted(top_candidates):
+            if top_name in (".git", ".llm-output"):
+                continue
+            if is_root_dotenv_secret(top_name):
+                continue
+
+            host_entry = self.repo_root / top_name
+            if not host_entry.exists() and not host_entry.is_symlink():
+                # Top-level entry does not exist on disk because all entries under it were deleted
+                continue
+
+            if host_entry.is_symlink():
+                try:
+                    resolved = host_entry.resolve()
+                except (OSError, RuntimeError) as error:
+                    raise SupervisorError(
+                        f"top-level symlink {top_name!r} could not be resolved: {error}"
+                    ) from None
+
+                try:
+                    relative_resolved = resolved.relative_to(self.repo_root.resolve())
+                except ValueError:
+                    raise SupervisorError(
+                        f"top-level symlink {top_name!r} resolves outside repository root to {resolved}"
+                    ) from None
+
+                if not relative_resolved.parts:
+                    raise SupervisorError(
+                        f"top-level symlink {top_name!r} resolves to the repository root"
+                    )
+                rel_parts = PurePosixPath(relative_resolved.as_posix()).parts
+                if rel_parts:
+                    target_top = rel_parts[0]
+                    if (
+                        target_top in (".git", ".llm-output")
+                        or is_root_dotenv_secret(target_top)
+                        or target_top not in top_candidates
+                    ):
+                        raise SupervisorError(
+                            f"top-level symlink {top_name!r} resolves outside candidate entries to {relative_resolved}"
+                        )
+
+                if not resolved.exists():
+                    raise SupervisorError(
+                        f"top-level symlink {top_name!r} points to non-existent target {resolved}"
+                    )
+                mount_source = resolved
+            else:
+                mount_source = host_entry.resolve()
+
+            if not (mount_source.is_dir() or mount_source.is_file()):
+                raise SupervisorError(
+                    f"top-level candidate entry {top_name!r} is not a regular file or directory"
+                )
+            container_mount_path = f"{CONTROLLER_MOUNT_TARGET}/{top_name}"
+            projected.append((mount_source, container_mount_path))
+
+        return projected
+
     def controller_argv(
         self,
         controller_name: str,
         postgres_name: str,
         image_id: str,
         argv: list[str],
+        *,
+        projection: list[tuple[Path, str]] | None = None,
     ) -> list[str]:
         """Build the controller container invocation for one command."""
+        empty_dotenv = self.empty_dotenv_path()
+        if (
+            empty_dotenv.is_symlink()
+            or not empty_dotenv.is_file()
+            or empty_dotenv.stat().st_size != 0
+        ):
+            raise SupervisorError(
+                f"dotenv mask at {empty_dotenv} is not a zero-byte regular file; refusing to mount it"
+            )
+        empty_dotenv_resolved = empty_dotenv.resolve()
+        active_projection = self.workspace_projection() if projection is None else projection
+        mount_args: list[str] = []
+        for host_path, container_path in active_projection:
+            mount_args.extend(["--volume", f"{host_path}:{container_path}"])
+        mount_args.extend(
+            ["--volume", f"{empty_dotenv_resolved}:{CONTROLLER_MOUNT_TARGET}/.env:ro"]
+        )
         return [
             "docker",
             "run",
@@ -783,8 +1041,7 @@ class LocalVerificationHarness:
             f"container:{postgres_name}",
             "--user",
             CONTROLLER_USER,
-            "--volume",
-            f"{self.repo_root}:{CONTROLLER_MOUNT_TARGET}",
+            *mount_args,
             "--workdir",
             CONTROLLER_MOUNT_TARGET,
             "--env",
@@ -799,13 +1056,63 @@ class LocalVerificationHarness:
             *argv,
         ]
 
-    def _container_evidence_path(self, evidence_dir: Path) -> str | None:
-        """Map an evidence directory into the controller mount, if it is inside it."""
-        try:
-            relative = evidence_dir.resolve().relative_to(self.repo_root.resolve())
-        except ValueError:
-            return None
-        return f"{CONTROLLER_MOUNT_TARGET}/{relative.as_posix()}"
+    def _extract_container_junit(
+        self,
+        *,
+        record: dict[str, Any],
+        log_dir: Path,
+        controller_name: str,
+        container_junit_path: str,
+        host_junit_path: Path,
+        junit_name: str,
+        step_result: CommandResult,
+    ) -> None:
+        """Extract recorded JUnit artifact from the controller to the host evidence path."""
+        if (
+            step_result.returncode
+            in (
+                RUNNER_TIMEOUT_RETURN_CODE,
+                RUNNER_CANCELLED_RETURN_CODE,
+                RUNNER_LAUNCH_FAILURE_RETURN_CODE,
+            )
+            or step_result.returncode in DOCKER_RUN_FAILURE_RETURN_CODES
+        ):
+            return
+
+        if host_junit_path.is_symlink() or host_junit_path.exists():
+            raise SupervisorError(f"pre-existing destination for JUnit artifact: {host_junit_path}")
+
+        cp_result = self.execute_step(
+            record,
+            log_dir=log_dir,
+            name="Extract controller JUnit artifact",
+            argv=[
+                "docker",
+                "cp",
+                f"{controller_name}:{container_junit_path}",
+                str(host_junit_path),
+            ],
+            cwd=self.repo_root,
+            env=None,
+            timeout=120.0,
+        )
+
+        if cp_result.returncode != 0:
+            raise SupervisorError(
+                "failed to extract recorded JUnit artifact from controller: "
+                f"{_first_line(cp_result)}"
+            )
+
+        if (
+            host_junit_path.is_symlink()
+            or not host_junit_path.is_file()
+            or host_junit_path.stat().st_size == 0
+        ):
+            raise SupervisorError(
+                "extracted JUnit artifact is missing, empty, or not a regular file"
+            )
+
+        record["run"]["junit_artifact"] = junit_name
 
     def _record_controller_identity(
         self,
@@ -815,17 +1122,23 @@ class LocalVerificationHarness:
         postgres_name: str,
         image_id: str,
         log_dir: Path,
+        projection: list[tuple[Path, str]],
     ) -> dict[str, Any]:
         if CONTROLLER_UID == SANDBOX_UID:
             raise SupervisorError(
                 f"the controller identity must differ from the sandbox identity ({CONTROLLER_UID})"
             )
+        empty_dotenv_resolved = self.empty_dotenv_path().resolve()
         argv = self.controller_argv(
             controller_name,
             postgres_name,
             image_id,
             ["python3", "-c", CONTROLLER_PROBE_CODE],
+            projection=projection,
         )
+        mounts = [f"{host_path}:{container_path}" for host_path, container_path in projection] + [
+            f"{empty_dotenv_resolved}:{CONTROLLER_MOUNT_TARGET}/.env:ro"
+        ]
         result = self.execute_step(
             record,
             log_dir=log_dir,
@@ -834,7 +1147,13 @@ class LocalVerificationHarness:
             cwd=self.repo_root,
             env=None,
             timeout=300.0,
-            container={"image": image_id, "user": CONTROLLER_USER, "init": True},
+            container={
+                "image": image_id,
+                "user": CONTROLLER_USER,
+                "init": True,
+                "network": f"container:{postgres_name}",
+                "mounts": mounts,
+            },
         )
         if result.returncode != 0:
             raise SupervisorError(f"controller identity probe failed: {_first_line(result)}")
@@ -862,6 +1181,10 @@ class LocalVerificationHarness:
             )
         if values.get("uv_lock_present") != "True":
             raise SupervisorError("controller must see the repository uv.lock at /workspace")
+        if values.get("dotenv_empty") != "True":
+            raise SupervisorError(
+                "controller must see a disabled or empty .env file at /workspace/.env"
+            )
         return {
             "uid": uid,
             "gid": gid,
@@ -870,6 +1193,7 @@ class LocalVerificationHarness:
             "init_process": init_process,
             "python": python,
             "pytest": values.get("pytest", ""),
+            "dotenv_isolated": True,
         }
 
     def cleanup(self, run_id: str) -> dict[str, Any]:
@@ -1015,11 +1339,12 @@ class LocalVerificationHarness:
         pytest_argv: list[str],
         junit_artifact: str | None,
         result: CommandResult,
+        check_no_tests: bool = True,
     ) -> None:
         """Share the pytest bookkeeping both selection paths must agree on."""
         record["run"]["pytest_argv"] = pytest_argv
         record["run"]["junit_artifact"] = junit_artifact
-        if result.returncode == PYTEST_NO_TESTS_COLLECTED:
+        if check_no_tests and result.returncode == PYTEST_NO_TESTS_COLLECTED:
             raise ConfigurationError(
                 "the requested selection matched no tests; check the focused targets"
             )
@@ -1037,6 +1362,7 @@ class LocalVerificationHarness:
         junit_argument: str | None,
         wrap_argv: Callable[[list[str]], list[str]],
         container: dict[str, Any] | None,
+        check_no_tests: bool = True,
     ) -> CommandResult:
         """Run one pytest step; the host and container paths differ only in wrapping."""
         pytest_argv = [*step.prefix, *targets, *step.suffix]
@@ -1057,6 +1383,7 @@ class LocalVerificationHarness:
             pytest_argv=pytest_argv,
             junit_artifact=junit_artifact,
             result=result,
+            check_no_tests=check_no_tests,
         )
         return result
 
@@ -1139,6 +1466,7 @@ class LocalVerificationHarness:
                 record["environment"]["postgres"]["readiness"] = self.wait_for_postgres(
                     postgres["name"]
                 )
+                projection = self.workspace_projection()
                 record["environment"]["controller"] = self._record_controller_identity(
                     record,
                     # The probe keeps its own name: each controller step is an
@@ -1147,12 +1475,16 @@ class LocalVerificationHarness:
                     postgres_name=postgres["name"],
                     image_id=image["id"],
                     log_dir=log_dir,
+                    projection=projection,
                 )
                 step = selection.pytest_step
                 junit_name = f"junit-{slugify(step.name)}.xml"
-                # JUnit output is written through the mounted workspace so the host
-                # keeps the structured per-test outcomes next to the raw logs.
-                container_evidence = self._container_evidence_path(evidence_dir)
+                container_junit_path = f"/tmp/{junit_name}"
+                host_junit_path = evidence_dir / junit_name
+                empty_dotenv_resolved = self.empty_dotenv_path().resolve()
+                mounts = [
+                    f"{host_path}:{container_path}" for host_path, container_path in projection
+                ] + [f"{empty_dotenv_resolved}:{CONTROLLER_MOUNT_TARGET}/.env:ro"]
                 result = self._run_pytest_step(
                     record,
                     log_dir=log_dir,
@@ -1160,24 +1492,39 @@ class LocalVerificationHarness:
                     targets=targets,
                     timeout=request.timeout or step.timeout,
                     env=None,
-                    junit_artifact=junit_name if container_evidence is not None else None,
-                    junit_argument=(
-                        f"{container_evidence}/{junit_name}"
-                        if container_evidence is not None
-                        else None
-                    ),
+                    junit_artifact=None,
+                    junit_argument=container_junit_path,
                     wrap_argv=lambda argv: self.controller_argv(
-                        controller_name, postgres["name"], image["id"], argv
+                        controller_name,
+                        postgres["name"],
+                        image["id"],
+                        argv,
+                        projection=projection,
                     ),
                     container={
                         "image": image["id"],
                         "user": CONTROLLER_USER,
                         "init": True,
                         "network": f"container:{postgres['name']}",
-                        "mount": f"{self.repo_root}:{CONTROLLER_MOUNT_TARGET}",
+                        "mounts": mounts,
                     },
+                    check_no_tests=False,
                 )
-                outcome, exit_code = self._step_failure(result, record["steps"][-1]) or (
+                pytest_step_record = record["steps"][-1]
+                self._extract_container_junit(
+                    record=record,
+                    log_dir=log_dir,
+                    controller_name=controller_name,
+                    container_junit_path=container_junit_path,
+                    host_junit_path=host_junit_path,
+                    junit_name=junit_name,
+                    step_result=result,
+                )
+                if result.returncode == PYTEST_NO_TESTS_COLLECTED:
+                    raise ConfigurationError(
+                        "the requested selection matched no tests; check the focused targets"
+                    )
+                outcome, exit_code = self._step_failure(result, pytest_step_record) or (
                     "passed",
                     EXIT_PASSED,
                 )

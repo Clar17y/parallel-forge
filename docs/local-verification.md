@@ -56,10 +56,26 @@ Environment:
   baked from `uv.lock` at build time, so a recorded run performs no package
   resolution and needs no outbound network.
 - The controller container is started with `--init` and is checked at run time for
-  UID/GID 1000, an init reaper as PID 1, Python 3.14 and the mounted `uv.lock`.
-  UID 1000 is deliberately distinct from the Forge sandbox identity 10001 in
-  `Dockerfile.runner`, which keeps private-stage and ACL fixtures valid. A mismatch
-  fails the run before any test executes.
+  UID/GID 1000, an init reaper as PID 1, Python 3.14, the mounted `uv.lock` and an
+  empty `/workspace/.env`. UID 1000 is deliberately distinct from the Forge sandbox
+  identity 10001 in `Dockerfile.runner`, which keeps private-stage and ACL fixtures
+  valid. A mismatch fails the run before any test executes.
+- The harness does not bind the host repository root directly to `/workspace`. Instead,
+  it builds a deterministic workspace projection from Git candidate inputs (tracked
+  plus nonignored untracked files) and binds existing top-level candidate entries to
+  their corresponding `/workspace/<name>` paths. This keeps `/workspace` itself
+  container-owned so mounting the empty mask at `/workspace/.env:ro` cannot create or
+  alter a host `repo_root/.env` mountpoint.
+- The repository-root `.env` and other root `.env.*` secret variants are explicitly
+  excluded from projection, while preserving the tracked `.env.example` fixture. Local
+  ignored state (such as `.git` metadata, `.llm-output` evidence, virtual environments,
+  and local caches) and root dotenv secrets are not mounted. An empty read-only file is
+  mounted over `/workspace/.env:ro` for every controller invocation (both the identity
+  probe and the test runner). Local development secrets from an ignored repository-root
+  `.env` never enter argv, logs, records or container-visible files, and the harness
+  does not materialize a host `.env` mountpoint. Ignored files within projected top-level
+  directories remain readable through those directory binds; runtime Settings loads
+  only the root file.
 - PostgreSQL 17 (pinned by repository digest) runs as an ephemeral container with
   no network, sharing only the
   controller's network namespace. The fixtures' fixed loopback endpoint
@@ -69,14 +85,21 @@ Environment:
 
 Evidence and policy:
 
-- Candidate identity is the HEAD commit plus aggregate digests of the tracked tree
-  and the working-tree state, so a later reader can tell whether recorded results
-  still describe the inputs.
+- Candidate identity records the HEAD commit, branch, dirty flag, index/tracked
+  tree digest and an aggregate working-tree digest sensitive to the actual bytes of
+  dirty tracked and untracked files. Raw bytes are hashed safely with NUL path
+  framing, and file contents or secrets are never persisted in evidence records.
 - Every command is recorded as an argv list with its exit code, duration, timeout,
   resolved immutable image IDs and raw stdout/stderr log paths, plus JUnit output
   for pytest selections. Recorded output and error lines pass through the
   repository's `redact_secrets`, and the recorded PostgreSQL argv carries a
   redacted password, so evidence never publishes a credential-shaped value.
+  Container pytest writes JUnit output to container storage (`/tmp`), and the
+  harness extracts it to the documented host evidence directory as a recorded
+  `docker cp` step so runs succeed even when the host-created evidence directory is
+  not writable by UID 1000, without weakening host permissions. Missing, empty, or
+  failed artifact extraction is treated honestly as an environment error rather
+  than a test outcome, even when pytest failed.
 - A run never calls a live provider, probes provider quota, reserves budget,
   dispatches GitHub Actions, retries a failed step automatically or expands a
   focused selection. Those guarantees are written into every record.
