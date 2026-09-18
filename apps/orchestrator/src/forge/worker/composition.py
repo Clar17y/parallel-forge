@@ -453,6 +453,8 @@ def compose_worker_handlers(
         ),
     )
 
+    search_ranking = SearchRankingConfiguration.from_settings(settings, redactor=shared_redactor)
+
     if agent_gateway is None:
 
         def legacy_google_adapter(route: object) -> GoogleAdkRuntimeAdapter | None:
@@ -500,9 +502,7 @@ def compose_worker_handlers(
             prompt_loader=prompt_loader,
             redactor=shared_redactor,
             runtime_factory=runtime_factory,
-            search_ranking=SearchRankingConfiguration.from_settings(
-                settings, redactor=shared_redactor
-            ),
+            search_ranking=search_ranking,
         )
     else:
         runtime_factory = AgentRuntimeFactory(subscription_adapters=subscription_adapters)
@@ -512,7 +512,7 @@ def compose_worker_handlers(
         settings, session_factory, artifact_store, shared_redactor, clock
     )
     delivery_gateway = resolved_gateway
-    delivery_ranking = SearchRankingConfiguration.from_settings(settings, redactor=shared_redactor)
+    delivery_ranking = search_ranking
     if agent_gateway is None:
 
         async def delivery_tools(
@@ -670,6 +670,7 @@ def compose_worker_handlers(
         artifacts=artifact_store,
         delivery=delivery_dependencies,
         redactor=shared_redactor,
+        search_ranking=search_ranking,
     )
 
     async def subscription_snapshot(

@@ -103,6 +103,57 @@ def test_ranking_on_reports_the_matches_actually_withheld() -> None:
     assert measurement.projected_delivered == 35
 
 
+def test_below_floor_ranking_counts_as_ranked_and_aggregates_units_and_duration() -> None:
+    records = [
+        _record(
+            {
+                "mode": "on",
+                "status": "below_floor",
+                "match_count": 40,
+                "returned_count": 40,
+                "input_units": 500,
+                "output_units": 20,
+                "duration_ms": 250,
+            }
+        ),
+        _record(
+            {
+                "mode": "on",
+                "status": "ranked",
+                "match_count": 30,
+                "returned_count": 10,
+                "input_units": 300,
+                "output_units": 15,
+                "duration_ms": 150,
+            }
+        ),
+        _record(
+            {
+                "mode": "on",
+                "status": "unavailable",
+                "match_count": 20,
+                "returned_count": 20,
+            }
+        ),
+    ]
+
+    (measurement,) = measure_search_ranking(records)
+
+    assert measurement.mode == "on"
+    assert measurement.searches == 3
+    assert measurement.ranked == 2
+    assert measurement.unavailable == 1
+    assert measurement.matches_offered == 90
+    assert measurement.matches_delivered == 70
+    assert measurement.matches_withheld == 20
+    assert measurement.delivered_fraction == 70 / 90
+    assert measurement.projected_delivered == 70
+    assert measurement.projected_fraction == 70 / 90
+    assert measurement.ranker_input_units == 800
+    assert measurement.ranker_output_units == 35
+    assert measurement.ranker_duration_ms == 400
+
+
 def test_modes_are_reported_separately_and_other_tools_are_ignored() -> None:
     records = [
         _record({"mode": "off", "match_count": 10, "returned_count": 10}),

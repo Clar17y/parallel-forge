@@ -6,16 +6,25 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from forge.application.ports.search_ranking import SearchRankingMode
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
 from forge.domain.subscription import SPECIALIST_ALLOWED_TOOLS, SpecialistPurpose
 from forge.domain.tool import ToolName, repository_resource_identity
+from forge.ranking.configuration import SearchRankingConfiguration
 from forge.worker.subscription_tools import SubscriptionToolServiceFactory
 from test_subscription_attempt_runner import invocation
 
 
-def case(tmp_path, *, purpose=SpecialistPurpose.PRIMARY, planning=False):
+def case(
+    tmp_path,
+    *,
+    purpose=SpecialistPurpose.PRIMARY,
+    planning=False,
+    search_ranking=None,
+    task_text=None,
+):
     admission, original = invocation()
     project_id = uuid4()
     policy = ProjectPolicy(
@@ -59,7 +68,11 @@ def case(tmp_path, *, purpose=SpecialistPurpose.PRIMARY, planning=False):
             if planning
             else identity.worktree_name,
         ),
-        untrusted_context={"repository_path": "Z:/attacker", "policy": {"version": 999}},
+        untrusted_context={
+            "repository_path": "Z:/attacker",
+            "policy": {"version": 999},
+            **({"task": {"text": task_text}} if task_text is not None else {}),
+        },
     )
     record = SimpleNamespace(
         project_id=project_id,
@@ -117,7 +130,12 @@ def case(tmp_path, *, purpose=SpecialistPurpose.PRIMARY, planning=False):
         environment=environment,
         operation_executor=object(),
     )
-    factory = SubscriptionToolServiceFactory(work_factory, artifacts=object(), delivery=delivery)
+    factory = SubscriptionToolServiceFactory(
+        work_factory,
+        artifacts=object(),
+        delivery=delivery,
+        search_ranking=search_ranking,
+    )
     return factory, admission, request, run, project, record, calls, delivery
 
 
@@ -200,3 +218,21 @@ async def test_factory_requires_persisted_invocation_context(tmp_path, missing):
     with pytest.raises(ValueError, match="differs from admission"):
         await factory(admission, request)
     assert not calls
+
+
+@pytest.mark.parametrize("planning", [False, True])
+async def test_factory_supplies_search_ranking_and_objective(tmp_path, planning):
+    ranker = object()
+    ranking = SearchRankingConfiguration(mode=SearchRankingMode.ON, top_k=7, ranker=ranker)
+    factory, admission, request, _, _, _, _, _ = case(
+        tmp_path,
+        planning=planning,
+        search_ranking=ranking,
+        task_text="Implement retry backoff",
+    )
+    assert factory._search_ranking is ranking
+    service = await factory(admission, request)
+    assert service._search_ranker is ranker
+    assert service._search_ranking_mode is SearchRankingMode.ON
+    assert service._search_ranking_top_k == 7
+    assert service._search_objective == "Implement retry backoff"

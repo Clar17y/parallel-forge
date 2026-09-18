@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from forge.application.ports.repository import SearchMatch
@@ -13,10 +14,20 @@ from forge.application.ports.search_ranking import (
     SearchRankingRequest,
     SearchRankingUnavailable,
 )
-from forge.application.services.tools import ControlledToolService
-from forge.domain.tool import ToolCallStatus, ToolName, ToolRequest
+from forge.application.services.tools import ControlledToolService, _authorized_agent_role
+from forge.domain.actor import AgentRole
+from forge.domain.subscription import SpecialistPurpose
+from forge.domain.tool import (
+    SubscriptionToolAuthorizationContext,
+    ToolAuthorization,
+    ToolCallStatus,
+    ToolName,
+    ToolRequest,
+)
 from forge.tools.repository import RepositoryReader
 from test_planner_tools import (  # type: ignore[import-not-found]
+    RUN_ID,
+    TASK_ID,
     _context,
     _project,
     _TrackingReader,
@@ -271,3 +282,40 @@ async def test_ranking_is_skipped_when_the_reader_returns_nothing_to_rank(
 
     assert list(result.metadata["matches"]) == []
     assert ranker.requests == []
+
+
+@pytest.mark.parametrize(
+    ("purpose", "expected_role"),
+    [
+        (SpecialistPurpose.PRIMARY, AgentRole.DEVELOPER),
+        (SpecialistPurpose.ROUTINE_IMPLEMENTATION, AgentRole.DEVELOPER),
+        (SpecialistPurpose.COMPLEX_IMPLEMENTATION, AgentRole.DEVELOPER),
+        (SpecialistPurpose.INTEGRATION, AgentRole.DEVELOPER),
+        (SpecialistPurpose.EXPLORATION, AgentRole.DEVELOPER),
+        (SpecialistPurpose.PLANNING, AgentRole.PLANNER),
+        (SpecialistPurpose.INDEPENDENT_REVIEW, AgentRole.REVIEWER),
+        (SpecialistPurpose.SECURITY, AgentRole.REVIEWER),
+        (SpecialistPurpose.VERIFICATION, AgentRole.REVIEWER),
+    ],
+)
+def test_subscription_role_adaptation_maps_all_specialist_purposes(
+    purpose: SpecialistPurpose,
+    expected_role: AgentRole,
+) -> None:
+    context = SubscriptionToolAuthorizationContext(
+        run_id=RUN_ID,
+        task_id=TASK_ID,
+        attempt_id=uuid4(),
+        worktree_id="forge-test",
+        purpose=purpose,
+        policy_version=1,
+        permitted_tools=frozenset({ToolName.REPOSITORY_SEARCH}),
+        invocation_id=uuid4(),
+    )
+    authorization = ToolAuthorization(
+        context=context,
+        request=ToolRequest(name=ToolName.REPOSITORY_SEARCH, arguments={"literal": "x"}),
+    )
+    role = _authorized_agent_role(authorization)
+    assert role is not None
+    assert role is expected_role

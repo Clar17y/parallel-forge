@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import TypedDict
+from typing import TypedDict, cast
 from uuid import UUID, uuid4
 
 from forge.application.adapters.git_commit import (
@@ -199,7 +199,7 @@ class _ToolLineage(TypedDict):
 
 
 def _tool_lineage(context: _ToolContext) -> _ToolLineage:
-    if isinstance(context, SubscriptionToolAuthorizationContext):
+    if type(context) is SubscriptionToolAuthorizationContext:
         return {
             "agent_execution_id": None,
             "step_id": None,
@@ -208,10 +208,11 @@ def _tool_lineage(context: _ToolContext) -> _ToolLineage:
             "subscription_attempt_id": context.attempt_id,
             "subscription_purpose": context.purpose.value,
         }
+    legacy_context = cast(ToolAuthorizationContext, context)
     return {
-        "agent_execution_id": _required_uuid(context.agent_execution_id),
-        "step_id": context.step_id,
-        "role": context.role,
+        "agent_execution_id": _required_uuid(legacy_context.agent_execution_id),
+        "step_id": legacy_context.step_id,
+        "role": legacy_context.role,
         "subscription_task_id": None,
         "subscription_attempt_id": None,
         "subscription_purpose": None,
@@ -4027,10 +4028,28 @@ def _file_read(value: FileRead) -> dict[str, object]:
     }
 
 
-def _authorized_agent_role(authorization: ToolAuthorization) -> AgentRole | None:
-    """Return the agent role, or None for subscription specialist authority."""
+_SPECIALIST_PURPOSE_ROLE_MAP: Mapping[SpecialistPurpose, AgentRole] = MappingProxyType(
+    {
+        SpecialistPurpose.PRIMARY: AgentRole.DEVELOPER,
+        SpecialistPurpose.ROUTINE_IMPLEMENTATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.COMPLEX_IMPLEMENTATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.INTEGRATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.EXPLORATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.PLANNING: AgentRole.PLANNER,
+        SpecialistPurpose.INDEPENDENT_REVIEW: AgentRole.REVIEWER,
+        SpecialistPurpose.SECURITY: AgentRole.REVIEWER,
+        SpecialistPurpose.VERIFICATION: AgentRole.REVIEWER,
+    }
+)
 
-    if type(authorization.context) is not ToolAuthorizationContext:
+
+def _authorized_agent_role(authorization: ToolAuthorization) -> AgentRole | None:
+    """Return the agent role, adapting subscription specialist authority."""
+
+    context = authorization.context
+    if isinstance(context, SubscriptionToolAuthorizationContext):
+        return _SPECIALIST_PURPOSE_ROLE_MAP.get(context.purpose)
+    if type(context) is not ToolAuthorizationContext:
         return None
     return authorization.role
 

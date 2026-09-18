@@ -125,7 +125,10 @@ SubscriptionInstallationSpec = Annotated[
 
 
 class SubscriptionInstallationManifest(_ClosedModel):
-    version: Literal[1]
+    # This development-only schema has no deployed users. Requiring the exact
+    # client build changes the wire contract, so advance the version instead of
+    # pretending the old shape is still version 1.
+    version: Literal[2]
     installations: tuple[SubscriptionInstallationSpec, ...] = Field(max_length=32)
 
     @model_validator(mode="after")

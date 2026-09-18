@@ -13,6 +13,7 @@ from forge.agents.codex_conformance import (
     CodexOfficialConformanceHarness,
     _LoopbackResponses,
     _response_sequence,
+    _user_agent_matches_client_version,
     required_codex_live_scopes,
 )
 from forge.agents.codex_gateway import CodexInstallation, codex_account_identity
@@ -191,7 +192,38 @@ async def test_official_client_denies_native_surfaces_and_round_trips_one_forge_
     assert result.side_effects_absent and not result.credentials_sent
     assert result.terminal_proof.permits_decision
     assert not result.publishable and not result.live_provider_call
+    assert result.client_version == installation.client_version
     sanitized = result.sanitized_payload()
+    assert sanitized["installation"]["client_version"] == installation.client_version
     assert sanitized["verifier"]["version"] != "1"
     payload = json.dumps(sanitized, sort_keys=True)
     assert str(tmp_path) not in payload and "codex@example.invalid" not in payload
+
+
+@pytest.mark.parametrize(
+    ("user_agent", "expected"),
+    [
+        ("codex/0.154.0 (x86_64-pc-windows-msvc)", True),
+        ("codex/0.154.0", True),
+        ("codex/0.153.4 (x86_64-pc-windows-msvc)", False),
+        ("codex/0.99.0 (x86_64-pc-windows-msvc)", False),
+        ("codex/10.154.0", False),
+        ("codex/0.154.0.1", False),
+        ("unknown-client/1.0", False),
+        (None, False),
+        (12345, False),
+    ],
+    ids=[
+        "configured_match",
+        "bare_version_match",
+        "stale_default",
+        "different_version",
+        "prefix_version_mismatch",
+        "suffix_version_mismatch",
+        "no_version",
+        "none",
+        "non_string",
+    ],
+)
+def test_user_agent_matches_client_version(user_agent: object, expected: bool) -> None:
+    assert _user_agent_matches_client_version(user_agent, "0.154.0") is expected

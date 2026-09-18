@@ -28,6 +28,16 @@ NEWER = "2.1.268"
 OLDER = "2.1.263"
 
 
+def test_required_client_pins_use_a_new_manifest_schema() -> None:
+    """The unused schema-v1 shape is retired instead of migrated in development."""
+
+    with pytest.raises(ValueError):
+        SubscriptionInstallationManifest.model_validate(
+            {"version": 1, "installations": ()},
+            strict=True,
+        )
+
+
 def _installation(tmp_path: Path, version: str) -> ClaudeInstallation:
     executable = tmp_path / "claude.cmd"
     executable.write_text("echo claude\n", encoding="utf-8")
@@ -115,7 +125,7 @@ def test_the_manifest_carries_the_version_beside_the_digest() -> None:
     manifest = SubscriptionInstallationManifest.model_validate_json(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "installations": [
                     {
                         "client": "claude_code",

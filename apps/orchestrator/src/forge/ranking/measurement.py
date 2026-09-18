@@ -58,6 +58,9 @@ class SearchRankingMeasurement:
         return self.projected_delivered / self.matches_offered
 
 
+_COMPLETED_RANKING_STATUSES = frozenset({"ranked", "below_floor"})
+
+
 def measure_search_ranking(
     records: Iterable[ToolCallRecord],
 ) -> tuple[SearchRankingMeasurement, ...]:
@@ -87,7 +90,7 @@ def measure_search_ranking(
         bucket["projected_delivered"] = bucket.get("projected_delivered", 0) + projected
         if ranking.get("status") == "unavailable":
             bucket["unavailable"] = bucket.get("unavailable", 0) + 1
-        if ranking.get("status") == "ranked":
+        if ranking.get("status") in _COMPLETED_RANKING_STATUSES:
             bucket["ranked"] = bucket.get("ranked", 0) + 1
             bucket["ranker_input_units"] = bucket.get("ranker_input_units", 0) + _count(
                 ranking.get("input_units")

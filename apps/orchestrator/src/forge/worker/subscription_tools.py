@@ -1,6 +1,6 @@
 """Resolve controlled adapters from durable run policy, never provider context."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from forge.application.ports.artifacts import ArtifactStore
@@ -16,8 +16,23 @@ from forge.domain.subscription import SpecialistPurpose
 from forge.domain.subscription_execution import SUBSCRIPTION_WORK_STATES
 from forge.domain.tool import ToolName, repository_resource_identity
 from forge.observability.redaction import Redactor
+from forge.ranking.configuration import SearchRankingConfiguration
 from forge.tools.repository import RepositoryReader
 from forge.worker.delivery_runtime import DeliveryRuntime
+
+
+def _subscription_search_objective(request: SubscriptionInvocationRequest) -> str | None:
+    """Return the durable human task text, used only to rank search results."""
+
+    context = request.untrusted_context
+    if isinstance(context, Mapping):
+        task_info = context.get("task")
+        if isinstance(task_info, Mapping):
+            text = task_info.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return None
+
 
 _READS = frozenset(
     {
@@ -46,9 +61,13 @@ class SubscriptionToolServiceFactory:
         artifacts: ArtifactStore,
         delivery: DeliveryRuntime,
         redactor: Redactor | None = None,
+        search_ranking: SearchRankingConfiguration | None = None,
     ) -> None:
         self._factory, self._artifacts = work_factory, artifacts
         self._delivery, self._redactor = delivery, redactor
+        self._search_ranking = (
+            search_ranking if search_ranking is not None else SearchRankingConfiguration()
+        )
 
     async def __call__(
         self,
@@ -90,6 +109,8 @@ class SubscriptionToolServiceFactory:
                 raise ValueError("subscription tool policy identity differs")
             await work.rollback()
         tools = authority.permitted_tools
+        ranking = self._search_ranking
+        objective = _subscription_search_objective(request)
         if run.state is RunState.PLANNING and (
             request.task.purpose not in (SpecialistPurpose.PRIMARY, SpecialistPurpose.PLANNING)
             or not tools <= _READS
@@ -106,6 +127,10 @@ class SubscriptionToolServiceFactory:
                     secret_paths=policy.effective_secret_paths,
                 ),
                 redactor=self._redactor,
+                search_ranker=ranking.ranker,
+                search_ranking_mode=ranking.mode,
+                search_ranking_top_k=ranking.top_k,
+                search_objective=objective,
             )
         if not run.worktree_path or not run.branch_name or not run.base_sha:
             raise ValueError("subscription managed worktree is absent")
@@ -137,4 +162,8 @@ class SubscriptionToolServiceFactory:
             worktree=tree,
             runner_factory=self._delivery if checks else None,
             command_environment=environment,
+            search_ranker=ranking.ranker,
+            search_ranking_mode=ranking.mode,
+            search_ranking_top_k=ranking.top_k,
+            search_objective=objective,
         )
