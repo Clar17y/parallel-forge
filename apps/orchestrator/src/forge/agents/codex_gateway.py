@@ -20,6 +20,7 @@ from typing import Any, Protocol, cast
 from forge.agents.capability_verification import (
     capability_report,
     capability_scope,
+    validate_client_version,
     validate_installation_identity,
 )
 from forge.agents.client_process import (
@@ -67,6 +68,9 @@ from forge.domain.subscription import AttemptTelemetry, AuthMode, BillingMode
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
 
+# The last build whose isolation conformance was verified in-repo. Installations
+# declare their own client_version; this default only seeds fixtures and
+# offline conformance runs.
 CODEX_CLIENT_VERSION = "0.153.4"
 CODEX_MODEL_CATALOG_DIGEST = "d0361624f53c1a590b6777f825de2ef2fd9381ae2841119845a2c3a7f47fdda8"
 CODEX_MODEL_CATALOG_ARGUMENT = "__FORGE_CODEX_MODEL_CATALOG__"
@@ -163,7 +167,7 @@ class CodexCapabilityReport:
         try:
             identity = capability_identity(
                 scope=scope,
-                client_version=CODEX_CLIENT_VERSION,
+                client_version=installation.client_version,
                 executable_digest=installation.executable_digest,
                 client_home=installation.client_home,
                 account=installation.account,
@@ -172,7 +176,7 @@ class CodexCapabilityReport:
             return False
         return (
             self.supported is True
-            and self.installed_version == CODEX_CLIENT_VERSION
+            and self.installed_version == installation.client_version
             and self.account_kind == "chatgpt"
             and self.billing_allowance_enforced is True
             and self.native_tools_isolated is True
@@ -197,6 +201,7 @@ class CodexInstallation:
     client_home: str = field(repr=False)
     account: str
     executable_digest: str
+    client_version: str = CODEX_CLIENT_VERSION
     quota_limit_id: str | None = None
     script: tuple[str, ...] = ("app-server", "--stdio")
     duration_seconds: float = 30.0
@@ -236,6 +241,7 @@ class CodexInstallation:
             or re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,95}", self.quota_limit_id) is None
         ):
             raise ValueError("Codex quota limit requires an opaque provider identifier")
+        validate_client_version(self.client_version)
         validate_installation_identity(self.account, self.executable_digest)
         if _ACCOUNT_DIGEST.fullmatch(self.account) is None:
             raise ValueError("Codex account requires an opaque SHA-256 identity")

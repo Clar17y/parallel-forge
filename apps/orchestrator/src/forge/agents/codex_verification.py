@@ -181,7 +181,7 @@ class CodexEvidenceVerifier:
 
         identity = capability_identity(
             scope=scope,
-            client_version=CODEX_CLIENT_VERSION,
+            client_version=installation.client_version,
             executable_digest=actual_digest,
             client_home=installation.client_home,
             account=installation.account,
@@ -199,7 +199,7 @@ class CodexEvidenceVerifier:
             return CodexCapabilityReport.unavailable("Codex capability evidence is not trusted")
         return CodexCapabilityReport(
             supported=True,
-            installed_version=CODEX_CLIENT_VERSION,
+            installed_version=installation.client_version,
             account_kind="chatgpt",
             billing_allowance_enforced=True,
             native_tools_isolated=True,
