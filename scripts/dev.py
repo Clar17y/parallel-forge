@@ -361,6 +361,10 @@ class DefaultCommandRunner:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "text": True,
+            # Tool output is UTF-8 (docker, git, pytest); a non-UTF-8 byte must not
+            # crash the reader thread or silently truncate the captured result.
+            "encoding": "utf-8",
+            "errors": "backslashreplace",
         }
 
         if sys.platform == "win32":
@@ -448,6 +452,8 @@ class DefaultCommandRunner:
             "cwd": str(cwd) if cwd else None,
             "env": env,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "backslashreplace",
         }
 
         if sys.platform == "win32":

@@ -1,0 +1,23 @@
+# Keep image build contexts bounded and free of local runtime state.
+.git
+.venv
+.worktrees
+.llm-output
+.superpowers
+.pytest-basetemp
+.pytest_cache
+.mypy_cache
+.ruff_cache
+**/__pycache__
+**/node_modules
+**/.next
+playwright-report
+test-results
+coverage
+htmlcov
+dist
+build
+*.egg-info
+.env
+.env.*
+!.env.example
