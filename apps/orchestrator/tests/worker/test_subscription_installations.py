@@ -36,7 +36,7 @@ def test_closed_manifest_loads_pinned_adapters_and_opaque_quota_mappings(
     manifest.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "installations": [
                     {
                         "client": "codex_app_server",
@@ -47,6 +47,7 @@ def test_closed_manifest_loads_pinned_adapters_and_opaque_quota_mappings(
                         "effort": "low",
                         "account": account,
                         "executable_digest": executable_digest,
+                        "client_version": "0.153.4",
                         "quota": {"account": "personal", "pool": "weekly"},
                         "quota_limit_id": "codex",
                     },
@@ -59,6 +60,7 @@ def test_closed_manifest_loads_pinned_adapters_and_opaque_quota_mappings(
                         "effort": "medium",
                         "account": account,
                         "executable_digest": executable_digest,
+                        "client_version": "2.1.263",
                         "quota": {"account": "review", "pool": "seven-day"},
                         "quota_limit_types": ["seven_day"],
                     },
@@ -71,6 +73,7 @@ def test_closed_manifest_loads_pinned_adapters_and_opaque_quota_mappings(
                         "effort": "medium",
                         "account": account,
                         "executable_digest": executable_digest,
+                        "client_version": "0.60.0",
                         "quota": {"account": "google", "pool": "allowance"},
                     },
                 ],
@@ -172,7 +175,7 @@ def test_absent_and_malformed_manifests_leave_settings_healthy(tmp_path: Path) -
     assert load_subscription_installations(missing, SubscriptionVerifierDependencies()) == ()
 
     malformed_path = tmp_path / "malformed.json"
-    malformed_path.write_text('{"version":1,"version":1,"installations":[]}', encoding="utf-8")
+    malformed_path.write_text('{"version":2,"version":2,"installations":[]}', encoding="utf-8")
     malformed = Settings(subscription_installations_path=malformed_path, _env_file=None)
     assert malformed.subscription_quota_policy.route_pools == ()
     assert load_subscription_installations(malformed, SubscriptionVerifierDependencies()) == ()
@@ -243,7 +246,7 @@ def _codex_manifest(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     home.mkdir()
     executable = Path(sys.executable).resolve(strict=True)
     payload: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "installations": [
             {
                 "client": "codex_app_server",
@@ -254,6 +257,7 @@ def _codex_manifest(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
                 "effort": "low",
                 "account": hashlib.sha256(b"account").hexdigest(),
                 "executable_digest": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                "client_version": "0.153.4",
                 "quota": {"account": "personal", "pool": "weekly"},
             }
         ],

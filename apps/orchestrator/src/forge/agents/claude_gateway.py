@@ -21,6 +21,7 @@ from uuid import uuid4
 from forge.agents.capability_verification import (
     capability_report,
     capability_scope,
+    validate_client_version,
     validate_installation_identity,
 )
 from forge.agents.claude_protocol import ClaudeStreamCodec
@@ -68,6 +69,9 @@ from forge.domain.subscription import AttemptTelemetry, AuthMode, BillingMode, T
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
 
+# The last build whose isolation conformance was verified in-repo. Installations
+# declare their own client_version, so moving a pin is a manifest change with
+# fresh evidence; this default only seeds fixtures and offline conformance runs.
 CLAUDE_CLIENT_VERSION = "2.1.263"
 _ALLOWANCE_WINDOWS = frozenset({"five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"})
 _MANAGED_ISOLATION_SETTINGS: tuple[tuple[str, bool], ...] = (
@@ -378,11 +382,12 @@ def claude_configuration_matches(
     effort: str,
     tools: frozenset[ToolName],
     session_id: str,
+    client_version: str,
 ) -> bool:
     """Require the effective client state to exactly match Forge's launch policy."""
 
     return claude_settings_match(settings, model=model, effort=effort) and claude_init_matches(
-        init, model=model, tools=tools, session_id=session_id
+        init, model=model, tools=tools, session_id=session_id, client_version=client_version
     )
 
 
@@ -411,7 +416,12 @@ def claude_settings_match(settings: Mapping[str, object], *, model: str, effort:
 
 
 def claude_init_matches(
-    init: Mapping[str, object], *, model: str, tools: frozenset[ToolName], session_id: str
+    init: Mapping[str, object],
+    *,
+    model: str,
+    tools: frozenset[ToolName],
+    session_id: str,
+    client_version: str,
 ) -> bool:
     """Require the exact post-turn client capability advertisement."""
 
@@ -419,7 +429,7 @@ def claude_init_matches(
     advertised = init.get("tools")
     return (
         init.get("session_id") == session_id
-        and init.get("claude_code_version") == CLAUDE_CLIENT_VERSION
+        and init.get("claude_code_version") == client_version
         and init.get("model") == model
         and init.get("permissionMode") == "dontAsk"
         and isinstance(advertised, list)
@@ -524,6 +534,7 @@ class ClaudeInstallation:
     client_home: str = field(repr=False)
     account: str
     executable_digest: str
+    client_version: str = CLAUDE_CLIENT_VERSION
     script: tuple[str, ...] = (
         "-p",
         "--input-format",
@@ -559,6 +570,7 @@ class ClaudeInstallation:
             or not self.quota_limit_types <= _ALLOWANCE_WINDOWS
         ):
             raise ValueError("Claude quota binding requires known allowance windows")
+        validate_client_version(self.client_version)
         validate_installation_identity(self.account, self.executable_digest)
         object.__setattr__(self, "script", tuple(self.script))
         object.__setattr__(self, "cwd", str(Path(self.cwd).resolve(strict=True)))
@@ -585,7 +597,7 @@ class ClaudeCapabilityReport:
         try:
             identity = capability_identity(
                 scope=scope,
-                client_version=CLAUDE_CLIENT_VERSION,
+                client_version=installation.client_version,
                 executable_digest=installation.executable_digest,
                 client_home=installation.client_home,
                 account=installation.account,
@@ -593,7 +605,7 @@ class ClaudeCapabilityReport:
         except TypeError, ValueError:
             return False
         return (
-            self.installed_version == CLAUDE_CLIENT_VERSION
+            self.installed_version == installation.client_version
             and self.subscription_auth is True
             and self.model == installation.model
             and self.effort == installation.effort
@@ -1038,6 +1050,7 @@ class ClaudeGateway(SubscriptionGateway):
                 model=self._installation.model,
                 tools=request.authorization.permitted_tools,
                 session_id=thread,
+                client_version=self._installation.client_version,
             ):
                 raise ClaudeConfigurationError("Claude effective isolation differs")
             initialized = True
@@ -1076,6 +1089,7 @@ class ClaudeGateway(SubscriptionGateway):
                     model=self._installation.model,
                     tools=request.authorization.permitted_tools,
                     session_id=thread,
+                    client_version=self._installation.client_version,
                 ):
                     raise ClaudeConfigurationError("Claude effective isolation differs")
                 initialized = True

@@ -13,6 +13,7 @@ from forge.domain.subscription_quota import QuotaPolicy, QuotaPoolKey, QuotaRout
 
 _MAX_MANIFEST_BYTES = 64 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+_CLIENT_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z", re.ASCII)
 
 
 class _ClosedModel(BaseModel):
@@ -44,6 +45,11 @@ class _InstallationSpec(_ClosedModel):
     effort: str = Field(min_length=1, max_length=32)
     account: str
     executable_digest: str
+    # Official clients release near-daily. The exact version an installation
+    # must report lives here beside the digest it identifies, so moving a pin
+    # is an operator configuration change with fresh conformance evidence
+    # rather than a source edit to a safety-critical module.
+    client_version: str = Field(min_length=1, max_length=32)
     quota: InstallationQuota
 
     @field_validator("executable", "cwd", "home", "model", "effort")
@@ -64,6 +70,13 @@ class _InstallationSpec(_ClosedModel):
     @classmethod
     def require_opaque_account(cls, value: str) -> str:
         QuotaPoolKey("configured", value, "configured")
+        return value
+
+    @field_validator("client_version")
+    @classmethod
+    def require_exact_release(cls, value: str) -> str:
+        if _CLIENT_VERSION.fullmatch(value) is None:
+            raise ValueError("client version must be an exact released build")
         return value
 
     @field_validator("executable_digest")
@@ -112,7 +125,10 @@ SubscriptionInstallationSpec = Annotated[
 
 
 class SubscriptionInstallationManifest(_ClosedModel):
-    version: Literal[1]
+    # This development-only schema has no deployed users. Requiring the exact
+    # client build changes the wire contract, so advance the version instead of
+    # pretending the old shape is still version 1.
+    version: Literal[2]
     installations: tuple[SubscriptionInstallationSpec, ...] = Field(max_length=32)
 
     @model_validator(mode="after")

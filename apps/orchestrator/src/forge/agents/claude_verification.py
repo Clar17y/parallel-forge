@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from forge.agents import claude_gateway
 from forge.agents.capability_verification import stable_executable_digest
 from forge.agents.claude_gateway import (
-    CLAUDE_CLIENT_VERSION,
     CLAUDE_ISOLATION_POLICY_DIGEST,
     ClaudeCapabilityReport,
     ClaudeInstallation,
@@ -134,7 +133,7 @@ class ClaudeEvidenceVerifier:
 
         identity = capability_identity(
             scope=scope,
-            client_version=CLAUDE_CLIENT_VERSION,
+            client_version=installation.client_version,
             executable_digest=actual_digest,
             client_home=installation.client_home,
             account=installation.account,
@@ -153,7 +152,7 @@ class ClaudeEvidenceVerifier:
         ):
             return ClaudeCapabilityReport()
         return ClaudeCapabilityReport(
-            installed_version=CLAUDE_CLIENT_VERSION,
+            installed_version=installation.client_version,
             subscription_auth=True,
             model=installation.model,
             effort=installation.effort,

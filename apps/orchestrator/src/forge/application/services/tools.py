@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import TypedDict
+from typing import TypedDict, cast
 from uuid import UUID, uuid4
 
 from forge.application.adapters.git_commit import (
@@ -43,6 +43,14 @@ from forge.application.ports.repository import (
     SearchMatch,
 )
 from forge.application.ports.runner import WorktreeRunnerFactoryPort
+from forge.application.ports.search_ranking import (
+    MAX_OBJECTIVE_BYTES,
+    MAX_RANKED_MATCHES,
+    SearchRankerPort,
+    SearchRanking,
+    SearchRankingMode,
+    SearchRankingRequest,
+)
 from forge.application.ports.tool_schemas import arguments_match_schema as _arguments_match_schema
 from forge.application.ports.tools import (
     ToolAuthorizationDenied,
@@ -191,7 +199,7 @@ class _ToolLineage(TypedDict):
 
 
 def _tool_lineage(context: _ToolContext) -> _ToolLineage:
-    if isinstance(context, SubscriptionToolAuthorizationContext):
+    if type(context) is SubscriptionToolAuthorizationContext:
         return {
             "agent_execution_id": None,
             "step_id": None,
@@ -200,10 +208,11 @@ def _tool_lineage(context: _ToolContext) -> _ToolLineage:
             "subscription_attempt_id": context.attempt_id,
             "subscription_purpose": context.purpose.value,
         }
+    legacy_context = cast(ToolAuthorizationContext, context)
     return {
-        "agent_execution_id": _required_uuid(context.agent_execution_id),
-        "step_id": context.step_id,
-        "role": context.role,
+        "agent_execution_id": _required_uuid(legacy_context.agent_execution_id),
+        "step_id": legacy_context.step_id,
+        "role": legacy_context.role,
         "subscription_task_id": None,
         "subscription_attempt_id": None,
         "subscription_purpose": None,
@@ -235,6 +244,14 @@ _UNAVAILABLE_TOOLS = frozenset(
 _WRITE_EXECUTION_LEASE_SECONDS = 30.0
 _DUPLICATE_OBSERVER_INITIAL_DELAY_SECONDS = 0.05
 _DUPLICATE_OBSERVER_MAX_DELAY_SECONDS = 1.0
+_DEFAULT_SEARCH_RANKING_TOP_K = 15
+# Ranking runs inside one agent tool call, so it is bounded well below the
+# provider turn budget and always fails open when it exceeds this.
+_SEARCH_RANKING_TIMEOUT_SECONDS = 20.0
+# The lowest normalized score meaning "at least in the same area of the
+# codebase". Below this, no match is worth keeping over any other, so the
+# ranking is recorded but never applied.
+_MIN_APPLIED_RELEVANCE = 1.0 / 3.0
 _WRITE_RESULT_ARTIFACT_MAX_BYTES = 64 * 1024
 _TERMINAL_TOOL_STATUSES = frozenset(
     {
@@ -320,6 +337,10 @@ class ControlledToolService:
         worktree: ManagedWorktree | None = None,
         runner_factory: WorktreeRunnerFactoryPort | None = None,
         command_environment: Mapping[str, str] | None = None,
+        search_ranker: SearchRankerPort | None = None,
+        search_ranking_mode: SearchRankingMode = SearchRankingMode.OFF,
+        search_ranking_top_k: int = _DEFAULT_SEARCH_RANKING_TOP_K,
+        search_objective: str | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._authorizer = authorizer or ToolAuthorizer()
@@ -339,6 +360,12 @@ class ControlledToolService:
         self._runner_factory = runner_factory
         self._command_environment = MappingProxyType(dict(command_environment or {}))
         self._named_completions: dict[UUID, asyncio.Task[ToolResult]] = {}
+        self._search_ranker = search_ranker
+        self._search_ranking_mode = SearchRankingMode(search_ranking_mode)
+        if type(search_ranking_top_k) is not int or search_ranking_top_k < 1:
+            raise ValueError("search ranking top_k must be a positive count")
+        self._search_ranking_top_k = search_ranking_top_k
+        self._search_objective = _bounded_objective(search_objective)
         if not callable(self._unit_of_work_factory):
             raise TypeError("controlled tool service requires a unit of work factory")
 
@@ -2730,12 +2757,13 @@ class ControlledToolService:
                 reader = self._repository_reader
                 if reader is None:
                     raise ToolInvocationError()
-                matches = reader.search(
-                    _argument_text(authorization, "literal"),
-                    _argument_text(authorization, "path", "."),
-                )
+                literal = _argument_text(authorization, "literal")
+                path = _argument_text(authorization, "path", ".")
+                matches = reader.search(literal, path)
                 return self._result(
-                    name, ToolCallStatus.SUCCEEDED, metadata={"matches": _matches(matches)}
+                    name,
+                    ToolCallStatus.SUCCEEDED,
+                    metadata=await self._search_metadata(authorization, literal, path, matches),
                 )
             if name is ToolName.REPOSITORY_READ_INSTRUCTIONS:
                 reader = self._repository_reader
@@ -2823,6 +2851,95 @@ class ControlledToolService:
 
     def _open_uow(self) -> UnitOfWork:
         return self._unit_of_work_factory()
+
+    async def _search_metadata(
+        self,
+        authorization: ToolAuthorization,
+        literal: str,
+        path: str,
+        matches: Sequence[SearchMatch],
+    ) -> dict[str, object]:
+        """Return search results, reordered only when ranking is applied.
+
+        Ranking is advisory.  Any ranker failure, an absent objective, or a
+        non-agent authority returns the reader's own complete result, so a
+        degraded ranker can never reduce what an agent is able to see.
+        """
+
+        total = len(matches)
+        mode = self._search_ranking_mode
+        telemetry: dict[str, object] = {
+            "mode": mode.value,
+            "applied": False,
+            "match_count": total,
+            "returned_count": total,
+        }
+        metadata: dict[str, object] = {"matches": _matches(matches), "ranking": telemetry}
+        ranker = self._search_ranker
+        objective = self._search_objective
+        role = _authorized_agent_role(authorization)
+        if (
+            mode is SearchRankingMode.OFF
+            or ranker is None
+            or objective is None
+            or role is None
+            or not 0 < total <= MAX_RANKED_MATCHES
+        ):
+            return metadata
+        try:
+            async with asyncio.timeout(_SEARCH_RANKING_TIMEOUT_SECONDS):
+                ranking = await ranker.rank(
+                    SearchRankingRequest(
+                        objective=objective,
+                        literal=literal,
+                        path=path,
+                        role=role,
+                        matches=tuple(matches),
+                    )
+                )
+            if type(ranking) is not SearchRanking:
+                raise TypeError("ranker returned an untyped ranking")
+            order = ranking.ordered(total)
+        except Exception:  # noqa: BLE001 - ranking is advisory and always fails open
+            telemetry["status"] = "unavailable"
+            return metadata
+        telemetry.update(
+            {
+                "status": "ranked",
+                "model": ranking.model,
+                "request_id": ranking.request_id,
+                # Model token counts.  These keys avoid the word "token" because
+                # the durable result redaction policy treats any key containing
+                # it as secret-bearing and would replace the counts.
+                "input_units": ranking.input_tokens,
+                "output_units": ranking.output_tokens,
+                "duration_ms": ranking.duration_ms,
+            }
+        )
+        # Collapsing a tail is only worth its cost when something actually
+        # cleared the bar.  When a search finds nothing relevant to the task,
+        # withholding matches trades evidence away for no relevance at all, so
+        # the complete reader result stands.
+        if max((item.relevance for item in ranking.ranked), default=0.0) < _MIN_APPLIED_RELEVANCE:
+            telemetry["status"] = "below_floor"
+            if mode is SearchRankingMode.SHADOW:
+                telemetry["would_return_count"] = total
+                telemetry["would_return_paths"] = _distinct_paths(matches, order)
+            return metadata
+        kept, omitted = order[: self._search_ranking_top_k], order[self._search_ranking_top_k :]
+        if mode is SearchRankingMode.SHADOW:
+            telemetry["would_return_count"] = len(kept)
+            telemetry["would_return_paths"] = _distinct_paths(matches, kept)
+            return metadata
+        telemetry["applied"] = True
+        telemetry["returned_count"] = len(kept)
+        metadata["matches"] = _matches([matches[index] for index in kept])
+        if omitted:
+            metadata["omitted_matches"] = {
+                "count": len(omitted),
+                "paths": _distinct_paths(matches, omitted),
+            }
+        return metadata
 
     def _result(
         self,
@@ -3909,6 +4026,55 @@ def _file_read(value: FileRead) -> dict[str, object]:
         "original_byte_count": value.original_byte_count,
         "truncated": value.truncated,
     }
+
+
+_SPECIALIST_PURPOSE_ROLE_MAP: Mapping[SpecialistPurpose, AgentRole] = MappingProxyType(
+    {
+        SpecialistPurpose.PRIMARY: AgentRole.DEVELOPER,
+        SpecialistPurpose.ROUTINE_IMPLEMENTATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.COMPLEX_IMPLEMENTATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.INTEGRATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.EXPLORATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.PLANNING: AgentRole.PLANNER,
+        SpecialistPurpose.INDEPENDENT_REVIEW: AgentRole.REVIEWER,
+        SpecialistPurpose.SECURITY: AgentRole.REVIEWER,
+        SpecialistPurpose.VERIFICATION: AgentRole.REVIEWER,
+    }
+)
+
+
+def _authorized_agent_role(authorization: ToolAuthorization) -> AgentRole | None:
+    """Return the agent role, adapting subscription specialist authority."""
+
+    context = authorization.context
+    if isinstance(context, SubscriptionToolAuthorizationContext):
+        return _SPECIALIST_PURPOSE_ROLE_MAP.get(context.purpose)
+    if type(context) is not ToolAuthorizationContext:
+        return None
+    return authorization.role
+
+
+def _bounded_objective(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str:
+        raise TypeError("search objective must be text")
+    text = value.strip()
+    if not text:
+        return None
+    encoded = text.encode("utf-8")[:MAX_OBJECTIVE_BYTES]
+    return encoded.decode("utf-8", errors="ignore")
+
+
+def _distinct_paths(matches: Sequence[SearchMatch], order: Sequence[int]) -> list[str]:
+    """Return each distinct path in the given positions, order preserved."""
+
+    paths: list[str] = []
+    for index in order:
+        path = matches[index].path
+        if path not in paths:
+            paths.append(path)
+    return paths[:MAX_RANKED_MATCHES]
 
 
 def _matches(values: Sequence[SearchMatch]) -> list[dict[str, object]]:

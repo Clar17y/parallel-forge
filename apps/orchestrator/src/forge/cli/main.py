@@ -10,6 +10,7 @@ import typer
 
 from forge.application.services.auth import AuthService, AuthUnitOfWork
 from forge.cli.evaluations import eval_app
+from forge.cli.search_ranking import ranking_app
 from forge.cli.subscription_profiles import profile_app
 from forge.cli.subscription_quota import quota_app
 from forge.cli.subscription_runtime import runtime_app
@@ -28,6 +29,7 @@ app.add_typer(profile_app, name="profile")
 app.add_typer(quota_app, name="subscription-quota")
 app.add_typer(runtime_app, name="subscription-runtime")
 app.add_typer(task_app, name="subscription-tasks")
+app.add_typer(ranking_app, name="search-ranking")
 
 
 @app.callback()

@@ -28,7 +28,6 @@ from forge.agents.codex_gateway import (
     codex_tool_alias,
 )
 from forge.agents.codex_verification import (
-    CODEX_CLIENT_VERSION,
     CODEX_VERIFIER_ID,
     CODEX_VERIFIER_VERSION,
     CodexVerificationScope,
@@ -91,6 +90,7 @@ def required_codex_live_scopes() -> tuple[CodexConformanceScope, ...]:
 @dataclass(frozen=True, slots=True)
 class CodexConformanceResult:
     scope: CodexConformanceScope
+    client_version: str
     executable_digest: str
     client_home_digest: str
     account: str
@@ -115,7 +115,7 @@ class CodexConformanceResult:
             "installation": {
                 "account": self.account,
                 "client_home_digest": self.client_home_digest,
-                "client_version": CODEX_CLIENT_VERSION,
+                "client_version": self.client_version,
                 "executable_digest": self.executable_digest,
             },
             "scope": {
@@ -224,14 +224,7 @@ class CodexOfficialConformanceHarness:
                     },
                 )
                 user_agent = initialize.get("userAgent")
-                if (
-                    not isinstance(user_agent, str)
-                    or re.search(
-                        rf"(?<![0-9.]){re.escape(CODEX_CLIENT_VERSION)}(?![0-9.])",
-                        user_agent,
-                    )
-                    is None
-                ):
+                if not _user_agent_matches_client_version(user_agent, installation.client_version):
                     raise CodexConformanceError("Codex client version differs")
                 await session.send({"method": "initialized", "params": {}})
                 configured = await _rpc(
@@ -311,6 +304,7 @@ class CodexOfficialConformanceHarness:
             raise CodexConformanceError("Codex terminal process proof is incomplete")
         return CodexConformanceResult(
             scope=scope,
+            client_version=installation.client_version,
             executable_digest=digest,
             client_home_digest=capability_home_digest(installation.client_home),
             account=installation.account,
@@ -324,6 +318,18 @@ class CodexOfficialConformanceHarness:
             credentials_sent=credentials_sent,
             terminal_proof=proof,
         )
+
+
+def _user_agent_matches_client_version(user_agent: object, client_version: str) -> bool:
+    if not isinstance(user_agent, str):
+        return False
+    return (
+        re.search(
+            rf"(?<![0-9.]){re.escape(client_version)}(?![0-9.])",
+            user_agent,
+        )
+        is not None
+    )
 
 
 def _offline_configuration(installation: CodexInstallation, base_url: str) -> dict[str, object]:

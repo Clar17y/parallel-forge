@@ -97,7 +97,7 @@ async def test_registered_worker_processes_preserve_quota_and_human_gate(
     (tmp_path / "subscription-installations.json").write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "installations": [
                     {
                         "client": "codex_app_server",
@@ -108,6 +108,7 @@ async def test_registered_worker_processes_preserve_quota_and_human_gate(
                         "effort": "low",
                         "account": account,
                         "executable_digest": executable_digest,
+                        "client_version": "0.153.4",
                         "quota": {
                             "account": "local",
                             "pool": "subscription-allowance_only",

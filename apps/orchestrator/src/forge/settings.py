@@ -47,6 +47,13 @@ class Settings(BaseSettings):
         default_factory=lambda: TaskBudget(max_provider_attempts=64)
     )
     subscription_worker_concurrency: int = Field(default=3, ge=1, le=64, strict=True)
+    # Advisory search ranking. "shadow" measures without changing agent input;
+    # "on" also collapses the low-relevance tail. Both require TYPESAFE_API_KEY
+    # in the process environment and degrade to "off" without it. Enabling
+    # either sends bounded, redacted repository match text to TypeSafe.
+    search_ranking_mode: Literal["off", "shadow", "on"] = "off"
+    search_ranking_top_k: int = Field(default=15, ge=1, le=100, strict=True)
+    search_ranking_model: str = Field(default="jev-latest", min_length=1, max_length=128)
     subscription_attempt_budget: TaskBudget = Field(
         default_factory=lambda: TaskBudget(
             max_duration_seconds=300,

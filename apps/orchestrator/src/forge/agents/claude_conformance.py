@@ -14,7 +14,6 @@ from uuid import uuid4
 from forge.agents import claude_gateway
 from forge.agents.capability_verification import stable_executable_digest
 from forge.agents.claude_gateway import (
-    CLAUDE_CLIENT_VERSION,
     CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT,
     ClaudeInstallation,
     claude_configuration_matches,
@@ -77,6 +76,7 @@ def required_claude_live_scopes() -> tuple[ClaudeConformanceScope, ...]:
 @dataclass(frozen=True, slots=True)
 class ClaudeConformanceResult:
     scope: ClaudeConformanceScope
+    client_version: str
     executable_digest: str
     client_home_digest: str
     account: str
@@ -100,7 +100,7 @@ class ClaudeConformanceResult:
             "installation": {
                 "account": self.account,
                 "client_home_digest": self.client_home_digest,
-                "client_version": CLAUDE_CLIENT_VERSION,
+                "client_version": self.client_version,
                 "executable_digest": self.executable_digest,
             },
             "scope": {
@@ -296,6 +296,7 @@ class ClaudeOfficialConformanceHarness:
             raise ClaudeConformanceError("Claude isolation or terminal proof is incomplete")
         return ClaudeConformanceResult(
             scope=scope,
+            client_version=installation.client_version,
             executable_digest=digest,
             client_home_digest=capability_home_digest(installation.client_home),
             account=installation.account,
@@ -415,6 +416,7 @@ def _validate_configuration(
         effort=installation.effort,
         tools=frozenset(scope.tool_surface),
         session_id=session_id,
+        client_version=installation.client_version,
     ):
         raise ClaudeConformanceError("Claude initialized with an unisolated capability")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 from collections.abc import Awaitable
 from pathlib import Path
@@ -38,6 +39,20 @@ async def capability_report[Report](
     return candidate
 
 
+_CLIENT_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z", re.ASCII)
+
+
+def validate_client_version(value: Any) -> None:
+    """Require an exact released build, never a range, channel or alias.
+
+    A version an operator can widen would let one conformance proof cover
+    builds it never observed, so only an exact release identifies one.
+    """
+
+    if type(value) is not str or _CLIENT_VERSION.fullmatch(value) is None:
+        raise ValueError("client version must be an exact released build")
+
+
 def validate_installation_identity(account: Any, executable_digest: Any) -> None:
     """Reuse the closed evidence identity validators without accepting raw account data."""
 
@@ -70,5 +85,6 @@ __all__ = [
     "capability_report",
     "capability_scope",
     "stable_executable_digest",
+    "validate_client_version",
     "validate_installation_identity",
 ]
