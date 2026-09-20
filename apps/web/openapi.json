@@ -5205,6 +5205,66 @@
         "title": "SubscriptionTaskControlView",
         "type": "object"
       },
+      "SubscriptionTaskFeedbackView": {
+        "additionalProperties": false,
+        "properties": {
+          "closed_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "accepted",
+                  "cancelled",
+                  "budget_exhausted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed Reason"
+          },
+          "feedback_bytes": {
+            "maximum": 4096.0,
+            "minimum": 1.0,
+            "title": "Feedback Bytes",
+            "type": "integer"
+          },
+          "feedback_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Feedback Digest",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "primary_task_id": {
+            "format": "uuid",
+            "title": "Primary Task Id",
+            "type": "string"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskFeedbackStatus"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "primary_task_id",
+          "status",
+          "feedback_digest",
+          "feedback_bytes",
+          "observed_at"
+        ],
+        "title": "SubscriptionTaskFeedbackView",
+        "type": "object"
+      },
       "SubscriptionTaskPage": {
         "additionalProperties": false,
         "properties": {
@@ -5352,6 +5412,14 @@
             "default": false,
             "title": "Fallback Selected",
             "type": "boolean"
+          },
+          "feedback_receipts": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionTaskFeedbackView"
+            },
+            "maxItems": 32,
+            "title": "Feedback Receipts",
+            "type": "array"
           },
           "owned_paths": {
             "items": {

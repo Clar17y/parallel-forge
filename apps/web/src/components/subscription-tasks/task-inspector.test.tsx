@@ -111,3 +111,33 @@ test('the inspector resumes the visible settled pause with versions from the sam
     action: 'resume', expected_run_version: 7, expected_task_version: 4, reason: 'Continue', pause_receipt_id: 'pause-1',
   });
 });
+
+test('the selected specialist shows its retained feedback receipt and bounded feedback control', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => new Response(JSON.stringify(
+    String(input).includes('/attempts') ? {
+      run_id: 'run-1', task_id: 'worker-1', attempts: [], has_more: false,
+    } : {
+      run_id: 'run-1', run_version: 8, run_allows_execution: true, subscription: true,
+      tasks: [{
+        task_id: 'worker-1', parent_task_id: 'primary-1', dependency_task_ids: [],
+        purpose: 'routine_implementation', owned_paths: ['src/parser.ts'], state: 'leased',
+        pause_requested: false, cancel_requested: false, version: 4, repairs: 0,
+        unsettled_effects: 0, feedback_receipts: [{
+          receipt_id: 'feedback-1', primary_task_id: 'primary-1', status: 'forwarded',
+          feedback_digest: 'a'.repeat(64), feedback_bytes: 38,
+          observed_at: '2026-09-18T12:00:00Z', closed_reason: null,
+        }],
+      }],
+      has_more: false, quota_statuses: [],
+    },
+  )));
+  render(<TaskInspector runId="run-1" />);
+  await screen.findByText('src/parser.ts');
+  await userEvent.click(screen.getByRole('button', { name: 'Inspect routine_implementation task worker-1' }));
+
+  const feedback = screen.getByRole('region', { name: 'Worker feedback' });
+  expect(feedback).toHaveTextContent('Target worker: routine_implementation task worker-1');
+  expect(feedback).toHaveTextContent('Forwarded to worker');
+  expect(feedback).toHaveTextContent('Receipt feedback-1');
+  expect(feedback).toHaveTextContent('does not issue provider commands');
+});

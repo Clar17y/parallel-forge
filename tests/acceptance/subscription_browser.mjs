@@ -1,18 +1,17 @@
 // Real-browser A8 operator flow. Bootstrap material stays in memory; no tracing.
 import { createRequire } from 'node:module';
+import {
+  createControlBridge,
+  loadLoopbackOrigins,
+  loseFirstResponse,
+  waitForRunHeader as header,
+} from './subscription_browser_helpers.mjs';
+
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
 const { chromium, expect } = require('@playwright/test');
-const web = new URL(process.env.FORGE_E2E_WEB_ORIGIN);
-const control = new URL(process.env.FORGE_E2E_CONTROL_ORIGIN);
-for (const origin of [web, control]) {
-  if (origin.protocol !== 'http:' || origin.hostname !== '127.0.0.1' || origin.username || origin.password || origin.pathname !== '/') throw new Error('loopback origins required');
-}
+const { web, control } = loadLoopbackOrigins();
+const bridge = createControlBridge(control);
 const secrets = [];
-async function bridge(path, method = 'GET') {
-  const response = await fetch(new URL(path, control), { method });
-  if (!response.ok) throw new Error(`test control failed: ${response.status}`);
-  return response.json();
-}
 async function api(page, path, body, method = 'POST') {
   return page.evaluate(async ({ path, body, method }) => {
     const headers = { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() };
@@ -28,31 +27,11 @@ async function api(page, path, body, method = 'POST') {
 async function state(page, run, expected) {
   await expect.poll(async () => (await api(page, `/runs/${run}`)).state, { timeout: 20000 }).toBe(expected);
 }
-async function header(page, expected) {
-  const status = page.locator('[aria-label="Current run status"]');
-  await expect(status).toBeVisible({ timeout: 20000 });
-  await expect(status).toHaveAttribute('data-run-state', expected);
-  await expect(page.getByText('Events: connected', { exact: true })).toBeVisible();
-}
 async function confirm(page, name) {
   await page.getByRole('region', { name: 'Run controls', exact: true }).getByRole('button', { name, exact: true }).click();
   const dialog = page.getByRole('dialog', { name, exact: true });
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: `Confirm ${name.toLowerCase()}`, exact: true }).click();
-}
-function loseFirstResponse(page, path) {
-  const requests = [];
-  const replies = [];
-  const handler = async route => {
-    if (route.request().method() !== 'POST') return route.continue();
-    requests.push({ body: route.request().postData(), key: route.request().headers()['idempotency-key'] });
-    const response = await route.fetch();
-    expect(response.ok()).toBe(true);
-    replies.push(await response.json());
-    if (requests.length === 1) await route.abort('failed');
-    else await route.fulfill({ response });
-  };
-  return { requests, replies, install: () => page.route(path, handler), remove: () => page.unroute(path, handler) };
 }
 
 let browser;
@@ -114,8 +93,11 @@ try {
   await expect(edit.getByRole('alert')).toBeVisible();
   await edit.getByRole('button', { name: 'Append version 2' }).click();
   await expect(first.getByRole('heading', { name: `Profile ${profile.profile_id} · version 2`, exact: true })).toBeVisible();
+  expect(lostProfile.statuses).toEqual([201, 201]);
   expect(lostProfile.requests).toHaveLength(2);
   expect(lostProfile.requests[1]).toEqual(lostProfile.requests[0]);
+  expect(lostProfile.parseErrors).toEqual([]);
+  expect(lostProfile.replies[0]).not.toBeNull();
   expect(lostProfile.replies[1]).toEqual(lostProfile.replies[0]);
   await lostProfile.remove();
   await staleEdit.getByRole('button', { name: 'Append version 2' }).click();
@@ -158,8 +140,11 @@ try {
   await expect(first.getByRole('alert').filter({ hasText: 'The request could not be confirmed.' })).toBeVisible();
   await first.getByRole('dialog', { name: 'Resume', exact: true }).getByRole('button', { name: 'Confirm resume', exact: true }).click();
   await expect(first.getByRole('dialog', { name: 'Resume', exact: true })).toBeHidden();
+  expect(lostResume.statuses).toEqual([202, 202]);
   expect(lostResume.requests).toHaveLength(2);
   expect(lostResume.requests[1]).toEqual(lostResume.requests[0]);
+  expect(lostResume.parseErrors).toEqual([]);
+  expect(lostResume.replies[0]).not.toBeNull();
   expect(lostResume.replies[1].id).toBe(lostResume.replies[0].id);
   await lostResume.remove();
   await state(first, original, 'PAUSED');

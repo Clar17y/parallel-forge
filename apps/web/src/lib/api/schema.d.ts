@@ -2701,6 +2701,31 @@ export interface components {
             receipt_id: string;
             status: components["schemas"]["TaskControlStatus"];
         };
+        /** SubscriptionTaskFeedbackView */
+        SubscriptionTaskFeedbackView: {
+            /** Closed Reason */
+            closed_reason?: ("accepted" | "cancelled" | "budget_exhausted") | null;
+            /** Feedback Bytes */
+            feedback_bytes: number;
+            /** Feedback Digest */
+            feedback_digest: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /**
+             * Primary Task Id
+             * Format: uuid
+             */
+            primary_task_id: string;
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            status: components["schemas"]["TaskFeedbackStatus"];
+        };
         /** SubscriptionTaskPage */
         SubscriptionTaskPage: {
             /** Candidate Epoch */
@@ -2749,6 +2774,8 @@ export interface components {
              * @default false
              */
             fallback_selected: boolean;
+            /** Feedback Receipts */
+            feedback_receipts?: components["schemas"]["SubscriptionTaskFeedbackView"][];
             /** Owned Paths */
             owned_paths: string[];
             /** Parent Task Id */

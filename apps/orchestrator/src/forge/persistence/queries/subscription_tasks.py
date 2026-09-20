@@ -15,6 +15,7 @@ from forge.domain.subscription import (
     decode_subscription_record,
 )
 from forge.domain.subscription_execution import run_allows_subscription_attempt
+from forge.domain.subscription_feedback import MAX_FEEDBACK_PER_TASK
 from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPolicy
 from forge.observability.redaction import redact_value
 from forge.persistence.models.run import Run
@@ -28,6 +29,7 @@ from forge.persistence.models.subscription import (
     SubscriptionEnvelope,
     SubscriptionTask,
 )
+from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
 from forge.persistence.queries.subscription_capacity import capacity_observation
 from forge.persistence.queries.subscription_task_controls import (
     control_view,
@@ -87,6 +89,7 @@ class SubscriptionTaskQuery:
             page = page[:limit]
             ids = [row[0].id for row in page]
             control_receipts = await latest_control_receipts(session, ids)
+            feedback_receipts = await _feedback_receipts(session, run_id, ids)
             effects = (
                 dict(
                     (
@@ -149,6 +152,7 @@ class SubscriptionTaskQuery:
                         "control": await control_view(
                             session, row, scheduled, control_receipts.get(row.id)
                         ),
+                        "feedback_receipts": feedback_receipts.get(row.id, []),
                         "quota_status": quota_by_key[key],
                         "requested_route": _route(contract.route.requested),
                         "effective_route": _route(contract.route.effective),
@@ -224,6 +228,66 @@ def _bounds(offset: int, limit: int) -> None:
 
 def _safe(value: str) -> str:
     return str(redact_value(value))
+
+
+async def _feedback_receipts(
+    session: AsyncSession, run_id: UUID, task_ids: list[UUID]
+) -> dict[UUID, list[dict[str, object]]]:
+    if not task_ids:
+        return {}
+    receipt_order = (
+        SubscriptionTaskFeedback.created_at,
+        SubscriptionTaskFeedback.id,
+    )
+    ranked = (
+        select(
+            SubscriptionTaskFeedback.id.label("receipt_id"),
+            SubscriptionTaskFeedback.primary_task_id,
+            SubscriptionTaskFeedback.task_id,
+            SubscriptionTaskFeedback.state,
+            SubscriptionTaskFeedback.feedback_digest,
+            SubscriptionTaskFeedback.feedback_bytes,
+            SubscriptionTaskFeedback.created_at,
+            SubscriptionTaskFeedback.closed_reason,
+            func.row_number()
+            .over(
+                partition_by=SubscriptionTaskFeedback.task_id,
+                order_by=receipt_order,
+            )
+            .label("receipt_rank"),
+        )
+        .where(
+            SubscriptionTaskFeedback.run_id == run_id,
+            SubscriptionTaskFeedback.task_id.in_(task_ids),
+        )
+        .subquery()
+    )
+    rows = list(
+        (
+            await session.execute(
+                select(ranked)
+                .where(ranked.c.receipt_rank <= MAX_FEEDBACK_PER_TASK + 1)
+                .order_by(ranked.c.task_id, ranked.c.receipt_rank)
+            )
+        ).mappings()
+    )
+    projected: dict[UUID, list[dict[str, object]]] = {}
+    for row in rows:
+        receipts = projected.setdefault(row["task_id"], [])
+        receipts.append(
+            {
+                "receipt_id": row["receipt_id"],
+                "primary_task_id": row["primary_task_id"],
+                "status": row["state"],
+                "feedback_digest": row["feedback_digest"],
+                "feedback_bytes": row["feedback_bytes"],
+                "observed_at": row["created_at"],
+                "closed_reason": row["closed_reason"],
+            }
+        )
+        if len(receipts) > MAX_FEEDBACK_PER_TASK:
+            raise ValueError("subscription feedback projection exceeds its bound")
+    return projected
 
 
 def _route(route: RouteSpec) -> dict[str, object]:
