@@ -36,3 +36,37 @@ test('background refresh keeps the snapshot and never overlaps a pending request
   await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
   expect(fetcher.mock.calls).toHaveLength(2);
 });
+
+test('refresh synchronously returns exact request tokens and retains the displayed token until that request installs', async () => {
+  vi.useFakeTimers();
+  let complete!: (response: Response) => void;
+  vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"id":"first"}'))
+    .mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }))
+    .mockResolvedValueOnce(new Response('{"id":"first"}'));
+
+  const hook = renderHook(() => useApi<{ id: string }>('/tasks', { keepPreviousOnRefresh: true }));
+  expect(hook.result.current.token).toBe(0);
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(hook.result.current.value?.id).toBe('first');
+  expect(hook.result.current.token).toBe(0);
+
+  let target = 0;
+  act(() => { target = hook.result.current.refresh(); });
+  expect(target).toBe(1);
+  expect(hook.result.current.refreshing).toBe(true);
+  expect(hook.result.current.value?.id).toBe('first');
+  expect(hook.result.current.token).toBe(0);
+
+  await act(async () => { complete(new Response('{"id":"first"}')); });
+  expect(hook.result.current.value?.id).toBe('first');
+  expect(hook.result.current.token).toBe(target);
+
+  let later = 0;
+  act(() => { later = hook.result.current.refresh(); });
+  expect(later).toBe(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(hook.result.current.value?.id).toBe('first');
+  expect(hook.result.current.token).toBe(later);
+});

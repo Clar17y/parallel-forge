@@ -25,6 +25,7 @@ from forge.domain.subscription import (
     encode_subscription_record,
 )
 from forge.domain.subscription_feedback import (
+    MAX_FEEDBACK_PER_TASK,
     StoredTaskFeedback,
     SubscriptionTaskFeedbackRequest,
     TaskFeedbackConflict,
@@ -46,8 +47,6 @@ from forge.persistence.models.subscription_usage import (
 )
 from forge.persistence.repositories.scheduling import PostgresSchedulingRepository
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
-
-MAX_FEEDBACK_PER_TASK = 32
 
 
 def _digest(value: str) -> str:

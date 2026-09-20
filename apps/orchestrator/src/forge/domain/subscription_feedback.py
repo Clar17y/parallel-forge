@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from forge.domain.payload import contains_credential
 
 MAX_FEEDBACK_BYTES = 4096
+MAX_FEEDBACK_PER_TASK = 32
 type TaskFeedbackStatus = Literal["pending_primary", "forwarded", "delivered", "closed"]
 
 
@@ -76,6 +77,7 @@ class StoredTaskFeedback(_ClosedModel):
 
 __all__ = [
     "MAX_FEEDBACK_BYTES",
+    "MAX_FEEDBACK_PER_TASK",
     "StoredTaskFeedback",
     "SubscriptionTaskFeedbackRequest",
     "TaskFeedbackConflict",

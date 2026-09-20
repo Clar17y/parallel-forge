@@ -7,7 +7,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from forge.api.schemas.subscription_quota import QuotaStatusResponse
-from forge.domain.subscription_feedback import SubscriptionTaskFeedbackRequest
+from forge.domain.subscription_feedback import (
+    MAX_FEEDBACK_BYTES,
+    MAX_FEEDBACK_PER_TASK,
+    SubscriptionTaskFeedbackRequest,
+    TaskFeedbackStatus,
+)
 from forge.domain.subscription_task_controls import (
     SubscriptionTaskControlRequest,
     TaskControlAction,
@@ -53,6 +58,16 @@ class SubscriptionTaskControlView(ProjectionModel):
     pause_receipt_id: UUID | None = None
 
 
+class SubscriptionTaskFeedbackView(ProjectionModel):
+    receipt_id: UUID
+    primary_task_id: UUID
+    status: TaskFeedbackStatus
+    feedback_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    feedback_bytes: int = Field(ge=1, le=MAX_FEEDBACK_BYTES)
+    observed_at: datetime
+    closed_reason: Literal["accepted", "cancelled", "budget_exhausted"] | None = None
+
+
 class SubscriptionTaskView(ProjectionModel):
     task_id: UUID
     parent_task_id: UUID | None
@@ -66,6 +81,9 @@ class SubscriptionTaskView(ProjectionModel):
     repairs: int | None
     unsettled_effects: int
     control: SubscriptionTaskControlView | None = None
+    feedback_receipts: list[SubscriptionTaskFeedbackView] = Field(
+        default_factory=list, max_length=MAX_FEEDBACK_PER_TASK
+    )
     quota_status: QuotaStatusResponse | None = None
     requested_route: AttemptRoute | None = None
     effective_route: AttemptRoute | None = None

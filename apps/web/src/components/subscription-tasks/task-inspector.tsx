@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useApi } from '@/hooks/use-api';
 import { QuotaStatusCard, QuotaStatusList } from './quota-status';
 import { TaskControls, TaskControlSummary } from './task-controls';
+import { TaskFeedback } from './task-feedback';
 import type { components } from '@/lib/api/schema';
 
 type TaskPage = components['schemas']['SubscriptionTaskPage'];
@@ -50,9 +51,13 @@ export function TaskInspector({ runId }: { runId: string }) {
             {task.quota_status ? <QuotaStatusCard status={task.quota_status} /> : null}
             {task.effective_route ? <p>Selected route: {routeLabel(task.effective_route)}{task.fallback_selected ? ' · approved fallback selected' : ' · preferred route'}</p> : null}
             {selected === task.task_id ? <>
+              <TaskFeedback key={`${task.task_id}-feedback`} runId={runId}
+                runVersion={tasks.value!.run_version ?? -1} runIsTerminal={tasks.value!.run_is_terminal ?? false}
+                task={task} projectionToken={tasks.token} onRefresh={tasks.refresh} />
               <TaskControls key={`${task.task_id}-controls`} runId={runId}
                 runVersion={tasks.value!.run_version ?? -1} runAllowsExecution={tasks.value!.run_allows_execution ?? false}
-                runIsTerminal={tasks.value!.run_is_terminal ?? false} task={task} onRefresh={tasks.refresh} />
+                runIsTerminal={tasks.value!.run_is_terminal ?? false} task={task}
+                projectionToken={tasks.token} onRefresh={tasks.refresh} />
               <Attempts key={task.task_id} runId={runId} taskId={task.task_id} />
             </> : null}
           </li>)}</ul>}
