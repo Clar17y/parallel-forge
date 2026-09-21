@@ -860,3 +860,213 @@ def test_linux_operational_pinning_failure_modes_and_cleanup(monkeypatch, stage)
         assert child.killed is True
         assert child.reaped is True
         assert closed_fds == [fake_fd]
+
+
+@pytest.mark.asyncio
+async def test_client_process_document_accepts_formatted_multiline_json() -> None:
+    from forge.agents.client_process import ClientLaunchSpec, ClientProcessSupervisor
+
+    code = 'import sys\nsys.stdout.write(\'{\\n  "status": "ok",\\n  "value": 42\\n}\\n\')\n'
+    spec = ClientLaunchSpec(
+        argv=(sys.executable, "-c", code),
+        cwd=".",
+        environment={},
+        protocol="json_document",
+    )
+    supervisor = ClientProcessSupervisor()
+    result = await supervisor.run_document(spec)
+
+    assert result.frames == ({"status": "ok", "value": 42},)
+    assert result.return_code == 0
+    assert result.stop_confirmed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_code", "error_match"),
+    [
+        (
+            "import sys; sys.stdout.write('{\\n  \"a\": 1\\n} trailing')",
+            "trailing output",
+        ),
+        (
+            'import sys; sys.stdout.write(\'{\\n  "a": 1\\n}{\\n  "b": 2\\n}\')',
+            "trailing output",
+        ),
+        (
+            "import sys; sys.stdout.write('[1, 2, 3]')",
+            "must be an object",
+        ),
+        (
+            "import sys; sys.stdout.write('{ malformed json')",
+            "malformed JSON document",
+        ),
+        (
+            "import sys; sys.stdout.write('   \\n')",
+            "empty document",
+        ),
+        (
+            "pass",
+            "empty document",
+        ),
+        (
+            "import sys; sys.stdout.buffer.write(b'\\xff\\xfe\\xfd')",
+            "non-UTF-8 document",
+        ),
+    ],
+)
+async def test_client_process_document_rejects_malformed_multiple_or_non_object(
+    bad_code: str, error_match: str
+) -> None:
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessSupervisor,
+        ClientProtocolError,
+    )
+
+    spec = ClientLaunchSpec(
+        argv=(sys.executable, "-c", bad_code),
+        cwd=".",
+        environment={},
+        protocol="json_document",
+    )
+    supervisor = ClientProcessSupervisor()
+    with pytest.raises(ClientProtocolError, match=error_match) as exc_info:
+        await supervisor.run_document(spec)
+    assert exc_info.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_client_process_document_enforces_output_cap() -> None:
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessSupervisor,
+        ClientProtocolError,
+    )
+
+    code = "import sys\nsys.stdout.write('{\"key\": \"' + 'x' * 20000 + '\"}')\n"
+    spec = ClientLaunchSpec(
+        argv=(sys.executable, "-c", code),
+        cwd=".",
+        environment={},
+        stdout_max_bytes=16 * 1024,
+        protocol="json_document",
+    )
+    supervisor = ClientProcessSupervisor()
+    with pytest.raises(ClientProtocolError, match="client total output exceeds limit"):
+        await supervisor.run_document(spec)
+
+
+@pytest.mark.asyncio
+async def test_document_recursion_during_frame_copy_is_protocol_error_without_frame() -> None:
+    from io import BytesIO
+
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessReceipt,
+        ClientProcessSession,
+        ClientProtocolError,
+    )
+
+    nested = '{"value":' * 2_000 + "0" + "}" * 2_000
+
+    class Process:
+        pid = 321
+
+        def __init__(self):
+            self.stdin = BytesIO()
+            self.stdout = BytesIO(nested.encode())
+            self.stderr = BytesIO()
+            self.pinned_paths = {}
+
+        def token(self):
+            return "process"
+
+        def resume(self):
+            pass
+
+        def wait(self, _seconds):
+            return 0
+
+        def terminate_tree(self):
+            pass
+
+        def close(self):
+            pass
+
+    spec = ClientLaunchSpec(
+        argv=(sys.executable, "-c", "pass"), cwd=".", environment={}, protocol="json_document"
+    )
+    session = ClientProcessSession(
+        Process(),
+        ClientProcessReceipt("nested", 321, "process", 1.0),
+        spec,
+        lifecycle=None,
+        deadline=asyncio.get_running_loop().time() + 2,
+    )
+    session.begin()
+    with pytest.raises(ClientProtocolError, match="not bounded JSON") as caught:
+        while await session.receive() is not None:
+            pass
+    assert caught.value.__cause__ is None
+    assert session._frames == []
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_close_stdin_sanitizes_error_and_settles_once() -> None:
+    from io import BytesIO
+
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessError,
+        ClientProcessReceipt,
+        ClientProcessSession,
+    )
+
+    class FailingInput(BytesIO):
+        fail = True
+
+        def close(self):
+            if self.fail:
+                self.fail = False
+                raise OSError("C:/private/provider-token")
+            super().close()
+
+    class Process:
+        pid = 322
+
+        def __init__(self):
+            self.stdin = FailingInput()
+            self.stdout = BytesIO()
+            self.stderr = BytesIO()
+            self.pinned_paths = {}
+
+        def token(self):
+            return "process"
+
+        def resume(self):
+            pass
+
+        def wait(self, _seconds):
+            return 0
+
+        def terminate_tree(self):
+            pass
+
+        def close(self):
+            pass
+
+    spec = ClientLaunchSpec(argv=(sys.executable, "-c", "pass"), cwd=".", environment={})
+    session = ClientProcessSession(
+        Process(),
+        ClientProcessReceipt("stdin", 322, "process", 1.0),
+        spec,
+        lifecycle=None,
+        deadline=asyncio.get_running_loop().time() + 2,
+    )
+    session.begin()
+    with pytest.raises(ClientProcessError, match="^client input failed$") as caught:
+        await session.close_stdin()
+    assert "private" not in str(caught.value)
+    await session.close()

@@ -660,3 +660,102 @@ async def test_handler_cleanup_ownership_and_failure_disposal(
     else:
         await run()
     assert calls == ["drain", "drain"] + ([] if caller_owned else ["close"]) + ["dispose"]
+
+
+@pytest.mark.asyncio
+async def test_worker_startup_fails_closed_without_aborting_on_whitespace_only_model_manifest(
+    tmp_path, monkeypatch
+):
+    import json
+    import sys
+    from pathlib import Path
+
+    from forge.worker.composition import WorkerHandlers
+
+    manifest_path = tmp_path / "whitespace_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "installations": [
+                    {
+                        "client": "codex_app_server",
+                        "executable": str(Path(sys.executable).resolve(strict=True)),
+                        "cwd": str(tmp_path),
+                        "home": str(tmp_path),
+                        "model": "   ",
+                        "effort": "low",
+                        "account": "a" * 64,
+                        "executable_digest": "b" * 64,
+                        "client_version": "0.154.0",
+                        "quota": {"account": "personal", "pool": "weekly"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calls = []
+    stop = asyncio.Event()
+
+    class FakeSettings:
+        database_url = "postgresql+asyncpg://unused/forge"
+        subscription_worker_concurrency = 1
+        subscription_installations_path = manifest_path
+        artifact_root = str(tmp_path)
+        subscription_quota_policy = None
+
+    class Engine:
+        async def dispose(self):
+            calls.append("dispose")
+
+    class Recovery:
+        def __init__(self, _operations):
+            pass
+
+        async def reconcile_all(self, _adapters, *, allow_unresolved):
+            calls.append("recovered")
+
+    class Commands:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def tick(self):
+            stop.set()
+
+        async def drain(self):
+            calls.append("drain")
+
+    handlers = WorkerHandlers({})
+    handlers.subscription_status = None
+    handlers.subscription_invocations = lambda _owner: None
+
+    composed = []
+
+    def compose(
+        _settings,
+        _factory,
+        *,
+        subscription_adapters,
+        subscription_readiness,
+        subscription_readiness_supplier,
+    ):
+        composed.append((subscription_adapters, subscription_readiness))
+        return handlers
+
+    monkeypatch.setattr(main, "create_engine", lambda _url: Engine())
+    monkeypatch.setattr(main, "create_session_factory", lambda _engine: lambda: None)
+    monkeypatch.setattr(main, "PostgresCommandRepository", lambda _factory: object())
+    monkeypatch.setattr(main, "PostgresOperationRepository", lambda _factory: object())
+    monkeypatch.setattr(main, "RecoveryService", Recovery)
+    monkeypatch.setattr(main, "Worker", Commands)
+    monkeypatch.setattr(main, "compose_worker_handlers", compose)
+
+    await main.run_worker(FakeSettings(), stop_event=stop, worker_id="process-whitespace")
+
+    assert len(composed) == 1
+    assert composed[0][0] == ()
+    assert composed[0][1] == ()
+    assert "recovered" in calls
+    assert "dispose" in calls

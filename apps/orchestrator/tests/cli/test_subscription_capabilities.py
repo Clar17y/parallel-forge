@@ -4,11 +4,21 @@ import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from forge.agents.claude_verification import (
+    CLAUDE_VERIFIER_ID,
+    CLAUDE_VERIFIER_VERSION,
+    required_claude_verification_scopes,
+)
 from forge.agents.codex_capability_probe import CodexCapabilityProbeError
 from forge.agents.codex_conformance import CodexConformanceResult
-from forge.agents.codex_verification import required_codex_verification_scopes
+from forge.agents.codex_verification import (
+    CODEX_VERIFIER_ID,
+    CODEX_VERIFIER_VERSION,
+    required_codex_verification_scopes,
+)
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.cli.subscription_capabilities import (
     CapabilityComposition,
@@ -443,3 +453,263 @@ async def test_authorized_probe_failure_records_safe_identity_bound_diagnostic(
     assert reason is ReadinessReason.SIGNED_OUT
     assert identity.account == "a" * 64
     assert times["expires_at"] > times["observed_at"]
+
+
+async def _run_verifier_status_test(
+    tmp_path: Path,
+    client: str,
+    model: str,
+    effort: str,
+    scope_name: str,
+    verifier_id: str,
+    verifier_version: str,
+) -> tuple[dict[str, Any], Any]:
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from forge.domain.capability_evidence import (
+        CapabilityEvidenceManifest,
+        CapabilityProof,
+        CapabilityProofKind,
+        ResolvedCapabilityEvidence,
+        capability_identity,
+        encode_capability_evidence,
+    )
+
+    executable = Path(sys.executable).resolve(strict=True)
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    account = "a" * 64
+    home = tmp_path / f"{client}-home"
+    home.mkdir(exist_ok=True)
+    manifest_file = tmp_path / f"{client}-installations.json"
+    installation_data = {
+        "client": client,
+        "executable": str(executable),
+        "cwd": str(tmp_path),
+        "home": str(home),
+        "model": model,
+        "effort": effort,
+        "account": account,
+        "executable_digest": digest,
+        "client_version": "0.154.0" if client == "codex_app_server" else "2.1.263",
+        "quota": {"account": "personal", "pool": "weekly"},
+    }
+    if client == "claude_code":
+        installation_data["quota_limit_types"] = ["seven_day"]
+    manifest_file.write_text(
+        json.dumps({"version": 2, "installations": [installation_data]}),
+        encoding="utf-8",
+    )
+
+    scopes = (
+        required_codex_verification_scopes()
+        if client == "codex_app_server"
+        else required_claude_verification_scopes()
+    )
+    scope = next(s for s in scopes if s.name == scope_name)
+    identity = capability_identity(
+        scope=scope.evidence_scope(),
+        client_version=installation_data["client_version"],
+        executable_digest=digest,
+        client_home=str(home),
+        account=account,
+    )
+
+    evidence_manifest = CapabilityEvidenceManifest(
+        evidence_id=uuid4(),
+        identity=identity,
+        verifier_id=verifier_id,
+        verifier_version=verifier_version,
+        observed_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+        proofs=tuple(
+            CapabilityProof(kind=kind, artifact_digest="a" * 64) for kind in CapabilityProofKind
+        ),
+    )
+    wire = encode_capability_evidence(evidence_manifest)
+    resolved = ResolvedCapabilityEvidence(
+        manifest=evidence_manifest,
+        artifact_digest=hashlib.sha256(wire).hexdigest(),
+        revision=1,
+    )
+
+    class FakeSource:
+        async def resolve(self, _id):
+            return resolved
+
+    class Engine:
+        async def dispose(self):
+            return None
+
+    composition = CapabilityComposition(
+        settings_factory=lambda: Settings(
+            _env_file=None,
+            process_role="cli",
+            subscription_installations_path=manifest_file,
+        ),
+        engine_factory=lambda _url: Engine(),
+        session_factory=lambda _engine: lambda: None,
+        evidence_source_factory=lambda _sessions, _artifacts: FakeSource(),
+        diagnostic_factory=lambda _sessions: None,
+    )
+
+    result = await status_data(composition)
+    return result["targets"][0]["evidence"][0], evidence_manifest
+
+
+@pytest.mark.parametrize(
+    (
+        "client",
+        "model",
+        "effort",
+        "scope_name",
+        "obsolete_verifier_id",
+        "obsolete_verifier_version",
+    ),
+    [
+        (
+            "codex_app_server",
+            "gpt-6-astra",
+            "low",
+            "astra-primary",
+            "forge-codex-official",
+            "1-obsolete-policy-catalog",
+        ),
+        (
+            "claude_code",
+            "claude-opus-5",
+            "medium",
+            "opus-independent-review",
+            "forge-claude-official",
+            "1-obsolete-policy-catalog",
+        ),
+    ],
+)
+async def test_status_reports_stale_or_invalid_for_obsolete_verifier_evidence(
+    tmp_path: Path,
+    client: str,
+    model: str,
+    effort: str,
+    scope_name: str,
+    obsolete_verifier_id: str,
+    obsolete_verifier_version: str,
+) -> None:
+    entry, _ = await _run_verifier_status_test(
+        tmp_path,
+        client,
+        model,
+        effort,
+        scope_name,
+        obsolete_verifier_id,
+        obsolete_verifier_version,
+    )
+    assert entry["status"] == "stale_or_invalid"
+
+
+@pytest.mark.parametrize(
+    (
+        "client",
+        "model",
+        "effort",
+        "scope_name",
+        "verifier_id",
+        "verifier_version",
+    ),
+    [
+        (
+            "claude_code",
+            "claude-opus-5",
+            "medium",
+            "opus-independent-review",
+            "forge-untrusted-verifier",
+            CLAUDE_VERIFIER_VERSION,
+        ),
+        (
+            "claude_code",
+            "claude-opus-5",
+            "medium",
+            "opus-independent-review",
+            CODEX_VERIFIER_ID,
+            CODEX_VERIFIER_VERSION,
+        ),
+        (
+            "codex_app_server",
+            "gpt-6-astra",
+            "low",
+            "astra-primary",
+            CLAUDE_VERIFIER_ID,
+            CLAUDE_VERIFIER_VERSION,
+        ),
+    ],
+)
+async def test_status_reports_stale_or_invalid_for_wrong_or_cross_client_verifier_evidence(
+    tmp_path: Path,
+    client: str,
+    model: str,
+    effort: str,
+    scope_name: str,
+    verifier_id: str,
+    verifier_version: str,
+) -> None:
+    entry, _ = await _run_verifier_status_test(
+        tmp_path,
+        client,
+        model,
+        effort,
+        scope_name,
+        verifier_id,
+        verifier_version,
+    )
+    assert entry["status"] == "stale_or_invalid"
+
+
+@pytest.mark.parametrize(
+    (
+        "client",
+        "model",
+        "effort",
+        "scope_name",
+        "verifier_id",
+        "verifier_version",
+    ),
+    [
+        (
+            "codex_app_server",
+            "gpt-6-astra",
+            "low",
+            "astra-primary",
+            CODEX_VERIFIER_ID,
+            CODEX_VERIFIER_VERSION,
+        ),
+        (
+            "claude_code",
+            "claude-opus-5",
+            "medium",
+            "opus-independent-review",
+            CLAUDE_VERIFIER_ID,
+            CLAUDE_VERIFIER_VERSION,
+        ),
+    ],
+)
+async def test_status_reports_current_for_valid_current_verifier_evidence(
+    tmp_path: Path,
+    client: str,
+    model: str,
+    effort: str,
+    scope_name: str,
+    verifier_id: str,
+    verifier_version: str,
+) -> None:
+    entry, manifest = await _run_verifier_status_test(
+        tmp_path,
+        client,
+        model,
+        effort,
+        scope_name,
+        verifier_id,
+        verifier_version,
+    )
+    assert entry["status"] == "current"
+    assert entry["evidence_id"] == str(manifest.evidence_id)
+    assert entry["revision"] == 1
+    assert entry["expires_at"] == manifest.expires_at.isoformat()

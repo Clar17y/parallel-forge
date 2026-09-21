@@ -41,6 +41,7 @@ from forge.agents.claude_verification import (
 from forge.agents.client_process import (
     ClientLaunchSpec,
     ClientProcessError,
+    ClientProcessResult,
     ClientProcessSupervisor,
     ClientProcessTimeout,
     ClientSettlementUncertain,
@@ -171,6 +172,7 @@ class SupervisedClaudeLiveRouteRunner:
         )
         session = None
         completed = False
+        cancelled = False
         try:
             spec = ClientLaunchSpec(
                 argv=(installation.executable, *gateway._command(request)),
@@ -201,6 +203,9 @@ class SupervisedClaudeLiveRouteRunner:
                         ).encode("utf-8")
                     ).hexdigest(),
                 )
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except ClaudeCapabilityProbeError:
             raise
         except ClientProcessTimeout, TimeoutError:
@@ -211,8 +216,13 @@ class SupervisedClaudeLiveRouteRunner:
             raise ClaudeCapabilityProbeError("probe_protocol_failed") from None
         finally:
             if session is not None:
-                receipt = await session.close(completed=completed)
-                if not terminal_launch_proof(receipt).permits_decision:
+                receipt = await _close_probe_session(
+                    session, completed=completed, cancellation_pending=cancelled
+                )
+                if cancelled:
+                    raise asyncio.CancelledError
+                proof = terminal_launch_proof(receipt)
+                if not proof.stop_confirmed or (completed and not proof.permits_decision):
                     raise ClaudeCapabilityProbeError("probe_stop_uncertain")
 
 
@@ -289,6 +299,7 @@ class SupervisedClaudeAuthStatusRunner:
     async def run(self, installation: ClaudeInstallation, environment: Mapping[str, str]) -> str:
         session = None
         completed = False
+        cancelled = False
         try:
             spec = ClientLaunchSpec(
                 argv=(installation.executable, "--setting-sources=", "auth", "status"),
@@ -297,31 +308,68 @@ class SupervisedClaudeAuthStatusRunner:
                 allowed_environment=frozenset(environment),
                 executable_digest=installation.executable_digest,
                 duration_seconds=min(installation.duration_seconds, 15.0),
+                stdout_max_bytes=_MAX_AUTH_STATUS_BYTES,
+                protocol="json_document",
             )
             async with asyncio.timeout(spec.duration_seconds):
                 session = await self.supervisor.start(spec)
+                await session.close_stdin()
                 frame = await session.receive()
                 if not isinstance(frame, Mapping):
                     raise ClaudeCapabilityProbeError("auth_status_invalid")
-                # The supervised transport already enforces a bounded JSON line.
                 payload = json.dumps(frame, sort_keys=True, separators=(",", ":"))
+                if len(payload.encode("utf-8")) > _MAX_AUTH_STATUS_BYTES:
+                    raise ClaudeCapabilityProbeError("auth_status_invalid")
                 if await session.receive() is not None:
                     raise ClaudeCapabilityProbeError("auth_status_invalid")
                 completed = True
                 return payload
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except ClaudeCapabilityProbeError:
             raise
         except ClientProcessTimeout, TimeoutError:
             raise ClaudeCapabilityProbeError("probe_timeout") from None
         except ClientSettlementUncertain:
             raise ClaudeCapabilityProbeError("probe_stop_uncertain") from None
-        except ClientProcessError, TypeError, ValueError:
+        except ClientProcessError, OSError, TypeError, ValueError:
             raise ClaudeCapabilityProbeError("auth_status_invalid") from None
         finally:
             if session is not None:
-                receipt = await session.close(completed=completed)
-                if not terminal_launch_proof(receipt).permits_decision:
+                receipt = await _close_probe_session(
+                    session, completed=completed, cancellation_pending=cancelled
+                )
+                if cancelled:
+                    raise asyncio.CancelledError
+                proof = terminal_launch_proof(receipt)
+                if not proof.stop_confirmed or (completed and not proof.permits_decision):
                     raise ClaudeCapabilityProbeError("probe_stop_uncertain")
+
+
+async def _close_probe_session(
+    session: Any, *, completed: bool, cancellation_pending: bool = False
+) -> ClientProcessResult:
+    """Await one close to completion without allowing cleanup to hide cancellation."""
+
+    close_task = asyncio.create_task(session.close(completed=completed))
+    wait_task = asyncio.create_task(asyncio.wait((close_task,)))
+    interrupted = cancellation_pending
+    while not wait_task.done():
+        try:
+            await asyncio.shield(wait_task)
+        except asyncio.CancelledError:
+            interrupted = True
+    wait_task.result()
+    try:
+        receipt = close_task.result()
+    except BaseException:
+        if interrupted:
+            raise asyncio.CancelledError from None
+        raise
+    if interrupted:
+        raise asyncio.CancelledError
+    return cast(ClientProcessResult, receipt)
 
 
 @dataclass(slots=True)

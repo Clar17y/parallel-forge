@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, Any, Protocol, Self, cast
+from typing import IO, Any, Literal, Protocol, Self, cast
 from uuid import uuid4
 
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
@@ -117,8 +117,11 @@ class ClientLaunchSpec:
     stdout_max_bytes: int = 1024 * 1024
     stderr_max_bytes: int = 1024 * 1024
     frame_max_bytes: int = 256 * 1024
+    protocol: Literal["jsonl", "json_document"] = "jsonl"
 
     def __post_init__(self) -> None:
+        if self.protocol not in {"jsonl", "json_document"}:
+            raise ValueError("invalid client protocol")
         argv = tuple(self.argv)
         if not argv or any(type(a) is not str or not a or "\0" in a for a in argv):
             raise ValueError("invalid client argv")
@@ -561,8 +564,13 @@ class ClientProcessSession:
             raise ClientProcessError("pinned client file is unavailable") from None
 
     def begin(self) -> None:
+        stdout_task = (
+            asyncio.create_task(self._stdout_document())
+            if self.spec.protocol == "json_document"
+            else asyncio.create_task(self._stdout())
+        )
         self._tasks = [
-            asyncio.create_task(self._stdout()),
+            stdout_task,
             asyncio.create_task(self._stderr_reader()),
         ]
         self._exit_task = asyncio.create_task(self._watch_exit())
@@ -614,6 +622,49 @@ class ClientProcessSession:
         finally:
             self._queue.put_nowait(None)
 
+    async def _stdout_document(self) -> None:
+        pending = bytearray()
+        try:
+            while chunk := await asyncio.to_thread(
+                self.process.stdout.read, min(4096, self.spec.stdout_max_bytes + 1)
+            ):
+                self._out_bytes += len(chunk)
+                if self._out_bytes > self.spec.stdout_max_bytes:
+                    raise ClientProtocolError("client total output exceeds limit")
+                pending.extend(chunk)
+            if not pending:
+                raise ClientProtocolError("client emitted empty document")
+            try:
+                text = pending.decode("utf-8")
+            except UnicodeDecodeError:
+                raise ClientProtocolError("client emitted non-UTF-8 document") from None
+            decoder = json.JSONDecoder(
+                object_pairs_hook=_json_object,
+                parse_constant=_reject_json_constant,
+                parse_float=_json_float,
+            )
+            stripped_text = text.strip()
+            if not stripped_text:
+                raise ClientProtocolError("client emitted empty document")
+            try:
+                decoded, end = decoder.raw_decode(stripped_text)
+            except ValueError:
+                raise ClientProtocolError("client emitted malformed JSON document") from None
+            if not isinstance(decoded, dict):
+                raise ClientProtocolError("client document must be an object")
+            if stripped_text[end:].strip():
+                raise ClientProtocolError("client emitted trailing output")
+            self._admit_decoded_frame(decoded)
+        except (ClientProtocolError, OSError, ValueError, RecursionError) as error:
+            self._failure = (
+                error
+                if isinstance(error, ClientProtocolError)
+                else ClientProtocolError("client output failed")
+            )
+            self._settle("protocol_error")
+        finally:
+            self._queue.put_nowait(None)
+
     def _admit_frame(self, line: bytes | bytearray) -> None:
         if len(line) + 1 > self.spec.frame_max_bytes:
             raise ClientProtocolError("client frame exceeds limit")
@@ -628,8 +679,17 @@ class ClientProcessSession:
             raise ClientProtocolError("client emitted malformed JSONL") from None
         if not isinstance(decoded, dict):
             raise ClientProtocolError("client frame must be an object")
+        self._admit_decoded_frame(decoded)
+
+    def _admit_decoded_frame(self, decoded: dict[str, Any]) -> None:
+        """Copy before admission so an uncopyable provider frame is never visible."""
+
+        try:
+            queued = copy.deepcopy(decoded)
+        except RecursionError:
+            raise ClientProtocolError("client frame is not bounded JSON") from None
         self._frames.append(decoded)
-        self._queue.put_nowait(copy.deepcopy(decoded))
+        self._queue.put_nowait(queued)
 
     async def _stderr_reader(self) -> None:
         try:
@@ -669,8 +729,15 @@ class ClientProcessSession:
             remaining = remaining[count:]
 
     async def close_stdin(self) -> None:
-        async with self._send_lock:
-            await asyncio.to_thread(self.process.stdin.close)
+        try:
+            async with self._send_lock:
+                await asyncio.to_thread(self.process.stdin.close)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._settle("cancelled"))
+            raise
+        except OSError, ValueError:
+            await asyncio.shield(self._settle("protocol_error"))
+            raise ClientProcessError("client input failed") from None
 
     async def receive(self) -> dict[str, Any] | None:
         try:
@@ -823,6 +890,26 @@ class ClientProcessSupervisor:
         session = await self.start(spec, lifecycle=lifecycle)
         try:
             await session.send(request)
+            await session.close_stdin()
+            while await session.receive() is not None:
+                pass
+            result = await session.wait_closed()
+            if session._failure:
+                raise session._failure
+            return result
+        finally:
+            await session.close()
+
+    async def run_document(
+        self,
+        spec: ClientLaunchSpec,
+        *,
+        lifecycle: ClientProcessLifecycle | None = None,
+    ) -> ClientProcessResult:
+        if spec.protocol != "json_document":
+            raise ValueError("run_document requires a json_document launch spec")
+        session = await self.start(spec, lifecycle=lifecycle)
+        try:
             await session.close_stdin()
             while await session.receive() is not None:
                 pass

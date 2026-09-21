@@ -71,6 +71,13 @@ class _InstallationSpec(_ClosedModel):
             raise ValueError("installation text contains a null byte")
         return value
 
+    @field_validator("model")
+    @classmethod
+    def require_non_blank_model(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("installation model must not be blank")
+        return value
+
     @field_validator("effort")
     @classmethod
     def require_supported_effort(cls, value: str) -> str:

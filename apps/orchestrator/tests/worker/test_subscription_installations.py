@@ -226,7 +226,9 @@ def test_absent_and_malformed_manifests_leave_settings_healthy(tmp_path: Path) -
     assert load_subscription_installations(malformed, SubscriptionVerifierDependencies()) == ()
 
 
-def test_manifest_rejects_unknown_reasoning_effort_before_readiness(tmp_path: Path) -> None:
+def test_manifest_rejects_unknown_reasoning_effort_before_readiness(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     path, payload = _codex_manifest(tmp_path)
     payload["installations"][0]["effort"] = "turbo"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -239,6 +241,9 @@ def test_manifest_rejects_unknown_reasoning_effort_before_readiness(tmp_path: Pa
     )
     assert diagnostic.adapters == ()
     assert diagnostic.readiness == ()
+    assert "Subscription installation manifest is unavailable" in caplog.text
+    assert str(path) not in caplog.text
+    assert "turbo" not in caplog.text
 
 
 @pytest.mark.parametrize("field", ["executable", "cwd", "home"])
@@ -297,6 +302,31 @@ def test_production_dependencies_exclude_gemini_until_a_trusted_verifier_exists(
     assert isinstance(dependencies.codex, CodexEvidenceVerifier)
     assert isinstance(dependencies.claude, ClaudeEvidenceVerifier)
     assert dependencies.gemini is None
+
+
+@pytest.mark.parametrize("whitespace_model", ["   ", "\t", "  \t\n "])
+def test_manifest_rejects_whitespace_only_model_and_loads_no_authority(
+    tmp_path: Path, whitespace_model: str
+) -> None:
+    path, payload = _codex_manifest(tmp_path)
+    payload["installations"][0]["model"] = whitespace_model
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    settings = Settings(subscription_installations_path=path, _env_file=None)
+
+    assert settings.subscription_quota_policy.route_pools == ()
+    assert (
+        load_subscription_installations(
+            settings,
+            SubscriptionVerifierDependencies(codex=SimpleNamespace(verify=lambda *_args: None)),
+        )
+        == ()
+    )
+    diagnostic = load_subscription_installations_diagnostic(
+        settings,
+        SubscriptionVerifierDependencies(codex=SimpleNamespace(verify=lambda *_args: None)),
+    )
+    assert diagnostic.adapters == ()
+    assert diagnostic.readiness == ()
 
 
 def _codex_manifest(tmp_path: Path) -> tuple[Path, dict[str, Any]]:

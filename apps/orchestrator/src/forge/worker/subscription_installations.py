@@ -116,25 +116,29 @@ def load_subscription_installations_diagnostic(
     settings: Settings, verifiers: SubscriptionVerifierDependencies
 ) -> SubscriptionInstallationLoad:
     """Load adapters while retaining a redacted diagnostic for every valid item."""
-    manifest = load_subscription_installation_manifest(
-        getattr(settings, "subscription_installations_path", None)
-    )
+    configured_path = getattr(settings, "subscription_installations_path", None)
+    manifest = load_subscription_installation_manifest(configured_path)
     if manifest is None:
+        if configured_path is not None:
+            logger.warning("Subscription installation manifest is unavailable")
         return SubscriptionInstallationLoad((), ())
     adapters: list[SubscriptionRuntimeAdapter] = []
     admitted: set[RouteSpec] = set()
     diagnostics: list[SubscriptionRouteReadiness] = []
     for item in manifest.installations:
-        route = RouteSpec(
-            provider={
-                "codex_app_server": "openai",
-                "claude_code": "anthropic",
-                "gemini_cli": "google",
-            }[item.client],
-            client=item.client,
-            model=item.model,
-            effort=ReasoningEffort(item.effort),
-        )
+        try:
+            route = RouteSpec(
+                provider={
+                    "codex_app_server": "openai",
+                    "claude_code": "anthropic",
+                    "gemini_cli": "google",
+                }[item.client],
+                client=item.client,
+                model=item.model,
+                effort=ReasoningEffort(item.effort),
+            )
+        except TypeError, ValueError:
+            continue
         actual_digest = stable_executable_digest(item.executable)
         if item.client == "gemini_cli" and verifiers.gemini is None:
             reason = ReadinessReason.PROVIDER_UNSUPPORTED

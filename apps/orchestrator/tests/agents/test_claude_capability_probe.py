@@ -335,8 +335,15 @@ def test_subscription_environment_is_minimal_and_offline_remains_provider_suppre
 class AuthSession:
     def __init__(self, frames, certain=True):
         self.frames, self.certain, self.close_calls = list(frames), certain, 0
+        self.stdin_closed = False
+        self.closed_before_receive = False
+
+    async def close_stdin(self):
+        self.stdin_closed = True
 
     async def receive(self):
+        if self.stdin_closed:
+            self.closed_before_receive = True
         return self.frames.pop(0)
 
     async def close(self, *, completed):
@@ -373,10 +380,14 @@ async def test_supervised_auth_exact_command_clean_environment_terminal_and_clos
     assert json.loads(await runner.run(parts[0], environment))["loggedIn"] is True
     spec = supervisor.specs[0]
     assert spec.argv == (parts[0].executable, "--setting-sources=", "auth", "status")
+    assert spec.protocol == "json_document"
+    assert spec.stdout_max_bytes == 16 * 1024
     assert {key: spec.environment[key] for key in environment} == environment
     assert set(spec.environment) <= {*environment, "SystemRoot"}
     assert spec.allowed_environment <= frozenset({*environment, "SystemRoot"})
     assert spec.duration_seconds == 1 and session.close_calls == 1
+    assert session.stdin_closed is True
+    assert session.closed_before_receive is True
 
 
 @pytest.mark.parametrize(
@@ -394,6 +405,101 @@ async def test_supervised_auth_invalid_or_uncertain_closes_once(parts, frames, c
     with pytest.raises(ClaudeCapabilityProbeError, match=f"^{reason}$"):
         await runner.run(parts[0], claude_subscription_environment(parts[0]))
     assert session.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_supervised_auth_formatted_multiline_json_regression_fails_with_jsonl_session(parts):
+    from io import BytesIO
+
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessReceipt,
+        ClientProcessSession,
+    )
+
+    formatted_bytes = (
+        b"{\n"
+        b'  "loggedIn": true,\n'
+        b'  "authMethod": "claude.ai",\n'
+        b'  "apiProvider": "firstParty",\n'
+        b'  "email": "user@example.com",\n'
+        b'  "subscriptionType": "pro"\n'
+        b"}\n"
+    )
+
+    class ByteProcess:
+        pid = 1234
+
+        def __init__(self, raw: bytes):
+            self.stdin = BytesIO()
+            self.stdout = BytesIO(raw)
+            self.stderr = BytesIO()
+            self.pinned_paths: dict[str, str] = {}
+
+        def token(self):
+            return "token-1"
+
+        def resume(self):
+            pass
+
+        def wait(self, _seconds):
+            return 0
+
+        def terminate_tree(self):
+            pass
+
+        def close(self):
+            pass
+
+    # The current interactive JSONL session fails on formatted multi-line JSON:
+    jsonl_spec = ClientLaunchSpec(
+        argv=(parts[0].executable, "--setting-sources=", "auth", "status"),
+        cwd=parts[0].cwd,
+        environment={},
+    )
+    jsonl_session = ClientProcessSession(
+        ByteProcess(formatted_bytes),
+        ClientProcessReceipt("launch-jsonl", 1234, "token-1", 1.0),
+        jsonl_spec,
+        lifecycle=None,
+        deadline=asyncio.get_running_loop().time() + 2.0,
+    )
+    jsonl_session.begin()
+
+    class Supervisor:
+        async def start(self, _spec):
+            return jsonl_session
+
+    runner = SupervisedClaudeAuthStatusRunner(supervisor=Supervisor())
+    with pytest.raises(ClaudeCapabilityProbeError, match="^auth_status_invalid$"):
+        await runner.run(parts[0], claude_subscription_environment(parts[0]))
+
+    # But the whole-document supervisor session succeeds on the exact same bytes:
+    doc_spec = ClientLaunchSpec(
+        argv=(parts[0].executable, "--setting-sources=", "auth", "status"),
+        cwd=parts[0].cwd,
+        environment={},
+        protocol="json_document",
+    )
+    doc_session = ClientProcessSession(
+        ByteProcess(formatted_bytes),
+        ClientProcessReceipt("launch-doc", 1234, "token-1", 1.0),
+        doc_spec,
+        lifecycle=None,
+        deadline=asyncio.get_running_loop().time() + 2.0,
+    )
+    doc_session.begin()
+
+    class DocSupervisor:
+        async def start(self, _spec):
+            return doc_session
+
+    runner_doc = SupervisedClaudeAuthStatusRunner(supervisor=DocSupervisor())
+    result_text = await runner_doc.run(parts[0], claude_subscription_environment(parts[0]))
+    parsed = json.loads(result_text)
+    assert parsed["loggedIn"] is True
+    assert parsed["subscriptionType"] == "pro"
+    assert parsed["email"] == "user@example.com"
 
 
 def test_policy_digest_is_independent_of_fixture_default_version():
@@ -447,3 +553,233 @@ async def test_supervised_live_route_hashes_canonical_tool_surface_json(parts):
         assert (await runner.run(parts[0], parts[1])).tool_surface_digest == expected
     finally:
         monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_supervised_live_route_safely_stopped_failure_retains_accurate_reason(parts):
+    class Session:
+        async def close(self, *, completed):
+            return ClientProcessResult(
+                ClientProcessReceipt("live", 8, "process", 1.0),
+                0,
+                (),
+                0,
+                "",
+                0,
+                False,
+                False,
+                "cancelled",
+                True,
+            )
+
+    class Supervisor:
+        async def start(self, _spec):
+            return Session()
+
+    runner = SupervisedClaudeLiveRouteRunner(supervisor=Supervisor())
+
+    class Gateway:
+        def _command(self, _request):
+            return ()
+
+        async def _exchange(self, *_args):
+            return SimpleNamespace(failure="client_error", decision=None)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "forge.agents.claude_capability_probe.ClaudeGateway", lambda *_args, **_kwargs: Gateway()
+    )
+    try:
+        with pytest.raises(ClaudeCapabilityProbeError, match="^probe_protocol_failed$"):
+            await runner.run(parts[0], parts[1])
+    finally:
+        monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner_name", ["auth", "live"])
+async def test_supervised_runner_cancellation_wins_over_uncertain_cleanup(parts, runner_name):
+    entered = asyncio.Event()
+
+    class Session:
+        async def close_stdin(self):
+            return None
+
+        async def receive(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def close(self, *, completed):
+            await asyncio.sleep(0)
+            return ClientProcessResult(
+                ClientProcessReceipt("cancelled", 8, "process", 1.0),
+                None,
+                (),
+                0,
+                "",
+                0,
+                False,
+                False,
+                "stop_uncertain",
+                False,
+            )
+
+    class Supervisor:
+        async def start(self, _spec):
+            return Session()
+
+    if runner_name == "auth":
+        task = asyncio.create_task(
+            SupervisedClaudeAuthStatusRunner(supervisor=Supervisor()).run(
+                parts[0], claude_subscription_environment(parts[0])
+            )
+        )
+    else:
+
+        class Gateway:
+            def _command(self, _request):
+                return ()
+
+            async def _exchange(self, *_args):
+                entered.set()
+                await asyncio.Event().wait()
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(
+            "forge.agents.claude_capability_probe.ClaudeGateway",
+            lambda *_args, **_kwargs: Gateway(),
+        )
+        task = asyncio.create_task(
+            SupervisedClaudeLiveRouteRunner(supervisor=Supervisor()).run(parts[0], parts[1])
+        )
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+    finally:
+        if runner_name == "live":
+            monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_auth_runner_repeated_cancellation_waits_for_cleanup(parts):
+    entered, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Session:
+        async def close_stdin(self):
+            return None
+
+        async def receive(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def close(self, *, completed):
+            closing.set()
+            await release.wait()
+            return await AuthSession([None], certain=False).close(completed=completed)
+
+    class Supervisor:
+        async def start(self, _spec):
+            return Session()
+
+    task = asyncio.create_task(
+        SupervisedClaudeAuthStatusRunner(supervisor=Supervisor()).run(
+            parts[0], claude_subscription_environment(parts[0])
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(closing.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_auth_runner_cancellation_wins_over_failing_cleanup(parts):
+    from forge.agents.client_process import ClientSettlementUncertain
+
+    entered, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Session:
+        async def close_stdin(self):
+            return None
+
+        async def receive(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def close(self, *, completed):
+            closing.set()
+            await release.wait()
+            raise ClientSettlementUncertain(
+                ClientProcessResult(
+                    ClientProcessReceipt("auth", 8, "process", 1.0),
+                    None,
+                    (),
+                    0,
+                    "",
+                    0,
+                    False,
+                    False,
+                    "stop_uncertain",
+                    False,
+                )
+            )
+
+    class Supervisor:
+        async def start(self, _spec):
+            return Session()
+
+    task = asyncio.create_task(
+        SupervisedClaudeAuthStatusRunner(supervisor=Supervisor()).run(
+            parts[0], claude_subscription_environment(parts[0])
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(closing.wait(), 2)
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_auth_runner_sanitizes_close_stdin_error(parts):
+    class Session:
+        async def close_stdin(self):
+            raise OSError("C:/private/provider-token")
+
+        async def close(self, *, completed):
+            return ClientProcessResult(
+                ClientProcessReceipt("auth", 8, "process", 1.0),
+                0,
+                (),
+                0,
+                "",
+                0,
+                False,
+                False,
+                "cancelled",
+                True,
+            )
+
+    class Supervisor:
+        async def start(self, _spec):
+            return Session()
+
+    with pytest.raises(ClaudeCapabilityProbeError, match="^auth_status_invalid$") as caught:
+        await SupervisedClaudeAuthStatusRunner(supervisor=Supervisor()).run(
+            parts[0], claude_subscription_environment(parts[0])
+        )
+    assert "private" not in str(caught.value)

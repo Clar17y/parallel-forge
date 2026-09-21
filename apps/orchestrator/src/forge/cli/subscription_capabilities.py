@@ -29,6 +29,8 @@ from forge.agents.claude_conformance import (
 )
 from forge.agents.claude_gateway import ClaudeInstallation
 from forge.agents.claude_verification import (
+    CLAUDE_VERIFIER_ID,
+    CLAUDE_VERIFIER_VERSION,
     ClaudeVerificationScope,
     required_claude_verification_scopes,
 )
@@ -40,6 +42,8 @@ from forge.agents.codex_capability_probe import (
 from forge.agents.codex_conformance import CodexConformanceResult, CodexOfficialConformanceHarness
 from forge.agents.codex_gateway import CodexInstallation
 from forge.agents.codex_verification import (
+    CODEX_VERIFIER_ID,
+    CODEX_VERIFIER_VERSION,
     CodexVerificationScope,
     codex_executable_digest,
     required_codex_verification_scopes,
@@ -51,6 +55,7 @@ from forge.application.ports.capability_diagnostics import (
 )
 from forge.application.ports.capability_evidence import (
     CapabilityEvidenceMissing,
+    CapabilityEvidenceSource,
     CapabilityEvidenceUnavailable,
 )
 from forge.application.services.subscription_capability_evidence import (
@@ -150,6 +155,9 @@ class CapabilityComposition:
         ClaudeOfficialConformanceHarness
     )
     artifact_factory: Callable[[Path], ArtifactStore] = FilesystemArtifactStore
+    evidence_source_factory: Callable[
+        [async_sessionmaker[AsyncSession], ArtifactStore], PostgresCapabilityEvidenceSource
+    ] = PostgresCapabilityEvidenceSource
 
 
 def _emit(value: dict[str, object]) -> None:
@@ -284,12 +292,12 @@ async def status_data(composition: CapabilityComposition) -> dict[str, object]:
             "targets": [],
         }
     engine: AsyncEngine | None = None
-    source: PostgresCapabilityEvidenceSource | None = None
+    source: CapabilityEvidenceSource | None = None
     diagnostics: CapabilityProbeDiagnosticSource | None = None
     try:
         engine = composition.engine_factory(settings.database_url)
         sessions = composition.session_factory(engine)
-        source = PostgresCapabilityEvidenceSource(
+        source = composition.evidence_source_factory(
             sessions,
             composition.artifact_factory(settings.artifact_root),
         )
@@ -336,13 +344,32 @@ async def status_data(composition: CapabilityComposition) -> dict[str, object]:
                     if source:
                         try:
                             resolved = await source.resolve(identity)
-                            entry = {
-                                "scope": scope.name,
-                                "status": "current",
-                                "evidence_id": str(resolved.manifest.evidence_id),
-                                "revision": resolved.revision,
-                                "expires_at": resolved.manifest.expires_at.isoformat(),
-                            }
+                            expected_verifier_id = (
+                                CODEX_VERIFIER_ID
+                                if client == "codex_app_server"
+                                else CLAUDE_VERIFIER_ID
+                            )
+                            expected_verifier_version = (
+                                CODEX_VERIFIER_VERSION
+                                if client == "codex_app_server"
+                                else CLAUDE_VERIFIER_VERSION
+                            )
+                            if (
+                                not isinstance(resolved, ResolvedCapabilityEvidence)
+                                or not resolved.matches(identity)
+                                or not resolved.permits(scope.evidence_scope())
+                                or resolved.manifest.verifier_id != expected_verifier_id
+                                or resolved.manifest.verifier_version != expected_verifier_version
+                            ):
+                                entry = {"scope": scope.name, "status": "stale_or_invalid"}
+                            else:
+                                entry = {
+                                    "scope": scope.name,
+                                    "status": "current",
+                                    "evidence_id": str(resolved.manifest.evidence_id),
+                                    "revision": resolved.revision,
+                                    "expires_at": resolved.manifest.expires_at.isoformat(),
+                                }
                         except CapabilityEvidenceMissing:
                             entry = {"scope": scope.name, "status": "missing"}
                         except CapabilityEvidenceUnavailable:
@@ -541,7 +568,7 @@ async def publish_command(
         sessions = composition.session_factory(engine)
         diagnostics = composition.diagnostic_factory(sessions)
         artifacts = composition.artifact_factory(settings.artifact_root)
-        source = PostgresCapabilityEvidenceSource(sessions, artifacts)
+        source = composition.evidence_source_factory(sessions, artifacts)
         actual = await asyncio.to_thread(
             codex_executable_digest
             if selected_client == "codex_app_server"
