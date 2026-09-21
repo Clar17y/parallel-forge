@@ -110,7 +110,6 @@ class GeminiCapabilityReport:
     model: str | None = None
     effort: str | None = None
     tools_disabled: bool = False
-    billing_never: bool = False
     isolated_config: bool = False
     acp_mcp_supported: bool = False
     client_home: str | None = field(default=None, repr=False)
@@ -135,7 +134,6 @@ class GeminiCapabilityReport:
             and self.model == installation.model
             and self.effort == installation.effort
             and self.tools_disabled is True
-            and self.billing_never is True
             and self.isolated_config is True
             and self.acp_mcp_supported is True
             and self.client_home == installation.home

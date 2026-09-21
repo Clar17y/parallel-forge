@@ -108,7 +108,6 @@ def _report(**changes: Any) -> ClaudeCapabilityReport:
         "effort": "medium",
         "builtins_disabled": True,
         "strict_mcp": True,
-        "allowance_only_enforced": True,
         "hooks_disabled": True,
         "client_home": str(Path.cwd().resolve()),
         "account": "test-account",
@@ -326,7 +325,6 @@ async def test_assistant_usage_is_deduplicated_by_message_and_aggregated(scenari
         {"subscription_auth": False},
         {"builtins_disabled": False},
         {"strict_mcp": False},
-        {"allowance_only_enforced": False},
         {"hooks_disabled": False},
     ],
 )

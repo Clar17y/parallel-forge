@@ -392,9 +392,8 @@ async def test_home_verification_must_match_before_launch(tmp_path, missing):
     assert result.launch_proof is None and launches == []
 
 
-@pytest.mark.parametrize("gate", ["billing_allowance_enforced", "native_tools_isolated"])
-async def test_configuration_does_not_replace_billing_or_isolation_proof(gate):
-    client = _gateway("success", report=_report(**{gate: False}))
+async def test_configuration_does_not_replace_isolation_proof():
+    client = _gateway("success", report=_report(native_tools_isolated=False))
     client._installation = replace(client._installation, disabled_mcp_servers=("inherited",))
     result, launches, _ = await capture(client)
     assert result.failure is SubscriptionFailure.UNAVAILABLE and launches == []

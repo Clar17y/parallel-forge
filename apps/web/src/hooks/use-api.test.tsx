@@ -70,3 +70,28 @@ test('refresh synchronously returns exact request tokens and retains the display
   expect(hook.result.current.value?.id).toBe('first');
   expect(hook.result.current.token).toBe(later);
 });
+
+test('an opted-in refresh is shared across tabs without broadcasting background polling', async () => {
+  const storage = vi.spyOn(Storage.prototype, 'setItem');
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"id":"first"}'))
+    .mockResolvedValueOnce(new Response('{"id":"second"}'))
+    .mockResolvedValueOnce(new Response('{"id":"third"}'));
+  const hook = renderHook(() => useApi<{ id: string }>('/readiness', {
+    keepPreviousOnRefresh: true,
+    refreshStorageKey: 'forge:test:refresh',
+  }));
+  await waitFor(() => expect(hook.result.current.value?.id).toBe('first'));
+
+  act(() => { hook.result.current.refresh(); });
+  await waitFor(() => expect(hook.result.current.value?.id).toBe('second'));
+  expect(storage).toHaveBeenCalledTimes(1);
+  expect(storage.mock.calls[0][0]).toBe('forge:test:refresh');
+
+  act(() => window.dispatchEvent(new StorageEvent('storage', {
+    key: 'forge:test:refresh', newValue: 'another-tab',
+  })));
+  await waitFor(() => expect(hook.result.current.value?.id).toBe('third'));
+  expect(fetcher).toHaveBeenCalledTimes(3);
+  expect(storage).toHaveBeenCalledTimes(1);
+});

@@ -19,20 +19,29 @@ from forge.application.services.subscription_decision_recovery import Subscripti
 from forge.application.services.subscription_effect_recovery import SubscriptionEffectRecovery
 from forge.application.services.terminal_recovery import TerminalMergeRecovery
 from forge.application.services.worker import CommandHandler, Worker
+from forge.artifacts.filesystem import FilesystemArtifactStore
+from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPoolKey
+from forge.domain.subscription_readiness import SubscriptionRouteReadiness
 from forge.persistence.database import create_engine, create_session_factory
+from forge.persistence.repositories.capability_evidence import PostgresCapabilityEvidenceSource
+from forge.persistence.repositories.capability_probe_diagnostics import (
+    PostgresCapabilityProbeDiagnosticStore,
+)
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.operations import PostgresOperationRepository
 from forge.persistence.repositories.recovery import PostgresRecoveryBarrier, RecoveryBarrierLost
+from forge.persistence.repositories.subscription_quota import PostgresSubscriptionQuotaRepository
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.settings import Settings
 from forge.worker.composition import WorkerCompositionError, WorkerHandlers, compose_worker_handlers
 from forge.worker.startup import run_startup_recovery
 from forge.worker.startup_intervention import StartupInterventionRecovery
 from forge.worker.subscription_installations import (
-    load_subscription_installations,
+    load_subscription_installations_diagnostic,
     production_subscription_verifiers,
 )
 from forge.worker.subscription_invocation import SubscriptionInvocationWorker
+from forge.worker.subscription_readiness import SubscriptionReadinessEnricher
 from forge.worker.subscription_status import SubscriptionRuntimeReporter
 
 logger = logging.getLogger(__name__)
@@ -74,6 +83,8 @@ async def run_worker(
     control_worker: Worker | None = None
     owned_handlers: WorkerHandlers | None = None
     status_reporter: SubscriptionRuntimeReporter | None = None
+    subscription_readiness = None
+    subscription_readiness_supplier = None
     polls: list[asyncio.Task[None]] = []
     try:
         if supplied_subscription_adapters is not None:
@@ -84,10 +95,31 @@ async def run_worker(
         ):
             resolved_subscription_adapters = ()
         else:
-            resolved_subscription_adapters = load_subscription_installations(
+            installation_load = load_subscription_installations_diagnostic(
                 settings,
                 production_subscription_verifiers(factory, settings.artifact_root),
             )
+            resolved_subscription_adapters = installation_load.adapters
+            subscription_readiness = installation_load.readiness
+
+            async def quota_status(key: QuotaPoolKey) -> PoolQuotaStatus:
+                async with factory() as session:
+                    return await PostgresSubscriptionQuotaRepository(
+                        session, policy=settings.subscription_quota_policy
+                    ).status(key)
+
+            enricher = SubscriptionReadinessEnricher(
+                PostgresCapabilityEvidenceSource(
+                    factory, FilesystemArtifactStore(settings.artifact_root)
+                ),
+                quota_status,
+                installation_load.specs,
+                PostgresCapabilityProbeDiagnosticStore(factory),
+            )
+
+            async def subscription_readiness_supplier() -> tuple[SubscriptionRouteReadiness, ...]:
+                return await enricher.enrich(subscription_readiness)
+
         commands = PostgresCommandRepository(factory)
         operations = PostgresOperationRepository(factory)
         recovery = RecoveryService(operations)
@@ -99,7 +131,11 @@ async def run_worker(
             await intervention.wait_for_owners()
             if handlers is None:
                 effective_handlers = compose_worker_handlers(
-                    settings, factory, subscription_adapters=resolved_subscription_adapters
+                    settings,
+                    factory,
+                    subscription_adapters=resolved_subscription_adapters,
+                    subscription_readiness=subscription_readiness,
+                    subscription_readiness_supplier=subscription_readiness_supplier,
                 )
                 if isinstance(effective_handlers, WorkerHandlers):
                     owned_handlers = effective_handlers

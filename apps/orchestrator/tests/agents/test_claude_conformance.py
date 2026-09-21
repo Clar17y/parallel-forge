@@ -673,7 +673,12 @@ async def test_official_client_denies_inherited_surfaces_and_round_trips_one_for
     assert "--strict-mcp-config" in launches[0].argv
     assert not result.publishable and not result.live_provider_call
     assert "Cloud gateway" not in (await sessions[0].wait_closed()).stderr
-    payload = json.dumps(result.sanitized_payload(), sort_keys=True)
+    sanitized = result.sanitized_payload()
+    publication = sanitized["publication"]
+    assert sanitized["schema_version"] == 1
+    assert publication["billing_enforcement_proven"] is False
+    assert "subscription_route_binding_proven" not in publication
+    payload = json.dumps(sanitized, sort_keys=True)
     assert (
         str(tmp_path) not in payload
         and "fixture-must-not-be-used" not in payload

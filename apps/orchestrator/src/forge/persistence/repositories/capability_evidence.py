@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.capability_evidence import (
     CapabilityEvidenceConflict,
+    CapabilityEvidenceInvalid,
+    CapabilityEvidenceMissing,
     CapabilityEvidenceSourceError,
     CapabilityEvidenceUnavailable,
 )
@@ -29,6 +31,7 @@ from forge.domain.capability_evidence import (
     decode_capability_evidence,
     encode_capability_evidence,
 )
+from forge.domain.capability_proof import CapabilityProofError, validate_proof
 from forge.persistence.models.capability_evidence import CapabilityEvidence
 from forge.persistence.models.execution import Artifact
 
@@ -56,11 +59,38 @@ class PostgresCapabilityEvidenceSource:
 
     async def publish(self, manifest: CapabilityEvidenceManifest) -> ResolvedCapabilityEvidence:
         wire = _wire(manifest)
+        wire_digest = hashlib.sha256(wire).hexdigest()
+        # Replay identity is immutable.  Check it before proof artifacts so a
+        # malformed replacement cannot disguise the conflict as unavailability.
+        try:
+            async with self._factory() as session:
+                existing = await _record_by_id(session, manifest.evidence_id)
+            if existing is not None:
+                _record, artifact = existing
+                if artifact.digest != wire_digest:
+                    raise CapabilityEvidenceConflict("capability evidence replay differs")
+        except CapabilityEvidenceConflict:
+            raise
+        except SQLAlchemyError:
+            raise CapabilityEvidenceSourceError(
+                "capability evidence could not be persisted"
+            ) from None
         for proof in manifest.proofs:
             try:
+                proof_wire = await self._artifacts.open_bytes(
+                    proof.artifact_digest, max_bytes=16 * 1024
+                )
+                validate_proof(proof_wire, proof.kind, manifest)
                 if not await self._artifacts.verify(proof.artifact_digest):
                     raise CapabilityEvidenceUnavailable("capability proof artifact is unavailable")
-            except ArtifactIntegrityError, ArtifactStoreError, OSError:
+            except (
+                ArtifactIntegrityError,
+                ArtifactStoreError,
+                CapabilityProofError,
+                OSError,
+                AttributeError,
+                TypeError,
+            ):
                 raise CapabilityEvidenceUnavailable(
                     "capability proof artifact is unavailable"
                 ) from None
@@ -72,12 +102,19 @@ class PostgresCapabilityEvidenceSource:
             raise CapabilityEvidenceSourceError(
                 "capability evidence artifact could not be stored"
             ) from None
-        if (
-            descriptor.digest != hashlib.sha256(wire).hexdigest()
-            or descriptor.media_type != CAPABILITY_EVIDENCE_MEDIA_TYPE
-            or descriptor.byte_count != len(wire)
-            or descriptor.truncated
-        ):
+        try:
+            descriptor_is_valid = (
+                descriptor.digest == hashlib.sha256(wire).hexdigest()
+                and descriptor.media_type == CAPABILITY_EVIDENCE_MEDIA_TYPE
+                and descriptor.byte_count == len(wire)
+                and not descriptor.truncated
+                and await self._artifacts.verify(descriptor.digest)
+            )
+        except ArtifactIntegrityError, ArtifactStoreError, OSError, AttributeError, TypeError:
+            raise CapabilityEvidenceSourceError(
+                "capability evidence artifact is unavailable"
+            ) from None
+        if not descriptor_is_valid:
             raise CapabilityEvidenceSourceError("capability evidence artifact descriptor differs")
 
         try:
@@ -177,12 +214,12 @@ class PostgresCapabilityEvidenceSource:
                     )
                 ).one_or_none()
                 if row is None:
-                    raise CapabilityEvidenceUnavailable("capability evidence is missing")
+                    raise CapabilityEvidenceMissing("capability evidence is missing")
                 record, artifact = row
                 if evidence_id is not None and record.id != evidence_id:
-                    raise CapabilityEvidenceUnavailable("capability evidence was replaced")
+                    raise CapabilityEvidenceInvalid("capability evidence was replaced")
                 if not record.observed_at <= now < record.expires_at:
-                    raise CapabilityEvidenceUnavailable("capability evidence is stale")
+                    raise CapabilityEvidenceInvalid("capability evidence is stale")
                 try:
                     wire = await self._artifacts.open_bytes(artifact.digest, max_bytes=64 * 1024)
                     manifest = decode_capability_evidence(wire)
@@ -199,14 +236,25 @@ class PostgresCapabilityEvidenceSource:
                     not _same_record(record, artifact, manifest, artifact.digest, len(wire))
                     or manifest.identity != identity
                 ):
-                    raise CapabilityEvidenceUnavailable("capability evidence identity differs")
+                    raise CapabilityEvidenceInvalid("capability evidence identity differs")
                 for proof in manifest.proofs:
                     try:
+                        proof_wire = await self._artifacts.open_bytes(
+                            proof.artifact_digest, max_bytes=16 * 1024
+                        )
+                        validate_proof(proof_wire, proof.kind, manifest)
                         if not await self._artifacts.verify(proof.artifact_digest):
                             raise CapabilityEvidenceUnavailable(
                                 "capability proof artifact is unavailable"
                             )
-                    except ArtifactIntegrityError, ArtifactStoreError, OSError:
+                    except (
+                        ArtifactIntegrityError,
+                        ArtifactStoreError,
+                        CapabilityProofError,
+                        OSError,
+                        AttributeError,
+                        TypeError,
+                    ):
                         raise CapabilityEvidenceUnavailable(
                             "capability proof artifact is unavailable"
                         ) from None
@@ -218,9 +266,7 @@ class PostgresCapabilityEvidenceSource:
         except CapabilityEvidenceUnavailable:
             raise
         except SQLAlchemyError, TypeError, ValueError:
-            raise CapabilityEvidenceUnavailable(
-                "capability evidence could not be verified"
-            ) from None
+            raise CapabilityEvidenceInvalid("capability evidence could not be verified") from None
 
     async def invalidate(
         self,

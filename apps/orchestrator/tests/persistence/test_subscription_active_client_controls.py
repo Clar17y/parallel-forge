@@ -176,7 +176,6 @@ class ActiveClientScript(CounterScript):
                     model=WRITER.model,
                     effort=WRITER.effort.value,
                     tools_disabled=True,
-                    billing_never=True,
                     isolated_config=True,
                     acp_mcp_supported=True,
                     account=installation.account,

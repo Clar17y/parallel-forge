@@ -988,7 +988,7 @@
         "type": "object"
       },
       "BillingMode": {
-        "description": "Billing and charge boundary for an execution route.",
+        "description": "Forge-selected execution-route billing policy, not account billing state.",
         "enum": [
           "allowance_only",
           "paid_opt_in"
@@ -1875,6 +1875,44 @@
           "payload"
         ],
         "title": "EventItem",
+        "type": "object"
+      },
+      "EvidenceReferenceView": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_id": {
+            "format": "uuid",
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "evidence_id",
+          "revision",
+          "observed_at",
+          "expires_at"
+        ],
+        "title": "EvidenceReferenceView",
         "type": "object"
       },
       "FindingItem": {
@@ -5124,6 +5162,162 @@
         "title": "SubscriptionCapacityView",
         "type": "object"
       },
+      "SubscriptionRuntimeRouteView": {
+        "additionalProperties": false,
+        "properties": {
+          "admitted": {
+            "title": "Admitted",
+            "type": "boolean"
+          },
+          "auth_mode": {
+            "title": "Auth Mode",
+            "type": "string"
+          },
+          "billing_mode": {
+            "title": "Billing Mode",
+            "type": "string"
+          },
+          "client": {
+            "title": "Client",
+            "type": "string"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "effective_reason": {
+            "enum": [
+              "ready",
+              "missing_executable",
+              "executable_digest_mismatch",
+              "version_mismatch",
+              "unsupported_model_or_effort",
+              "signed_out",
+              "account_authentication_unproved",
+              "subscription_route_unbound",
+              "isolation_unproved",
+              "evidence_missing",
+              "evidence_stale_or_invalid",
+              "provider_unsupported",
+              "configuration_invalid",
+              "unknown",
+              "stale_worker",
+              "quota_exhausted"
+            ],
+            "title": "Effective Reason",
+            "type": "string"
+          },
+          "effort": {
+            "title": "Effort",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceReferenceView"
+            },
+            "maxItems": 32,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "quota": {
+            "enum": [
+              "blocked",
+              "unknown",
+              "eligible"
+            ],
+            "title": "Quota",
+            "type": "string"
+          },
+          "quota_next_probe_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quota Next Probe At"
+          },
+          "quota_reset_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quota Reset At"
+          },
+          "quota_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quota Revision"
+          },
+          "reason": {
+            "enum": [
+              "ready",
+              "missing_executable",
+              "executable_digest_mismatch",
+              "version_mismatch",
+              "unsupported_model_or_effort",
+              "signed_out",
+              "account_authentication_unproved",
+              "subscription_route_unbound",
+              "isolation_unproved",
+              "evidence_missing",
+              "evidence_stale_or_invalid",
+              "provider_unsupported",
+              "configuration_invalid",
+              "unknown"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema_version": {
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "provider",
+          "client",
+          "model",
+          "effort",
+          "auth_mode",
+          "billing_mode",
+          "configured",
+          "admitted",
+          "reason",
+          "effective_reason",
+          "quota"
+        ],
+        "title": "SubscriptionRuntimeRouteView",
+        "type": "object"
+      },
       "SubscriptionRuntimeStatusPage": {
         "additionalProperties": false,
         "properties": {
@@ -6082,7 +6276,7 @@
           },
           "routes": {
             "items": {
-              "$ref": "#/components/schemas/AttemptRoute"
+              "$ref": "#/components/schemas/SubscriptionRuntimeRouteView"
             },
             "maxItems": 64,
             "title": "Routes",

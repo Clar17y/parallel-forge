@@ -116,6 +116,14 @@ def test_linux_memfd_proc_available_delegates_to_operational_probe(monkeypatch):
     assert gateway._linux_memfd_proc_available() is False
 
 
+def test_isolation_policy_describes_controls_not_fixture_client_version():
+    from forge.agents import claude_gateway as gateway
+
+    payload = gateway._isolation_policy_digest_payload()
+    assert "client_version" not in payload
+    assert payload["subscription_launch_environment"] == [("CLAUDE_CODE_ENTRYPOINT", "local-agent")]
+
+
 def test_path_strictly_absent_semantics(tmp_path: Path):
     from forge.agents import claude_gateway as gateway
 
@@ -355,14 +363,24 @@ async def test_claude_launch_uses_only_the_verified_client_home(tmp_path, monkey
     environment = launches[0].environment
     assert environment["CLAUDE_CONFIG_DIR"] == str(home.resolve())
     assert environment["CLAUDE_CODE_ENTRYPOINT"] == "local-agent"
-    assert environment["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] == "1"
+    # Production starts from a fresh allowlist, but must leave the selected
+    # official Claude home capable of loading its stored claude.ai OAuth login.
+    # The managed-by-host switch is reserved for providerless offline tests.
+    assert "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST" not in environment
     assert "CLAUDE_CODE_MANAGED_SETTINGS_PATH" not in environment
     assert launches[0].executable_digest == installation.executable_digest
-    assert set(environment) == {
-        "CLAUDE_CONFIG_DIR",
-        "CLAUDE_CODE_ENTRYPOINT",
-        "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
-    } | ({"SystemRoot"} if os.name == "nt" else set())
+    assert set(environment) == {"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_ENTRYPOINT"} | (
+        {"SystemRoot"} if os.name == "nt" else set()
+    )
+    assert not {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "VERTEXAI_PROJECT",
+        "AZURE_OPENAI_API_KEY",
+    } & set(environment)
 
 
 async def test_claude_home_proof_mismatch_rejects_before_launch(tmp_path):
@@ -554,7 +572,6 @@ def test_home_is_canonical_and_omitted_from_representations(tmp_path):
         {"client_home": None},
         {"client_home": "relative"},
         {"installed_version": "2.1.268"},
-        {"allowance_only_enforced": False},
         {"hooks_disabled": False},
     ],
 )

@@ -1273,7 +1273,7 @@ export interface components {
         };
         /**
          * BillingMode
-         * @description Billing and charge boundary for an execution route.
+         * @description Forge-selected execution-route billing policy, not account billing state.
          * @enum {string}
          */
         BillingMode: "allowance_only" | "paid_opt_in";
@@ -1556,6 +1556,28 @@ export interface components {
             run_version: number;
             /** Sequence */
             sequence: number;
+        };
+        /** EvidenceReferenceView */
+        EvidenceReferenceView: {
+            /**
+             * Evidence Id
+             * Format: uuid
+             */
+            evidence_id: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Revision */
+            revision: number;
+            /** Scope */
+            scope: string;
         };
         /** FindingItem */
         FindingItem: {
@@ -2668,6 +2690,53 @@ export interface components {
             queue_order: "least_recently_served_run_then_oldest_task";
             run: components["schemas"]["CapacityLimitView"];
         };
+        /** SubscriptionRuntimeRouteView */
+        SubscriptionRuntimeRouteView: {
+            /** Admitted */
+            admitted: boolean;
+            /** Auth Mode */
+            auth_mode: string;
+            /** Billing Mode */
+            billing_mode: string;
+            /** Client */
+            client: string;
+            /** Configured */
+            configured: boolean;
+            /**
+             * Effective Reason
+             * @enum {string}
+             */
+            effective_reason: "ready" | "missing_executable" | "executable_digest_mismatch" | "version_mismatch" | "unsupported_model_or_effort" | "signed_out" | "account_authentication_unproved" | "subscription_route_unbound" | "isolation_unproved" | "evidence_missing" | "evidence_stale_or_invalid" | "provider_unsupported" | "configuration_invalid" | "unknown" | "stale_worker" | "quota_exhausted";
+            /** Effort */
+            effort: string;
+            /** Evidence */
+            evidence?: components["schemas"]["EvidenceReferenceView"][];
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+            /**
+             * Quota
+             * @enum {string}
+             */
+            quota: "blocked" | "unknown" | "eligible";
+            /** Quota Next Probe At */
+            quota_next_probe_at?: string | null;
+            /** Quota Reset At */
+            quota_reset_at?: string | null;
+            /** Quota Revision */
+            quota_revision?: number | null;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "ready" | "missing_executable" | "executable_digest_mismatch" | "version_mismatch" | "unsupported_model_or_effort" | "signed_out" | "account_authentication_unproved" | "subscription_route_unbound" | "isolation_unproved" | "evidence_missing" | "evidence_stale_or_invalid" | "provider_unsupported" | "configuration_invalid" | "unknown";
+            /**
+             * Schema Version
+             * @enum {integer}
+             */
+            schema_version: 1 | 2;
+        };
         /** SubscriptionRuntimeStatusPage */
         SubscriptionRuntimeStatusPage: {
             /** Fresh For Seconds */
@@ -2975,7 +3044,7 @@ export interface components {
              */
             last_seen_at: string;
             /** Routes */
-            routes: components["schemas"]["AttemptRoute"][];
+            routes: components["schemas"]["SubscriptionRuntimeRouteView"][];
             /**
              * State
              * @enum {string}

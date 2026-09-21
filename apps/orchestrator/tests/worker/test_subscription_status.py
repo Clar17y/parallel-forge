@@ -4,7 +4,15 @@ import asyncio
 from uuid import UUID
 
 import pytest
+from forge.domain.subscription import ReasoningEffort, RouteSpec
 from forge.worker import subscription_status as status
+
+PRIMARY = RouteSpec(
+    provider="openai",
+    client="codex_app_server",
+    model="gpt-6-astra",
+    effort=ReasoningEffort.LOW,
+)
 
 
 class Store:
@@ -63,3 +71,41 @@ async def test_report_errors_are_bounded_messages_and_cancellation_propagates(ca
 
     with pytest.raises(asyncio.CancelledError):
         await status.SubscriptionRuntimeReporter(Cancelled(), ()).publish()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_failure_or_timeout_reports_static_fail_closed_routes(caplog, monkeypatch):
+    monkeypatch.setattr(status.logger, "disabled", False)
+    monkeypatch.setattr(status, "_SNAPSHOT_SECONDS", 0.001)
+
+    async def broken():
+        raise ValueError("password=fixture-secret")
+
+    async def blocked():
+        await asyncio.Event().wait()
+        return ()
+
+    for supplier in (broken, blocked):
+        store = Store()
+        reporter = status.SubscriptionRuntimeReporter(
+            store,
+            (PRIMARY,),
+            snapshot_supplier=supplier,
+        )
+        await reporter.publish()
+        assert store.calls == [("report", reporter.instance_id, frozenset((PRIMARY,)))]
+
+    assert "snapshot unavailable" in caplog.text
+    assert "fixture-secret" not in caplog.text
+
+    async def cancelled():
+        raise asyncio.CancelledError
+
+    store = Store()
+    with pytest.raises(asyncio.CancelledError):
+        await status.SubscriptionRuntimeReporter(
+            store,
+            (PRIMARY,),
+            snapshot_supplier=cancelled,
+        ).publish()
+    assert store.calls == []

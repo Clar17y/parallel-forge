@@ -115,7 +115,6 @@ async def test_claude_specialist_exhaustion_survives_worker_recreation_and_singl
             builtins_disabled=True,
             hooks_disabled=True,
             strict_mcp=True,
-            allowance_only_enforced=True,
             quota_limit_types=windows,
             client_home=str(tmp_path.resolve()),
             account="test-account",

@@ -13,10 +13,13 @@ from forge.agents.codex_runtime import CodexRuntimeAdapter
 from forge.agents.codex_verification import CodexEvidenceVerifier
 from forge.agents.gemini_runtime import GeminiRuntimeAdapter
 from forge.domain.subscription_quota import QuotaPolicy, QuotaPoolKey, QuotaRoutePool
+from forge.domain.subscription_readiness import ReadinessReason
 from forge.settings import Settings
+from forge.worker import subscription_installations as installations
 from forge.worker.subscription_installations import (
     SubscriptionVerifierDependencies,
     load_subscription_installations,
+    load_subscription_installations_diagnostic,
     production_subscription_verifiers,
 )
 
@@ -120,6 +123,34 @@ def test_closed_manifest_loads_pinned_adapters_and_opaque_quota_mappings(
     )
 
 
+def test_diagnostic_loader_reads_once_and_reuses_missing_digest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path, _payload = _codex_manifest(tmp_path)
+    settings = Settings(subscription_installations_path=path, _env_file=None)
+    original_load = installations.load_subscription_installation_manifest
+
+    loads = digests = 0
+
+    def load_once(value):
+        nonlocal loads
+        loads += 1
+        return original_load(value)
+
+    def missing_once(value):
+        nonlocal digests
+        digests += 1
+
+    monkeypatch.setattr(installations, "load_subscription_installation_manifest", load_once)
+    monkeypatch.setattr(installations, "stable_executable_digest", missing_once)
+    result = load_subscription_installations_diagnostic(
+        settings,
+        SubscriptionVerifierDependencies(codex=SimpleNamespace(verify=lambda *_args: None)),
+    )
+    assert loads == 1 and digests == len(result.specs) == 1
+    assert result.readiness[0].reason is ReadinessReason.MISSING_EXECUTABLE
+
+
 @pytest.mark.parametrize(
     "untrusted_field,value",
     [
@@ -169,6 +200,20 @@ def test_missing_or_unverified_installation_is_healthy_and_unavailable(
         == ()
     )
 
+    diagnostic = load_subscription_installations_diagnostic(
+        settings, SubscriptionVerifierDependencies(codex=verifier)
+    )
+    assert len(diagnostic.readiness) == 1
+    assert (
+        diagnostic.readiness[0].reason
+        is {
+            "missing": ReadinessReason.MISSING_EXECUTABLE,
+            "digest": ReadinessReason.EXECUTABLE_DIGEST_MISMATCH,
+            "verifier": ReadinessReason.PROVIDER_UNSUPPORTED,
+        }[failure]
+    )
+    assert diagnostic.readiness[0].admitted is False
+
 
 def test_absent_and_malformed_manifests_leave_settings_healthy(tmp_path: Path) -> None:
     missing = Settings(subscription_installations_path=tmp_path / "missing.json", _env_file=None)
@@ -179,6 +224,21 @@ def test_absent_and_malformed_manifests_leave_settings_healthy(tmp_path: Path) -
     malformed = Settings(subscription_installations_path=malformed_path, _env_file=None)
     assert malformed.subscription_quota_policy.route_pools == ()
     assert load_subscription_installations(malformed, SubscriptionVerifierDependencies()) == ()
+
+
+def test_manifest_rejects_unknown_reasoning_effort_before_readiness(tmp_path: Path) -> None:
+    path, payload = _codex_manifest(tmp_path)
+    payload["installations"][0]["effort"] = "turbo"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    settings = Settings(subscription_installations_path=path, _env_file=None)
+
+    assert settings.subscription_quota_policy.route_pools == ()
+    diagnostic = load_subscription_installations_diagnostic(
+        settings,
+        SubscriptionVerifierDependencies(codex=SimpleNamespace(verify=lambda *_args: None)),
+    )
+    assert diagnostic.adapters == ()
+    assert diagnostic.readiness == ()
 
 
 @pytest.mark.parametrize("field", ["executable", "cwd", "home"])

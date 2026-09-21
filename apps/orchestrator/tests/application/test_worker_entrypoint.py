@@ -23,7 +23,8 @@ async def test_production_worker_polls_composed_subscription_invocations(
         database_url = "postgresql+asyncpg://unused/forge"
         subscription_worker_concurrency = 2
         subscription_installations_path = object() if registration_source == "operator" else None
-        artifact_root = object()
+        artifact_root = "."
+        subscription_quota_policy = object()
 
     class Engine:
         async def dispose(self):
@@ -86,7 +87,7 @@ async def test_production_worker_polls_composed_subscription_invocations(
 
     handlers.resources.push_async_callback(close)
     monkeypatch.setattr(main, "create_engine", lambda _url: Engine())
-    monkeypatch.setattr(main, "create_session_factory", lambda _engine: object())
+    monkeypatch.setattr(main, "create_session_factory", lambda _engine: lambda: None)
     monkeypatch.setattr(main, "PostgresCommandRepository", lambda _factory: object())
     monkeypatch.setattr(main, "PostgresOperationRepository", lambda _factory: object())
     monkeypatch.setattr(main, "RecoveryService", Recovery)
@@ -94,8 +95,17 @@ async def test_production_worker_polls_composed_subscription_invocations(
     registrations = () if registration_source == "explicit-empty" else (object(),)
     composed = []
 
-    def compose(_settings, _factory, *, subscription_adapters):
-        composed.append(subscription_adapters)
+    def compose(
+        _settings,
+        _factory,
+        *,
+        subscription_adapters,
+        subscription_readiness,
+        subscription_readiness_supplier,
+    ):
+        composed.append(
+            (subscription_adapters, subscription_readiness, subscription_readiness_supplier)
+        )
         return handlers
 
     monkeypatch.setattr(main, "compose_worker_handlers", compose)
@@ -107,8 +117,12 @@ async def test_production_worker_polls_composed_subscription_invocations(
     )
     monkeypatch.setattr(
         main,
-        "load_subscription_installations",
-        lambda settings, verifiers: registrations,
+        "load_subscription_installations_diagnostic",
+        lambda settings, verifiers: type(
+            "InstallationLoad",
+            (),
+            {"adapters": registrations, "readiness": (), "specs": ()},
+        )(),
     )
 
     kwargs = {}
@@ -116,7 +130,9 @@ async def test_production_worker_polls_composed_subscription_invocations(
         kwargs["subscription_adapters"] = iter(registrations)
     await main.run_worker(FakeSettings(), stop_event=stop, worker_id="process-one", **kwargs)
 
-    assert composed == [registrations]
+    assert len(composed) == 1 and composed[0][0] == registrations
+    assert composed[0][1] == (() if registration_source == "operator" else None)
+    assert (composed[0][2] is not None) is (registration_source == "operator")
     assert len(loader_calls) == (1 if registration_source == "operator" else 0)
     assert invoked.is_set(), "production startup never polled the subscription executor"
     assert len(owners) == len(set(owners)) == 2

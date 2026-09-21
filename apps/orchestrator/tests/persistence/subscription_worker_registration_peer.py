@@ -77,7 +77,6 @@ async def main():
                 supported=True,
                 installed_version="0.153.4",
                 account_kind="chatgpt",
-                billing_allowance_enforced=True,
                 native_tools_isolated=True,
                 model=installation.model,
                 effort=installation.effort,

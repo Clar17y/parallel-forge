@@ -21,6 +21,7 @@ from forge.agents.gemini_gateway import GeminiCapabilityVerifier, GeminiInstalla
 from forge.agents.gemini_runtime import GeminiRuntimeAdapter
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
 from forge.artifacts.filesystem import FilesystemArtifactStore
+from forge.domain.subscription import ReasoningEffort, RouteSpec
 from forge.domain.subscription_installations import (
     ClaudeInstallationSpec,
     CodexInstallationSpec,
@@ -28,12 +29,21 @@ from forge.domain.subscription_installations import (
     load_subscription_installation_manifest,
     quota_route_for,
 )
+from forge.domain.subscription_readiness import ReadinessReason, SubscriptionRouteReadiness
 from forge.persistence.repositories.capability_evidence import PostgresCapabilityEvidenceSource
 
 if TYPE_CHECKING:
     from forge.settings import Settings
 
 logger = logging.getLogger(__name__)
+_DIGEST_UNSET = object()
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionInstallationLoad:
+    adapters: tuple[SubscriptionRuntimeAdapter, ...]
+    readiness: tuple[SubscriptionRouteReadiness, ...]
+    specs: tuple[CodexInstallationSpec | ClaudeInstallationSpec | GeminiInstallationSpec, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,11 +112,73 @@ def load_subscription_installations(
     return tuple(adapters)
 
 
+def load_subscription_installations_diagnostic(
+    settings: Settings, verifiers: SubscriptionVerifierDependencies
+) -> SubscriptionInstallationLoad:
+    """Load adapters while retaining a redacted diagnostic for every valid item."""
+    manifest = load_subscription_installation_manifest(
+        getattr(settings, "subscription_installations_path", None)
+    )
+    if manifest is None:
+        return SubscriptionInstallationLoad((), ())
+    adapters: list[SubscriptionRuntimeAdapter] = []
+    admitted: set[RouteSpec] = set()
+    diagnostics: list[SubscriptionRouteReadiness] = []
+    for item in manifest.installations:
+        route = RouteSpec(
+            provider={
+                "codex_app_server": "openai",
+                "claude_code": "anthropic",
+                "gemini_cli": "google",
+            }[item.client],
+            client=item.client,
+            model=item.model,
+            effort=ReasoningEffort(item.effort),
+        )
+        actual_digest = stable_executable_digest(item.executable)
+        if item.client == "gemini_cli" and verifiers.gemini is None:
+            reason = ReadinessReason.PROVIDER_UNSUPPORTED
+        elif actual_digest is None:
+            reason = ReadinessReason.MISSING_EXECUTABLE
+        elif not hmac.compare_digest(actual_digest, item.executable_digest):
+            reason = ReadinessReason.EXECUTABLE_DIGEST_MISMATCH
+        else:
+            try:
+                candidate = _adapter_for(item, verifiers, actual_digest=actual_digest)
+                if candidate is None:
+                    reason = ReadinessReason.PROVIDER_UNSUPPORTED
+                else:
+                    expected = quota_route_for(item)
+                    actual = settings.subscription_quota_policy.key_for(candidate.route)
+                    if (actual.provider, actual.account, actual.pool) != (
+                        expected.provider,
+                        expected.account,
+                        expected.pool,
+                    ):
+                        reason = ReadinessReason.CONFIGURATION_INVALID
+                    else:
+                        adapters.append(candidate)
+                        admitted.add(candidate.route)
+                        reason = ReadinessReason.EVIDENCE_MISSING
+            except TypeError, ValueError:
+                reason = ReadinessReason.UNSUPPORTED_MODEL_OR_EFFORT
+        if route in admitted:
+            # Construction only proves local admission.  Evidence is deliberately
+            # not invoked by this loader, so it cannot claim capability-ready.
+            reason = ReadinessReason.EVIDENCE_MISSING
+        diagnostics.append(SubscriptionRouteReadiness(route, True, route in admitted, reason))
+    return SubscriptionInstallationLoad(tuple(adapters), tuple(diagnostics), manifest.installations)
+
+
 def _adapter_for(
     item: CodexInstallationSpec | ClaudeInstallationSpec | GeminiInstallationSpec,
     verifiers: SubscriptionVerifierDependencies,
+    *,
+    actual_digest: str | None | object = _DIGEST_UNSET,
 ) -> SubscriptionRuntimeAdapter | None:
-    actual_digest = stable_executable_digest(item.executable)
+    if actual_digest is _DIGEST_UNSET:
+        actual_digest = stable_executable_digest(item.executable)
+    assert actual_digest is None or isinstance(actual_digest, str)
     if actual_digest is None or not hmac.compare_digest(actual_digest, item.executable_digest):
         return None
     if isinstance(item, CodexInstallationSpec):
@@ -161,7 +233,9 @@ def _adapter_for(
 
 
 __all__ = [
+    "SubscriptionInstallationLoad",
     "SubscriptionVerifierDependencies",
     "load_subscription_installations",
+    "load_subscription_installations_diagnostic",
     "production_subscription_verifiers",
 ]

@@ -101,6 +101,15 @@ CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT: types.MappingProxyType[str, str] = types.Ma
         "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1",
     }
 )
+# The offline loopback harness must suppress all stored credentials.  Production
+# subscription traffic is deliberately different: it starts from an empty
+# allowlist too, but leaves the official client's stored claude.ai OAuth state
+# available.  In particular, do not add PROVIDER_MANAGED_BY_HOST here: that
+# control makes the client providerless and would turn an admitted subscription
+# route into a misleading API-less failure.
+CLAUDE_SUBSCRIPTION_LAUNCH_ENVIRONMENT: types.MappingProxyType[str, str] = types.MappingProxyType(
+    {"CLAUDE_CODE_ENTRYPOINT": "local-agent"}
+)
 _CLAUDE_COMMAND_CONTROLS = (
     "restricted",
     "safe_mode",
@@ -113,7 +122,8 @@ _CLAUDE_COMMAND_CONTROLS = (
     "linux_protected_empty_fixed_managed_policy_root",
     "trusted_host_fixed_root_policy_assumption",
     "claude_code_entrypoint_local_agent",
-    "claude_code_provider_managed_by_host",
+    "offline_claude_code_provider_managed_by_host",
+    "subscription_oauth_from_selected_config_dir",
     "effective_settings_before_user_turn",
     "exact_mcp_handshake_before_session_init",
     "callbacks_after_configuration_admission",
@@ -343,10 +353,14 @@ def claude_canonical_fixed_launch_arguments() -> tuple[str, ...]:
 
 def _isolation_policy_digest_payload() -> dict[str, object]:
     return {
-        "client_version": CLAUDE_CLIENT_VERSION,
+        # The manifest pins an actual executable/version and the verifier binds
+        # that identity.  This policy digest describes Forge controls only; a
+        # fixture default must not invalidate an otherwise identical newer
+        # official client installation.
         "command_controls": _CLAUDE_COMMAND_CONTROLS,
         "fixed_launch_arguments": claude_canonical_fixed_launch_arguments(),
         "launch_environment": sorted(CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT.items()),
+        "subscription_launch_environment": sorted(CLAUDE_SUBSCRIPTION_LAUNCH_ENVIRONMENT.items()),
         "managed_settings": _MANAGED_ISOLATION_SETTINGS,
         "conformance_controls": (
             "existing_read_sentinel",
@@ -586,7 +600,6 @@ class ClaudeCapabilityReport:
     builtins_disabled: bool = False
     hooks_disabled: bool = False
     strict_mcp: bool = False
-    allowance_only_enforced: bool = False
     quota_limit_types: frozenset[str] = frozenset()
     client_home: str | None = field(default=None, repr=False)
     account: str | None = None
@@ -612,7 +625,6 @@ class ClaudeCapabilityReport:
             and self.builtins_disabled is True
             and self.hooks_disabled is True
             and self.strict_mcp is True
-            and self.allowance_only_enforced is True
             and self.client_home == installation.client_home
             and self.account == installation.account
             and self.executable_digest == installation.executable_digest
@@ -853,10 +865,10 @@ class ClaudeGateway(SubscriptionGateway):
                     cwd=self._installation.cwd,
                     environment={
                         "CLAUDE_CONFIG_DIR": self._installation.client_home,
-                        **CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT,
+                        **CLAUDE_SUBSCRIPTION_LAUNCH_ENVIRONMENT,
                     },
                     allowed_environment=frozenset(
-                        {"CLAUDE_CONFIG_DIR", *CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT}
+                        {"CLAUDE_CONFIG_DIR", *CLAUDE_SUBSCRIPTION_LAUNCH_ENVIRONMENT}
                     ),
                     executable_digest=self._installation.executable_digest,
                     duration_seconds=duration,
@@ -1133,6 +1145,7 @@ __all__ = [
     "CLAUDE_CLIENT_VERSION",
     "CLAUDE_ISOLATION_LAUNCH_ENVIRONMENT",
     "CLAUDE_ISOLATION_POLICY_DIGEST",
+    "CLAUDE_SUBSCRIPTION_LAUNCH_ENVIRONMENT",
     "ClaudeCapabilityReport",
     "ClaudeCapabilityVerifier",
     "ClaudeGateway",
