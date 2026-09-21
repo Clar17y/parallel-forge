@@ -16,7 +16,7 @@ from forge.domain.capability_evidence import CapabilityEvidenceScope
 from forge.domain.subscription import ReasoningEffort, RouteSpec, SpecialistPurpose
 from forge.domain.tool import ToolName
 
-_EXECUTABLE_DIGEST = "05cdf2444b1bc9ee278386756b2cf2afbba94e822f21580278e07e206c3125b8"
+_EXECUTABLE_DIGEST = "162607893eaacaf7b4a34bcd0bc3978342c6707b0340f96040f0139ac904dd22"
 _LEAKED_TOOLS = (
     "ask_custom_permission",
     "ask_permission",
@@ -83,6 +83,7 @@ def _observation(**changes: object) -> AntigravityInitObservation:
         "client_version": ANTIGRAVITY_CLIENT_VERSION,
         "executable_digest": _EXECUTABLE_DIGEST,
         "selected_agent": ANTIGRAVITY_ISOLATION_AGENT,
+        "agent_selection_confirmed": True,
         "declared_tools": (),
         "observed_tools": _LEAKED_TOOLS,
         "prompt_count": 0,
@@ -92,11 +93,18 @@ def _observation(**changes: object) -> AntigravityInitObservation:
     return AntigravityInitObservation(**values)  # type: ignore[arg-type]
 
 
-def test_current_1_2_4_zero_turn_inventory_blocks_conformance_and_runtime() -> None:
-    report = AntigravityReadinessGate(_EXECUTABLE_DIGEST).assess(_observation())
+def test_current_1_2_7_zero_turn_inventory_blocks_conformance_and_runtime() -> None:
+    assert ANTIGRAVITY_CLIENT_VERSION == "1.2.7"
+
+    report = AntigravityReadinessGate(_EXECUTABLE_DIGEST).assess(
+        _observation(agent_selection_confirmed=False)
+    )
 
     assert len(_LEAKED_TOOLS) == 57
-    assert report.preflight_failures == (AntigravityPreflightFailure.OBSERVED_NATIVE_TOOLS,)
+    assert report.preflight_failures == (
+        AntigravityPreflightFailure.AGENT_SELECTION_UNCONFIRMED,
+        AntigravityPreflightFailure.OBSERVED_NATIVE_TOOLS,
+    )
     assert report.native_tool_extras == _LEAKED_TOOLS
     assert not report.ready_for_live_conformance
     assert not report.runtime_admissible
@@ -108,6 +116,10 @@ def test_current_1_2_4_zero_turn_inventory_blocks_conformance_and_runtime() -> N
         ({"client_version": "1.2.3"}, AntigravityPreflightFailure.CLIENT_VERSION),
         ({"executable_digest": "a" * 64}, AntigravityPreflightFailure.EXECUTABLE_IDENTITY),
         ({"selected_agent": "default"}, AntigravityPreflightFailure.AGENT_SELECTION),
+        (
+            {"agent_selection_confirmed": False, "observed_tools": ()},
+            AntigravityPreflightFailure.AGENT_SELECTION_UNCONFIRMED,
+        ),
         ({"declared_tools": ("view_file",)}, AntigravityPreflightFailure.DECLARED_NATIVE_TOOLS),
         (
             {"prompt_count": 1, "observed_tools": ()},
@@ -142,6 +154,7 @@ def test_clean_zero_turn_is_only_ready_for_live_proof_not_runtime() -> None:
         {"observed_tools": ("Write File",)},
         {"prompt_count": True},
         {"provider_turn_count": -1},
+        {"agent_selection_confirmed": 1},
     ],
 )
 def test_observation_rejects_noncanonical_or_invalid_probe_data(changes) -> None:
