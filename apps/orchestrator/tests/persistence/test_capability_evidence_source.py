@@ -14,6 +14,7 @@ from forge.domain.capability_evidence import (
     CapabilityProof,
     CapabilityProofKind,
 )
+from forge.domain.capability_proof import encode_proof
 from forge.domain.subscription import (
     AuthMode,
     BillingMode,
@@ -60,16 +61,67 @@ async def _manifest(
     identity: CapabilityEvidenceIdentity | None = None,
     evidence_id=None,
 ) -> CapabilityEvidenceManifest:
+    selected_identity = identity or _identity()
+    selected_id = evidence_id or uuid4()
+    placeholder = "0" * 64
+    draft = CapabilityEvidenceManifest(
+        evidence_id=selected_id,
+        identity=selected_identity,
+        verifier_id="codex-conformance",
+        verifier_version="1",
+        observed_at=now,
+        expires_at=now + timedelta(hours=1),
+        proofs=tuple(
+            CapabilityProof(kind=kind, artifact_digest=placeholder) for kind in CapabilityProofKind
+        ),
+    )
     proofs = []
     for kind in CapabilityProofKind:
+        payload = {
+            CapabilityProofKind.CLIENT_IDENTITY: {
+                "client": selected_identity.client,
+                "client_version": selected_identity.client_version,
+                "executable_digest": selected_identity.executable_digest,
+                "client_home_digest": selected_identity.client_home_digest,
+                "executable_unchanged": True,
+                "reported_client_version": selected_identity.client_version,
+            },
+            CapabilityProofKind.ACCOUNT_AUTHENTICATION: {
+                "account": selected_identity.account,
+                "auth_mode": "subscription",
+                "authenticated": True,
+                "account_kind": "chatgpt",
+            },
+            CapabilityProofKind.ROUTE_IDENTITY: {
+                "model": selected_identity.model,
+                "effort": selected_identity.effort.value,
+                "catalog_supported": True,
+                "turn_completed": True,
+                "turn_observation_digest": "3" * 64,
+            },
+            CapabilityProofKind.SUBSCRIPTION_ROUTE_BINDING: {
+                "auth_mode": "subscription",
+                "billing_mode": "allowance_only",
+                "paid_credential_names_scrubbed": True,
+                "fallback_disabled": True,
+                "subscription_route_observed": True,
+            },
+            CapabilityProofKind.TOOL_ISOLATION: {
+                "tool_surface": [tool.value for tool in selected_identity.tool_surface],
+                "isolated": True,
+                "forbidden_tool_calls": 0,
+                "side_effect_canaries_clear": True,
+                "advertised_tool_surface_digest": "4" * 64,
+            },
+        }[kind]
         descriptor = await artifacts.put_bytes(
-            f"sanitized {kind.value} proof".encode(),
-            media_type="application/vnd.forge.capability-proof+json",
+            encode_proof(kind, payload, draft),
+            media_type="application/vnd.forge.client-capability-proof+json",
         )
         proofs.append(CapabilityProof(kind=kind, artifact_digest=descriptor.digest))
     return CapabilityEvidenceManifest(
-        evidence_id=evidence_id or uuid4(),
-        identity=identity or _identity(),
+        evidence_id=selected_id,
+        identity=selected_identity,
         verifier_id="codex-conformance",
         verifier_version="1",
         observed_at=now,
@@ -118,6 +170,25 @@ async def test_missing_stale_mismatched_and_changed_replay_evidence_is_rejected(
     clock[0] = manifest.expires_at
     with pytest.raises(CapabilityEvidenceUnavailable, match="stale"):
         await source.resolve(manifest.identity)
+
+
+@pytest.mark.integration
+async def test_changed_replay_conflicts_when_persisted_manifest_artifact_is_missing(
+    session_factory, tmp_path
+) -> None:
+    now = datetime(2026, 9, 13, 12, tzinfo=UTC)
+    root = tmp_path / "artifacts"
+    artifacts = FilesystemArtifactStore(root)
+    source = PostgresCapabilityEvidenceSource(session_factory, artifacts, clock=lambda: now)
+    manifest = await _manifest(now, artifacts=artifacts)
+    published = await source.publish(manifest)
+
+    manifest_path = root / canonical_storage_pointer(published.artifact_digest)
+    manifest_path.unlink()
+
+    changed = manifest.model_copy(update={"verifier_version": "2"})
+    with pytest.raises(CapabilityEvidenceConflict, match="replay"):
+        await source.publish(changed)
 
 
 @pytest.mark.integration

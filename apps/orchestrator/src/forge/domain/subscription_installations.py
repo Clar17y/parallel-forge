@@ -9,11 +9,23 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from forge.domain.subscription import ReasoningEffort
 from forge.domain.subscription_quota import QuotaPolicy, QuotaPoolKey, QuotaRoutePool
 
 _MAX_MANIFEST_BYTES = 64 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _CLIENT_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z", re.ASCII)
+
+
+def is_account_identity_digest(value: object) -> bool:
+    """Return whether an account binding is a canonical opaque SHA-256 digest.
+
+    Version-2 manifests historically permitted human quota labels for Claude.
+    Keep that wire format readable, while publication callers can require this
+    stronger predicate before turning an installation into trusted evidence.
+    """
+
+    return type(value) is str and _SHA256.fullmatch(value) is not None
 
 
 class _ClosedModel(BaseModel):
@@ -57,6 +69,19 @@ class _InstallationSpec(_ClosedModel):
     def reject_controlled_text(cls, value: str) -> str:
         if "\0" in value:
             raise ValueError("installation text contains a null byte")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def require_non_blank_model(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("installation model must not be blank")
+        return value
+
+    @field_validator("effort")
+    @classmethod
+    def require_supported_effort(cls, value: str) -> str:
+        ReasoningEffort(value)
         return value
 
     @field_validator("executable", "cwd", "home")
@@ -240,6 +265,7 @@ __all__ = [
     "GeminiInstallationSpec",
     "SubscriptionInstallationManifest",
     "SubscriptionInstallationSpec",
+    "is_account_identity_digest",
     "load_subscription_installation_manifest",
     "merge_installation_quota_policy",
     "quota_route_for",

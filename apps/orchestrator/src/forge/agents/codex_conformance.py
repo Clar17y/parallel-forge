@@ -145,7 +145,7 @@ class CodexConformanceResult:
                 "live_provider_call": self.live_provider_call,
                 "account_authentication_proven": False,
                 "billing_enforcement_proven": False,
-                "reason": "offline transport proof cannot satisfy account, route or billing proofs",
+                "reason": "offline transport proof cannot satisfy account authentication, route identity, or subscription-route binding",
             },
         }
 

@@ -7,12 +7,24 @@ from uuid import uuid4
 
 import pytest
 from forge.domain.subscription import ReasoningEffort, RouteSpec
+from forge.domain.subscription_readiness import (
+    ReadinessQuota,
+    ReadinessReason,
+    SubscriptionRouteReadiness,
+)
 from forge.persistence.repositories.subscription_runtime_status import (
     SubscriptionRuntimeStatusStore,
 )
 
 PRIMARY = RouteSpec(
     provider="openai", client="codex", model="gpt-6-astra", effort=ReasoningEffort.LOW
+)
+READY = SubscriptionRouteReadiness(
+    PRIMARY,
+    configured=True,
+    admitted=True,
+    reason=ReadinessReason.READY,
+    quota=ReadinessQuota.ELIGIBLE,
 )
 
 
@@ -50,7 +62,7 @@ async def test_stop_racing_renewal_is_sticky_and_new_process_keeps_its_own_inven
     old, new = uuid4(), uuid4()
     assert all(await asyncio.gather(*(store.report(old, (PRIMARY,)) for _ in range(2))))
     assert await store.report(new, ())
-    assert not await store.report(old, ())  # same process cannot change its frozen registry
+    assert await store.report(old, ())  # diagnostic snapshots refresh without changing authority
     now += timedelta(seconds=10)
     await asyncio.gather(store.report(old, (PRIMARY,)), store.stop(old))
     assert not await store.report(old, (PRIMARY,))
@@ -59,6 +71,38 @@ async def test_stop_racing_renewal_is_sticky_and_new_process_keeps_its_own_inven
     rows = {row["worker_instance_id"]: row for row in (await reader.status())["workers"]}
     assert rows[old]["state"] == "stopped" and rows[new]["state"] == "current"
     assert rows[old]["stopped_at"] >= rows[old]["last_seen_at"]
+    assert rows[old]["routes"][0]["effective_reason"] == "stale_worker"
+
+
+@pytest.mark.integration
+async def test_v2_readiness_refreshes_and_inactive_workers_never_appear_ready(
+    session_factory,
+) -> None:
+    now = datetime(2026, 9, 12, tzinfo=UTC)
+    store = SubscriptionRuntimeStatusStore(session_factory, clock=lambda: now)
+    instance = uuid4()
+
+    assert await store.report(instance, (READY,))
+    route = (await store.status())["workers"][0]["routes"][0]
+    assert (route["schema_version"], route["reason"], route["effective_reason"]) == (
+        2,
+        "ready",
+        "ready",
+    )
+    assert route["quota"] == "eligible"
+
+    now += timedelta(seconds=46)
+    route = (await store.status())["workers"][0]["routes"][0]
+    assert route["effective_reason"] == "stale_worker"
+
+
+@pytest.mark.integration
+async def test_conflicting_duplicate_route_snapshots_are_rejected(session_factory) -> None:
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    conflicting = replace(READY, reason=ReadinessReason.SIGNED_OUT)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        await store.report(uuid4(), (READY, conflicting))
 
 
 @pytest.mark.integration

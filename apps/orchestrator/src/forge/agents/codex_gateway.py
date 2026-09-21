@@ -125,7 +125,9 @@ CODEX_ISOLATION_POLICY_DIGEST = hashlib.sha256(
     json.dumps(
         {
             "catalog_sha256": CODEX_MODEL_CATALOG_DIGEST,
-            "client_version": CODEX_CLIENT_VERSION,
+            # Installations bind their exact reported version and executable
+            # digest in capability evidence.  This digest describes Forge's
+            # version-independent isolation policy, not a fixture default.
             "disabled_features": _DISABLED_FEATURES,
             "dynamic_controls": (
                 "exact_model",
@@ -149,7 +151,6 @@ class CodexCapabilityReport:
     reason: str = ""
     installed_version: str | None = None
     account_kind: str | None = None
-    billing_allowance_enforced: bool = False
     native_tools_isolated: bool = False
     model: str | None = None
     effort: str | None = None
@@ -178,7 +179,6 @@ class CodexCapabilityReport:
             self.supported is True
             and self.installed_version == installation.client_version
             and self.account_kind == "chatgpt"
-            and self.billing_allowance_enforced is True
             and self.native_tools_isolated is True
             and self.model == installation.model
             and self.effort == installation.effort

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,6 +105,7 @@ from forge.domain.command import CommandEnvelope
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunState
 from forge.domain.subscription import RouteBinding, SpecialistPurpose
+from forge.domain.subscription_readiness import SubscriptionRouteReadiness
 from forge.domain.tool import (
     ToolAuthorizationContext,
     ToolName,
@@ -426,6 +427,9 @@ def compose_worker_handlers(
     *,
     agent_gateway: AgentGateway | None = None,
     subscription_adapters: Iterable[SubscriptionRuntimeAdapter] = (),
+    subscription_readiness: Iterable[SubscriptionRouteReadiness] | None = None,
+    subscription_readiness_supplier: Callable[[], Awaitable[Iterable[SubscriptionRouteReadiness]]]
+    | None = None,
     redactor: Redactor | None = None,
     clock: Clock | None = None,
     repository_inspector: LocalGitRepositoryInspector | None = None,
@@ -720,7 +724,11 @@ def compose_worker_handlers(
         eligible_routes=runtime_factory.subscription_routes,
     )
     handlers.subscription_status = SubscriptionRuntimeReporter(
-        SubscriptionRuntimeStatusStore(session_factory), runtime_factory.subscription_routes
+        SubscriptionRuntimeStatusStore(session_factory),
+        runtime_factory.subscription_routes
+        if subscription_readiness is None
+        else subscription_readiness,
+        snapshot_supplier=subscription_readiness_supplier,
     )
     handlers.subscription_decision_recovery = SubscriptionDecisionRecovery(
         uow_factory,

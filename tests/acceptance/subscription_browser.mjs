@@ -153,6 +153,47 @@ try {
   for (const page of [first, second]) await header(page, 'PLANNING');
   const workerAfter = await api(first, '/subscription-runtime');
   expect(workerAfter.workers.some(worker => !workerBefore.workers.some(old => old.worker_instance_id === worker.worker_instance_id))).toBe(true);
+
+  // Readiness guidance is browser-only here: fake safe metadata proves that an
+  // operator-owned login/config change and one manual refresh converge across
+  // tabs without launching a provider or collecting credentials.
+  let readiness = 'signed_out';
+  const readinessPayload = () => ({
+    observed_at: '2026-09-20T20:00:00Z', fresh_for_seconds: 45, has_more: false,
+    workers: [{
+      worker_instance_id: '11111111-1111-4111-8111-111111111111',
+      last_seen_at: '2026-09-20T20:00:00Z', stopped_at: null, state: 'current',
+      routes: [{
+        schema_version: 2, provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'medium',
+        auth_mode: 'subscription', billing_mode: 'allowance_only', configured: true,
+        admitted: readiness === 'ready', reason: readiness, effective_reason: readiness,
+        quota: readiness === 'ready' ? 'eligible' : 'unknown', quota_revision: 3,
+        quota_reset_at: null, quota_next_probe_at: null,
+        evidence: readiness === 'ready' ? [{
+          scope: 'astra-primary', evidence_id: '22222222-2222-4222-8222-222222222222', revision: 2,
+          observed_at: '2026-09-20T19:45:00Z', expires_at: '2026-09-20T20:45:00Z',
+        }] : [],
+      }],
+    }],
+  });
+  const readinessPattern = '**/api/subscription-runtime*';
+  await context.route(readinessPattern, route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(readinessPayload()),
+  }));
+  for (const page of [first, second]) {
+    await page.goto(new URL('/subscription-profiles', web).href);
+    await expect(page.getByRole('region', { name: 'Worker registration', exact: true })).toContainText('Signed out');
+  }
+  readiness = 'ready';
+  await first.getByRole('button', { name: 'Refresh subscription readiness', exact: true }).click();
+  for (const page of [first, second]) {
+    const readinessRegion = page.getByRole('region', { name: 'Worker registration', exact: true });
+    await expect(readinessRegion).toContainText('Capability ready');
+    await expect(readinessRegion).toContainText('Configured: yes · Admitted: yes');
+    await expect(readinessRegion).toContainText('eligible to attempt; this is not a remaining-allowance balance');
+  }
+  await context.unroute(readinessPattern);
+
   const afterResume = await bridge('/snapshot');
   expect(afterResume.envelopes).toEqual(beforeRestart.envelopes);
   expect(afterResume.run_controls[original]).toEqual({ 'run.paused': 1, 'run.resumed': 1 });

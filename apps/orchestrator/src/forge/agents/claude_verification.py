@@ -159,7 +159,6 @@ class ClaudeEvidenceVerifier:
             builtins_disabled=True,
             hooks_disabled=True,
             strict_mcp=True,
-            allowance_only_enforced=True,
             quota_limit_types=installation.quota_limit_types,
             client_home=installation.client_home,
             account=installation.account,

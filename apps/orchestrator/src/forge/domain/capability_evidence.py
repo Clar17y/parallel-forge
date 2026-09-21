@@ -43,7 +43,11 @@ class CapabilityProofKind(StrEnum):
     CLIENT_IDENTITY = "client_identity"
     ACCOUNT_AUTHENTICATION = "account_authentication"
     ROUTE_IDENTITY = "route_identity"
-    BILLING_ENFORCEMENT = "billing_enforcement"
+    # Schema-v1 called this wire value ``billing_enforcement``.  It never
+    # established a provider-wide account billing guarantee: it binds Forge's
+    # subscription route and excludes Forge-selected paid API credentials.
+    # Keep the wire value so stored manifests remain decodable.
+    SUBSCRIPTION_ROUTE_BINDING = "billing_enforcement"
     TOOL_ISOLATION = "tool_isolation"
 
 

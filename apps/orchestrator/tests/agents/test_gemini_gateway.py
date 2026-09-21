@@ -76,7 +76,6 @@ def test_capability_requires_exact_pinned_isolated_evidence():
         model="gemini-3.8",
         effort="high",
         tools_disabled=True,
-        billing_never=True,
         isolated_config=True,
         account=installation.account,
         executable_digest=installation.executable_digest,
@@ -90,7 +89,6 @@ def test_capability_requires_exact_pinned_isolated_evidence():
         model="gemini-3.8",
         effort="high",
         tools_disabled=True,
-        billing_never=True,
         isolated_config=True,
         acp_mcp_supported=True,
         account=installation.account,
@@ -265,7 +263,6 @@ def _gateway(
         model="gemini-test",
         effort="medium",
         tools_disabled=True,
-        billing_never=True,
         isolated_config=True,
         acp_mcp_supported=True,
         account="test-account",
@@ -412,12 +409,19 @@ async def test_failed_durable_receipt_overrides_success_and_preserves_evidence(t
     assert list(tmp_path.glob(".forge-gemini-*/settings.json"))
 
 
+def test_gemini_admission_requires_subscription_auth_but_not_removed_billing_field(tmp_path):
+    gateway = _gateway(tmp_path, "no_tools")
+    scope = capability_scope(_google_request())
+    report = gateway._verifier.verify(gateway._installation, scope)
+    assert report.admits(gateway._installation, scope)
+    assert not replace(report, subscription_auth=False).admits(gateway._installation, scope)
+
+
 @pytest.mark.parametrize(
     "field",
     [
         "subscription_auth",
         "tools_disabled",
-        "billing_never",
         "isolated_config",
         "acp_mcp_supported",
     ],

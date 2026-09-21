@@ -17,6 +17,14 @@ class CapabilityEvidenceUnavailable(CapabilityEvidenceSourceError):
     """No current artifact-verified evidence matches the exact identity."""
 
 
+class CapabilityEvidenceMissing(CapabilityEvidenceUnavailable):
+    """No evidence record exists for the exact identity."""
+
+
+class CapabilityEvidenceInvalid(CapabilityEvidenceUnavailable):
+    """Evidence exists but is stale, replaced, or cannot be verified."""
+
+
 class CapabilityEvidenceConflict(CapabilityEvidenceSourceError):
     """An immutable evidence identity or replay differs."""
 
@@ -32,6 +40,8 @@ class CapabilityEvidenceSource(Protocol):
 
 __all__ = [
     "CapabilityEvidenceConflict",
+    "CapabilityEvidenceInvalid",
+    "CapabilityEvidenceMissing",
     "CapabilityEvidenceSource",
     "CapabilityEvidenceSourceError",
     "CapabilityEvidenceUnavailable",

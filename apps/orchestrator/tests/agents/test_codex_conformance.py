@@ -196,6 +196,10 @@ async def test_official_client_denies_native_surfaces_and_round_trips_one_forge_
     sanitized = result.sanitized_payload()
     assert sanitized["installation"]["client_version"] == installation.client_version
     assert sanitized["verifier"]["version"] != "1"
+    publication = sanitized["publication"]
+    assert sanitized["schema_version"] == 1
+    assert publication["billing_enforcement_proven"] is False
+    assert "subscription_route_binding_proven" not in publication
     payload = json.dumps(sanitized, sort_keys=True)
     assert str(tmp_path) not in payload and "codex@example.invalid" not in payload
 

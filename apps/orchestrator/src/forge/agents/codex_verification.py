@@ -201,7 +201,6 @@ class CodexEvidenceVerifier:
             supported=True,
             installed_version=installation.client_version,
             account_kind="chatgpt",
-            billing_allowance_enforced=True,
             native_tools_isolated=True,
             model=installation.model,
             effort=installation.effort,

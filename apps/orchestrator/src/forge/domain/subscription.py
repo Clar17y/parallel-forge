@@ -106,8 +106,10 @@ class AuthMode(StrEnum):
 
 
 class BillingMode(StrEnum):
-    """Billing and charge boundary for an execution route."""
+    """Forge-selected execution-route billing policy, not account billing state."""
 
+    # Retained wire value: subscription route only, with no Forge-selected
+    # paid-API fallback. It does not assert provider-wide no-overage policy.
     ALLOWANCE_ONLY = "allowance_only"
     PAID_OPT_IN = "paid_opt_in"
 

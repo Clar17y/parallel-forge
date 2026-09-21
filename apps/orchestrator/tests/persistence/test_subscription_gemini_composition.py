@@ -80,7 +80,6 @@ async def test_composed_google_specialist_preserves_primary_and_durable_settleme
             model=google.model,
             effort=google.effort.value,
             tools_disabled=True,
-            billing_never=True,
             isolated_config=True,
             acp_mcp_supported=True,
             account=value.account,

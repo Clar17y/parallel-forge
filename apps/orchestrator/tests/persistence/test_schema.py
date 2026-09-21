@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-CURRENT_REVISION = "20260916_0023"
+CURRENT_REVISION = "20260920_0024"
 V01_TABLES = {
     "recovery_barrier",
     "api_mutations",
@@ -59,6 +59,7 @@ V01_TABLES = {
 }
 EXPECTED_TABLES = V01_TABLES | {
     "capability_evidence",
+    "capability_probe_diagnostics",
     "project_subscription_profiles",
     "subscription_profile_versions",
     "subscription_envelopes",
@@ -734,6 +735,7 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
         "subscription_quota_pools": {"provider": String, "account": String, "pool": String},
         "subscription_quota_admissions": {"attempt_id": Uuid},
         "subscription_worker_status": {"worker_instance_id": Uuid},
+        "capability_probe_diagnostics": {"identity_digest": String},
     }
 
     observed_json: set[tuple[str, str]] = set()

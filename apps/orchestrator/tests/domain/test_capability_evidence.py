@@ -89,6 +89,36 @@ def test_capability_manifest_is_canonical_closed_and_proof_backed() -> None:
         CapabilityEvidenceManifest.model_validate(payload)
 
 
+def test_subscription_route_binding_keeps_legacy_schema_v1_wire_value() -> None:
+    """The historical wire label must not imply provider-wide billing control."""
+
+    assert CapabilityProofKind.SUBSCRIPTION_ROUTE_BINDING.value == "billing_enforcement"
+    assert len(CapabilityProofKind) == 5
+    assert [kind.value for kind in CapabilityProofKind].count("billing_enforcement") == 1
+    schema = CapabilityProof.model_json_schema()["$defs"]["CapabilityProofKind"]
+    assert schema["enum"].count("billing_enforcement") == 1
+
+
+def test_literal_schema_v1_subscription_route_proof_wire_decodes_and_round_trips() -> None:
+    observed = datetime(2026, 9, 13, 10, tzinfo=UTC)
+    manifest = CapabilityEvidenceManifest(
+        evidence_id=uuid4(),
+        identity=_identity(),
+        verifier_id="codex-conformance",
+        verifier_version="1",
+        observed_at=observed,
+        expires_at=observed + timedelta(hours=1),
+        proofs=tuple(
+            CapabilityProof(kind=kind, artifact_digest=f"{index:x}" * 64)
+            for index, kind in enumerate(CapabilityProofKind, start=3)
+        ),
+    )
+    wire = encode_capability_evidence(manifest)
+    assert b'"schema_version":1' in wire
+    assert b'"kind":"billing_enforcement"' in wire
+    assert encode_capability_evidence(decode_capability_evidence(wire)) == wire
+
+
 def test_resolved_evidence_permits_only_its_exact_role_and_tool_surface() -> None:
     observed = datetime(2026, 9, 13, 10, tzinfo=UTC)
     manifest = CapabilityEvidenceManifest(

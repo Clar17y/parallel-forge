@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from capability_support import fake_capability_evidence
+from forge.agents.capability_verification import capability_scope
 from forge.agents.codex_gateway import (
     CodexCapabilityReport,
     CodexGateway,
@@ -39,6 +40,15 @@ def test_account_identity_accepts_only_one_bounded_exact_email(email) -> None:
 def test_installation_account_is_always_an_opaque_digest() -> None:
     with pytest.raises(ValueError, match="account"):
         replace(_gateway("success")._installation, account="codex@example.invalid")
+
+
+def test_codex_admission_requires_chatgpt_auth_but_not_removed_billing_field() -> None:
+    gateway = _gateway("success")
+    scope = capability_scope(_request())
+    report = gateway._verifier.verify(gateway._installation, scope)
+    assert report.admits(gateway._installation, scope)
+    assert not replace(report, account_kind="api_key").admits(gateway._installation, scope)
+    assert not replace(report, supported=False).admits(gateway._installation, scope)
 
 
 @dataclass
@@ -87,7 +97,6 @@ def _report(**changes: object) -> CodexCapabilityReport:
         "account_kind": "chatgpt",
         "model": "gpt-5.6-luna",
         "effort": "medium",
-        "billing_allowance_enforced": True,
         "native_tools_isolated": True,
         "client_home": str(Path.cwd()),
         "account": _TEST_ACCOUNT,
@@ -310,9 +319,10 @@ async def test_dynamic_tool_uses_strict_canonical_argument_schema() -> None:
     [
         {"installed_version": "0.153.3"},
         {"installed_version": "0.154.0"},
+        {"supported": False},
+        {"account_kind": "api_key"},
         {"model": "other"},
         {"effort": "low"},
-        {"billing_allowance_enforced": False},
         {"native_tools_isolated": False},
     ],
 )

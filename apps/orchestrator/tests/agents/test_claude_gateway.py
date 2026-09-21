@@ -58,7 +58,6 @@ def _report(**changes):
         "builtins_disabled": True,
         "hooks_disabled": True,
         "strict_mcp": True,
-        "allowance_only_enforced": True,
         "client_home": str(Path.cwd().resolve()),
         "account": "test-account",
         "executable_digest": "b" * 64,
@@ -128,8 +127,14 @@ def test_command_registers_only_sdk_forge_mcp_and_separates_system_prompt():
 
 
 def test_verifier_failure_does_not_admit_route():
-    report, installation = _verified(_report(allowance_only_enforced=False))
+    report, installation = _verified(_report(subscription_auth=False))
     assert not report.admits(installation, _scope())
+
+
+def test_claude_admission_requires_subscription_auth_but_not_removed_billing_field():
+    report, installation = _verified(_report())
+    assert report.admits(installation, _scope())
+    assert not replace(report, subscription_auth=False).admits(installation, _scope())
 
 
 @pytest.mark.parametrize(
@@ -139,7 +144,6 @@ def test_verifier_failure_does_not_admit_route():
         "builtins_disabled",
         "hooks_disabled",
         "strict_mcp",
-        "allowance_only_enforced",
     ],
 )
 @pytest.mark.parametrize("value", [1, "false", None])

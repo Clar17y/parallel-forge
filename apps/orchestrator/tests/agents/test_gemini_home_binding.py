@@ -23,7 +23,6 @@ async def test_unbound_capability_report_rejects_before_launch(tmp_path, home):
         model="gemini-test",
         effort="medium",
         tools_disabled=True,
-        billing_never=True,
         isolated_config=True,
         acp_mcp_supported=True,
         client_home=home,
@@ -54,7 +53,6 @@ def test_home_is_canonical_and_not_exposed_in_capability_representations(tmp_pat
     [
         {"installed_version": "other"},
         {"subscription_auth": False},
-        {"billing_never": False},
         {"tools_disabled": False},
         {"isolated_config": False},
         {"acp_mcp_supported": False},

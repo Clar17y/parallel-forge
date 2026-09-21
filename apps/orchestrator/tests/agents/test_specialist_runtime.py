@@ -34,7 +34,7 @@ def specialist(request, tmp_path):
         fake=fake,
         request=_anthropic_request if provider == "claude" else _google_request,
         broker=ClaudeBroker if provider == "claude" else GeminiBroker,
-        billing_field="allowance_only_enforced" if provider == "claude" else "billing_never",
+        proof_field="subscription_auth",
     )
 
 
@@ -67,7 +67,7 @@ async def test_registration_keeps_concurrent_brokers_and_lifecycles_separate(spe
     assert results[0].launch_proof.launch_id != results[1].launch_proof.launch_id
 
 
-async def test_binding_is_lazy_and_rechecks_changed_billing_proof(specialist):
+async def test_binding_is_lazy_and_rechecks_changed_capability_proof(specialist):
     fake = specialist.fake
     requests = [
         specialist.request(tools=frozenset({ToolName.REPOSITORY_READ_FILE})) for _ in range(2)
@@ -88,7 +88,7 @@ async def test_binding_is_lazy_and_rechecks_changed_billing_proof(specialist):
     ]
     assert verified == [] and all(not item.events for item in lifecycles)
     assert (await gateways[0].execute(requests[0])).failure is None
-    reports[0] = replace(reports[0], **{specialist.billing_field: False})
+    reports[0] = replace(reports[0], **{specialist.proof_field: False})
     rejected = await gateways[1].execute(requests[1])
     assert rejected.failure is SubscriptionFailure.UNAVAILABLE and rejected.launch_proof is None
     assert len(verified) == 2 and lifecycles[1].events == []
