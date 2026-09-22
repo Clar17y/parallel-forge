@@ -32,6 +32,10 @@ assert not any(
     for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
 )
 assert "--dangerously-skip-permissions" not in sys.argv
+if scenario == "login_state":
+    assert (home / ".gemini/antigravity-cli/jetski_state.pbtxt").read_text(
+        encoding="utf-8"
+    ) == "providerless login fixture"
 schema = json.loads(sys.argv[sys.argv.index("--json-schema") + 1])
 model = sys.argv[sys.argv.index("--model") + 1]
 send(

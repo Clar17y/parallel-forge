@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import re
 import shutil
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -82,11 +84,19 @@ class AntigravityInstallation:
 
 class _AttemptHome:
     def __init__(self, installation: AntigravityInstallation, mcp: LocalCliMcp):
-        self.path = Path(installation.cwd) / (".forge-agy-" + mcp.request.attempt.attempt_id.hex)
+        self.path = Path(tempfile.gettempdir()).resolve() / (
+            "forge-agy-" + mcp.request.attempt.attempt_id.hex
+        )
+        self._workspace = Path(installation.cwd)
         self._identity: tuple[int, int] | None = None
+        self._client_state = Path(installation.home) / ".gemini/antigravity-cli/jetski_state.pbtxt"
         self.mcp = mcp
 
     def prepare(self) -> dict[str, str]:
+        if self.path.is_relative_to(self._workspace) or any(
+            (parent / ".git").exists() for parent in self.path.parents
+        ):
+            raise OSError("Antigravity private home must be outside repositories")
         self.path.mkdir(mode=0o700)
         info = self.path.lstat()
         self._identity = (info.st_dev, info.st_ino)
@@ -102,6 +112,17 @@ class _AttemptHome:
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             with target.open("x", encoding="utf-8") as output:
                 output.write(contents)
+        if self._client_state.is_file():
+            # The official client reads its existing state. Forge neither reads
+            # nor copies credential contents, and does not import global settings.
+            source = self._client_state.resolve(strict=True)
+            target = self.path / ".gemini/antigravity-cli/jetski_state.pbtxt"
+            try:
+                target.symlink_to(source)
+            except OSError:
+                # Windows may require a privilege for symlinks. A same-volume
+                # hard link also reuses the file without copying its contents.
+                os.link(source, target)
         return antigravity_launch_environment(self.path)
 
     def cleanup(self) -> None:
