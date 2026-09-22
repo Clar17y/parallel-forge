@@ -35,19 +35,13 @@ tools: []
 This agent has no native tools. Do not invoke a model or a tool during initialization.
 """
 
-# These files are a deliberately small closed set.  The keys document the
-# controls Forge expects; runtime admission additionally requires a separately
-# observed installed-client report, so unsupported keys cannot become proof.
+# Use documented settings at their actual client paths. File contents remain
+# declarations, not proof of effective system/remote configuration or billing.
 _SETTINGS: dict[str, object] = {
     "useG1Credits": False,
-    "plugins": {"enabled": False},
-    "skills": {"enabled": False},
-    "subagents": {"enabled": False},
-    "customizations": {"inherit": False},
-    "project": {"inherit": False},
-    "hooks": {"enabled": False},
-    "telemetry": {"enabled": False},
-    "mcpServers": [],
+    "enableTelemetry": False,
+    "toolPermission": "strict",
+    "artifactReviewPolicy": "asks-for-review",
 }
 _EMPTY = "{}\n"
 
@@ -64,9 +58,10 @@ def antigravity_settings() -> dict[str, object]:
 def antigravity_launch_environment(home: str | Path) -> dict[str, str]:
     """Build the child environment from scratch; never inherit credentials."""
     value = _absolute_directory(home)
-    # HOME plus the explicit config root cover both conventional resolution
-    # paths.  No PATH is inherited: argv[0] is an absolute verified executable.
-    return {"HOME": value, "ANTIGRAVITY_HOME": value, "ANTIGRAVITY_CONFIG_DIR": value}
+    # Go's os.UserHomeDir uses USERPROFILE on Windows and HOME on Unix.
+    # ANTIGRAVITY_HOME / ANTIGRAVITY_CONFIG_DIR are not supported CLI overrides.
+    # No PATH or credential variable is inherited.
+    return {"HOME": value, "USERPROFILE": value}
 
 
 def antigravity_launch_argv(executable: str, model: str, effort: str) -> tuple[str, ...]:
@@ -89,12 +84,8 @@ def antigravity_launch_argv(executable: str, model: str, effort: str) -> tuple[s
         "stream-json",
         "--output-format",
         "stream-json",
-        "--sandbox",
-        "off",
-        "--project",
-        "none",
-        "--slash-commands",
-        "off",
+        "--sandbox=false",
+        "--disable-slash-commands",
     )
 
 
@@ -111,10 +102,12 @@ class AntigravityIsolationHome:
     @property
     def expected_files(self) -> dict[Path, bytes]:
         return {
-            self.path / "agents" / f"{ANTIGRAVITY_ISOLATION_AGENT}.md": _AGENT.encode(),
-            self.path / "mcp.json": _EMPTY.encode(),
-            self.path / "hooks.json": _EMPTY.encode(),
-            self.path / "settings.json": (
+            self.path / ".gemini/config/agents" / f"{ANTIGRAVITY_ISOLATION_AGENT}.md": (
+                _AGENT.encode()
+            ),
+            self.path / ".gemini/config/mcp_config.json": b'{"mcpServers":{}}\n',
+            self.path / ".gemini/antigravity-cli/hooks.json": _EMPTY.encode(),
+            self.path / ".gemini/antigravity-cli/settings.json": (
                 json.dumps(_SETTINGS, sort_keys=True, separators=(",", ":")) + "\n"
             ).encode(),
         }
@@ -127,9 +120,8 @@ class AntigravityIsolationHome:
             raise AntigravityIsolationError("managed Antigravity home already exists")
         self.path.mkdir(mode=0o700)
         try:
-            agents = self.path / "agents"
-            agents.mkdir(mode=0o700)
             for target, payload in self.expected_files.items():
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 _write_new_regular(target, payload)
             self._owned = True
             self.validate()
@@ -142,7 +134,7 @@ class AntigravityIsolationHome:
         if (
             not self._owned
             or not _safe_directory(self.path)
-            or not _safe_directory(self.path / "agents")
+            or not _safe_directory(self.path / ".gemini/config/agents")
         ):
             raise AntigravityIsolationError("Antigravity home is not managed")
         expected = self.expected_files

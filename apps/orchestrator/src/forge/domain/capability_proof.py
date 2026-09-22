@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from forge.domain.capability_evidence import CapabilityEvidenceManifest, CapabilityProofKind
+from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
 
 MAX_PROOF_BYTES = 16 * 1024
 _MAX_DEPTH = 8
@@ -120,6 +121,8 @@ def _validate_payload(
     result = dict(payload)
     _validate_json_value(result)
     identity = manifest.identity
+    if identity.client == "antigravity_cli" and kind is CapabilityProofKind.TOOL_ISOLATION:
+        return _antigravity_callbacks(result, manifest)
     expected: dict[CapabilityProofKind, dict[str, object]] = {
         CapabilityProofKind.CLIENT_IDENTITY: {
             "client": identity.client,
@@ -160,8 +163,38 @@ def _validate_payload(
         CapabilityProofKind.SUBSCRIPTION_ROUTE_BINDING: set(),
         CapabilityProofKind.TOOL_ISOLATION: {"advertised_tool_surface_digest"},
     }[kind]
+    antigravity = identity.client == "antigravity_cli"
+    if antigravity:
+        if (
+            identity.provider != "google"
+            or identity.auth_mode.value != "subscription"
+            or identity.billing_mode.value != "allowance_only"
+            or len(identity.account) != 64
+            or any(character not in "0123456789abcdef" for character in identity.account)
+        ):
+            raise CapabilityProofError("Antigravity subscription identity is invalid")
+        additions: dict[CapabilityProofKind, dict[str, object]] = {
+            CapabilityProofKind.ACCOUNT_AUTHENTICATION: {
+                "authentication_source": "google_subscription",
+            },
+            CapabilityProofKind.ROUTE_IDENTITY: {
+                "main_and_auxiliary_routes_bound": True,
+                "fallback_chain_bound": True,
+            },
+            CapabilityProofKind.SUBSCRIPTION_ROUTE_BINDING: {
+                "effective_use_g1_credits": False,
+                "home_policy_observed": True,
+                "system_policy_observed": True,
+                "remote_policy_observed": True,
+                "alternate_credentials_excluded": True,
+            },
+        }
+        expected[kind].update(additions.get(kind, {}))
+        if kind is CapabilityProofKind.SUBSCRIPTION_ROUTE_BINDING:
+            dynamic = {"effective_configuration_digest"}
     if set(result) != set(expected[kind]) | dynamic or any(
-        result[key] != value for key, value in expected[kind].items()
+        result[key] != value or (antigravity and type(result[key]) is not type(value))
+        for key, value in expected[kind].items()
     ):
         raise CapabilityProofError("capability proof payload differs")
     if (
@@ -169,18 +202,77 @@ def _validate_payload(
         and result["reported_client_version"] != identity.client_version
     ):
         raise CapabilityProofError("capability proof payload differs")
-    if kind is CapabilityProofKind.ACCOUNT_AUTHENTICATION and result["account_kind"] not in (
-        "chatgpt",
-        "subscription",
+    account_kinds = ("subscription",) if antigravity else ("subscription", "chatgpt")
+    if (
+        kind is CapabilityProofKind.ACCOUNT_AUTHENTICATION
+        and result["account_kind"] not in account_kinds
     ):
         raise CapabilityProofError("capability proof payload differs")
     dynamic_value = result[next(iter(dynamic))] if dynamic else None
-    if kind in (CapabilityProofKind.ROUTE_IDENTITY, CapabilityProofKind.TOOL_ISOLATION) and (
+    if (
+        kind in (CapabilityProofKind.ROUTE_IDENTITY, CapabilityProofKind.TOOL_ISOLATION)
+        or (antigravity and kind is CapabilityProofKind.SUBSCRIPTION_ROUTE_BINDING)
+    ) and (
         type(dynamic_value) is not str
         or len(dynamic_value) != 64
         or any(character not in "0123456789abcdef" for character in dynamic_value)
     ):
         raise CapabilityProofError("capability proof payload differs")
+    return result
+
+
+def _antigravity_callbacks(
+    result: dict[str, object], manifest: CapabilityEvidenceManifest
+) -> dict[str, object]:
+    # The legacy wire kind is retained, but this client cannot prove native
+    # tool isolation. Its distinct closed payload proves the Forge callback and
+    # lifecycle contracts and permanently records the accepted limitation.
+    expected = {
+        "tool_surface": [tool.value for tool in manifest.identity.tool_surface],
+        "approved_tools_unproved": True,
+        "callback_identity_bound": True,
+        "remote_mcp_collision_rejected": True,
+        "structured_output_validated": True,
+        "usage_bounded": True,
+    }
+    dynamic = {"callback_observation_digest", "completion", "cancellation", "deadline"}
+    if (
+        manifest.identity.provider != "google"
+        or set(result) != set(expected) | dynamic
+        or any(
+            type(result[key]) is not type(value) or result[key] != value
+            for key, value in expected.items()
+        )
+    ):
+        raise CapabilityProofError("Antigravity callback proof differs")
+    digest = result["callback_observation_digest"]
+    if (
+        type(digest) is not str
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise CapabilityProofError("Antigravity callback observation is invalid")
+    launches = set()
+    for name, outcomes in (
+        ("completion", {"exited", "completed"}),
+        ("cancellation", {"cancelled"}),
+        ("deadline", {"timeout"}),
+    ):
+        try:
+            terminal = SubscriptionLaunchTerminalProof.model_validate(result[name])
+        except TypeError, ValueError:
+            raise CapabilityProofError("Antigravity lifecycle proof is invalid") from None
+        if (
+            not terminal.stop_confirmed
+            or terminal.stdout_truncated
+            or terminal.stderr_truncated
+            or terminal.outcome not in outcomes
+            or terminal.launch_id in launches
+            or terminal.stdout_bytes > 1024 * 1024
+            or terminal.stderr_bytes > 1024 * 1024
+        ):
+            raise CapabilityProofError("Antigravity process tree is not settled")
+        launches.add(terminal.launch_id)
     return result
 
 

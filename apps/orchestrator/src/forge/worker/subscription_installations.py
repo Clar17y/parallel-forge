@@ -75,7 +75,8 @@ def production_subscription_verifiers(
     return SubscriptionVerifierDependencies(
         codex=CodexEvidenceVerifier(source),
         claude=ClaudeEvidenceVerifier(source),
-        # Issue #10 still lacks live evidence and an Antigravity production verifier.
+        # Antigravity has a distinct evidence verifier, but no verified runtime
+        # bridge yet. Never connect it to the retired Gemini CLI ACP adapter.
         gemini=None,
     )
 

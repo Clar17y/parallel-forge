@@ -72,6 +72,13 @@ class SubscriptionRouteReadiness:
             raise TypeError("subscription readiness warnings are invalid")
         if len(set(self.warnings)) != len(self.warnings):
             raise ValueError("subscription readiness warnings must be unique")
+        if (
+            self.route.client == "antigravity_cli"
+            and ReadinessWarning.APPROVED_TOOLS_UNPROVED not in self.warnings
+        ):
+            object.__setattr__(
+                self, "warnings", (*self.warnings, ReadinessWarning.APPROVED_TOOLS_UNPROVED)
+            )
 
     def wire(self) -> dict[str, object]:
         return {
