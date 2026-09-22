@@ -85,6 +85,8 @@ class LocalCliMcp:
             return None
         if type(ident) not in (str, int) or not 1 <= len(str(ident)) <= 128:
             raise ProtocolError("invalid MCP request identity")
+        if not isinstance(method, str) or not method:
+            raise ProtocolError("invalid MCP method")
         params = frame.get("params", {})
         if not isinstance(params, Mapping):
             raise ProtocolError("invalid MCP parameters")
@@ -118,8 +120,16 @@ class LocalCliMcp:
                 }
             elif method == "ping" and self._initialized:
                 result = {}
-            else:
+            elif method in {"initialize", "notifications/initialized", "tools/list", "ping"}:
                 raise ProtocolError("unsupported MCP request")
+            else:
+                # Optional client extensions must receive a JSON-RPC error,
+                # not tear down the authenticated transport before initialization.
+                return {
+                    "jsonrpc": "2.0",
+                    "id": ident,
+                    "error": {"code": -32601, "message": "Method not found"},
+                }
         return {"jsonrpc": "2.0", "id": ident, "result": result}
 
     async def _call(self, ident: object, params: Mapping[str, object]) -> dict[str, object]:

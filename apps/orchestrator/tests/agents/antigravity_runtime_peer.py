@@ -38,6 +38,37 @@ if scenario == "login_state":
     ) == "providerless login fixture"
 schema = json.loads(sys.argv[sys.argv.index("--json-schema") + 1])
 model = sys.argv[sys.argv.index("--model") + 1]
+
+
+def start_mcp():
+    child = subprocess.Popen(
+        [config["command"], *config["args"]],
+        env={**os.environ, **config["env"]},
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if scenario == "optional_startup":
+        assert rpc(child, 0, "client/optional_capability")["error"]["code"] == -32601
+    assert "result" in rpc(
+        child,
+        1,
+        "initialize",
+        {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "fake-agy", "version": "1"},
+        },
+    )
+    child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+    child.stdin.flush()
+    assert "repository.read_file" in [
+        tool["name"] for tool in rpc(child, 2, "tools/list")["result"]["tools"]
+    ]
+    return child
+
+
+child = start_mcp() if scenario == "optional_startup" else None
 send(
     {
         "event": "init",
@@ -47,26 +78,8 @@ send(
 )
 user = json.loads(sys.stdin.readline())
 assert user["event"] == "user"
-child = subprocess.Popen(
-    [config["command"], *config["args"]],
-    env={**os.environ, **config["env"]},
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    text=True,
-)
-assert "result" in rpc(
-    child,
-    1,
-    "initialize",
-    {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "fake-agy", "version": "1"},
-    },
-)
-assert "repository.read_file" in [
-    tool["name"] for tool in rpc(child, 2, "tools/list")["result"]["tools"]
-]
+if child is None:
+    child = start_mcp()
 tool_name = "forbidden" if scenario == "bad_tool" else "repository.read_file"
 receipt = rpc(child, 3, "tools/call", {"name": tool_name, "arguments": {"path": "README.md"}})
 assert receipt["result"]["isError"] is False

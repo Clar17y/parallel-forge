@@ -67,11 +67,12 @@ def launch_directories(monkeypatch):
     return paths
 
 
+@pytest.mark.parametrize("scenario", ["success", "optional_startup"])
 async def test_antigravity_uses_real_mcp_and_supervised_stream_without_capability_evidence(
-    tmp_path, launch_directories
+    tmp_path, launch_directories, scenario
 ):
     broker = _Broker()
-    runtime, lifecycle = gateway(tmp_path, "success", broker=broker)
+    runtime, lifecycle = gateway(tmp_path, scenario, broker=broker)
     result = await runtime.execute(request())
     assert result.failure is None, [value.stderr for value in lifecycle.results]
     assert result.decision.summary == "done"
