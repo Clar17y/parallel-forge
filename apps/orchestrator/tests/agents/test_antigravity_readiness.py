@@ -6,8 +6,10 @@ import pytest
 from forge.agents.antigravity_readiness import (
     ANTIGRAVITY_CLIENT_VERSION,
     ANTIGRAVITY_ISOLATION_AGENT,
+    ANTIGRAVITY_TOOL_BOUNDARY_WARNING,
     AntigravityInitObservation,
     AntigravityPreflightFailure,
+    AntigravityPreflightWarning,
     AntigravityReadinessGate,
     AntigravityReadinessVerifier,
 )
@@ -93,7 +95,7 @@ def _observation(**changes: object) -> AntigravityInitObservation:
     return AntigravityInitObservation(**values)  # type: ignore[arg-type]
 
 
-def test_current_1_2_7_zero_turn_inventory_blocks_conformance_and_runtime() -> None:
+def test_current_1_2_7_zero_turn_inventory_warns_but_allows_conformance() -> None:
     assert ANTIGRAVITY_CLIENT_VERSION == "1.2.7"
 
     report = AntigravityReadinessGate(_EXECUTABLE_DIGEST).assess(
@@ -101,13 +103,16 @@ def test_current_1_2_7_zero_turn_inventory_blocks_conformance_and_runtime() -> N
     )
 
     assert len(_LEAKED_TOOLS) == 57
-    assert report.preflight_failures == (
-        AntigravityPreflightFailure.AGENT_SELECTION_UNCONFIRMED,
-        AntigravityPreflightFailure.OBSERVED_NATIVE_TOOLS,
+    assert report.preflight_failures == ()
+    assert report.preflight_warnings == (
+        AntigravityPreflightWarning.APPROVED_TOOLS_UNPROVED,
+        AntigravityPreflightWarning.AGENT_SELECTION_UNCONFIRMED,
     )
     assert report.native_tool_extras == _LEAKED_TOOLS
-    assert not report.ready_for_live_conformance
+    assert report.ready_for_live_conformance
+    assert report.tool_boundary_warning_required
     assert not report.runtime_admissible
+    assert "cannot guarantee" in ANTIGRAVITY_TOOL_BOUNDARY_WARNING
 
 
 @pytest.mark.parametrize(
@@ -116,10 +121,6 @@ def test_current_1_2_7_zero_turn_inventory_blocks_conformance_and_runtime() -> N
         ({"client_version": "1.2.3"}, AntigravityPreflightFailure.CLIENT_VERSION),
         ({"executable_digest": "a" * 64}, AntigravityPreflightFailure.EXECUTABLE_IDENTITY),
         ({"selected_agent": "default"}, AntigravityPreflightFailure.AGENT_SELECTION),
-        (
-            {"agent_selection_confirmed": False, "observed_tools": ()},
-            AntigravityPreflightFailure.AGENT_SELECTION_UNCONFIRMED,
-        ),
         ({"declared_tools": ("view_file",)}, AntigravityPreflightFailure.DECLARED_NATIVE_TOOLS),
         (
             {"prompt_count": 1, "observed_tools": ()},
@@ -143,8 +144,24 @@ def test_clean_zero_turn_is_only_ready_for_live_proof_not_runtime() -> None:
     report = AntigravityReadinessGate(_EXECUTABLE_DIGEST).assess(_observation(observed_tools=()))
 
     assert report.preflight_failures == ()
+    assert report.preflight_warnings == (AntigravityPreflightWarning.APPROVED_TOOLS_UNPROVED,)
     assert report.ready_for_live_conformance
+    assert report.tool_boundary_warning_required
     assert not report.runtime_admissible
+
+
+def test_unconfirmed_selection_without_observed_tools_is_an_explicit_warning() -> None:
+    report = AntigravityReadinessGate(_EXECUTABLE_DIGEST).assess(
+        _observation(agent_selection_confirmed=False, observed_tools=())
+    )
+
+    assert report.preflight_failures == ()
+    assert report.preflight_warnings == (
+        AntigravityPreflightWarning.APPROVED_TOOLS_UNPROVED,
+        AntigravityPreflightWarning.AGENT_SELECTION_UNCONFIRMED,
+    )
+    assert report.ready_for_live_conformance
+    assert report.tool_boundary_warning_required
 
 
 @pytest.mark.parametrize(

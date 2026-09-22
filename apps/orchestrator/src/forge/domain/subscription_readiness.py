@@ -37,6 +37,10 @@ class ReadinessQuota(StrEnum):
     ELIGIBLE = "eligible"
 
 
+class ReadinessWarning(StrEnum):
+    APPROVED_TOOLS_UNPROVED = "approved_tools_unproved"
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceReference:
     scope: str
@@ -59,6 +63,15 @@ class SubscriptionRouteReadiness:
     quota_revision: int | None = None
     quota_reset_at: datetime | None = None
     quota_next_probe_at: datetime | None = None
+    warnings: tuple[ReadinessWarning, ...] = field(default=())
+
+    def __post_init__(self) -> None:
+        if type(self.warnings) is not tuple or any(
+            not isinstance(warning, ReadinessWarning) for warning in self.warnings
+        ):
+            raise TypeError("subscription readiness warnings are invalid")
+        if len(set(self.warnings)) != len(self.warnings):
+            raise ValueError("subscription readiness warnings must be unique")
 
     def wire(self) -> dict[str, object]:
         return {
@@ -90,7 +103,14 @@ class SubscriptionRouteReadiness:
             "quota_next_probe_at": None
             if self.quota_next_probe_at is None
             else self.quota_next_probe_at.isoformat(),
+            "warnings": [warning.value for warning in self.warnings],
         }
 
 
-__all__ = ["EvidenceReference", "ReadinessQuota", "ReadinessReason", "SubscriptionRouteReadiness"]
+__all__ = [
+    "EvidenceReference",
+    "ReadinessQuota",
+    "ReadinessReason",
+    "ReadinessWarning",
+    "SubscriptionRouteReadiness",
+]

@@ -180,3 +180,51 @@ def test_runtime_cli_missing_evidence_points_to_offline_verification(monkeypatch
     assert result.exit_code == 0
     assert "subscription-capabilities status and verify offline" in result.output
     assert "API key" not in result.output
+
+
+def test_runtime_cli_warns_that_antigravity_tools_are_not_guaranteed(monkeypatch):
+    async def query(_offset, _limit):
+        return SubscriptionRuntimeStatusPage(
+            observed_at=datetime(2026, 9, 22, 8, tzinfo=UTC),
+            fresh_for_seconds=45,
+            workers=[
+                SubscriptionWorkerStatusView(
+                    worker_instance_id="11111111-1111-4111-8111-111111111111",
+                    last_seen_at=datetime(2026, 9, 22, 8, tzinfo=UTC),
+                    stopped_at=None,
+                    state="current",
+                    routes=[
+                        SubscriptionRuntimeRouteView(
+                            schema_version=2,
+                            provider="google",
+                            client="gemini_cli",
+                            model="gemini-3.8-flash",
+                            effort="medium",
+                            auth_mode="subscription",
+                            billing_mode="allowance_only",
+                            configured=True,
+                            admitted=True,
+                            reason="evidence_missing",
+                            effective_reason="evidence_missing",
+                            quota="unknown",
+                            evidence=[],
+                            warnings=["approved_tools_unproved"],
+                        )
+                    ],
+                )
+            ],
+            has_more=False,
+        )
+
+    monkeypatch.setattr(cli, "_status", query)
+    result = CliRunner().invoke(app, ["subscription-runtime", "status", "--format", "text"])
+
+    assert result.exit_code == 0
+    assert "WARNING:" in result.output
+    assert (
+        "cannot guarantee that Antigravity limits itself to Forge-approved tools" in result.output
+    )
+
+    json_result = CliRunner().invoke(app, ["subscription-runtime", "status"])
+    assert json_result.exit_code == 0
+    assert '"warnings":["approved_tools_unproved"]' in json_result.output

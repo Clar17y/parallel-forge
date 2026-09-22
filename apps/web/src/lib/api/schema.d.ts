@@ -2736,6 +2736,8 @@ export interface components {
              * @enum {integer}
              */
             schema_version: 1 | 2;
+            /** Warnings */
+            warnings?: "approved_tools_unproved"[];
         };
         /** SubscriptionRuntimeStatusPage */
         SubscriptionRuntimeStatusPage: {

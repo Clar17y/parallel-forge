@@ -9,6 +9,7 @@ type Route = components['schemas']['SubscriptionRuntimeRouteView'];
 type Reason = Route['effective_reason'];
 const pageSize = 25;
 const refreshStorageKey = 'forge:subscription-runtime:refresh';
+const antigravityToolBoundaryWarning = 'Forge cannot guarantee that Antigravity limits itself to Forge-approved tools; native tools may be available to the model.';
 const states = {
   current: 'Current report',
   stale: 'Stale report — current registration is unknown',
@@ -41,7 +42,7 @@ function loginGuidance(client: string) {
     return <>Run <code>claude auth login</code> in the official Claude client, verify with <code>claude auth status</code>, then refresh.</>;
   }
   if (client === 'antigravity_cli' || client === 'gemini_cli') {
-    return <>Sign in with Google inside the official Antigravity client, then refresh. Sign-in does not override an isolation blocker.</>;
+    return <>Sign in with Google inside the official Antigravity client, then refresh. The separate approved-tool warning still applies.</>;
   }
   return <>Complete sign-in inside the configured official client, then refresh.</>;
 }
@@ -62,7 +63,7 @@ function guidance(route: Route) {
     case 'subscription_route_unbound':
       return loginGuidance(route.client);
     case 'isolation_unproved':
-      return 'Signing in cannot resolve this isolation blocker. Keep the route blocked until an operator-authorized capability workflow publishes complete isolation evidence.';
+      return 'Other required installation or transport isolation evidence is incomplete.';
     case 'evidence_missing':
       return 'Run subscription-capabilities status and verify offline, then explicitly authorize the bounded evidence publication workflow for this installation and scope.';
     case 'evidence_stale_or_invalid':
@@ -92,10 +93,12 @@ function QuotaStatus({ route }: { route: Route }) {
 
 function RouteReadiness({ route }: { route: Route }) {
   const evidence = route.evidence ?? [];
+  const hasAntigravityToolWarning = route.warnings?.includes('approved_tools_unproved') || route.client === 'antigravity_cli' || route.client === 'gemini_cli';
   return <li className="space-y-2 rounded border p-3">
     <p>{route.provider} / {route.client} / {route.model} · {route.effort} · {route.auth_mode} · {route.billing_mode}</p>
     <h4>{reasonTitles[route.effective_reason]}</h4>
     <p>Configured: {route.configured ? 'yes' : 'no'} · Admitted: {route.admitted ? 'yes' : 'no'} · Evidence schema: {route.schema_version}</p>
+    {hasAntigravityToolWarning ? <p role="alert"><strong>Warning:</strong> {antigravityToolBoundaryWarning}</p> : null}
     <p>{guidance(route)}</p>
     <QuotaStatus route={route} />
     {evidence.length === 0 ? <p>Capability evidence: none retained for this route.</p> : <ul aria-label={`Capability evidence for ${route.provider} ${route.model}`}>

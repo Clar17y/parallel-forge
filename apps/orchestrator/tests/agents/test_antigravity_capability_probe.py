@@ -39,9 +39,23 @@ def _frames(**changes: object) -> list[dict[str, object]]:
     return [init, {"type": "stopped", "confirmed": True}]
 
 
-def test_1_2_7_zero_turn_fixture_is_the_only_clean_offline_candidate(installation) -> None:
+def test_1_2_7_zero_turn_accepts_native_tools_as_a_degraded_safety_warning(installation) -> None:
+    observation = parse_zero_turn_frames(
+        _frames(components=["manage_task", "run_command"]), installation
+    )
+
+    assert observation.client_version == "1.2.7"
+    assert observation.components == ("manage_task", "run_command")
+    assert observation.tool_boundary_warning_required
+
+
+def test_empty_zero_turn_component_inventory_still_requires_tool_boundary_warning(
+    installation,
+) -> None:
     observation = parse_zero_turn_frames(_frames(), installation)
-    assert observation.client_version == "1.2.7" and observation.components == ()
+
+    assert observation.components == ()
+    assert observation.tool_boundary_warning_required
 
 
 @pytest.mark.parametrize(
@@ -49,7 +63,6 @@ def test_1_2_7_zero_turn_fixture_is_the_only_clean_offline_candidate(installatio
     [
         {"client_version": "1.2.8"},
         {"executable_digest": "c" * 64},
-        {"components": ["shell"]},
         {"useG1Credits": True},
         {"useG1Credits": None},
         {"account_kind": "api_key"},
@@ -75,6 +88,15 @@ def test_any_identity_credit_surface_or_route_drift_fails_closed(installation, c
 def test_turn_unknown_and_uncertain_stop_frames_are_rejected(installation, bad) -> None:
     with pytest.raises(AntigravityProbeError):
         parse_zero_turn_frames(bad, installation)
+
+
+@pytest.mark.parametrize(
+    "components",
+    [["run_command", "manage_task"], ["run_command", "run_command"], ["Run Command"]],
+)
+def test_noncanonical_or_invalid_component_inventory_is_rejected(installation, components) -> None:
+    with pytest.raises(AntigravityProbeError):
+        parse_zero_turn_frames(_frames(components=components), installation)
 
 
 async def test_no_live_launch_exists_even_with_authorization(installation) -> None:

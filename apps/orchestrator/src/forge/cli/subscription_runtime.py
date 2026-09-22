@@ -6,6 +6,7 @@ from typing import Annotated
 
 import typer
 
+from forge.agents.antigravity_readiness import ANTIGRAVITY_TOOL_BOUNDARY_WARNING
 from forge.api.schemas.subscription_runtime import (
     SubscriptionRuntimeRouteView,
     SubscriptionRuntimeStatusPage,
@@ -84,6 +85,11 @@ def _render_route(route: SubscriptionRuntimeRouteView) -> list[str]:
         ),
         f"    action={_guidance(route)}",
     ]
+    if "approved_tools_unproved" in route.warnings or route.client in {
+        "antigravity_cli",
+        "gemini_cli",
+    }:
+        lines.append(f"    {ANTIGRAVITY_TOOL_BOUNDARY_WARNING}")
     if route.quota == "unknown":
         lines.append("    quota=unknown; not a zero-balance or availability claim")
     elif route.quota == "eligible":
@@ -126,10 +132,13 @@ def _guidance(route: SubscriptionRuntimeRouteView) -> str:
         if route.client == "claude_code":
             return "Run `claude auth login`, verify with `claude auth status`, then refresh."
         if route.client in {"antigravity_cli", "gemini_cli"}:
-            return "Sign in with Google inside Antigravity, then refresh; sign-in does not prove isolation."
+            return (
+                "Sign in with Google inside Antigravity, then refresh; "
+                "the approved-tool warning still applies."
+            )
         return "Complete sign-in inside the configured official client, then refresh."
     if reason == "isolation_unproved":
-        return "Keep blocked until an authorized capability workflow proves complete isolation."
+        return "Other required installation or transport isolation evidence is incomplete."
     if reason == "evidence_missing":
         return (
             "Run subscription-capabilities status and verify offline, then explicitly authorize "

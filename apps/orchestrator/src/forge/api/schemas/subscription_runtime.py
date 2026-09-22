@@ -58,6 +58,7 @@ class SubscriptionRuntimeRouteView(ProjectionModel):
     quota_revision: int | None = Field(default=None, ge=0)
     quota_reset_at: datetime | None = None
     quota_next_probe_at: datetime | None = None
+    warnings: list[Literal["approved_tools_unproved"]] = Field(default_factory=list, max_length=8)
 
 
 class EvidenceReferenceView(ProjectionModel):
