@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from forge.agents.antigravity_runtime import AntigravityInstallation, AntigravityRuntimeAdapter
 from forge.agents.capability_verification import stable_executable_digest
 from forge.agents.claude_gateway import ClaudeCapabilityVerifier, ClaudeInstallation
 from forge.agents.claude_runtime import ClaudeRuntimeAdapter
@@ -21,11 +22,13 @@ from forge.agents.gemini_gateway import GeminiCapabilityVerifier, GeminiInstalla
 from forge.agents.gemini_runtime import GeminiRuntimeAdapter
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
 from forge.artifacts.filesystem import FilesystemArtifactStore
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription import ReasoningEffort, RouteSpec
 from forge.domain.subscription_installations import (
+    AntigravityInstallationSpec,
     ClaudeInstallationSpec,
     CodexInstallationSpec,
-    GeminiInstallationSpec,
+    SubscriptionInstallationSpec,
     load_subscription_installation_manifest,
     quota_route_for,
 )
@@ -47,7 +50,7 @@ _DIGEST_UNSET = object()
 class SubscriptionInstallationLoad:
     adapters: tuple[SubscriptionRuntimeAdapter, ...]
     readiness: tuple[SubscriptionRouteReadiness, ...]
-    specs: tuple[CodexInstallationSpec | ClaudeInstallationSpec | GeminiInstallationSpec, ...] = ()
+    specs: tuple[SubscriptionInstallationSpec, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,8 +78,8 @@ def production_subscription_verifiers(
     return SubscriptionVerifierDependencies(
         codex=CodexEvidenceVerifier(source),
         claude=ClaudeEvidenceVerifier(source),
-        # Antigravity has a distinct evidence verifier, but no verified runtime
-        # bridge yet. Never connect it to the retired Gemini CLI ACP adapter.
+        # Strict admission remains separate from the personal Antigravity
+        # adapter. Never attach its verifier to the legacy Gemini ACP protocol.
         gemini=None,
     )
 
@@ -98,7 +101,12 @@ def load_subscription_installations(
     adapters: list[SubscriptionRuntimeAdapter] = []
     for item in manifest.installations:
         try:
-            adapter = _adapter_for(item, verifiers)
+            adapter = _adapter_for(
+                item,
+                verifiers,
+                trust=settings.subscription_client_trust,
+                duration_seconds=settings.subscription_attempt_budget.max_duration_seconds,
+            )
             if adapter is None:
                 logger.warning("Subscription installation is unavailable")
                 continue
@@ -130,16 +138,22 @@ def load_subscription_installations_diagnostic(
     adapters: list[SubscriptionRuntimeAdapter] = []
     admitted: set[RouteSpec] = set()
     diagnostics: list[SubscriptionRouteReadiness] = []
+    trust = settings.subscription_client_trust
     for item in manifest.installations:
-        warnings = (
-            (ReadinessWarning.APPROVED_TOOLS_UNPROVED,) if item.client == "gemini_cli" else ()
+        warnings: tuple[ReadinessWarning, ...] = (
+            (ReadinessWarning.APPROVED_TOOLS_UNPROVED,)
+            if item.client in {"gemini_cli", "antigravity_cli"}
+            else ()
         )
+        if trust is LocalCliTrust.OPERATOR:
+            warnings += (ReadinessWarning.OPERATOR_TRUSTED,)
         try:
             route = RouteSpec(
                 provider={
                     "codex_app_server": "openai",
                     "claude_code": "anthropic",
                     "gemini_cli": "google",
+                    "antigravity_cli": "google",
                 }[item.client],
                 client=item.client,
                 model=item.model,
@@ -148,15 +162,27 @@ def load_subscription_installations_diagnostic(
         except TypeError, ValueError:
             continue
         actual_digest = stable_executable_digest(item.executable)
-        if item.client == "gemini_cli" and verifiers.gemini is None:
+        if (
+            trust is LocalCliTrust.VERIFIED
+            and item.client == "gemini_cli"
+            and verifiers.gemini is None
+        ):
             reason = ReadinessReason.PROVIDER_UNSUPPORTED
         elif actual_digest is None:
             reason = ReadinessReason.MISSING_EXECUTABLE
-        elif not hmac.compare_digest(actual_digest, item.executable_digest):
+        elif trust is LocalCliTrust.VERIFIED and not hmac.compare_digest(
+            actual_digest, item.executable_digest
+        ):
             reason = ReadinessReason.EXECUTABLE_DIGEST_MISMATCH
         else:
             try:
-                candidate = _adapter_for(item, verifiers, actual_digest=actual_digest)
+                candidate = _adapter_for(
+                    item,
+                    verifiers,
+                    actual_digest=actual_digest,
+                    trust=trust,
+                    duration_seconds=settings.subscription_attempt_budget.max_duration_seconds,
+                )
                 if candidate is None:
                     reason = ReadinessReason.PROVIDER_UNSUPPORTED
                 else:
@@ -177,7 +203,13 @@ def load_subscription_installations_diagnostic(
         if route in admitted:
             # Construction only proves local admission.  Evidence is deliberately
             # not invoked by this loader, so it cannot claim capability-ready.
-            reason = ReadinessReason.EVIDENCE_MISSING
+            reason = (
+                ReadinessReason.OPERATOR_TRUSTED
+                if trust is LocalCliTrust.OPERATOR
+                else ReadinessReason.EVIDENCE_MISSING
+            )
+            if actual_digest != item.executable_digest:
+                warnings += (ReadinessWarning.CLIENT_BUILD_CHANGED,)
         diagnostics.append(
             SubscriptionRouteReadiness(
                 route,
@@ -191,18 +223,37 @@ def load_subscription_installations_diagnostic(
 
 
 def _adapter_for(
-    item: CodexInstallationSpec | ClaudeInstallationSpec | GeminiInstallationSpec,
+    item: SubscriptionInstallationSpec,
     verifiers: SubscriptionVerifierDependencies,
     *,
     actual_digest: str | None | object = _DIGEST_UNSET,
+    trust: LocalCliTrust = LocalCliTrust.VERIFIED,
+    duration_seconds: float = 300,
 ) -> SubscriptionRuntimeAdapter | None:
     if actual_digest is _DIGEST_UNSET:
         actual_digest = stable_executable_digest(item.executable)
     assert actual_digest is None or isinstance(actual_digest, str)
-    if actual_digest is None or not hmac.compare_digest(actual_digest, item.executable_digest):
+    if actual_digest is None or (
+        trust is LocalCliTrust.VERIFIED
+        and not hmac.compare_digest(actual_digest, item.executable_digest)
+    ):
         return None
+    if isinstance(item, AntigravityInstallationSpec):
+        if trust is not LocalCliTrust.OPERATOR:
+            return None
+        return AntigravityRuntimeAdapter(
+            AntigravityInstallation(
+                executable=item.executable,
+                cwd=item.cwd,
+                home=item.home,
+                model=item.model,
+                effort=item.effort,
+                executable_digest=actual_digest,
+                duration_seconds=duration_seconds,
+            )
+        )
     if isinstance(item, CodexInstallationSpec):
-        if verifiers.codex is None:
+        if verifiers.codex is None and trust is LocalCliTrust.VERIFIED:
             return None
         return CodexRuntimeAdapter(
             CodexInstallation(
@@ -212,15 +263,17 @@ def _adapter_for(
                 model=item.model,
                 effort=item.effort,
                 account=item.account,
-                executable_digest=item.executable_digest,
+                executable_digest=actual_digest,
                 client_version=item.client_version,
                 quota_limit_id=item.quota_limit_id,
                 disabled_mcp_servers=item.disabled_mcp_servers,
+                duration_seconds=duration_seconds,
             ),
             verifiers.codex,
+            trust=trust,
         )
     if isinstance(item, ClaudeInstallationSpec):
-        if verifiers.claude is None:
+        if verifiers.claude is None and trust is LocalCliTrust.VERIFIED:
             return None
         return ClaudeRuntimeAdapter(
             ClaudeInstallation(
@@ -230,13 +283,15 @@ def _adapter_for(
                 model=item.model,
                 effort=item.effort,
                 account=item.account,
-                executable_digest=item.executable_digest,
+                executable_digest=actual_digest,
                 client_version=item.client_version,
                 quota_limit_types=frozenset(item.quota_limit_types),
+                duration_seconds=duration_seconds,
             ),
             verifiers.claude,
+            trust=trust,
         )
-    if verifiers.gemini is None:
+    if verifiers.gemini is None and trust is LocalCliTrust.VERIFIED:
         return None
     return GeminiRuntimeAdapter(
         GeminiInstallation(
@@ -246,9 +301,11 @@ def _adapter_for(
             model=item.model,
             effort=item.effort,
             account=item.account,
-            executable_digest=item.executable_digest,
+            executable_digest=actual_digest,
+            duration_seconds=duration_seconds,
         ),
         verifiers.gemini,
+        trust=trust,
     )
 
 

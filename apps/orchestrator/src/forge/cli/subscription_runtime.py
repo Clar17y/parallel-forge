@@ -11,6 +11,7 @@ from forge.api.schemas.subscription_runtime import (
     SubscriptionRuntimeRouteView,
     SubscriptionRuntimeStatusPage,
 )
+from forge.domain.local_cli import OPERATOR_TRUST_WARNING
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.repositories.subscription_runtime_status import (
     SubscriptionRuntimeStatusStore,
@@ -85,6 +86,10 @@ def _render_route(route: SubscriptionRuntimeRouteView) -> list[str]:
         ),
         f"    action={_guidance(route)}",
     ]
+    if "operator_trusted" in route.warnings:
+        lines.append(f"    {OPERATOR_TRUST_WARNING}")
+    if "client_build_changed" in route.warnings:
+        lines.append("    Local client updated; no new capability evidence is required.")
     if "approved_tools_unproved" in route.warnings or route.client in {
         "antigravity_cli",
         "gemini_cli",
@@ -107,13 +112,15 @@ def _render_route(route: SubscriptionRuntimeRouteView) -> list[str]:
             f"observed={item.observed_at.isoformat()} expires={item.expires_at.isoformat()}"
             for item in route.evidence
         )
-    else:
+    elif route.reason != "operator_trusted":
         lines.append("    evidence=none")
     return lines
 
 
 def _guidance(route: SubscriptionRuntimeRouteView) -> str:
     reason = route.effective_reason
+    if reason == "operator_trusted":
+        return "Ready to attempt. Start a run to use configured agents; no capability evidence is required."
     if reason == "ready":
         return "Capability evidence matches; invocation still rechecks authority."
     if reason == "missing_executable":
@@ -147,7 +154,7 @@ def _guidance(route: SubscriptionRuntimeRouteView) -> str:
     if reason == "evidence_stale_or_invalid":
         return "Inspect the installation and publish fresh bounded evidence."
     if reason == "provider_unsupported":
-        return "Choose an admitted official client; sign-in alone cannot enable this route."
+        return "No runtime adapter is available for this client. Choose a supported local client."
     if reason == "configuration_invalid":
         return "Correct the closed installation manifest and exact quota mapping, then restart."
     if reason == "stale_worker":

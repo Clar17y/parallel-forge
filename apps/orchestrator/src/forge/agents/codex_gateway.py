@@ -58,6 +58,7 @@ from forge.domain.capability_evidence import (
     ResolvedCapabilityEvidence,
     capability_identity,
 )
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.provider_quota import (
     QuotaExhaustion,
     classify_codex_error,
@@ -458,13 +459,17 @@ class CodexGateway:
     def __init__(
         self,
         installation: CodexInstallation,
-        verifier: CodexCapabilityVerifier,
+        verifier: CodexCapabilityVerifier | None = None,
         *,
         broker: ToolBroker | None = None,
         supervisor: ClientProcessSupervisor | None = None,
         lifecycle: ClientProcessLifecycle | None = None,
         now: Callable[[], datetime] | None = None,
+        trust: LocalCliTrust = LocalCliTrust.VERIFIED,
     ) -> None:
+        if not isinstance(trust, LocalCliTrust):
+            raise TypeError("local CLI trust policy is required")
+        self._trust = trust
         self._installation, self._verifier = installation, verifier
         self._broker = broker
         self._supervisor = supervisor or ClientProcessSupervisor()
@@ -537,12 +542,16 @@ class CodexGateway:
             ):
                 result = failed(SubscriptionFailure.POLICY_DENIED)
             elif (
-                not (
-                    await capability_report(
-                        self._verifier.verify(self._installation, scope),
-                        CodexCapabilityReport,
-                    )
-                ).admits(self._installation, scope)
+                self._trust is LocalCliTrust.VERIFIED
+                and (
+                    self._verifier is None
+                    or not (
+                        await capability_report(
+                            self._verifier.verify(self._installation, scope),
+                            CodexCapabilityReport,
+                        )
+                    ).admits(self._installation, scope)
+                )
                 or self._broker is not None
                 and not callable(getattr(self._broker, "revoke", None))
                 or self._broker is None
@@ -647,6 +656,18 @@ class CodexGateway:
     def _configuration_matches(
         self, response: Mapping[str, Any], model_catalog_path: str | None = None
     ) -> bool:
+        if self._trust is LocalCliTrust.OPERATOR:
+            # Configuration declarations and the live account/thread checks are
+            # enough for personal use. Missing isolation metadata is advisory.
+            config = response.get("config", {})
+            expected = {
+                "model": self._installation.model,
+                "model_reasoning_effort": self._installation.effort,
+                "forced_login_method": "chatgpt",
+            }
+            return isinstance(config, Mapping) and all(
+                key not in config or config[key] == value for key, value in expected.items()
+            )
         return codex_configuration_matches(
             response,
             self._configuration(model_catalog_path),

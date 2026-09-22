@@ -20,6 +20,7 @@ from forge.application.services.subscription_effect_recovery import Subscription
 from forge.application.services.terminal_recovery import TerminalMergeRecovery
 from forge.application.services.worker import CommandHandler, Worker
 from forge.artifacts.filesystem import FilesystemArtifactStore
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPoolKey
 from forge.domain.subscription_readiness import SubscriptionRouteReadiness
 from forge.persistence.database import create_engine, create_session_factory
@@ -37,6 +38,7 @@ from forge.worker.composition import WorkerCompositionError, WorkerHandlers, com
 from forge.worker.startup import run_startup_recovery
 from forge.worker.startup_intervention import StartupInterventionRecovery
 from forge.worker.subscription_installations import (
+    SubscriptionVerifierDependencies,
     load_subscription_installations_diagnostic,
     production_subscription_verifiers,
 )
@@ -97,7 +99,9 @@ async def run_worker(
         else:
             installation_load = load_subscription_installations_diagnostic(
                 settings,
-                production_subscription_verifiers(factory, settings.artifact_root),
+                production_subscription_verifiers(factory, settings.artifact_root)
+                if settings.subscription_client_trust is LocalCliTrust.VERIFIED
+                else SubscriptionVerifierDependencies(),
             )
             resolved_subscription_adapters = installation_load.adapters
             subscription_readiness = installation_load.readiness
@@ -111,7 +115,9 @@ async def run_worker(
             enricher = SubscriptionReadinessEnricher(
                 PostgresCapabilityEvidenceSource(
                     factory, FilesystemArtifactStore(settings.artifact_root)
-                ),
+                )
+                if settings.subscription_client_trust is LocalCliTrust.VERIFIED
+                else None,
                 quota_status,
                 installation_load.specs,
                 PostgresCapabilityProbeDiagnosticStore(factory),

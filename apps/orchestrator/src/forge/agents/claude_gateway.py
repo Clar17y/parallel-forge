@@ -59,6 +59,7 @@ from forge.domain.capability_evidence import (
     ResolvedCapabilityEvidence,
     capability_identity,
 )
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.provider_quota import (
     QuotaExhaustion,
     classify_claude_error,
@@ -777,13 +778,17 @@ class ClaudeGateway(SubscriptionGateway):
     def __init__(
         self,
         installation: ClaudeInstallation,
-        verifier: ClaudeCapabilityVerifier,
+        verifier: ClaudeCapabilityVerifier | None = None,
         *,
         broker: ToolBroker | None = None,
         supervisor: ClientProcessSupervisor | None = None,
         lifecycle: ClientProcessLifecycle | None = None,
         now: Callable[[], datetime] | None = None,
+        trust: LocalCliTrust = LocalCliTrust.VERIFIED,
     ) -> None:
+        if not isinstance(trust, LocalCliTrust):
+            raise TypeError("local CLI trust policy is required")
+        self._trust = trust
         self._installation, self._verifier, self._broker = installation, verifier, broker
         self._supervisor = supervisor or ClientProcessSupervisor()
         self._lifecycle = lifecycle
@@ -845,12 +850,16 @@ class ClaudeGateway(SubscriptionGateway):
             ):
                 result = failed(SubscriptionFailure.POLICY_DENIED)
             elif (
-                not await asyncio.to_thread(claude_isolation_platform_supported)
-                or not (
-                    await capability_report(
-                        self._verifier.verify(self._installation, scope), ClaudeCapabilityReport
-                    )
-                ).admits(self._installation, scope)
+                self._trust is LocalCliTrust.VERIFIED
+                and (
+                    not await asyncio.to_thread(claude_isolation_platform_supported)
+                    or self._verifier is None
+                    or not (
+                        await capability_report(
+                            self._verifier.verify(self._installation, scope), ClaudeCapabilityReport
+                        )
+                    ).admits(self._installation, scope)
+                )
                 or (request.authorization.permitted_tools and self._broker is None)
             ):
                 result = failed(SubscriptionFailure.UNAVAILABLE)
@@ -931,6 +940,35 @@ class ClaudeGateway(SubscriptionGateway):
             system_prompt=request.trusted_system_prompt,
             permitted_tools=request.authorization.permitted_tools,
             schema=output_schema(request),
+        )
+
+    def _settings_match(self, settings: Mapping[str, object]) -> bool:
+        if self._trust is LocalCliTrust.OPERATOR:
+            applied = settings.get("applied", {})
+            expected = {"model": self._installation.model, "effort": self._installation.effort}
+            return isinstance(applied, Mapping) and all(
+                key not in applied or applied[key] == value for key, value in expected.items()
+            )
+        return claude_settings_match(
+            settings, model=self._installation.model, effort=self._installation.effort
+        )
+
+    def _init_matches(
+        self, init: Mapping[str, object], request: SubscriptionInvocationRequest
+    ) -> bool:
+        if self._trust is LocalCliTrust.OPERATOR:
+            # Runtime identity still matters; an exact inventory of inherited
+            # customizations and a historical CLI version do not gate a task.
+            return (
+                init.get("session_id") == str(request.attempt.attempt_id)
+                and init.get("model") == self._installation.model
+            )
+        return claude_init_matches(
+            init,
+            model=self._installation.model,
+            tools=request.authorization.permitted_tools,
+            session_id=str(request.attempt.attempt_id),
+            client_version=self._installation.client_version,
         )
 
     async def _exchange(
@@ -1037,6 +1075,9 @@ class ClaudeGateway(SubscriptionGateway):
                 response = frame["response"]
                 assert isinstance(response, Mapping)
                 value = response.get("response")
+                if response.get("subtype") != "success" and self._trust is LocalCliTrust.OPERATOR:
+                    settings = {}
+                    break
                 if response.get("subtype") != "success" or not isinstance(value, Mapping):
                     raise ClaudeConfigurationError("Claude effective settings are unavailable")
                 settings = value
@@ -1048,22 +1089,12 @@ class ClaudeGateway(SubscriptionGateway):
                 await session.send(reply)
         else:
             raise ProtocolError("too many Claude settings events")
-        if settings is None or not claude_settings_match(
-            settings,
-            model=self._installation.model,
-            effort=self._installation.effort,
-        ):
+        if settings is None or not self._settings_match(settings):
             raise ClaudeConfigurationError("Claude effective isolation differs")
         if init is not None:
             if not codec.handshake_complete:
                 raise ProtocolError("Claude initialized before MCP handshake completion")
-            if not claude_init_matches(
-                init,
-                model=self._installation.model,
-                tools=request.authorization.permitted_tools,
-                session_id=thread,
-                client_version=self._installation.client_version,
-            ):
+            if not self._init_matches(init, request):
                 raise ClaudeConfigurationError("Claude effective isolation differs")
             initialized = True
         context = {
@@ -1096,13 +1127,7 @@ class ClaudeGateway(SubscriptionGateway):
                     raise ProtocolError("Claude emitted an event before initialization metadata")
                 if not codec.handshake_complete:
                     raise ProtocolError("Claude initialized before MCP handshake completion")
-                if not claude_init_matches(
-                    frame,
-                    model=self._installation.model,
-                    tools=request.authorization.permitted_tools,
-                    session_id=thread,
-                    client_version=self._installation.client_version,
-                ):
+                if not self._init_matches(frame, request):
                     raise ClaudeConfigurationError("Claude effective isolation differs")
                 initialized = True
                 continue

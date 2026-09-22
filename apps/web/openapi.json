@@ -5188,6 +5188,7 @@
           "effective_reason": {
             "enum": [
               "ready",
+              "operator_trusted",
               "missing_executable",
               "executable_digest_mismatch",
               "version_mismatch",
@@ -5275,6 +5276,7 @@
           "reason": {
             "enum": [
               "ready",
+              "operator_trusted",
               "missing_executable",
               "executable_digest_mismatch",
               "version_mismatch",
@@ -5302,7 +5304,11 @@
           },
           "warnings": {
             "items": {
-              "const": "approved_tools_unproved",
+              "enum": [
+                "approved_tools_unproved",
+                "operator_trusted",
+                "client_build_changed"
+              ],
               "type": "string"
             },
             "maxItems": 8,

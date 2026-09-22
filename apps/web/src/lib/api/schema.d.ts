@@ -2706,7 +2706,7 @@ export interface components {
              * Effective Reason
              * @enum {string}
              */
-            effective_reason: "ready" | "missing_executable" | "executable_digest_mismatch" | "version_mismatch" | "unsupported_model_or_effort" | "signed_out" | "account_authentication_unproved" | "subscription_route_unbound" | "isolation_unproved" | "evidence_missing" | "evidence_stale_or_invalid" | "provider_unsupported" | "configuration_invalid" | "unknown" | "stale_worker" | "quota_exhausted";
+            effective_reason: "ready" | "operator_trusted" | "missing_executable" | "executable_digest_mismatch" | "version_mismatch" | "unsupported_model_or_effort" | "signed_out" | "account_authentication_unproved" | "subscription_route_unbound" | "isolation_unproved" | "evidence_missing" | "evidence_stale_or_invalid" | "provider_unsupported" | "configuration_invalid" | "unknown" | "stale_worker" | "quota_exhausted";
             /** Effort */
             effort: string;
             /** Evidence */
@@ -2730,14 +2730,14 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "ready" | "missing_executable" | "executable_digest_mismatch" | "version_mismatch" | "unsupported_model_or_effort" | "signed_out" | "account_authentication_unproved" | "subscription_route_unbound" | "isolation_unproved" | "evidence_missing" | "evidence_stale_or_invalid" | "provider_unsupported" | "configuration_invalid" | "unknown";
+            reason: "ready" | "operator_trusted" | "missing_executable" | "executable_digest_mismatch" | "version_mismatch" | "unsupported_model_or_effort" | "signed_out" | "account_authentication_unproved" | "subscription_route_unbound" | "isolation_unproved" | "evidence_missing" | "evidence_stale_or_invalid" | "provider_unsupported" | "configuration_invalid" | "unknown";
             /**
              * Schema Version
              * @enum {integer}
              */
             schema_version: 1 | 2;
             /** Warnings */
-            warnings?: "approved_tools_unproved"[];
+            warnings?: ("approved_tools_unproved" | "operator_trusted" | "client_build_changed")[];
         };
         /** SubscriptionRuntimeStatusPage */
         SubscriptionRuntimeStatusPage: {

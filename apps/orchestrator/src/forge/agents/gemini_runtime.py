@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from forge.agents.gemini_gateway import GeminiCapabilityVerifier, GeminiGateway, GeminiInstallation
 from forge.agents.runtime_factory import RouteUnavailable
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription import AuthMode, BillingMode, ReasoningEffort, RouteSpec
 
 if TYPE_CHECKING:
@@ -15,15 +16,19 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class GeminiRuntimeAdapter:
-    """Construction is local; each execution retains the gateway's capability gate."""
+    """Construct the legacy ACP gateway with an explicit local-client trust policy."""
 
     installation: GeminiInstallation = field(repr=False)
-    verifier: GeminiCapabilityVerifier = field(repr=False)
+    verifier: GeminiCapabilityVerifier | None = field(default=None, repr=False)
+    trust: LocalCliTrust = field(default=LocalCliTrust.VERIFIED, kw_only=True)
     route: RouteSpec = field(init=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.installation, GeminiInstallation) or not callable(
-            getattr(self.verifier, "verify", None)
+        if (
+            not isinstance(self.installation, GeminiInstallation)
+            or not isinstance(self.trust, LocalCliTrust)
+            or self.trust is LocalCliTrust.VERIFIED
+            and not callable(getattr(self.verifier, "verify", None))
         ):
             raise TypeError("Gemini runtime requires trusted installation and verification")
         if self.installation.effort is None:
@@ -58,4 +63,5 @@ class GeminiRuntimeAdapter:
             self.verifier,
             broker=broker,
             lifecycle=lifecycle,
+            trust=self.trust,
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import replace
 
 from forge.agents.claude_verification import (
     CLAUDE_VERIFIER_ID,
@@ -24,6 +25,7 @@ from forge.application.ports.capability_evidence import (
 )
 from forge.domain.capability_evidence import CapabilityEvidenceIdentity, capability_identity
 from forge.domain.subscription_installations import (
+    AntigravityInstallationSpec,
     CodexInstallationSpec,
     GeminiInstallationSpec,
     SubscriptionInstallationSpec,
@@ -41,7 +43,7 @@ from forge.domain.subscription_readiness import (
 class SubscriptionReadinessEnricher:
     def __init__(
         self,
-        evidence: CapabilityEvidenceSource,
+        evidence: CapabilityEvidenceSource | None,
         quota_status: Callable[[QuotaPoolKey], Awaitable[PoolQuotaStatus]],
         specs: Iterable[SubscriptionInstallationSpec],
         diagnostics: CapabilityProbeDiagnosticSource | None = None,
@@ -77,12 +79,14 @@ class SubscriptionReadinessEnricher:
     async def _one(
         self, value: SubscriptionRouteReadiness, spec: SubscriptionInstallationSpec | None
     ) -> SubscriptionRouteReadiness:
+        if spec is not None and value.admitted and value.reason is ReadinessReason.OPERATOR_TRUSTED:
+            return await self._with_quota(replace(value, evidence=()), spec)
         if spec is None or value.reason not in {
             ReadinessReason.EVIDENCE_MISSING,
             ReadinessReason.READY,
         }:
             return value
-        if isinstance(spec, GeminiInstallationSpec):
+        if isinstance(spec, (GeminiInstallationSpec, AntigravityInstallationSpec)):
             return value
         scopes, verifier = (
             (required_codex_verification_scopes(), (CODEX_VERIFIER_ID, CODEX_VERIFIER_VERSION))
@@ -108,6 +112,8 @@ class SubscriptionReadinessEnricher:
                     client_home=spec.home,
                     account=spec.account,
                 )
+                if self._evidence is None:
+                    raise CapabilityEvidenceMissing()
                 resolved = await self._evidence.resolve(identity)
                 if (
                     not resolved.matches(identity)
@@ -148,6 +154,13 @@ class SubscriptionReadinessEnricher:
             reason = ReadinessReason.EVIDENCE_MISSING
         else:
             reason = ReadinessReason.READY
+        return await self._with_quota(
+            replace(value, reason=reason, evidence=tuple(references)), spec
+        )
+
+    async def _with_quota(
+        self, value: SubscriptionRouteReadiness, spec: SubscriptionInstallationSpec
+    ) -> SubscriptionRouteReadiness:
         selector = quota_route_for(spec)
         key = QuotaPoolKey(selector.provider, selector.account, selector.pool)
         try:
@@ -165,17 +178,12 @@ class SubscriptionReadinessEnricher:
                 next_eligible_at=None,
                 retry_basis=None,
             )
-        return SubscriptionRouteReadiness(
-            value.route,
-            value.configured,
-            value.admitted,
-            reason,
-            ReadinessQuota(status.status),
-            tuple(references),
-            status.revision,
-            status.reset_at,
-            status.next_eligible_at,
-            warnings=value.warnings,
+        return replace(
+            value,
+            quota=ReadinessQuota(status.status),
+            quota_revision=status.revision,
+            quota_reset_at=status.reset_at,
+            quota_next_probe_at=status.next_eligible_at,
         )
 
     async def _diagnostic(

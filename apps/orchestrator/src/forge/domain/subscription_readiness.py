@@ -14,6 +14,7 @@ from forge.domain.subscription import RouteSpec
 
 class ReadinessReason(StrEnum):
     READY = "ready"
+    OPERATOR_TRUSTED = "operator_trusted"
     MISSING_EXECUTABLE = "missing_executable"
     EXECUTABLE_DIGEST_MISMATCH = "executable_digest_mismatch"
     VERSION_MISMATCH = "version_mismatch"
@@ -39,6 +40,8 @@ class ReadinessQuota(StrEnum):
 
 class ReadinessWarning(StrEnum):
     APPROVED_TOOLS_UNPROVED = "approved_tools_unproved"
+    OPERATOR_TRUSTED = "operator_trusted"
+    CLIENT_BUILD_CHANGED = "client_build_changed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +75,13 @@ class SubscriptionRouteReadiness:
             raise TypeError("subscription readiness warnings are invalid")
         if len(set(self.warnings)) != len(self.warnings):
             raise ValueError("subscription readiness warnings must be unique")
+        if (
+            self.reason is ReadinessReason.OPERATOR_TRUSTED
+            and ReadinessWarning.OPERATOR_TRUSTED not in self.warnings
+        ):
+            object.__setattr__(
+                self, "warnings", (*self.warnings, ReadinessWarning.OPERATOR_TRUSTED)
+            )
         if (
             self.route.client == "antigravity_cli"
             and ReadinessWarning.APPROVED_TOOLS_UNPROVED not in self.warnings

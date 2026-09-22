@@ -29,6 +29,23 @@ const route = (change: Record<string, unknown> = {}) => ({
 const response = (value: unknown) => new Response(JSON.stringify(value));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+test('personal clients are ready to attempt without an evidence workflow', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(page([
+    worker('current', [route({
+      client: 'antigravity_cli', provider: 'google', model: 'gemini-3.8-flash-medium',
+      admitted: true, reason: 'operator_trusted', effective_reason: 'operator_trusted',
+      warnings: ['operator_trusted', 'approved_tools_unproved', 'client_build_changed'],
+    })]),
+  ]))));
+  render(<SubscriptionRuntimeStatus />);
+  expect(await screen.findByText('Ready to attempt')).toBeInTheDocument();
+  expect(screen.getByText(/trusted by you/i)).toBeInTheDocument();
+  expect(screen.getByText(/No capability evidence is required/i)).toBeInTheDocument();
+  expect(screen.getByText(/client has updated/i)).toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent(/cannot guarantee that Antigravity limits itself/);
+  expect(screen.queryByText(/Capability evidence: none retained/)).not.toBeInTheDocument();
+});
+
 test('missing reports remain unknown and refresh can reveal unregistered workers', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(response(page()))
     .mockResolvedValueOnce(response(page([worker('current')])));
