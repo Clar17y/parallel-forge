@@ -192,8 +192,11 @@ def _display_routes(routes: object, *, stale: bool) -> list[dict[str, object]]:
                     "admitted": False,
                     "reason": ReadinessReason.UNKNOWN.value,
                     "quota": "unknown",
+                    "warnings": [],
                 }
             )
+        else:
+            value.setdefault("warnings", [])
         if stale:
             value["effective_reason"] = ReadinessReason.STALE_WORKER.value
         elif value.get("quota") == "blocked" and value.get("reason") == ReadinessReason.READY.value:

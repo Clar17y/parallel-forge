@@ -5299,6 +5299,15 @@
             ],
             "title": "Schema Version",
             "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "const": "approved_tools_unproved",
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [

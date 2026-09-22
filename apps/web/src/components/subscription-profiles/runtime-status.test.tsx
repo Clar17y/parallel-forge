@@ -23,6 +23,7 @@ const route = (change: Record<string, unknown> = {}) => ({
   quota_revision: null,
   quota_reset_at: null,
   quota_next_probe_at: null,
+  warnings: [],
   ...change,
 });
 const response = (value: unknown) => new Response(JSON.stringify(value));
@@ -97,16 +98,16 @@ test('missing evidence points to offline verification before live publication', 
   expect(screen.queryByText(/buy|top.?up|enter an api key/i)).not.toBeInTheDocument();
 });
 
-test('unproved isolation and confirmed quota exhaustion stay blocked with actionable safe copy', async () => {
+test('Antigravity warns about its unproved tool boundary while quota exhaustion stays blocked', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(page([
     worker('current', [
-      route({ provider: 'google', client: 'antigravity_cli', model: 'gemini-3.8-flash', reason: 'isolation_unproved', effective_reason: 'isolation_unproved' }),
+      route({ provider: 'google', client: 'gemini_cli', model: 'gemini-3.8-flash', admitted: true, warnings: ['approved_tools_unproved'] }),
       route({ admitted: true, reason: 'ready', effective_reason: 'quota_exhausted', quota: 'blocked', quota_revision: 9, quota_reset_at: '2026-09-13T01:00:00Z', quota_next_probe_at: '2026-09-13T01:05:00Z' }),
     ]),
   ]))));
   render(<SubscriptionRuntimeStatus />);
-  expect(await screen.findByText('Isolation unproved')).toBeInTheDocument();
-  expect(screen.getByText(/Signing in cannot resolve this isolation blocker/i)).toBeInTheDocument();
+  expect(await screen.findByText('Capability evidence missing')).toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent(/cannot guarantee that Antigravity limits itself to Forge-approved tools/i);
   expect(screen.getByText('Quota exhausted')).toBeInTheDocument();
   expect(screen.getByText(/Wait for the retained reset or next-probe time/i)).toBeInTheDocument();
   expect(screen.getByText('2026-09-13T01:00:00Z', { selector: 'time' })).toBeInTheDocument();

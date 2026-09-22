@@ -1,9 +1,9 @@
 """Offline Antigravity stream parser and explicitly-gated live probe shape.
 
-This intentionally does not guess an undocumented callback protocol.  Version
-1.2.7's offline material proves that default components can be excluded, but it
-does not prove a receipt-bound Forge MCP dispatcher.  Consequently a clean
-zero-turn stream is useful diagnostic evidence only and live admission remains
+This intentionally does not guess an undocumented callback protocol. Version
+1.2.7 does not provide a trustworthy approved-tool boundary, which is retained
+as an operator-visible warning rather than an admission failure. It also does
+not prove a receipt-bound Forge MCP dispatcher, so live admission remains
 fail-closed with ``forge_callback_unproved``.
 """
 
@@ -22,27 +22,7 @@ from forge.agents.antigravity_configuration import ANTIGRAVITY_ISOLATION_AGENT
 
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
 _VERSION = re.compile(r"\A[0-9]+\.[0-9]+\.[0-9]+\Z", re.ASCII)
-_FORBIDDEN_COMPONENTS = frozenset(
-    {
-        "tools",
-        "native_tools",
-        "hooks",
-        "customizations",
-        "mcp",
-        "mcp_servers",
-        "plugins",
-        "skills",
-        "subagents",
-        "tasks",
-        "inbox",
-        "ask",
-        "files",
-        "shell",
-        "web",
-        "search",
-        "project",
-    }
-)
+_COMPONENT = re.compile(r"\A[a-z][a-z0-9_]{0,127}\Z", re.ASCII)
 
 
 class AntigravityProbeError(RuntimeError):
@@ -87,7 +67,7 @@ class AntigravityProbeInstallation:
 
 @dataclass(frozen=True, slots=True)
 class AntigravityZeroTurnObservation:
-    """Only the fields required to prove no turn or client surface was exposed."""
+    """Identity and billing fields plus the advisory native-component inventory."""
 
     client_version: str
     executable_digest: str
@@ -99,16 +79,31 @@ class AntigravityZeroTurnObservation:
     components: tuple[str, ...]
     terminal_confirmed: bool
 
+    def __post_init__(self) -> None:
+        if (
+            type(self.components) is not tuple
+            or len(self.components) > 128
+            or any(
+                type(component) is not str or _COMPONENT.fullmatch(component) is None
+                for component in self.components
+            )
+            or tuple(sorted(set(self.components))) != self.components
+        ):
+            raise ValueError("Antigravity component inventory is invalid")
+
+    @property
+    def tool_boundary_warning_required(self) -> bool:
+        return True
+
 
 def parse_zero_turn_frames(
     frames: Iterable[Mapping[str, Any]], installation: AntigravityProbeInstallation
 ) -> AntigravityZeroTurnObservation:
     """Validate a fake/archived initialization stream without launching anything.
 
-    The small schema deliberately rejects unknown frame kinds and *any* payload
-    that looks like a request, a turn, or a surface-bearing component.  It is
-    therefore safe to tighten after a separately authorized installed-client
-    observation, but not to use as an optimistic compatibility parser.
+    The small schema deliberately rejects unknown frame kinds and any payload
+    that looks like a request or turn. A canonical bounded component inventory
+    is retained as advisory evidence so it can drive the required warning.
     """
     if not isinstance(installation, AntigravityProbeInstallation):
         raise TypeError("Antigravity installation is required")
@@ -148,6 +143,17 @@ def parse_zero_turn_frames(
         raise AntigravityProbeError(AntigravityProbeFailure.PROTOCOL.value)
     components = init["components"]
     if (
+        type(components) is not list
+        or len(components) > 128
+        or any(
+            type(component) is not str or _COMPONENT.fullmatch(component) is None
+            for component in components
+        )
+        or sorted(set(components)) != components
+    ):
+        raise AntigravityProbeError(AntigravityProbeFailure.PROTOCOL.value)
+    canonical_components = tuple(components)
+    if (
         init["client_version"] != installation.client_version
         or not hmac.compare_digest(str(init["executable_digest"]), installation.executable_digest)
         or init["agent"] != ANTIGRAVITY_ISOLATION_AGENT
@@ -155,9 +161,6 @@ def parse_zero_turn_frames(
         or init["model"] != installation.model
         or init["effort"] != installation.effort
         or init["useG1Credits"] is not False
-        or type(components) is not list
-        or any(type(item) is not str for item in components)
-        or components
     ):
         raise AntigravityProbeError(AntigravityProbeFailure.PROTOCOL.value)
     account = init["account_identity_digest"]
@@ -173,7 +176,7 @@ def parse_zero_turn_frames(
         model=installation.model,
         effort=installation.effort,
         use_g1_credits=False,
-        components=(),
+        components=canonical_components,
         terminal_confirmed=True,
     )
 

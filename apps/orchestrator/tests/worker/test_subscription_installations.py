@@ -13,7 +13,7 @@ from forge.agents.codex_runtime import CodexRuntimeAdapter
 from forge.agents.codex_verification import CodexEvidenceVerifier
 from forge.agents.gemini_runtime import GeminiRuntimeAdapter
 from forge.domain.subscription_quota import QuotaPolicy, QuotaPoolKey, QuotaRoutePool
-from forge.domain.subscription_readiness import ReadinessReason
+from forge.domain.subscription_readiness import ReadinessReason, ReadinessWarning
 from forge.settings import Settings
 from forge.worker import subscription_installations as installations
 from forge.worker.subscription_installations import (
@@ -121,6 +121,12 @@ def test_closed_manifest_loads_pinned_adapters_and_opaque_quota_mappings(
     assert settings.subscription_quota_policy.key_for(adapters[2].route) == QuotaPoolKey(
         "google", "google", "allowance"
     )
+    diagnostic = load_subscription_installations_diagnostic(
+        settings,
+        SubscriptionVerifierDependencies(codex=verifier, claude=verifier, gemini=verifier),
+    )
+    assert diagnostic.readiness[2].warnings == (ReadinessWarning.APPROVED_TOOLS_UNPROVED,)
+    assert diagnostic.readiness[2].wire()["warnings"] == ["approved_tools_unproved"]
 
 
 def test_diagnostic_loader_reads_once_and_reuses_missing_digest(

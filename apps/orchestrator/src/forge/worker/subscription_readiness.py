@@ -175,6 +175,7 @@ class SubscriptionReadinessEnricher:
             status.revision,
             status.reset_at,
             status.next_eligible_at,
+            warnings=value.warnings,
         )
 
     async def _diagnostic(

@@ -29,7 +29,11 @@ from forge.domain.subscription_installations import (
     load_subscription_installation_manifest,
     quota_route_for,
 )
-from forge.domain.subscription_readiness import ReadinessReason, SubscriptionRouteReadiness
+from forge.domain.subscription_readiness import (
+    ReadinessReason,
+    ReadinessWarning,
+    SubscriptionRouteReadiness,
+)
 from forge.persistence.repositories.capability_evidence import PostgresCapabilityEvidenceSource
 
 if TYPE_CHECKING:
@@ -71,7 +75,7 @@ def production_subscription_verifiers(
     return SubscriptionVerifierDependencies(
         codex=CodexEvidenceVerifier(source),
         claude=ClaudeEvidenceVerifier(source),
-        # Issue #10 established no admissible Antigravity/Gemini production verifier.
+        # Issue #10 still lacks live evidence and an Antigravity production verifier.
         gemini=None,
     )
 
@@ -126,6 +130,9 @@ def load_subscription_installations_diagnostic(
     admitted: set[RouteSpec] = set()
     diagnostics: list[SubscriptionRouteReadiness] = []
     for item in manifest.installations:
+        warnings = (
+            (ReadinessWarning.APPROVED_TOOLS_UNPROVED,) if item.client == "gemini_cli" else ()
+        )
         try:
             route = RouteSpec(
                 provider={
@@ -170,7 +177,15 @@ def load_subscription_installations_diagnostic(
             # Construction only proves local admission.  Evidence is deliberately
             # not invoked by this loader, so it cannot claim capability-ready.
             reason = ReadinessReason.EVIDENCE_MISSING
-        diagnostics.append(SubscriptionRouteReadiness(route, True, route in admitted, reason))
+        diagnostics.append(
+            SubscriptionRouteReadiness(
+                route,
+                True,
+                route in admitted,
+                reason,
+                warnings=warnings,
+            )
+        )
     return SubscriptionInstallationLoad(tuple(adapters), tuple(diagnostics), manifest.installations)
 
 
