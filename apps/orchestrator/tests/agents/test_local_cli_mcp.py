@@ -28,7 +28,7 @@ async def test_unsupported_method_returns_rpc_error_and_allows_normal_handshake(
         {
             "jsonrpc": "2.0",
             "id": "optional-probe",
-            "method": "client/optional_capability",
+            "method": "server/discover",
             "params": {"untrusted": "do not echo payloads"},
         }
     )

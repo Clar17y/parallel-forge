@@ -49,7 +49,7 @@ def start_mcp():
         text=True,
     )
     if scenario == "optional_startup":
-        assert rpc(child, 0, "client/optional_capability")["error"]["code"] == -32601
+        assert rpc(child, 0, "server/discover")["error"]["code"] == -32601
     assert "result" in rpc(
         child,
         1,
@@ -116,6 +116,10 @@ result = {
 }
 if scenario == "missing_usage":
     result.pop("usage")
+if scenario == "missing_output":
+    result.pop("structured_output")
+if scenario == "invalid_decision":
+    handoff["status"] = "invalid fixture status"
 if scenario == "429":
     result.update(status="ERROR", error="HTTP 429")
 if scenario == "401":

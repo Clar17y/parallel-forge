@@ -369,9 +369,21 @@ class AntigravityGateway:
                 ), telemetry
             output = payload.get("structured_output")
             if not isinstance(output, Mapping) or set(output) != {"decision"}:
-                raise ProtocolError("invalid Antigravity structured output")
+                return SubscriptionInvocationResult(
+                    attempt=request.attempt,
+                    failure=SubscriptionFailure.PROTOCOL,
+                    failure_detail="Antigravity returned invalid structured output",
+                ), telemetry
+            try:
+                decision = decode_final(output["decision"], request)
+            except ProtocolError:
+                return SubscriptionInvocationResult(
+                    attempt=request.attempt,
+                    failure=SubscriptionFailure.PROTOCOL,
+                    failure_detail="Antigravity returned an invalid Forge decision",
+                ), telemetry
             await session.close_stdin()
-            return decode_final(output["decision"], request), telemetry
+            return decision, telemetry
         raise ProtocolError("Antigravity ended before a result")
 
 

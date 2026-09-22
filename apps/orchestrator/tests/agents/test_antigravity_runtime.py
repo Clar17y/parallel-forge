@@ -221,6 +221,22 @@ async def test_token_budget_failure_retains_actual_usage(tmp_path):
     assert result.launch_proof.stop_confirmed
 
 
+@pytest.mark.parametrize(
+    "scenario,detail",
+    [
+        ("missing_output", "Antigravity returned invalid structured output"),
+        ("invalid_decision", "Antigravity returned an invalid Forge decision"),
+    ],
+)
+async def test_invalid_output_retains_usage_and_explains_the_failure(tmp_path, scenario, detail):
+    runtime, _ = gateway(tmp_path, scenario)
+    result = await runtime.execute(request())
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.failure_detail == detail
+    assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
+    assert result.launch_proof.stop_confirmed
+
+
 async def test_antigravity_failed_revoke_still_closes_transport_and_stops_child(
     tmp_path, monkeypatch
 ):
