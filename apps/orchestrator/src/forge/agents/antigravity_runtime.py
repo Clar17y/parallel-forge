@@ -101,6 +101,9 @@ class _AttemptHome:
         info = self.path.lstat()
         self._identity = (info.st_dev, info.st_ino)
         settings = antigravity_settings()
+        # Runtime operations use explicit grants; do not inherit the isolation
+        # probe's strict mode, which requests review for every non-read tool.
+        settings["toolPermission"] = "request-review"
         settings["permissions"] = {"allow": [f"mcp({self.mcp.name}/*)"]}
         payloads = {
             ".gemini/config/mcp_config.json": json.dumps(self.mcp.configuration()),
@@ -366,6 +369,28 @@ class AntigravityGateway:
                     reason = SubscriptionFailure.OUTAGE
                 return SubscriptionInvocationResult(
                     attempt=request.attempt, failure=reason
+                ), telemetry
+            denied_actions = payload.get("denied_actions", [])
+            if (
+                not isinstance(denied_actions, list)
+                or len(denied_actions) > 64
+                or any(
+                    not isinstance(action, str) or not 1 <= len(action) <= 128
+                    for action in denied_actions
+                )
+            ):
+                return SubscriptionInvocationResult(
+                    attempt=request.attempt,
+                    failure=SubscriptionFailure.PROTOCOL,
+                    failure_detail="Antigravity returned invalid denied-action data",
+                ), telemetry
+            if denied_actions:
+                # Headless soft-denials can accompany a SUCCESS result. Do not
+                # accept a decision after the client refused a requested tool.
+                return SubscriptionInvocationResult(
+                    attempt=request.attempt,
+                    failure=SubscriptionFailure.POLICY_DENIED,
+                    failure_detail="Antigravity denied a tool permission in headless mode",
                 ), telemetry
             output = payload.get("structured_output")
             if not isinstance(output, Mapping) or set(output) != {"decision"}:

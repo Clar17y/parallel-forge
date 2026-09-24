@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import os
 import sys
 from dataclasses import replace
@@ -80,6 +81,29 @@ async def test_antigravity_uses_real_mcp_and_supervised_stream_without_capabilit
     assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
     assert result.launch_proof.stop_confirmed
     assert not launch_directories[0].exists()
+
+
+async def test_runtime_uses_review_mode_with_only_its_forge_server_allowed(tmp_path, monkeypatch):
+    observed = []
+    original_start = ClientProcessSupervisor.start
+
+    async def capture_settings(self, spec, **kwargs):
+        settings = json.loads(
+            (Path(spec.cwd) / ".gemini/antigravity-cli/settings.json").read_text(encoding="utf-8")
+        )
+        observed.append(settings)
+        return await original_start(self, spec, **kwargs)
+
+    monkeypatch.setattr(ClientProcessSupervisor, "start", capture_settings)
+    runtime, _ = gateway(tmp_path, "success")
+    value = request()
+    result = await runtime.execute(value)
+    assert result.failure is None
+    assert observed[0]["toolPermission"] == "request-review"
+    assert observed[0]["permissions"] == {"allow": [f"mcp(forge_{value.attempt.attempt_id.hex}/*)"]}
+    assert observed[0]["useG1Credits"] is False
+    assert len(runtime.broker.calls) == 1 and runtime.broker.revoked
+    assert result.launch_proof.stop_confirmed
 
 
 @pytest.mark.parametrize("force_hard_link", [False, True])
@@ -233,6 +257,28 @@ async def test_invalid_output_retains_usage_and_explains_the_failure(tmp_path, s
     result = await runtime.execute(request())
     assert result.failure is SubscriptionFailure.PROTOCOL
     assert result.failure_detail == detail
+    assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
+    assert result.launch_proof.stop_confirmed
+
+
+@pytest.mark.parametrize("scenario", ["permission_denied", "permission_denied_with_output"])
+async def test_headless_permission_denial_is_not_a_successful_forge_decision(tmp_path, scenario):
+    broker = _Broker()
+    runtime, _ = gateway(tmp_path, scenario, broker=broker)
+    result = await runtime.execute(request())
+    assert result.failure is SubscriptionFailure.POLICY_DENIED
+    assert result.failure_detail == "Antigravity denied a tool permission in headless mode"
+    assert result.decision is None
+    assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
+    assert not broker.calls and broker.revoked
+    assert result.launch_proof.stop_confirmed
+
+
+async def test_malformed_denied_actions_cannot_be_accepted_as_success(tmp_path):
+    runtime, _ = gateway(tmp_path, "invalid_denied_actions")
+    result = await runtime.execute(request())
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.decision is None
     assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
     assert result.launch_proof.stop_confirmed
 

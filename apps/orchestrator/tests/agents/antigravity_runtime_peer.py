@@ -81,8 +81,9 @@ assert user["event"] == "user"
 if child is None:
     child = start_mcp()
 tool_name = "forbidden" if scenario == "bad_tool" else "repository.read_file"
-receipt = rpc(child, 3, "tools/call", {"name": tool_name, "arguments": {"path": "README.md"}})
-assert receipt["result"]["isError"] is False
+if not scenario.startswith("permission_denied"):
+    receipt = rpc(child, 3, "tools/call", {"name": tool_name, "arguments": {"path": "README.md"}})
+    assert receipt["result"]["isError"] is False
 if scenario == "cancel":
     time.sleep(60)
 handoff = {
@@ -126,5 +127,11 @@ if scenario == "401":
     result.update(status="ERROR", error="authentication required (HTTP 401)")
 if scenario == "provider_cancel":
     result.update(status="CANCELED")
+if scenario.startswith("permission_denied"):
+    result["denied_actions"] = ["mcp"]
+    if scenario == "permission_denied":
+        result.pop("structured_output")
+if scenario == "invalid_denied_actions":
+    result["denied_actions"] = "mcp"
 send({"event": "result", "result": result})
 sys.stdin.read()
