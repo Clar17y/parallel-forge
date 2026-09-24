@@ -106,6 +106,24 @@ async def test_runtime_uses_review_mode_with_only_its_forge_server_allowed(tmp_p
     assert result.launch_proof.stop_confirmed
 
 
+async def test_worker_can_correct_named_check_arguments_in_one_supervised_turn(tmp_path):
+    value = request()
+    value = replace(
+        value,
+        authorization=replace(
+            value.authorization,
+            permitted_tools=value.authorization.permitted_tools | {ToolName.BUILD_RUN_NAMED_CHECK},
+        ),
+    )
+    broker = _Broker()
+    runtime, _ = gateway(tmp_path, "repair_arguments", broker=broker)
+    result = await runtime.execute(value)
+    assert result.failure is None and result.decision is not None
+    assert [call.name for call in broker.calls] == ["build.run_named_check", "repository.read_file"]
+    assert result.telemetry.tool_call_count == 3 and result.telemetry.named_check_count == 1
+    assert broker.revoked and result.launch_proof.stop_confirmed
+
+
 @pytest.mark.parametrize("force_hard_link", [False, True])
 async def test_configured_client_state_is_reused_without_copying_global_settings(
     tmp_path, monkeypatch, force_hard_link, launch_directories

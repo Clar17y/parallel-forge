@@ -80,6 +80,22 @@ user = json.loads(sys.stdin.readline())
 assert user["event"] == "user"
 if child is None:
     child = start_mcp()
+if scenario == "repair_arguments":
+    bad = rpc(
+        child,
+        "bad-check",
+        "tools/call",
+        {"name": "build.run_named_check", "arguments": {"command": "unit"}},
+    )
+    assert bad["result"]["isError"] is True
+    assert "command_name" in bad["result"]["content"][0]["text"]
+    repaired = rpc(
+        child,
+        "check",
+        "tools/call",
+        {"name": "build.run_named_check", "arguments": {"command_name": "unit"}},
+    )
+    assert repaired["result"]["isError"] is False
 tool_name = "forbidden" if scenario == "bad_tool" else "repository.read_file"
 if not scenario.startswith("permission_denied"):
     receipt = rpc(child, 3, "tools/call", {"name": tool_name, "arguments": {"path": "README.md"}})
