@@ -305,6 +305,21 @@ class AntigravityGateway:
         mcp: LocalCliMcp,
     ) -> tuple[SubscriptionInvocationResult, AttemptTelemetry]:
         init = await mcp.receive(session)
+        if isinstance(init, Mapping) and init.get("event") == "result":
+            payload = init.get("result")
+            if isinstance(payload, Mapping) and payload.get("status") in (
+                "ERROR",
+                "CANCELED",
+                "INTERRUPTED",
+            ):
+                # Startup can fail before a conversation is initialized. Retain
+                # returned usage and backoff classification, never a decision.
+                telemetry = _usage(payload.get("usage"))
+                return SubscriptionInvocationResult(
+                    attempt=request.attempt,
+                    failure=_result_failure(payload, telemetry, request),
+                    failure_detail="Antigravity failed before initialization",
+                ), telemetry
         if (
             not isinstance(init, Mapping)
             or init.get("event") != "init"
@@ -345,28 +360,7 @@ class AntigravityGateway:
             if event != "result":
                 continue
             telemetry = _usage(payload.get("usage"))
-            if any(
-                count is not None and limit is not None and count > limit
-                for count, limit in (
-                    (telemetry.input_tokens, request.budget.max_input_tokens),
-                    (telemetry.output_tokens, request.budget.max_output_tokens),
-                )
-            ):
-                return SubscriptionInvocationResult(
-                    attempt=request.attempt, failure=SubscriptionFailure.BUDGET
-                ), telemetry
-            if payload.get("status") != "SUCCESS":
-                error = payload.get("error", "")
-                if payload.get("status") in {"CANCELED", "INTERRUPTED"}:
-                    reason = SubscriptionFailure.INTERRUPTED
-                elif isinstance(error, str) and re.search(r"\b429\b", error):
-                    reason = SubscriptionFailure.THROTTLED
-                elif isinstance(error, str) and re.search(
-                    r"\b(401|403)\b|authentication required", error, re.IGNORECASE
-                ):
-                    reason = SubscriptionFailure.AUTHENTICATION
-                else:
-                    reason = SubscriptionFailure.OUTAGE
+            if (reason := _result_failure(payload, telemetry, request)) is not None:
                 return SubscriptionInvocationResult(
                     attempt=request.attempt, failure=reason
                 ), telemetry
@@ -410,6 +404,33 @@ class AntigravityGateway:
             await session.close_stdin()
             return decision, telemetry
         raise ProtocolError("Antigravity ended before a result")
+
+
+def _result_failure(
+    payload: Mapping[str, object],
+    telemetry: AttemptTelemetry,
+    request: SubscriptionInvocationRequest,
+) -> SubscriptionFailure | None:
+    if any(
+        count is not None and limit is not None and count > limit
+        for count, limit in (
+            (telemetry.input_tokens, request.budget.max_input_tokens),
+            (telemetry.output_tokens, request.budget.max_output_tokens),
+        )
+    ):
+        return SubscriptionFailure.BUDGET
+    if payload.get("status") == "SUCCESS":
+        return None
+    error = payload.get("error", "")
+    if payload.get("status") in ("CANCELED", "INTERRUPTED"):
+        return SubscriptionFailure.INTERRUPTED
+    if isinstance(error, str) and re.search(r"\b429\b", error):
+        return SubscriptionFailure.THROTTLED
+    if isinstance(error, str) and re.search(
+        r"\b(401|403)\b|authentication required", error, re.IGNORECASE
+    ):
+        return SubscriptionFailure.AUTHENTICATION
+    return SubscriptionFailure.OUTAGE
 
 
 def _usage(value: object) -> AttemptTelemetry:

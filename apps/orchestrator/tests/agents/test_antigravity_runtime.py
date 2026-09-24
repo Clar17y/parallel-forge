@@ -221,6 +221,39 @@ async def test_antigravity_rejects_bad_data_and_never_invents_exhaustion(
     assert result.launch_proof.stop_confirmed
 
 
+@pytest.mark.parametrize(
+    "scenario,expected,tokens",
+    [
+        ("startup_429", SubscriptionFailure.THROTTLED, 0),
+        ("startup_401", SubscriptionFailure.AUTHENTICATION, 0),
+        ("startup_cancel", SubscriptionFailure.INTERRUPTED, 0),
+        ("startup_outage", SubscriptionFailure.OUTAGE, 0),
+        ("startup_unknown", SubscriptionFailure.OUTAGE, None),
+        ("startup_over_budget", SubscriptionFailure.BUDGET, 999999),
+        ("startup_success", SubscriptionFailure.PROTOCOL, None),
+        ("startup_bad_usage", SubscriptionFailure.PROTOCOL, None),
+    ],
+)
+async def test_startup_failure_preserves_classification_usage_and_cleanup(
+    tmp_path, launch_directories, scenario, expected, tokens
+):
+    broker = _Broker()
+    runtime, _ = gateway(tmp_path, scenario, broker=broker)
+    value = request()
+    value = replace(
+        value, task=replace(value.task, budget=replace(value.task.budget, max_input_tokens=1000))
+    )
+    result = await runtime.execute(value)
+    assert result.failure is expected
+    assert result.decision is None and result.quota_exhaustion is None
+    assert result.telemetry.input_tokens == tokens
+    assert not broker.calls and broker.revoked
+    assert result.launch_proof.stop_confirmed
+    assert not launch_directories[0].exists()
+    if expected is not SubscriptionFailure.PROTOCOL:
+        assert result.failure_detail == "Antigravity failed before initialization"
+
+
 async def test_antigravity_cancellation_settles_the_mcp_child(tmp_path, launch_directories):
     broker = _Broker()
     runtime, _ = gateway(tmp_path, "cancel", broker=broker)

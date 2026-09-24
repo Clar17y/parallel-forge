@@ -39,6 +39,31 @@ if scenario == "login_state":
 schema = json.loads(sys.argv[sys.argv.index("--json-schema") + 1])
 model = sys.argv[sys.argv.index("--model") + 1]
 
+if scenario.startswith("startup_"):
+    startup = {
+        "conversation_id": "conversation",
+        "status": "ERROR",
+        "error": "provider startup unavailable",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0},
+    }
+    if scenario == "startup_429":
+        startup["error"] = "HTTP 429"
+    if scenario == "startup_401":
+        startup["error"] = "authentication required (HTTP 401)"
+    if scenario == "startup_cancel":
+        startup["status"] = "CANCELED"
+    if scenario == "startup_success":
+        startup["status"] = "SUCCESS"
+    if scenario == "startup_unknown":
+        startup.pop("usage")
+    if scenario == "startup_over_budget":
+        startup["usage"]["input_tokens"] = 999999
+    if scenario == "startup_bad_usage":
+        startup["usage"]["input_tokens"] = True
+    send({"event": "result", "result": startup})
+    sys.stdin.read()
+    sys.exit(0)
+
 
 def start_mcp():
     child = subprocess.Popen(
