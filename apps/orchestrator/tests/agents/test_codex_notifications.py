@@ -62,6 +62,29 @@ async def test_sparse_quota_and_retry_notice_cannot_confirm_exhaustion(scenario)
     assert result.quota_exhaustion is None
 
 
+@pytest.mark.parametrize("scenario", ["startup_advisory", "turn_advisory"])
+async def test_client_status_notifications_do_not_abort_the_attempt(scenario):
+    broker = _Broker()
+    result = await gateway(scenario, broker=broker).execute(_request())
+    assert result.failure is None and result.decision is not None
+    assert result.quota_exhaustion is None and result.telemetry.input_tokens == 13
+    assert result.launch_proof.stop_confirmed and broker.revoked and broker.calls == []
+
+
+@pytest.mark.parametrize("scenario", ["late_thread_start", "late_thread_start_stream"])
+async def test_thread_start_notification_may_follow_its_response(scenario):
+    result = await gateway(scenario).execute(_request())
+    assert result.failure is None and result.decision is not None
+    assert result.launch_proof.stop_confirmed
+
+
+@pytest.mark.parametrize("scenario", ["warning_before_ack", "warning_in_stream"])
+async def test_warning_for_the_bound_thread_is_advisory(scenario):
+    result = await gateway(scenario).execute(_request())
+    assert result.failure is None and result.decision is not None
+    assert result.launch_proof.stop_confirmed
+
+
 @pytest.mark.parametrize(
     "scenario,failure",
     [
@@ -86,6 +109,13 @@ async def test_non_quota_terminal_error_keeps_its_classification(scenario, failu
         "global_request",
         "malformed_global",
         "wrong_ack",
+        "advisory_request",
+        "malformed_advisory",
+        "changed_auth",
+        "foreign_late_thread_start",
+        "late_thread_start_request",
+        "foreign_warning",
+        "warning_request",
     ],
 )
 async def test_notifications_cannot_bypass_identity_and_frame_validation(scenario):
