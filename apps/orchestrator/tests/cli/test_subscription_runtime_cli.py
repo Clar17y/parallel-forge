@@ -13,6 +13,31 @@ from forge.cli.main import app
 from typer.testing import CliRunner
 
 
+def test_personal_cli_status_does_not_require_evidence_or_hide_tool_warning():
+    route = SubscriptionRuntimeRouteView(
+        schema_version=2,
+        provider="google",
+        client="antigravity_cli",
+        model="gemini-3.8-flash-medium",
+        effort="medium",
+        auth_mode="subscription",
+        billing_mode="allowance_only",
+        configured=True,
+        admitted=True,
+        reason="operator_trusted",
+        effective_reason="operator_trusted",
+        quota="unknown",
+        evidence=[],
+        warnings=["operator_trusted", "approved_tools_unproved"],
+    )
+    text = "\n".join(cli._render_route(route))
+    assert "Ready to attempt" in text
+    assert "no capability evidence is required" in text
+    assert "cannot guarantee that Antigravity limits itself" in text
+    assert "evidence=none" not in text
+    assert '"operator_trusted"' in route.model_dump_json()
+
+
 def test_runtime_cli_prints_unknown_inventory_and_forwards_bounds(monkeypatch):
     calls = []
 

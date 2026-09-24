@@ -57,10 +57,9 @@ class _InstallationSpec(_ClosedModel):
     effort: str = Field(min_length=1, max_length=32)
     account: str
     executable_digest: str
-    # Official clients release near-daily. The exact version an installation
-    # must report lives here beside the digest it identifies, so moving a pin
-    # is an operator configuration change with fresh conformance evidence
-    # rather than a source edit to a safety-critical module.
+    # These declarations bind evidence when verified admission is selected.
+    # Personal operator trust instead binds the installed executable at startup
+    # and reports a changed build without requiring new capability evidence.
     client_version: str = Field(min_length=1, max_length=32)
     quota: InstallationQuota
 
@@ -143,8 +142,15 @@ class GeminiInstallationSpec(_InstallationSpec):
     client: Literal["gemini_cli"]
 
 
+class AntigravityInstallationSpec(_InstallationSpec):
+    client: Literal["antigravity_cli"]
+
+
 SubscriptionInstallationSpec = Annotated[
-    CodexInstallationSpec | ClaudeInstallationSpec | GeminiInstallationSpec,
+    CodexInstallationSpec
+    | ClaudeInstallationSpec
+    | GeminiInstallationSpec
+    | AntigravityInstallationSpec,
     Field(discriminator="client"),
 ]
 
@@ -196,6 +202,7 @@ def quota_route_for(item: SubscriptionInstallationSpec) -> QuotaRoutePool:
         "codex_app_server": "openai",
         "claude_code": "anthropic",
         "gemini_cli": "google",
+        "antigravity_cli": "google",
     }[item.client]
     return QuotaRoutePool(
         provider=provider,
@@ -260,6 +267,7 @@ def _reject_json_constant(value: str) -> object:
 
 
 __all__ = [
+    "AntigravityInstallationSpec",
     "ClaudeInstallationSpec",
     "CodexInstallationSpec",
     "GeminiInstallationSpec",

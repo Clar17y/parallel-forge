@@ -17,6 +17,7 @@ const states = {
 };
 const reasonTitles: Record<Reason, string> = {
   ready: 'Capability ready',
+  operator_trusted: 'Ready to attempt',
   missing_executable: 'Official client missing',
   executable_digest_mismatch: 'Client build differs',
   version_mismatch: 'Client version differs',
@@ -49,6 +50,8 @@ function loginGuidance(client: string) {
 
 function guidance(route: Route) {
   switch (route.effective_reason) {
+    case 'operator_trusted':
+      return 'This local client is trusted by you. Start a run to use its configured agents. No capability evidence is required.';
     case 'ready':
       return 'Current durable evidence matches this exact subscription route. Invocation still rechecks authority.';
     case 'missing_executable':
@@ -69,7 +72,7 @@ function guidance(route: Route) {
     case 'evidence_stale_or_invalid':
       return 'Inspect the pinned client and installation, then publish fresh bounded evidence. Stale or invalid evidence never grants readiness.';
     case 'provider_unsupported':
-      return 'This client is not production-admitted. Choose an admitted official client; sign-in alone cannot enable it.';
+      return 'Forge has no runtime adapter available for this client. Choose a supported local client.';
     case 'configuration_invalid':
       return 'Inspect the closed installation manifest and exact quota mapping, correct them, then restart the worker.';
     case 'stale_worker':
@@ -93,15 +96,18 @@ function QuotaStatus({ route }: { route: Route }) {
 
 function RouteReadiness({ route }: { route: Route }) {
   const evidence = route.evidence ?? [];
+  const operatorTrusted = route.reason === 'operator_trusted';
   const hasAntigravityToolWarning = route.warnings?.includes('approved_tools_unproved') || route.client === 'antigravity_cli' || route.client === 'gemini_cli';
   return <li className="space-y-2 rounded border p-3">
     <p>{route.provider} / {route.client} / {route.model} · {route.effort} · {route.auth_mode} · {route.billing_mode}</p>
     <h4>{reasonTitles[route.effective_reason]}</h4>
-    <p>Configured: {route.configured ? 'yes' : 'no'} · Admitted: {route.admitted ? 'yes' : 'no'} · Evidence schema: {route.schema_version}</p>
+    <p>Configured: {route.configured ? 'yes' : 'no'} · Admitted: {route.admitted ? 'yes' : 'no'}</p>
     {hasAntigravityToolWarning ? <p role="alert"><strong>Warning:</strong> {antigravityToolBoundaryWarning}</p> : null}
     <p>{guidance(route)}</p>
+    {operatorTrusted ? <p>Forge applies your configured login, model and spending controls. Provider internals are not independently verified.</p> : null}
+    {route.warnings?.includes('client_build_changed') ? <p>The local client has updated. Forge will attempt the installed build; no new evidence is required.</p> : null}
     <QuotaStatus route={route} />
-    {evidence.length === 0 ? <p>Capability evidence: none retained for this route.</p> : <ul aria-label={`Capability evidence for ${route.provider} ${route.model}`}>
+    {operatorTrusted ? null : evidence.length === 0 ? <p>Capability evidence: none retained for this route.</p> : <ul aria-label={`Capability evidence for ${route.provider} ${route.model}`}>
       {evidence.map(item => <li key={`${item.scope}:${item.evidence_id}:${item.revision}`}>
         {item.scope} · evidence {item.evidence_id} · revision {item.revision} · observed <time dateTime={item.observed_at}>{item.observed_at}</time> · expires <time dateTime={item.expires_at}>{item.expires_at}</time>
       </li>)}
@@ -130,7 +136,7 @@ export function SubscriptionRuntimeStatus() {
             <p>Instance {worker.worker_instance_id} · last report <time dateTime={worker.last_seen_at}>{worker.last_seen_at}</time></p>
             {worker.routes.length > 0 ? <ul className="space-y-2">{worker.routes.map(route =>
               <RouteReadiness key={`${route.provider}:${route.client}:${route.model}:${route.effort}`} route={route} />)}</ul> :
-              worker.state === 'current' ? <p>No subscription routes registered by this worker. It does not confirm sign-in, capability, or remaining allowance. Complete client setup and capability verification before launching these routes.</p> : <p>No routes in this historical report.</p>}
+              worker.state === 'current' ? <p>No subscription routes registered by this worker. It does not confirm sign-in, capability, or remaining allowance. Configure your local clients and restart the worker.</p> : <p>No routes in this historical report.</p>}
           </li>)}</ul>}
         {reports.value.has_more ? <p>This page is not the complete worker inventory. Inspect the next page before drawing conclusions about other workers.</p> : null}
       </> : null}

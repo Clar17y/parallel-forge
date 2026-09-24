@@ -10,6 +10,7 @@ from forge.domain.subscription import ReasoningEffort, RouteSpec
 from forge.domain.subscription_readiness import (
     ReadinessQuota,
     ReadinessReason,
+    ReadinessWarning,
     SubscriptionRouteReadiness,
 )
 from forge.persistence.repositories.subscription_runtime_status import (
@@ -26,6 +27,28 @@ READY = SubscriptionRouteReadiness(
     reason=ReadinessReason.READY,
     quota=ReadinessQuota.ELIGIBLE,
 )
+
+
+@pytest.mark.integration
+async def test_personal_readiness_survives_reload_with_warnings_and_quota_block(session_factory):
+    route = replace(
+        PRIMARY, provider="google", client="antigravity_cli", model="gemini-3.8-flash-medium"
+    )
+    value = SubscriptionRouteReadiness(
+        route, True, True, ReadinessReason.OPERATOR_TRUSTED, quota=ReadinessQuota.BLOCKED
+    )
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    assert await store.report(uuid4(), (value,))
+    reloaded = (await SubscriptionRuntimeStatusStore(session_factory).status())["workers"][0][
+        "routes"
+    ][0]
+    assert reloaded["reason"] == "operator_trusted"
+    assert reloaded["effective_reason"] == "quota_exhausted"
+    assert reloaded["evidence"] == []
+    assert set(reloaded["warnings"]) == {
+        ReadinessWarning.OPERATOR_TRUSTED.value,
+        ReadinessWarning.APPROVED_TOOLS_UNPROVED.value,
+    }
 
 
 @pytest.mark.integration

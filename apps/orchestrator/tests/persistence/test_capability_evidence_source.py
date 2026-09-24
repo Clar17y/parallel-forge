@@ -1,6 +1,7 @@
 """PostgreSQL is authoritative for current capability evidence selection."""
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -144,6 +145,60 @@ async def test_publish_replay_and_restart_resolve_the_same_artifact(
 
     restarted = PostgresCapabilityEvidenceSource(session_factory, artifacts, clock=lambda: now)
     assert await restarted.resolve(manifest.identity) == published
+
+
+@pytest.mark.integration
+async def test_antigravity_warning_survives_postgres_restart_and_paid_policy_is_rejected(
+    session_factory, tmp_path
+):
+    from forge.application.services.subscription_capability_evidence import (
+        SubscriptionCapabilityEvidenceService,
+    )
+
+    from apps.orchestrator.tests.application.test_antigravity_capability_publication import (
+        identity,
+        observations,
+    )
+
+    now = datetime.now(UTC)
+    artifacts = FilesystemArtifactStore(tmp_path / "antigravity-artifacts")
+    source = PostgresCapabilityEvidenceSource(session_factory, artifacts, clock=lambda: now)
+    service = SubscriptionCapabilityEvidenceService(artifacts, source, clock=lambda: now)
+    published = await service.publish(
+        identity=identity(), observations=observations(), observed_at=now
+    )
+    restarted = PostgresCapabilityEvidenceSource(session_factory, artifacts, clock=lambda: now)
+    assert await restarted.resolve(identity()) == published
+    tool_proof = next(
+        p for p in published.manifest.proofs if p.kind is CapabilityProofKind.TOOL_ISOLATION
+    )
+    wire = await artifacts.open_bytes(tool_proof.artifact_digest, max_bytes=16 * 1024)
+    assert json.loads(wire)["payload"]["approved_tools_unproved"] is True
+
+    # Even recomputed artifact/manifest digests cannot launder a paid setting.
+    binding = next(
+        p
+        for p in published.manifest.proofs
+        if p.kind is CapabilityProofKind.SUBSCRIPTION_ROUTE_BINDING
+    )
+    payload = json.loads(await artifacts.open_bytes(binding.artifact_digest, max_bytes=16 * 1024))
+    payload["payload"]["effective_use_g1_credits"] = True
+    changed = await artifacts.put_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(),
+        media_type="application/vnd.forge.client-capability-proof+json",
+    )
+    manifest = published.manifest.model_copy(
+        update={
+            "evidence_id": uuid4(),
+            "proofs": tuple(
+                p.model_copy(update={"artifact_digest": changed.digest}) if p == binding else p
+                for p in published.manifest.proofs
+            ),
+        }
+    )
+    with pytest.raises(CapabilityEvidenceUnavailable):
+        await source.publish(manifest)
+    assert await restarted.resolve(identity()) == published
 
 
 @pytest.mark.integration

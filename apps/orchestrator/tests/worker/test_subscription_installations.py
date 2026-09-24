@@ -12,6 +12,7 @@ from forge.agents.claude_verification import ClaudeEvidenceVerifier
 from forge.agents.codex_runtime import CodexRuntimeAdapter
 from forge.agents.codex_verification import CodexEvidenceVerifier
 from forge.agents.gemini_runtime import GeminiRuntimeAdapter
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription_quota import QuotaPolicy, QuotaPoolKey, QuotaRoutePool
 from forge.domain.subscription_readiness import ReadinessReason, ReadinessWarning
 from forge.settings import Settings
@@ -84,7 +85,11 @@ def test_closed_manifest_loads_pinned_adapters_and_opaque_quota_mappings(
         ),
         encoding="utf-8",
     )
-    settings = Settings(subscription_installations_path=manifest, _env_file=None)
+    settings = Settings(
+        subscription_installations_path=manifest,
+        subscription_client_trust=LocalCliTrust.VERIFIED,
+        _env_file=None,
+    )
     verifier = SimpleNamespace(verify=lambda *_args: None)
 
     adapters = load_subscription_installations(
@@ -200,6 +205,7 @@ def test_missing_or_unverified_installation_is_healthy_and_unavailable(
     path.write_text(json.dumps(payload), encoding="utf-8")
     settings = Settings(subscription_installations_path=path, _env_file=None)
     verifier = None if failure == "verifier" else SimpleNamespace(verify=lambda *_args: None)
+    settings.subscription_client_trust = LocalCliTrust.VERIFIED
 
     assert (
         load_subscription_installations(settings, SubscriptionVerifierDependencies(codex=verifier))

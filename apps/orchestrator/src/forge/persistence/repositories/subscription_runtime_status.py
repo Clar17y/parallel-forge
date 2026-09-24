@@ -199,7 +199,10 @@ def _display_routes(routes: object, *, stale: bool) -> list[dict[str, object]]:
             value.setdefault("warnings", [])
         if stale:
             value["effective_reason"] = ReadinessReason.STALE_WORKER.value
-        elif value.get("quota") == "blocked" and value.get("reason") == ReadinessReason.READY.value:
+        elif value.get("quota") == "blocked" and value.get("reason") in {
+            ReadinessReason.READY.value,
+            ReadinessReason.OPERATOR_TRUSTED.value,
+        }:
             value["effective_reason"] = ReadinessReason.QUOTA_EXHAUSTED.value
         else:
             value["effective_reason"] = value.get("reason", ReadinessReason.UNKNOWN.value)

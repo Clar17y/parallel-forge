@@ -8,6 +8,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.application.ports.provider_credentials import validate_provider_secret_reference
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription import TaskBudget
 from forge.domain.subscription_installations import (
     load_subscription_installation_manifest,
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
     pricing_catalog_path: Path | None = None
     prompt_root: Path | None = None
     subscription_installations_path: Path | None = None
+    subscription_client_trust: LocalCliTrust = LocalCliTrust.OPERATOR
     subscription_quota_policy: QuotaPolicy = Field(default_factory=QuotaPolicy)
     subscription_primary_budget: TaskBudget = Field(
         default_factory=lambda: TaskBudget(max_provider_attempts=64)

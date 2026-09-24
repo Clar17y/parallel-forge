@@ -21,6 +21,7 @@ class SubscriptionRuntimeRouteView(ProjectionModel):
     admitted: bool
     reason: Literal[
         "ready",
+        "operator_trusted",
         "missing_executable",
         "executable_digest_mismatch",
         "version_mismatch",
@@ -37,6 +38,7 @@ class SubscriptionRuntimeRouteView(ProjectionModel):
     ]
     effective_reason: Literal[
         "ready",
+        "operator_trusted",
         "missing_executable",
         "executable_digest_mismatch",
         "version_mismatch",
@@ -58,7 +60,9 @@ class SubscriptionRuntimeRouteView(ProjectionModel):
     quota_revision: int | None = Field(default=None, ge=0)
     quota_reset_at: datetime | None = None
     quota_next_probe_at: datetime | None = None
-    warnings: list[Literal["approved_tools_unproved"]] = Field(default_factory=list, max_length=8)
+    warnings: list[
+        Literal["approved_tools_unproved", "operator_trusted", "client_build_changed"]
+    ] = Field(default_factory=list, max_length=8)
 
 
 class EvidenceReferenceView(ProjectionModel):

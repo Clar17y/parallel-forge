@@ -50,6 +50,16 @@ runtime adapters must preserve the runtime boundaries below.
   durable work, and the CLI is an operator entry point.
 - Keep Google ADK and provider details behind Forge-owned interfaces. Agent
   roles receive only named, controlled tools.
+- Local CLI providers are for personal operator use. The default admission
+  policy trusts configured clients; capability evidence is optional. Missing
+  proof and ordinary client updates must not disable an otherwise usable
+  adapter. Preserve honest `operator_trusted` reporting and Antigravity's
+  `approved_tools_unproved` warning. The CLI may expose native tools beyond
+  Forge's interface; this accepted limitation is not an admission gate.
+- An approved run permits its primary to delegate to configured runtime agents
+  within the run's roles, ownership and budgets. No separate capability-proof
+  workflow or human approval is required for each child. Keep actual callback
+  checks, spending settings, quota backoff, cancellation and process settlement.
 - Repository writes belong only inside an explicitly managed worktree.
 - Human approval gates are explicit and evidence-bound. Never merge a pull
   request without immediate, explicit human authorization.

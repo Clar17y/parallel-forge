@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, replace
@@ -14,6 +15,7 @@ from forge.application.ports.subscription_gateway import (
     SubscriptionInterrupted,
 )
 from forge.domain.capability_evidence import CapabilityEvidenceScope
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription import (
     AuthMode,
     BillingMode,
@@ -23,6 +25,9 @@ from forge.domain.subscription import (
 )
 from forge.domain.tool import ToolName
 from test_subscription_protocol import _request
+
+_TEST_EXECUTABLE = Path(sys.executable).resolve(strict=True)
+_TEST_EXECUTABLE_DIGEST = hashlib.sha256(_TEST_EXECUTABLE.read_bytes()).hexdigest()
 
 
 @dataclass
@@ -111,6 +116,25 @@ async def test_supervised_gemini_uses_real_mcp_bridge_and_retains_launch_proof(t
     assert result.launch_proof is not None and result.launch_proof.permits_decision
     assert result.telemetry.input_tokens == 10 and result.telemetry.output_tokens == 4
     assert result.telemetry.tool_call_count == 1
+
+
+@pytest.mark.parametrize("trust", [LocalCliTrust.OPERATOR, LocalCliTrust.VERIFIED])
+async def test_launch_rejects_executable_that_no_longer_matches_installation(tmp_path, trust):
+    source = _gateway(tmp_path, "tool")
+    installation = replace(source._installation, executable_digest="0" * 64)
+    verifier = _Verifier(replace(source._verifier.report, executable_digest="0" * 64))
+    broker, lifecycle = _Broker(), _Lifecycle()
+    gateway = GeminiGateway(installation, verifier, broker=broker, lifecycle=lifecycle, trust=trust)
+
+    result = await gateway.execute(
+        _google_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    )
+
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.decision is None and result.launch_proof is None
+    assert broker.revoked and broker.calls == []
+    assert lifecycle.results == []
+    assert not list(tmp_path.glob(".forge-gemini-*"))
 
 
 async def test_launch_materializes_configuration_before_start_and_cleans_after_stop(tmp_path):
@@ -266,16 +290,16 @@ def _gateway(
         isolated_config=True,
         acp_mcp_supported=True,
         account="test-account",
-        executable_digest="c" * 64,
+        executable_digest=_TEST_EXECUTABLE_DIGEST,
     )
     return GeminiGateway(
         GeminiInstallation(
-            executable=sys.executable,
+            executable=str(_TEST_EXECUTABLE),
             cwd=str(tmp_path),
             home=str(home),
             model="gemini-test",
             account="test-account",
-            executable_digest="c" * 64,
+            executable_digest=_TEST_EXECUTABLE_DIGEST,
             effort="medium",
             script=(str(Path(__file__).with_name("gemini_acp_peer.py")), scenario, "--acp"),
             duration_seconds=duration,

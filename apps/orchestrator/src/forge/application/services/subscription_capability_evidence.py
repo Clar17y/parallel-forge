@@ -8,7 +8,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid5
 
-from forge.agents.capability_publication import CapabilityObservationSet
+from forge.agents.capability_publication import (
+    AntigravityCallbackObservation,
+    AntigravityPolicyObservation,
+    CapabilityObservationSet,
+    ToolIsolationObservation,
+)
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.capability_evidence_publication import CapabilityEvidencePublisher
 from forge.artifacts._errors import ArtifactIntegrityError, ArtifactStoreError
@@ -198,20 +203,7 @@ def _observation_payloads(
         raise CapabilityPublicationError("subscription binding differs")
     if binding.subscription_route_observed is not True:
         raise CapabilityPublicationError("subscription binding differs")
-    expected_tools = tuple(tool.value for tool in identity.tool_surface)
-    expected_tool_digest = hashlib.sha256(
-        json.dumps(list(expected_tools), separators=(",", ":")).encode()
-    ).hexdigest()
-    if (
-        tools.tool_surface != expected_tools
-        or tools.isolated is not True
-        or tools.advertised_tool_surface_digest != expected_tool_digest
-        or tools.forbidden_tool_calls != 0
-        or type(tools.forbidden_tool_calls) is not int
-        or tools.side_effect_canaries_clear is not True
-    ):
-        raise CapabilityPublicationError("tool isolation differs")
-    return {
+    payloads: dict[CapabilityProofKind, dict[str, object]] = {
         CapabilityProofKind.CLIENT_IDENTITY: {
             "client": client.client,
             "client_version": client.client_version,
@@ -240,14 +232,75 @@ def _observation_payloads(
             "fallback_disabled": binding.fallback_disabled,
             "subscription_route_observed": True,
         },
-        CapabilityProofKind.TOOL_ISOLATION: {
+    }
+    expected_tools = tuple(tool.value for tool in identity.tool_surface)
+    policy = observations.antigravity_policy
+    if identity.client == "antigravity_cli":
+        if (
+            not isinstance(tools, AntigravityCallbackObservation)
+            or not isinstance(policy, AntigravityPolicyObservation)
+            or tools.tool_surface != expected_tools
+        ):
+            raise CapabilityPublicationError("Antigravity observations are incomplete")
+        payloads[CapabilityProofKind.ACCOUNT_AUTHENTICATION]["authentication_source"] = (
+            policy.authentication_source
+        )
+        payloads[CapabilityProofKind.ROUTE_IDENTITY].update(
+            {
+                "main_and_auxiliary_routes_bound": policy.main_and_auxiliary_routes_bound,
+                "fallback_chain_bound": policy.fallback_chain_bound,
+            }
+        )
+        payloads[CapabilityProofKind.SUBSCRIPTION_ROUTE_BINDING].update(
+            {
+                "effective_use_g1_credits": policy.effective_use_g1_credits,
+                "home_policy_observed": policy.home_policy_observed,
+                "system_policy_observed": policy.system_policy_observed,
+                "remote_policy_observed": policy.remote_policy_observed,
+                "alternate_credentials_excluded": policy.alternate_credentials_excluded,
+                "effective_configuration_digest": policy.effective_configuration_digest,
+            }
+        )
+        try:
+            payloads[CapabilityProofKind.TOOL_ISOLATION] = {
+                "tool_surface": list(tools.tool_surface),
+                "approved_tools_unproved": True,
+                "callback_identity_bound": tools.callback_identity_bound,
+                "remote_mcp_collision_rejected": tools.remote_mcp_collision_rejected,
+                "callback_observation_digest": tools.callback_observation_digest,
+                "structured_output_validated": tools.structured_output_validated,
+                "usage_bounded": tools.usage_bounded,
+                "completion": tools.completion.model_dump(mode="json"),
+                "cancellation": tools.cancellation.model_dump(mode="json"),
+                "deadline": tools.deadline.model_dump(mode="json"),
+            }
+        except AttributeError, TypeError, ValueError:
+            raise CapabilityPublicationError(
+                "Antigravity lifecycle observations are invalid"
+            ) from None
+    else:
+        expected_tool_digest = hashlib.sha256(
+            json.dumps(list(expected_tools), separators=(",", ":")).encode()
+        ).hexdigest()
+        if (
+            policy is not None
+            or not isinstance(tools, ToolIsolationObservation)
+            or tools.tool_surface != expected_tools
+            or tools.isolated is not True
+            or tools.advertised_tool_surface_digest != expected_tool_digest
+            or tools.forbidden_tool_calls != 0
+            or type(tools.forbidden_tool_calls) is not int
+            or tools.side_effect_canaries_clear is not True
+        ):
+            raise CapabilityPublicationError("tool isolation differs")
+        payloads[CapabilityProofKind.TOOL_ISOLATION] = {
             "tool_surface": list(tools.tool_surface),
-            "isolated": tools.isolated,
+            "isolated": True,
             "advertised_tool_surface_digest": tools.advertised_tool_surface_digest,
             "forbidden_tool_calls": 0,
             "side_effect_canaries_clear": True,
-        },
-    }
+        }
+    return payloads
 
 
 def _manifest(

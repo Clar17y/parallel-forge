@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
+
 
 class ProviderObservationRequired(RuntimeError):
     """Raised until an approved production probe is composed."""
@@ -64,14 +66,45 @@ class ToolIsolationObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class AntigravityPolicyObservation:
+    """Effective observations required in addition to declared launch settings."""
+
+    authentication_source: str
+    main_and_auxiliary_routes_bound: bool
+    fallback_chain_bound: bool
+    effective_use_g1_credits: bool
+    home_policy_observed: bool
+    system_policy_observed: bool
+    remote_policy_observed: bool
+    alternate_credentials_excluded: bool
+    effective_configuration_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class AntigravityCallbackObservation:
+    """Proved Forge callbacks; deliberately makes no native-tool isolation claim."""
+
+    tool_surface: tuple[str, ...]
+    callback_identity_bound: bool
+    remote_mcp_collision_rejected: bool
+    callback_observation_digest: str
+    structured_output_validated: bool
+    usage_bounded: bool
+    completion: SubscriptionLaunchTerminalProof
+    cancellation: SubscriptionLaunchTerminalProof
+    deadline: SubscriptionLaunchTerminalProof
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityObservationSet:
     client_identity: ClientIdentityObservation
     account_authentication: AccountAuthenticationObservation
     route_identity: RouteIdentityObservation
     subscription_route_binding: SubscriptionRouteBindingObservation
-    tool_isolation: ToolIsolationObservation
+    tool_isolation: ToolIsolationObservation | AntigravityCallbackObservation
     verifier_id: str = "forge-codex-official"
     verifier_version: str = "1"
+    antigravity_policy: AntigravityPolicyObservation | None = None
 
 
 class UnsupportedCapabilityProbe:
@@ -83,6 +116,8 @@ class UnsupportedCapabilityProbe:
 
 __all__ = [
     "AccountAuthenticationObservation",
+    "AntigravityCallbackObservation",
+    "AntigravityPolicyObservation",
     "CapabilityObservationProducer",
     "CapabilityObservationSet",
     "ClientIdentityObservation",

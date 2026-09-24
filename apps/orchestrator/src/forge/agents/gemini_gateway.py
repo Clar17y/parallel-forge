@@ -1,4 +1,4 @@
-"""Supervised official Gemini ACP gateway, disabled without verified capability."""
+"""Supervised legacy Gemini ACP gateway with an explicit local-client trust policy."""
 
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ from forge.domain.capability_evidence import (
     ResolvedCapabilityEvidence,
     capability_identity,
 )
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription import AuthMode, BillingMode
 
 _VERSION = "0.59.0"
@@ -157,12 +158,16 @@ class GeminiGateway:
     def __init__(
         self,
         installation: GeminiInstallation,
-        verifier: GeminiCapabilityVerifier,
+        verifier: GeminiCapabilityVerifier | None = None,
         *,
         broker: ToolBroker | None = None,
         supervisor: ClientProcessSupervisor | None = None,
         lifecycle: ClientProcessLifecycle | None = None,
+        trust: LocalCliTrust = LocalCliTrust.VERIFIED,
     ) -> None:
+        if not isinstance(trust, LocalCliTrust):
+            raise TypeError("local CLI trust policy is required")
+        self._trust = trust
         self._installation, self._verifier, self._broker = installation, verifier, broker
         self._supervisor = supervisor or ClientProcessSupervisor()
         self._lifecycle = lifecycle
@@ -198,13 +203,17 @@ class GeminiGateway:
                 or route.billing_mode is not BillingMode.ALLOWANCE_ONLY
             ):
                 result = failed(SubscriptionFailure.POLICY_DENIED)
-            elif not (
-                await capability_report(
-                    self._verifier.verify(self._installation, scope), GeminiCapabilityReport
+            elif (
+                self._trust is LocalCliTrust.VERIFIED
+                and (
+                    self._verifier is None
+                    or not (
+                        await capability_report(
+                            self._verifier.verify(self._installation, scope), GeminiCapabilityReport
+                        )
+                    ).admits(self._installation, scope)
                 )
-            ).admits(self._installation, scope) or (
-                request.authorization.permitted_tools and self._broker is None
-            ):
+            ) or (request.authorization.permitted_tools and self._broker is None):
                 result = failed(SubscriptionFailure.UNAVAILABLE)
             else:
                 duration = min(
@@ -231,6 +240,7 @@ class GeminiGateway:
                     environment=environment,
                     allowed_environment=frozenset(environment),
                     duration_seconds=duration,
+                    executable_digest=self._installation.executable_digest,
                 )
                 async with asyncio.timeout(duration):
                     await exchange.start()
