@@ -240,6 +240,7 @@ class GeminiGateway:
                     environment=environment,
                     allowed_environment=frozenset(environment),
                     duration_seconds=duration,
+                    executable_digest=self._installation.executable_digest,
                 )
                 async with asyncio.timeout(duration):
                     await exchange.start()
