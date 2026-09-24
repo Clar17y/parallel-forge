@@ -629,7 +629,12 @@ class CodexGateway:
             result = failed(SubscriptionFailure.UNCERTAIN)
         except CapabilityEvidenceSourceError:
             result = failed(SubscriptionFailure.UNAVAILABLE)
-        except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
+        except ProtocolError as error:
+            # ProtocolError messages are Forge-owned constants, never provider payloads.
+            result = replace(
+                failed(SubscriptionFailure.PROTOCOL), failure_detail=f"Codex protocol: {error}"
+            )
+        except ClientProcessError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)
         except Exception:  # noqa: BLE001 - provider/verifier/broker errors must remain sanitized
             result = failed(SubscriptionFailure.PROTOCOL)
@@ -828,14 +833,15 @@ class CodexGateway:
                     {
                         "type": "text",
                         "text": "Complete the bounded task and return its structured result.",
-                    }
+                    },
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {"forge_task": {"kind": "untrusted", "value": context}},
+                            allow_nan=False,
+                        ),
+                    },
                 ],
-                "additionalContext": {
-                    "forge_task": {
-                        "kind": "untrusted",
-                        "value": json.dumps(context, allow_nan=False),
-                    }
-                },
                 "model": self._installation.model,
                 "effort": self._installation.effort,
                 "environments": [],
@@ -1156,6 +1162,8 @@ def codex_dynamic_tools(tools: Sequence[ToolName]) -> list[dict[str, object]]:
 
     if any(not isinstance(tool, ToolName) for tool in tools):
         raise TypeError("Codex dynamic tools require controlled Forge tools")
+    if not tools:
+        return []
     return [
         {
             "type": "namespace",

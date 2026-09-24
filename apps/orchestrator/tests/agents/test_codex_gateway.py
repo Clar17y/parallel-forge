@@ -131,6 +131,8 @@ m=recv("thread/start")
 p=m["params"]
 assert p["model"]=="gpt-5.6-luna" and p["allowProviderModelFallback"] is False
 assert p["environments"]==[] and p["ephemeral"] is True
+if scenario=="no_tools":
+ assert p["dynamicTools"]==[]
 if scenario=="schema":
  namespace=p["dynamicTools"][0]
  assert namespace["type"]=="namespace" and namespace["name"]=="forge"
@@ -143,6 +145,14 @@ send({{"jsonrpc":"2.0","id":m["id"],"result":{{"thread":{{"id":"thread-actual"}}
 m=recv("turn/start"); p=m["params"]
 assert p["threadId"]=="thread-actual" and p["model"]=="gpt-5.6-luna"
 assert p["effort"]=="medium" and p["environments"]==[]
+if scenario=="complete_context":
+ assert "additionalContext" not in p
+ context=json.loads(p["input"][1]["text"])["forge_task"]
+ assert context["kind"]=="untrusted"
+ value=context["value"]
+ assert value["context"]["task"]["text"]=="bounded context "*500+"REPAIR_AND_SELF_REVIEW"
+ assert value["task"]["route"]["effective"]["model"]=="gpt-5.6-luna"
+ assert "broker_token" not in p["input"][1]["text"]
 send({{"jsonrpc":"2.0","id":m["id"],"result":{{"turn":{{"id":"turn-actual"}}}}}})
 if scenario=="late_started":
  send({{"method":"turn/started","params":{{"threadId":"thread-actual","turn":{{"id":"turn-actual","items":[],"status":"inProgress"}}}}}})
@@ -222,6 +232,39 @@ def _gateway(
         _Verifier(report or _report(quota_limit_id=quota_limit_id), bind_evidence),
         broker=broker,
     )
+
+
+@pytest.mark.asyncio
+async def test_decision_only_turn_does_not_declare_an_empty_tool_namespace() -> None:
+    original = _request()
+    request = replace(
+        original,
+        authorization=replace(original.authorization, permitted_tools=frozenset()),
+    )
+    broker = _Broker()
+    result = await _gateway("no_tools", broker=broker).execute(request)
+    assert result.failure is None and result.decision is not None
+    assert broker.calls == [] and broker.revoked
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
+@pytest.mark.asyncio
+async def test_complete_task_context_is_sent_as_explicit_untrusted_turn_input() -> None:
+    request = replace(
+        _request(),
+        untrusted_context={"task": {"text": "bounded context " * 500 + "REPAIR_AND_SELF_REVIEW"}},
+    )
+    result = await _gateway("complete_context").execute(request)
+    assert result.failure is None and result.decision is not None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
+@pytest.mark.asyncio
+async def test_protocol_failure_retains_the_safe_validation_reason() -> None:
+    result = await _gateway("foreign").execute(_request())
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.failure_detail == "Codex protocol: foreign provider thread"
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
 
 
 @pytest.mark.asyncio

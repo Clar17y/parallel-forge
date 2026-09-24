@@ -7,6 +7,7 @@ import pytest
 from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
 from forge.domain.subscription import (
     TaskBudget,
+    UnknownTelemetryPolicy,
     decode_subscription_record,
     encode_subscription_record,
 )
@@ -166,6 +167,48 @@ async def test_production_reservation_fits_frozen_task_limits_without_expanding_
         assert reserved.max_input_tokens == 12 and reserved.max_output_tokens == 5
         assert reserved.max_provider_attempts == 1 and reserved.max_repairs == 0
         assert (await work.subscription.get_task(admitted.task.run_id, tasks[0])).budget == budget
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("scope", ["task", "run"])
+async def test_reservation_preserves_stricter_uncertainty_authority(
+    session_factory, persisted_run, scope
+):
+    factory = _factory(session_factory, [datetime.now(UTC)])
+    _, tasks = await _seed(factory, persisted_run, ("ready",))
+    strict = UnknownTelemetryPolicy(
+        allow_unknown_tokens=False,
+        allow_unknown_cost=False,
+        allow_unknown_quota=False,
+        max_uncertain_attempts=2,
+    )
+    permissive = UnknownTelemetryPolicy(max_uncertain_attempts=8)
+    async with factory() as work:
+        child = await work.session.get(SubscriptionTask, tasks[0])
+        parent = await work.session.get(SubscriptionTask, child.parent_task_id)
+        for row, name in ((child, "task"), (parent, "run")):
+            contract = decode_subscription_record(row.payload)
+            row.payload = encode_subscription_record(
+                replace(
+                    contract,
+                    budget=replace(
+                        contract.budget,
+                        unknown_telemetry_policy=strict if name == scope else permissive,
+                    ),
+                )
+            )
+        await work.commit()
+    admitted = await SubscriptionDecisionExecutor(factory).admit_next(
+        "bounded-worker", replace(_reservation(), unknown_telemetry_policy=permissive)
+    )
+    assert admitted is not None
+    async with factory() as work:
+        reserved = await work.subscription_budget.reserved_budget(
+            admitted.task.run_id, admitted.task.task_id, admitted.attempt.attempt_id
+        )
+        assert reserved.unknown_telemetry_policy == strict
+        stored = await work.subscription.get_task(admitted.task.run_id, tasks[0])
+        assert stored == admitted.task
 
 
 @pytest.mark.integration

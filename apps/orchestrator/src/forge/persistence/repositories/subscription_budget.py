@@ -144,6 +144,7 @@ class PostgresSubscriptionBudgetRepository:
         if pending_repairs not in (0, 1):
             raise SubscriptionBudgetConflict("ambiguous pending repair slot")
         proposed = budget_ceiling(ceiling).values()
+        unknown = ceiling.unknown_telemetry_policy
         for scope, _, budget in await self._budget_scopes(run_id, task_id, contract, primary):
             current = await self._usage(run_id, scope)
             if (
@@ -156,6 +157,16 @@ class PostgresSubscriptionBudgetRepository:
                 )
             ):
                 return None
+            policy = budget.unknown_telemetry_policy
+            unknown = replace(
+                unknown,
+                allow_unknown_tokens=unknown.allow_unknown_tokens and policy.allow_unknown_tokens,
+                allow_unknown_cost=unknown.allow_unknown_cost and policy.allow_unknown_cost,
+                allow_unknown_quota=unknown.allow_unknown_quota and policy.allow_unknown_quota,
+                max_uncertain_attempts=min(
+                    unknown.max_uncertain_attempts, policy.max_uncertain_attempts
+                ),
+            )
             used = (current.consumed + current.outstanding).values()
             # reserve_attempt atomically transfers this task's existing repair
             # slot. Do not count it twice or borrow another task's reservation.
@@ -183,6 +194,7 @@ class PostgresSubscriptionBudgetRepository:
             max_input_tokens=proposed["input_tokens"],
             max_output_tokens=proposed["output_tokens"],
             max_cost_minor=proposed["cost_minor"],
+            unknown_telemetry_policy=unknown,
         )
 
     async def _budget_scopes(
