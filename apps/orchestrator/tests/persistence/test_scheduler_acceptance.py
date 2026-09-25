@@ -38,6 +38,7 @@ async def _remove_disposable_subscription_rows(session_factory):
         await session.execute(
             text(
                 "TRUNCATE TABLE subscription_quota_observations, subscription_quota_admissions, subscription_quota_pools, "
+                "subscription_scheduled_tasks, subscription_scheduler_runs, subscription_scheduler_capacity_policies, "
                 "subscription_scheduled_effects, subscription_decision_records, subscription_budget_reservations, "
                 "subscription_budget_pools, subscription_operation_bindings, subscription_attempts, "
                 "subscription_task_dependencies, subscription_tasks, subscription_envelopes, "

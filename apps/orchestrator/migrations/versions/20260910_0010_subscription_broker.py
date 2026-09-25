@@ -51,6 +51,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    retained = (
+        op.get_bind()
+        .execute(sa.text("SELECT EXISTS (SELECT 1 FROM subscription_client_launches)"))
+        .scalar_one()
+    )
+    if retained:
+        raise RuntimeError("cannot discard retained subscription client launches")
     op.drop_constraint("tool_call_authority_lineage_xor", "tool_calls", type_="check")
     op.drop_constraint("fk_tool_call_subscription_attempt", "tool_calls", type_="foreignkey")
     op.drop_constraint("fk_tool_call_subscription_task", "tool_calls", type_="foreignkey")

@@ -106,6 +106,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    retained = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT EXISTS (SELECT 1 FROM subscription_scheduled_tasks) "
+                "OR EXISTS (SELECT 1 FROM subscription_scheduler_runs) "
+                "OR EXISTS (SELECT 1 FROM subscription_scheduled_effects) "
+                "OR EXISTS (SELECT 1 FROM subscription_scheduler_capacity_policies)"
+            )
+        )
+        .scalar_one()
+    )
+    if retained:
+        raise RuntimeError("cannot discard retained subscription scheduler state")
     op.drop_table("subscription_scheduled_tasks")
     op.drop_table("subscription_scheduler_runs")
     op.drop_table("subscription_scheduled_effects")

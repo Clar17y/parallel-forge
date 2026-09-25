@@ -51,7 +51,7 @@ class WebConfig:
         """Build isolated web child environment excluding root/provider secrets."""
         env = dict(base_env if base_env is not None else os.environ)
         for key in tuple(env):
-            if key == "DATABASE_URL" or (
+            if key in {"DATABASE_URL", "TYPESAFE_API_KEY"} or (
                 key.startswith("FORGE_") and not key.startswith("FORGE_E2E_")
             ):
                 del env[key]

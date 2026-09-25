@@ -906,6 +906,28 @@ def test_web_process_excludes_database_and_provider_secrets(tmp_path: Path, monk
         assert key not in web_proc.env, f"Secret key '{key}' leaked into web child process environment!"
 
 
+def test_web_process_excludes_ranking_key_but_worker_retains_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-ranking-credential")
+    monkeypatch.setenv("FORGE_E2E_TEST", "1")
+    monkeypatch.setenv("NEXT_TELEMETRY_DISABLED", "1")
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+
+    supervisor.start_processes(runner_image="sha256:" + "a" * 64)
+
+    web = next(proc for proc in runner.spawned if proc.name == "web")
+    worker = next(proc for proc in runner.spawned if proc.name == "worker")
+    assert web.env is not None and worker.env is not None
+    assert "TYPESAFE_API_KEY" not in set(web.env)
+    assert worker.env["TYPESAFE_API_KEY"] == "test-ranking-credential"
+    assert os.environ["TYPESAFE_API_KEY"] == "test-ranking-credential"
+    assert web.env["FORGE_E2E_TEST"] == "1"
+    assert web.env["NEXT_TELEMETRY_DISABLED"] == "1"
+    assert web.env["PORT"] == "3000"
+
+
 @pytest.mark.parametrize(
     "invalid_origin,var_name",
     [
