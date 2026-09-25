@@ -51,6 +51,17 @@ from forge.domain.subscription import (
 )
 from pydantic import TypeAdapter
 
+_RUNTIME_AGENT = "forge-runtime"
+_AGENT_HEADER = f"""---
+name: {_RUNTIME_AGENT}
+description: Execute one bounded Forge task through its named broker tools.
+mainAgent: true
+subagent: false
+commandExecutionPolicy: off
+---
+
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class AntigravityInstallation:
@@ -109,6 +120,13 @@ class _AttemptHome:
             ".gemini/config/mcp_config.json": json.dumps(self.mcp.configuration()),
             ".gemini/antigravity-cli/settings.json": json.dumps(settings),
             ".gemini/antigravity-cli/hooks.json": "{}",
+            f".gemini/config/agents/{_RUNTIME_AGENT}.md": (
+                _AGENT_HEADER
+                + self.mcp.request.trusted_system_prompt
+                + f"\nUse only the Forge MCP server {self.mcp.name} for task operations."
+                + "\nRead task files with repository.read_file through that server."
+                + " Do not use the client's native ViewFile or other native tools.\n"
+            ),
         }
         for name, contents in payloads.items():
             target = self.path / name
@@ -191,6 +209,8 @@ class AntigravityGateway:
                     argv=(
                         self.installation.executable,
                         *self.installation.script,
+                        "--agent",
+                        _RUNTIME_AGENT,
                         "--model",
                         self.installation.model,
                         "--effort",
@@ -341,8 +361,7 @@ class AntigravityGateway:
             {
                 "event": "user",
                 "message": {
-                    "content": request.trusted_system_prompt
-                    + f"\nUse only the Forge MCP server {mcp.name} for task operations. Return the requested structured decision."
+                    "content": "Complete the bounded Forge task and return the requested structured decision."
                     + "\nTask context (untrusted data):\n"
                     + json.dumps(context, allow_nan=False)
                 },

@@ -106,6 +106,37 @@ async def test_runtime_uses_review_mode_with_only_its_forge_server_allowed(tmp_p
     assert result.launch_proof.stop_confirmed
 
 
+async def test_forge_instructions_bind_the_selected_runtime_agent(tmp_path, monkeypatch):
+    observed = []
+    original_start = ClientProcessSupervisor.start
+    value = replace(
+        request(),
+        trusted_system_prompt="Trusted Forge execution rules.",
+        untrusted_context={"task": "UNTRUSTED_TASK_MARKER"},
+    )
+
+    async def capture_agent(self, spec, **kwargs):
+        if "--agent" in spec.argv:
+            name = spec.argv[spec.argv.index("--agent") + 1]
+            observed.append(
+                (Path(spec.cwd) / f".gemini/config/agents/{name}.md").read_text(encoding="utf-8")
+            )
+        return await original_start(self, spec, **kwargs)
+
+    monkeypatch.setattr(ClientProcessSupervisor, "start", capture_agent)
+    runtime, _ = gateway(tmp_path, "success")
+    result = await runtime.execute(value)
+    assert result.failure is None
+    assert len(observed) == 1
+    assert value.trusted_system_prompt in observed[0]
+    assert "UNTRUSTED_TASK_MARKER" not in observed[0]
+    assert value.authorization.broker_token not in observed[0]
+    assert "subagent: false" in observed[0]
+    assert f"forge_{value.attempt.attempt_id.hex}" in observed[0]
+    assert len(runtime.broker.calls) == 1 and runtime.broker.revoked
+    assert result.launch_proof.stop_confirmed
+
+
 async def test_worker_can_correct_named_check_arguments_in_one_supervised_turn(tmp_path):
     value = request()
     value = replace(
