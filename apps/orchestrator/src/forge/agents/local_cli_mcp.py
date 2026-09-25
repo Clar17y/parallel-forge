@@ -19,6 +19,7 @@ from forge.agents.subscription_protocol import (
     tool_input_schema,
 )
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
+from forge.application.ports.tool_schemas import arguments_match_schema
 from forge.domain.tool import ToolName
 
 
@@ -155,11 +156,7 @@ class LocalCliMcp:
             raise ProtocolError("tool exceeds task permission")
         args = params.get("arguments")
         schema = tool_input_schema(tool)
-        if (
-            not isinstance(args, Mapping)
-            or not set(schema["required"]) <= set(args) <= set(schema["properties"])
-            or any(type(value) is not str for value in args.values())
-        ):
+        if not isinstance(args, Mapping) or not arguments_match_schema(tool, args):
             if self.calls >= self.request.budget.max_tool_calls:
                 raise ProtocolError("tool budget exhausted")
             self.calls += 1

@@ -219,3 +219,29 @@ async def test_argument_errors_keep_permission_checks_and_consume_the_tool_budge
                 }
             )
     assert broker.calls == [] and mcp.calls == 1 and mcp.checks == 0
+
+
+async def test_invalid_diff_scope_can_be_corrected_before_broker_dispatch():
+    value = request()
+    value = replace(
+        value,
+        authorization=replace(value.authorization, permitted_tools=frozenset({ToolName.GIT_DIFF})),
+    )
+    broker = _Broker()
+    mcp = LocalCliMcp(value, broker)
+    await initialize(mcp)
+    frame = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "git.diff", "arguments": {"scope": "staged"}},
+    }
+    response = await mcp._handle(frame)
+    assert response["result"]["isError"] is True
+    assert "working_tree" in response["result"]["content"][0]["text"]
+    assert broker.calls == [] and mcp.calls == 1 and mcp.checks == 0
+    response = await mcp._handle(
+        {**frame, "id": 2, "params": {"name": "git.diff", "arguments": {"scope": "snapshot"}}}
+    )
+    assert response["result"]["isError"] is False
+    assert len(broker.calls) == 1 and mcp.calls == 2 and mcp.checks == 0
