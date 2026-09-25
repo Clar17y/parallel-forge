@@ -207,6 +207,8 @@ async def test_private_home_is_not_created_when_temp_directory_is_inside_a_repos
         ("bad_usage", SubscriptionFailure.PROTOCOL),
         ("429", SubscriptionFailure.THROTTLED),
         ("401", SubscriptionFailure.AUTHENTICATION),
+        ("verification", SubscriptionFailure.AUTHENTICATION),
+        ("eligibility", SubscriptionFailure.AUTHENTICATION),
         ("provider_cancel", SubscriptionFailure.INTERRUPTED),
         ("bad_tool", SubscriptionFailure.PROTOCOL),
     ],
@@ -226,6 +228,8 @@ async def test_antigravity_rejects_bad_data_and_never_invents_exhaustion(
     [
         ("startup_429", SubscriptionFailure.THROTTLED, 0),
         ("startup_401", SubscriptionFailure.AUTHENTICATION, 0),
+        ("startup_verification", SubscriptionFailure.AUTHENTICATION, 0),
+        ("startup_eligibility", SubscriptionFailure.AUTHENTICATION, 0),
         ("startup_cancel", SubscriptionFailure.INTERRUPTED, 0),
         ("startup_outage", SubscriptionFailure.OUTAGE, 0),
         ("startup_unknown", SubscriptionFailure.OUTAGE, None),

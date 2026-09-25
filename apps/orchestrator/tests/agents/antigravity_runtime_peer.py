@@ -50,6 +50,10 @@ if scenario.startswith("startup_"):
         startup["error"] = "HTTP 429"
     if scenario == "startup_401":
         startup["error"] = "authentication required (HTTP 401)"
+    if scenario == "startup_verification":
+        startup["error"] = "Verification Required"
+    if scenario == "startup_eligibility":
+        startup["error"] = "Eligibility check failed: Verify your account to continue."
     if scenario == "startup_cancel":
         startup["status"] = "CANCELED"
     if scenario == "startup_success":
@@ -166,6 +170,12 @@ if scenario == "429":
     result.update(status="ERROR", error="HTTP 429")
 if scenario == "401":
     result.update(status="ERROR", error="authentication required (HTTP 401)")
+if scenario == "verification":
+    result.update(status="ERROR", error="Verification Required")
+if scenario == "eligibility":
+    result.update(
+        status="ERROR", error="Eligibility check failed: Verify your account to continue."
+    )
 if scenario == "provider_cancel":
     result.update(status="CANCELED")
 if scenario.startswith("permission_denied"):

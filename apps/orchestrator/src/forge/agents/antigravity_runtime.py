@@ -427,7 +427,9 @@ def _result_failure(
     if isinstance(error, str) and re.search(r"\b429\b", error):
         return SubscriptionFailure.THROTTLED
     if isinstance(error, str) and re.search(
-        r"\b(401|403)\b|authentication required", error, re.IGNORECASE
+        r"\b(401|403)\b|(?:authentication|verification) required|verify your account",
+        error,
+        re.IGNORECASE,
     ):
         return SubscriptionFailure.AUTHENTICATION
     return SubscriptionFailure.OUTAGE
