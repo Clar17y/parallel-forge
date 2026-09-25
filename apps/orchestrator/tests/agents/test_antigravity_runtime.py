@@ -136,7 +136,8 @@ async def test_forge_instructions_bind_the_selected_runtime_agent(tmp_path, monk
     assert "candidate_commit must be null without a git.commit receipt" in observed[0]
     schema_text = observed[0].split("\nForge final response schema:\n", 1)[1]
     assert json.loads(schema_text) == output_schema(value)
-    assert "Return the JSON response directly; a handoff is not a tool or a file." in observed[0]
+    assert "Use the client's finish tool to return the final structured decision" in observed[0]
+    assert "a handoff is not a Forge tool or a repository file" in observed[0]
     assert "UNTRUSTED_TASK_MARKER" not in observed[0]
     assert value.authorization.broker_token not in observed[0]
     assert "subagent: false" in observed[0]

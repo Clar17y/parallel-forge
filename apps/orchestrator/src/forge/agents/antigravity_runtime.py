@@ -142,8 +142,10 @@ class _AttemptHome:
                 + _HANDOFF_GUIDANCE
                 + f"\nUse only the Forge MCP server {self.mcp.name} for task operations."
                 + "\nRead task files with repository.read_file through that server."
-                + " Do not use the client's native ViewFile or other native tools.\n"
-                + "Return the JSON response directly; a handoff is not a tool or a file.\n"
+                + " Do not use native filesystem, shell, search, editing or subagent tools.\n"
+                + "Use the client's finish tool to return the final structured decision"
+                + " matching the schema below. This is response transport, not a task operation;"
+                + " a handoff is not a Forge tool or a repository file.\n"
                 + "Forge final response schema:\n"
                 + json.dumps(output_schema(self.mcp.request), allow_nan=False)
             ),
