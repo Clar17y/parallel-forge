@@ -5,19 +5,52 @@
   "outcome": "functional_acceptance_complete_locally",
   "source_commit_initial": "77f4c993ffa00e5158bf7774ef7e97015f4a681f",
   "source_commit_active_browser_and_cli": "3088947f51db69fa87fc95fb49f764d89b48d9bb",
-  "test_input_git_blobs": {
-    "apps/orchestrator/tests/agents/test_local_cli_runtime_trust.py": "ab3ee5b9a3760719b106a4324b1a37af34d04c8c",
-    "apps/orchestrator/tests/api/test_subscription_runtime_status_api.py": "bbfa53743a2b2e6f6332b19cd5764d0c8ab70a6e",
-    "apps/orchestrator/tests/cli/test_subscription_runtime_cli.py": "da781200190751bafd40b9f7d4f2c046f1101e84",
-    "apps/orchestrator/tests/persistence/test_subscription_active_client_controls.py": "45864763fa6cf7633413ba1bed8f21bcf684f29b",
-    "apps/orchestrator/tests/persistence/test_subscription_usage_assessment.py": "896fe27d4d5de3c6b3f382f32294f46546ae594a",
-    "apps/orchestrator/tests/worker/test_local_cli_trust.py": "a026f9221737ff8179ac6f5565883956dc462ef9",
-    "apps/web/src/components/subscription-profiles/runtime-status.test.tsx": "f662a20da1f32aaa35a46746dac6d5e7321fa8d3",
-    "tests/acceptance/test_subscription_active_browser_process.py": "f0f010a31b5402e76d0411f01074061a536d4b65",
-    "tests/acceptance/test_subscription_browser_process.py": "97edccb990d9f6960f5b8e9992960dd4162e7e58",
-    "tests/acceptance/test_subscription_operator_process.py": "e4ed30a2db53cda7db1e54010a3f73da9a9d0c8f",
-    "tests/acceptance/test_subscription_profile_process.py": "7ec587b77964c028b1043e8321e30405d6ae01da"
-  },
+  "test_input_git_blobs": [
+    {
+      "path": "apps/orchestrator/tests/agents/test_local_cli_runtime_trust.py",
+      "git_blob": "ab3ee5b9a3760719b106a4324b1a37af34d04c8c"
+    },
+    {
+      "path": "apps/orchestrator/tests/api/test_subscription_runtime_status_api.py",
+      "git_blob": "bbfa53743a2b2e6f6332b19cd5764d0c8ab70a6e"
+    },
+    {
+      "path": "apps/orchestrator/tests/cli/test_subscription_runtime_cli.py",
+      "git_blob": "da781200190751bafd40b9f7d4f2c046f1101e84"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_subscription_active_client_controls.py",
+      "git_blob": "45864763fa6cf7633413ba1bed8f21bcf684f29b"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_subscription_usage_assessment.py",
+      "git_blob": "896fe27d4d5de3c6b3f382f32294f46546ae594a"
+    },
+    {
+      "path": "apps/orchestrator/tests/worker/test_local_cli_trust.py",
+      "git_blob": "a026f9221737ff8179ac6f5565883956dc462ef9"
+    },
+    {
+      "path": "apps/web/src/components/subscription-profiles/runtime-status.test.tsx",
+      "git_blob": "f662a20da1f32aaa35a46746dac6d5e7321fa8d3"
+    },
+    {
+      "path": "tests/acceptance/test_subscription_active_browser_process.py",
+      "git_blob": "f0f010a31b5402e76d0411f01074061a536d4b65"
+    },
+    {
+      "path": "tests/acceptance/test_subscription_browser_process.py",
+      "git_blob": "97edccb990d9f6960f5b8e9992960dd4162e7e58"
+    },
+    {
+      "path": "tests/acceptance/test_subscription_operator_process.py",
+      "git_blob": "e4ed30a2db53cda7db1e54010a3f73da9a9d0c8f"
+    },
+    {
+      "path": "tests/acceptance/test_subscription_profile_process.py",
+      "git_blob": "7ec587b77964c028b1043e8321e30405d6ae01da"
+    }
+  ],
   "runtime_changes": [],
   "test_changes": [],
   "reused_repair": "PR53 binds the shared active-client fixture to the actual executable digest; the sole failed A8 case then passed without an additional change.",
@@ -146,7 +179,8 @@
     "web_log": ".llm-output/issue26/readiness-web.log",
     "web_duration_seconds": 1.76,
     "manifest_digests_and_terminal_process_records": "passed",
-    "diff_check": "passed"
+    "diff_check": "passed",
+    "secret_scan": "An API-test filename followed by its Git blob SHA1 triggered generic-api-key. Verified the value with git hash-object, represented paths and blob IDs as explicit fields, and reran the unchanged pinned scanner without suppressions."
   },
   "manifests": [
     {
