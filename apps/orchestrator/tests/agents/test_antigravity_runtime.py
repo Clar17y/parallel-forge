@@ -133,6 +133,7 @@ async def test_forge_instructions_bind_the_selected_runtime_agent(tmp_path, monk
     assert "output_digest=metadata.command_result_digest" in observed[0]
     assert "duration_ms=metadata.command_duration_ms" in observed[0]
     assert "receipt_id=operation_id" in observed[0]
+    assert "candidate_commit must be null without a git.commit receipt" in observed[0]
     schema_text = observed[0].split("\nForge final response schema:\n", 1)[1]
     assert json.loads(schema_text) == output_schema(value)
     assert "Return the JSON response directly; a handoff is not a tool or a file." in observed[0]

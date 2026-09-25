@@ -68,6 +68,14 @@ passed=(exit_code == 0), output_digest=metadata.command_result_digest,
 duration_ms=metadata.command_duration_ms, and receipt_id=operation_id.
 Include those operation IDs in evidence_receipt_ids too. Receipt IDs alone do not
 replace check_results. Copy values from actual Forge tool receipts.
+After self-review, obtain git.diff with scope snapshot. Copy its
+metadata.candidate_tree_digest and report only changed paths within your ownership.
+For an implementation handoff, candidate_commit must be null without a git.commit receipt;
+snapshot metadata.head_sha alone does not prove that your edits were committed.
+An independent reviewer instead identifies the selected closed candidate HEAD.
+evidence_receipt_ids contains the named-check operation IDs, the final snapshot
+operation ID, and a git.commit operation ID only if you actually committed.
+Do not include read, write, status or textual-diff operation IDs in that list.
 """
 
 
