@@ -50,11 +50,16 @@ from test_subscription_usage import _known
 LUNA = RouteSpec(
     provider="openai", client="codex", model="gpt-5.6-luna", effort=ReasoningEffort.MEDIUM
 )
+# Keep the original envelope unchanged; new operator inputs have a distinct scenario ID.
+OPERATOR_LUNA = RouteSpec(
+    provider="openai", client="codex", model="gpt-6-luna", effort=ReasoningEffort.MEDIUM
+)
 
 
 class QuotaCounterScript(CounterScript):
-    def __init__(self):
+    def __init__(self, fallback_route=LUNA):
         super().__init__()
+        self.fallback_route = fallback_route
         self.observed_at = datetime.now(UTC)
         self.reset_at = self.observed_at + timedelta(hours=1)
         self.handoff = None
@@ -120,7 +125,10 @@ class QuotaCounterScript(CounterScript):
                 ),
                 telemetry=_known(quota_status=QuotaStatus.EXHAUSTED),
             )
-        assert request.task.route.effective == LUNA and request.task.route.requested == WRITER
+        assert (
+            request.task.route.effective == self.fallback_route
+            and request.task.route.requested == WRITER
+        )
         assert "value + 0" in text, "approved fallback must see the retained partial write"
         tests = await call("read-tests", ToolName.REPOSITORY_READ_FILE, {"path": PATHS[1]})
         fixed = await call(
@@ -168,6 +176,11 @@ class QuotaCounterScript(CounterScript):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    "fallback_route,scenario_suffix",
+    [(LUNA, ""), (OPERATOR_LUNA, "-operator-luna6-1")],
+    ids=["historical-luna", "operator-luna6-v1"],
+)
 @pytest.mark.parametrize("approved", [False, True])
 @pytest.mark.parametrize(
     "runner_mode",
@@ -175,17 +188,17 @@ class QuotaCounterScript(CounterScript):
     ids=["trusted-host", "docker"],
 )
 async def test_counter_quota_fallback_preserves_effects_and_primary(
-    session_factory, tmp_path, approved, runner_mode, request
+    session_factory, tmp_path, approved, runner_mode, request, fallback_route, scenario_suffix
 ):
     runner_image = (
         request.getfixturevalue("counter_runner_image") if runner_mode is RunnerMode.DOCKER else ""
     )
-    script = QuotaCounterScript()
+    script = QuotaCounterScript(fallback_route)
     case = await prepared_counter_case(
         session_factory,
         tmp_path,
         script=script,
-        worker_fallbacks=(LUNA,) if approved else (),
+        worker_fallbacks=(fallback_route,) if approved else (),
         primary_budget=TaskBudget(max_provider_attempts=8, max_tool_calls=200),
         runner_mode=runner_mode,
         runner_image=runner_image,
@@ -215,7 +228,7 @@ async def test_counter_quota_fallback_preserves_effects_and_primary(
             session_factory,
             subscription_adapters=tuple(
                 script.adapter(route)
-                for route in ((PRIMARY, WRITER, LUNA) if approved else (PRIMARY, WRITER))
+                for route in ((PRIMARY, WRITER, fallback_route) if approved else (PRIMARY, WRITER))
             ),
         )
         if not approved:
@@ -249,7 +262,7 @@ async def test_counter_quota_fallback_preserves_effects_and_primary(
                 run_id=case.run.id,
                 tmp_path=tmp_path,
                 grade=None,
-                scenario="A6-deferred",
+                scenario=f"A6-deferred{scenario_suffix}",
                 worker_check_repair_sequences=0,
                 quota_status=blocked,
                 operator_view=view,
@@ -270,12 +283,14 @@ async def test_counter_quota_fallback_preserves_effects_and_primary(
         assert repaired.admission.task.owned_paths == PATHS
         assert repaired.admission.task.budget == exhausted.admission.task.budget
         assert repaired.admission.task.route.requested == WRITER
-        assert repaired.admission.task.route.effective == LUNA
+        assert repaired.admission.task.route.effective == fallback_route
         await handlers.aclose()
         handlers = compose_worker_handlers(
             case.settings,
             session_factory,
-            subscription_adapters=tuple(script.adapter(route) for route in (PRIMARY, WRITER, LUNA)),
+            subscription_adapters=tuple(
+                script.adapter(route) for route in (PRIMARY, WRITER, fallback_route)
+            ),
         )
         assert (await handlers.subscription_decision_recovery.reconcile_all()).applied == 1
         worker = handlers.subscription_invocations("accept-after-restart")
@@ -308,7 +323,7 @@ async def test_counter_quota_fallback_preserves_effects_and_primary(
         child = next(task for task in view["tasks"] if task["task_id"] == script.child_id)
         assert child["fallback_selected"]
         assert child["requested_route"]["model"] == WRITER.model
-        assert child["effective_route"]["model"] == LUNA.model
+        assert child["effective_route"]["model"] == fallback_route.model
         passing = next(
             item
             for item in script.receipts
@@ -335,7 +350,7 @@ async def test_counter_quota_fallback_preserves_effects_and_primary(
             run_id=case.run.id,
             tmp_path=tmp_path,
             grade=grade,
-            scenario="A6-approved-fallback",
+            scenario=f"A6-approved-fallback{scenario_suffix}",
             worker_check_repair_sequences=0,
             quota_status=blocked,
             operator_view=view,

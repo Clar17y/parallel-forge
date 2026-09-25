@@ -138,12 +138,16 @@ async def test_codex_notifications_suppress_restarted_concurrent_pollers_and_adm
         )
 
     settings = Settings(
+        _env_file=None,
         data_root=tmp_path,
         prompt_root=Path(__file__).resolve().parents[4] / "agents",
         provider_secret_reference="",
         subscription_attempt_budget=_reservation(),
         subscription_quota_policy=policy,
+        subscription_installations_path=None,
     )
+    # Ambient personal installations must not remap this fixture's quota pool.
+    assert settings.subscription_quota_policy == policy
 
     def handlers():
         return composition.compose_worker_handlers(
