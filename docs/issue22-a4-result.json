@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/Clar17y/parallel-forge/issues/22",
+  "date": "2026-09-25",
+  "outcome": "functional_acceptance_complete_locally",
+  "source_commit": "2d02dc03942747bd6392c2a9d3e7edfb6034096e",
+  "delivery": "Local pre-delivery record for the development change; fixture publication and merge remain unapproved",
+  "runtime_changes": [],
+  "test_changes": [],
+  "evidence_class": "scripted specialists with real PostgreSQL, managed Git and trusted-host named checks",
+  "environment": {
+    "platform": "Windows",
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "postgresql": "17.11"
+  },
+  "validation": {
+    "command": [
+      ".venv/Scripts/python.exe",
+      "-m",
+      "pytest",
+      "apps/orchestrator/tests/persistence/test_subscription_review_acceptance.py",
+      "apps/orchestrator/tests/persistence/test_subscription_review_handoff.py",
+      "apps/orchestrator/tests/persistence/test_subscription_review_finalization.py",
+      "-q",
+      "--junitxml=.llm-output/issue22/a4-junit.xml"
+    ],
+    "acceptance_output_root": ".llm-output/issue22/acceptance",
+    "passed": 24,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 5,
+    "duration_seconds": 157.17,
+    "exit_code": 0,
+    "log": ".llm-output/issue22/a4.log"
+  },
+  "run_id": "e4534e7e-e971-4065-86ad-c7ec0b37985c",
+  "candidate_commit": "e575189bfb61c00f58dd5bb1f6fcbd06a586b786",
+  "candidate_tree_digest": "c67c6b9a37b5bb4d7c3fd880204b4490b95ca9289be5183a1cbc4801735ea4ab",
+  "changed_paths": [
+    "src/range.py",
+    "tests/test_range.py"
+  ],
+  "state": "AWAITING_PR_APPROVAL",
+  "pending_gate": "pr",
+  "pending_evidence_digest": "0242021ed773bc3ee141c75f6dc41b3427c2f0bba1f13b7fb21f692df9e69eb3",
+  "frozen_scripted_routes": {
+    "primary": {
+      "provider": "openai",
+      "client": "codex",
+      "model": "gpt-6-astra",
+      "effort": "low"
+    },
+    "planning": {
+      "provider": "openai",
+      "client": "codex",
+      "model": "gpt-5.6-sol",
+      "effort": "low"
+    },
+    "routine_implementation": {
+      "provider": "google",
+      "client": "gemini_cli",
+      "model": "gemini-3.8-flash-medium",
+      "effort": "medium"
+    },
+    "independent_review": {
+      "provider": "anthropic",
+      "client": "claude",
+      "model": "claude-opus-5",
+      "effort": "medium"
+    },
+    "integration": {
+      "provider": "google",
+      "client": "gemini_cli",
+      "model": "gemini-3.8-flash-medium",
+      "effort": "medium"
+    }
+  },
+  "finding": {
+    "id": "range-equal-bound",
+    "initial_candidate_tree_digest": "bac7627e3bdfaa91761a759e93604b905f88af354ba5df6b3e0a7ec84a3143d6",
+    "initial_review_task": "93370f8e-bfd4-5a51-ae5f-ac3c207ed6a3",
+    "final_review_task": "cc983c3c-a618-57b2-9fbe-ec1a9dd0c140",
+    "initial_status": "request_changes",
+    "final_status": "resolved and approved",
+    "repair_tasks": 1,
+    "automatic_repair_debits": 0,
+    "failed_check_earns_credit": false,
+    "restart_before_first_review_application": true
+  },
+  "evidence": {
+    "manifest": ".llm-output/issue22/acceptance/e4534e7e-e971-4065-86ad-c7ec0b37985c/manifest.json",
+    "manifest_digest": "6babacd7ddd1b296765bfdaa07323bb74475e1001eb5cadaa97276f8e9ad28e5",
+    "artifact_files_verified": 31,
+    "artifact_bytes_and_parent_closure": "passed",
+    "candidate_contents_and_review_binding": "passed",
+    "scripted_attempts": 12,
+    "controlled_receipts": 22,
+    "outstanding_attempt_reservations": 0
+  },
+  "reused_evidence": [
+    "docs/issue19-a1-result.json: delivered live API/worker/runtime composition",
+    "Existing specialist tool/negative coverage; current handoff and finalization cases rerun above"
+  ],
+  "self_review": "Primary checked revised criteria, role/tool separation, actual failed-check evidence, retained finding identity, repaired candidate and human publication gate. No concrete uncovered specialist integration behavior required a live smoke.",
+  "live_provider_calls": 0,
+  "limitations": [
+    "Planner, writer and reviewer responses are explicitly scripted; this is not a new live specialist opinion or provider certification.",
+    "The omission is an intentional fixture fault confirmed by actual file reads and failing named check; no live reviewer finding is fabricated.",
+    "Historical profile/envelope routes remain unchanged. Scripted token/cost counters do not measure live subscription usage.",
+    "Full manifest and artifact closure are retained locally and will be archived before worktree teardown.",
+    "No fixture publication, full CI or A5 work is part of this A4 result."
+  ]
+}
