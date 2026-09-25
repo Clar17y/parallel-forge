@@ -574,6 +574,19 @@ def test_output_schema_has_closed_required_objects_for_strict_provider(purpose) 
     check(schema)
 
 
+@pytest.mark.parametrize(
+    "purpose", [SpecialistPurpose.PRIMARY, SpecialistPurpose.ROUTINE_IMPLEMENTATION]
+)
+def test_every_decision_schema_selects_kind_before_branch_specific_fields(purpose) -> None:
+    from forge.agents.subscription_protocol import output_schema
+
+    # Strict providers emit keys in schema order. Choosing kind first must not
+    # commit the primary to the sole branch that previously started with kind.
+    choices = output_schema(_request(purpose=purpose))["properties"]["decision"]["anyOf"]
+    assert all(next(iter(choice["properties"])) == "kind" for choice in choices)
+    assert all(choice["required"][0] == "kind" for choice in choices)
+
+
 def test_plan_schema_requires_policy_check_names_instead_of_check_descriptions() -> None:
     from forge.agents.subscription_protocol import output_schema
     from jsonschema import Draft202012Validator

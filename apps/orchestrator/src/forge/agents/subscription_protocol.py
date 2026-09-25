@@ -365,7 +365,9 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
             if authority == "task_id" and kind in _CHILD_TARGET_KINDS:
                 continue
             props.pop(authority, None)
-        props["kind"] = {"const": kind, "type": "string"}
+        # Select the union branch before emitting its fields. Strict providers
+        # preserve key order; only plan/delegate previously put kind first.
+        schema["properties"] = {"kind": {"const": kind, "type": "string"}, **props}
         schema["required"] = [key for key in schema.get("required", []) if key in props] + ["kind"]
         schema["additionalProperties"] = False
         choices.append(schema)
