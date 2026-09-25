@@ -560,6 +560,8 @@ def test_output_schema_has_closed_required_objects_for_strict_provider(purpose) 
     def check(value):
         if isinstance(value, dict):
             assert "oneOf" not in value and "default" not in value
+            if isinstance(value.get("const"), str):
+                assert value.get("type") == "string", "provider requires typed discriminators"
             if value.get("type") == "object":
                 assert value["additionalProperties"] is False
                 assert set(value["required"]) == set(value["properties"])
@@ -570,6 +572,35 @@ def test_output_schema_has_closed_required_objects_for_strict_provider(purpose) 
                 check(child)
 
     check(schema)
+
+
+@pytest.mark.parametrize(
+    "purpose", [SpecialistPurpose.PRIMARY, SpecialistPurpose.ROUTINE_IMPLEMENTATION]
+)
+def test_every_decision_schema_selects_kind_before_branch_specific_fields(purpose) -> None:
+    from forge.agents.subscription_protocol import output_schema
+
+    # Strict providers emit keys in schema order. Choosing kind first must not
+    # commit the primary to the sole branch that previously started with kind.
+    choices = output_schema(_request(purpose=purpose))["properties"]["decision"]["anyOf"]
+    assert all(next(iter(choice["properties"])) == "kind" for choice in choices)
+    assert all(choice["required"][0] == "kind" for choice in choices)
+
+
+def test_plan_schema_requires_policy_check_names_instead_of_check_descriptions() -> None:
+    from forge.agents.subscription_protocol import output_schema
+    from jsonschema import Draft202012Validator
+
+    request = replace(
+        _request(purpose=SpecialistPurpose.PRIMARY),
+        run_state=RunState.PLANNING,
+        untrusted_context={"named_checks": ["unit", "slow-unit"]},
+    )
+    choice = output_schema(request)["properties"]["decision"]["anyOf"][0]
+    checks = Draft202012Validator(choice["properties"]["plan"]["properties"]["required_checks"])
+    assert checks.is_valid(["unit", "slow-unit"])
+    assert not checks.is_valid(["unit: run after the repair"])
+    assert not checks.is_valid(["unconfigured-check"])
 
 
 def test_record_decoder_rejects_unknown_provider_key():

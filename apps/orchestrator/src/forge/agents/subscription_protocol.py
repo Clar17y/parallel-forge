@@ -365,7 +365,9 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
             if authority == "task_id" and kind in _CHILD_TARGET_KINDS:
                 continue
             props.pop(authority, None)
-        props["kind"] = {"const": kind, "type": "string"}
+        # Select the union branch before emitting its fields. Strict providers
+        # preserve key order; only plan/delegate previously put kind first.
+        schema["properties"] = {"kind": {"const": kind, "type": "string"}, **props}
         schema["required"] = [key for key in schema.get("required", []) if key in props] + ["kind"]
         schema["additionalProperties"] = False
         choices.append(schema)
@@ -375,11 +377,21 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
         and _phase_allows("plan", request)
     ):
         plan = TypeAdapter(ScopedPlanOutput).json_schema()
+        named_checks = request.untrusted_context.get("named_checks")
+        if (
+            isinstance(named_checks, (list, tuple))
+            and named_checks
+            and all(isinstance(name, str) for name in named_checks)
+        ):
+            plan["properties"]["required_checks"]["items"] = {
+                "type": "string",
+                "enum": list(named_checks),
+            }
         definitions.update(plan.pop("$defs", {}))
         choices.append(
             {
                 "type": "object",
-                "properties": {"kind": {"const": "plan"}, "plan": plan},
+                "properties": {"kind": {"const": "plan", "type": "string"}, "plan": plan},
                 "required": ["kind", "plan"],
                 "additionalProperties": False,
             }
@@ -399,7 +411,7 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
             {
                 "type": "object",
                 "properties": {
-                    "kind": {"const": "delegate"},
+                    "kind": {"const": "delegate", "type": "string"},
                     "rationale": {"type": "string"},
                     "children": {"type": "array", "minItems": 1, "maxItems": 64, "items": child},
                 },

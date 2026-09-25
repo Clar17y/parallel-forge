@@ -19,6 +19,7 @@ from forge.agents.subscription_protocol import (
     tool_input_schema,
 )
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
+from forge.application.ports.tool_schemas import arguments_match_schema
 from forge.domain.tool import ToolName
 
 
@@ -83,6 +84,15 @@ class LocalCliMcp:
         method, ident = frame.get("method"), frame.get("id")
         if method == "notifications/initialized" and ident is None and self._initialized:
             return None
+        if method == "notifications/roots/list_changed" and "id" not in frame:
+            if not isinstance(frame.get("params", {}), Mapping):
+                raise ProtocolError("invalid MCP parameters")
+            self.metadata_calls += 1
+            if self.metadata_calls > 64:
+                raise ProtocolError("MCP metadata limit exceeded")
+            # Some clients emit this advisory notice before initialize. Forge's
+            # frozen task/worktree authority never comes from client roots.
+            return None
         if type(ident) not in (str, int) or not 1 <= len(str(ident)) <= 128:
             raise ProtocolError("invalid MCP request identity")
         if not isinstance(method, str) or not method:
@@ -142,15 +152,26 @@ class LocalCliMcp:
             tool = ToolName(name)
         except ValueError, TypeError:
             raise ProtocolError("unknown Forge tool") from None
+        if tool not in self.allowed:
+            raise ProtocolError("tool exceeds task permission")
         args = params.get("arguments")
         schema = tool_input_schema(tool)
-        if (
-            tool not in self.allowed
-            or not isinstance(args, Mapping)
-            or not set(schema["required"]) <= set(args) <= set(schema["properties"])
-            or any(type(value) is not str for value in args.values())
-        ):
-            raise ProtocolError("tool exceeds task permission")
+        if not isinstance(args, Mapping) or not arguments_match_schema(tool, args):
+            if self.calls >= self.request.budget.max_tool_calls:
+                raise ProtocolError("tool budget exhausted")
+            self.calls += 1
+            # No broker dispatch or command debit. Let the worker correct a
+            # permitted tool's arguments within the same bounded invocation.
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Invalid tool arguments. Required input schema: "
+                        + json.dumps(schema),
+                    }
+                ],
+                "isError": True,
+            }
         key = ("s:" if isinstance(ident, str) else "i:") + str(ident)
         call = ProviderToolCall(
             call_key=key,

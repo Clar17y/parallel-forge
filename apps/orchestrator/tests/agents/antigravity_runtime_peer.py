@@ -39,6 +39,35 @@ if scenario == "login_state":
 schema = json.loads(sys.argv[sys.argv.index("--json-schema") + 1])
 model = sys.argv[sys.argv.index("--model") + 1]
 
+if scenario.startswith("startup_"):
+    startup = {
+        "conversation_id": "conversation",
+        "status": "ERROR",
+        "error": "provider startup unavailable",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0},
+    }
+    if scenario == "startup_429":
+        startup["error"] = "HTTP 429"
+    if scenario == "startup_401":
+        startup["error"] = "authentication required (HTTP 401)"
+    if scenario == "startup_verification":
+        startup["error"] = "Verification Required"
+    if scenario == "startup_eligibility":
+        startup["error"] = "Eligibility check failed: Verify your account to continue."
+    if scenario == "startup_cancel":
+        startup["status"] = "CANCELED"
+    if scenario == "startup_success":
+        startup["status"] = "SUCCESS"
+    if scenario == "startup_unknown":
+        startup.pop("usage")
+    if scenario == "startup_over_budget":
+        startup["usage"]["input_tokens"] = 999999
+    if scenario == "startup_bad_usage":
+        startup["usage"]["input_tokens"] = True
+    send({"event": "result", "result": startup})
+    sys.stdin.read()
+    sys.exit(0)
+
 
 def start_mcp():
     child = subprocess.Popen(
@@ -48,8 +77,13 @@ def start_mcp():
         stdout=subprocess.PIPE,
         text=True,
     )
-    if scenario == "optional_startup":
+    if scenario in {"optional_startup", "roots_startup"}:
         assert rpc(child, 0, "server/discover")["error"]["code"] == -32601
+    if scenario == "roots_startup":
+        child.stdin.write(
+            '{"jsonrpc":"2.0","method":"notifications/roots/list_changed","params":{}}\n'
+        )
+        child.stdin.flush()
     assert "result" in rpc(
         child,
         1,
@@ -68,7 +102,7 @@ def start_mcp():
     return child
 
 
-child = start_mcp() if scenario == "optional_startup" else None
+child = start_mcp() if scenario in {"optional_startup", "roots_startup"} else None
 send(
     {
         "event": "init",
@@ -78,8 +112,29 @@ send(
 )
 user = json.loads(sys.stdin.readline())
 assert user["event"] == "user"
+if scenario == "rules_contract":
+    contract, context = user["message"]["content"].split("\nTask context (untrusted data):\n", 1)
+    assert json.loads(contract.split("\nForge final response schema:\n", 1)[1]) == schema
+    assert json.loads(context)["context"]["task"] == "UNTRUSTED_TASK_MARKER"
+    assert "UNTRUSTED_TASK_MARKER" not in (home / ".gemini/GEMINI.md").read_text(encoding="utf-8")
 if child is None:
     child = start_mcp()
+if scenario == "repair_arguments":
+    bad = rpc(
+        child,
+        "bad-check",
+        "tools/call",
+        {"name": "build.run_named_check", "arguments": {"command": "unit"}},
+    )
+    assert bad["result"]["isError"] is True
+    assert "command_name" in bad["result"]["content"][0]["text"]
+    repaired = rpc(
+        child,
+        "check",
+        "tools/call",
+        {"name": "build.run_named_check", "arguments": {"command_name": "unit"}},
+    )
+    assert repaired["result"]["isError"] is False
 tool_name = "forbidden" if scenario == "bad_tool" else "repository.read_file"
 if not scenario.startswith("permission_denied"):
     receipt = rpc(child, 3, "tools/call", {"name": tool_name, "arguments": {"path": "README.md"}})
@@ -125,13 +180,23 @@ if scenario == "429":
     result.update(status="ERROR", error="HTTP 429")
 if scenario == "401":
     result.update(status="ERROR", error="authentication required (HTTP 401)")
+if scenario == "verification":
+    result.update(status="ERROR", error="Verification Required")
+if scenario == "eligibility":
+    result.update(
+        status="ERROR", error="Eligibility check failed: Verify your account to continue."
+    )
 if scenario == "provider_cancel":
     result.update(status="CANCELED")
 if scenario.startswith("permission_denied"):
     result["denied_actions"] = ["mcp"]
+    if scenario == "permission_denied_object":
+        result["denied_actions"] = [{"action": "mcp", "display_name": "McpTool"}]
     if scenario == "permission_denied":
         result.pop("structured_output")
 if scenario == "invalid_denied_actions":
     result["denied_actions"] = "mcp"
+if scenario == "invalid_denied_action_object":
+    result["denied_actions"] = [{"action": "mcp", "display_name": None}]
 send({"event": "result", "result": result})
 sys.stdin.read()

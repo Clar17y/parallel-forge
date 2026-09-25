@@ -124,4 +124,17 @@ async def test_closed_candidate_request_advertises_only_inspection_tools(session
         ToolName.VALIDATION_RESULTS_READ, ToolName.REVIEW_ARTIFACTS_READ,
     })
     assert "candidate is CLOSED" in request.trusted_system_prompt
+    # Acceptance dispatches controller validation. Requiring its result here
+    # leaves a live primary waiting for work that only its proposal can start.
+    assert "controller runs final validation after this proposal" in request.trusted_system_prompt
+    # Final acceptance accepts a narrower evidence set than a worker handoff.
+    # Status/textual diffs and failed checks remain useful history, not claims.
+    assert (
+        "successful build.run_named_check, git.diff with scope snapshot, or git.commit"
+        in request.trusted_system_prompt
+    )
+    assert (
+        "Exclude git.status, textual diffs, reads, and failed checks"
+        in request.trusted_system_prompt
+    )
     assert request.untrusted_context["candidate_epoch"] == epoch + 1

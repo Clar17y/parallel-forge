@@ -12,6 +12,7 @@ from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
 )
+from forge.domain.local_cli import LocalCliTrust
 from forge.domain.tool import ToolName
 from test_codex_gateway import _Broker, _gateway, _report, _Verifier
 from test_subscription_protocol import _request
@@ -62,6 +63,66 @@ async def test_sparse_quota_and_retry_notice_cannot_confirm_exhaustion(scenario)
     assert result.quota_exhaustion is None
 
 
+@pytest.mark.parametrize("scenario", ["startup_advisory", "turn_advisory"])
+async def test_client_status_notifications_do_not_abort_the_attempt(scenario):
+    broker = _Broker()
+    result = await gateway(scenario, broker=broker).execute(_request())
+    assert result.failure is None and result.decision is not None
+    assert result.quota_exhaustion is None and result.telemetry.input_tokens == 13
+    assert result.launch_proof.stop_confirmed and broker.revoked and broker.calls == []
+
+
+async def test_startup_account_notice_cannot_override_the_bound_account():
+    broker = _Broker()
+    result = await gateway("startup_advisory_mismatch", broker=broker).execute(_request())
+    assert result.failure is SubscriptionFailure.AUTHENTICATION and result.decision is None
+    assert broker.revoked and broker.calls == []
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
+@pytest.mark.parametrize("trust", [LocalCliTrust.OPERATOR, LocalCliTrust.VERIFIED])
+@pytest.mark.parametrize(
+    "scenario,prior_calls",
+    [
+        ("account_update_model_list", 0),
+        ("account_update_config_read", 0),
+        ("account_update_thread_start", 0),
+        ("account_update_turn_start", 0),
+        ("account_update_in_stream", 0),
+        ("account_update_after_tool", 1),
+        ("account_update_after_final", 0),
+    ],
+)
+async def test_account_update_after_binding_stops_before_further_effects_or_acceptance(
+    scenario, prior_calls, trust
+):
+    broker = _Broker()
+    client = gateway(scenario, broker=broker)
+    client._trust = trust
+    result = await client.execute(_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE})))
+    assert result.failure is SubscriptionFailure.AUTHENTICATION and result.decision is None
+    assert result.quota_exhaustion is None
+    assert broker.revoked and len(broker.calls) == prior_calls
+    assert result.telemetry.tool_call_count == prior_calls
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    if scenario == "account_update_after_final":
+        assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
+
+
+@pytest.mark.parametrize("scenario", ["late_thread_start", "late_thread_start_stream"])
+async def test_thread_start_notification_may_follow_its_response(scenario):
+    result = await gateway(scenario).execute(_request())
+    assert result.failure is None and result.decision is not None
+    assert result.launch_proof.stop_confirmed
+
+
+@pytest.mark.parametrize("scenario", ["warning_before_ack", "warning_in_stream"])
+async def test_warning_for_the_bound_thread_is_advisory(scenario):
+    result = await gateway(scenario).execute(_request())
+    assert result.failure is None and result.decision is not None
+    assert result.launch_proof.stop_confirmed
+
+
 @pytest.mark.parametrize(
     "scenario,failure",
     [
@@ -86,6 +147,13 @@ async def test_non_quota_terminal_error_keeps_its_classification(scenario, failu
         "global_request",
         "malformed_global",
         "wrong_ack",
+        "advisory_request",
+        "malformed_advisory",
+        "changed_auth",
+        "foreign_late_thread_start",
+        "late_thread_start_request",
+        "foreign_warning",
+        "warning_request",
     ],
 )
 async def test_notifications_cannot_bypass_identity_and_frame_validation(scenario):

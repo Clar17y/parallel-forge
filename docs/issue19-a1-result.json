@@ -1,0 +1,539 @@
+{
+  "acceptance_version": "A1-operator-antigravity-13",
+  "fixture_version": "v0.2-acceptance-2",
+  "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+  "state": "AWAITING_PR_APPROVAL",
+  "forge_source_commit": "9588ba6627f04daa948253139f6c3771563d7256",
+  "source_hashes": {
+    "apps\\orchestrator\\src\\forge\\agents\\codex_gateway.py": "d5a4b1b93944aa484526712b817c34718df28303515bc79468c4f1e2aa69ded7",
+    "apps\\orchestrator\\src\\forge\\agents\\subscription_protocol.py": "7491ba1df16bf4cb345e7a6a6910c0cb354994445005851fbb1385d568fd942b",
+    "apps\\orchestrator\\src\\forge\\agents\\local_cli_mcp.py": "a87c256e4daf8b138e859531669df19929d9d056bdcb2d993fae45e170a920a6",
+    "apps\\orchestrator\\src\\forge\\agents\\antigravity_runtime.py": "80f9757333bde880198079284ceb6cf2f1c4ad88c59fcb4b6370aba49850b78b",
+    "apps\\orchestrator\\src\\forge\\application\\services\\subscription_requests.py": "70055a0535c5186f00dbfec94874b5e1da5daee33e1dd780c6dc25ff4e30e5aa",
+    "apps\\orchestrator\\src\\forge\\persistence\\repositories\\subscription_budget.py": "265e5fdfcc5ed59a4eb487d274ca5638800dcfcde22ded35f69803fda755466a"
+  },
+  "continuations": [
+    {
+      "prior_results": 8,
+      "max_wall_seconds": 1839,
+      "attempt_budget": {
+        "max_duration_seconds": 300,
+        "max_tool_calls": 25,
+        "max_named_checks": 3,
+        "max_provider_attempts": 1,
+        "max_repairs": 0,
+        "max_input_tokens": 600000,
+        "max_output_tokens": 64000,
+        "unknown_telemetry_policy": {
+          "max_uncertain_attempts": 8
+        }
+      },
+      "source_commit": "b471e0a188439dc5916e52c2d80d317c2c6c363f",
+      "source_hashes": {
+        "apps\\orchestrator\\src\\forge\\agents\\codex_gateway.py": "d5a4b1b93944aa484526712b817c34718df28303515bc79468c4f1e2aa69ded7",
+        "apps\\orchestrator\\src\\forge\\agents\\subscription_protocol.py": "7491ba1df16bf4cb345e7a6a6910c0cb354994445005851fbb1385d568fd942b",
+        "apps\\orchestrator\\src\\forge\\persistence\\repositories\\subscription_budget.py": "265e5fdfcc5ed59a4eb487d274ca5638800dcfcde22ded35f69803fda755466a",
+        "apps\\orchestrator\\src\\forge\\agents\\local_cli_mcp.py": "a87c256e4daf8b138e859531669df19929d9d056bdcb2d993fae45e170a920a6",
+        "apps\\orchestrator\\src\\forge\\agents\\antigravity_runtime.py": "80f9757333bde880198079284ceb6cf2f1c4ad88c59fcb4b6370aba49850b78b",
+        "apps\\orchestrator\\src\\forge\\application\\services\\subscription_requests.py": "f3eab8b2ee529dd649d6528cdabce9b338e2e6fea4f936fe19e097b9c9b74e21"
+      }
+    }
+  ],
+  "candidate_commit": "0b726f763300f7f33765b7d04eaf5732545f2f89",
+  "base_commit": "fe034c39e3865f5fd64f166a0145f4bf4591ee4f",
+  "client_versions": [
+    {
+      "client": "codex_app_server",
+      "executable_digest": "70bcb05f9bf1a4e7306edd0cd1b57d02af3267ad02a34b26f45c8c4bb20a3301",
+      "version": "codex-cli 0.156.1"
+    },
+    {
+      "client": "antigravity_cli",
+      "executable_digest": "6169fe5c865cb877fa0043507256a57945c2e23a6bb0e68060733f454a4554f6",
+      "version": "1.2.11"
+    }
+  ],
+  "routes": [
+    {
+      "requested": {
+        "provider": "openai",
+        "client": "codex_app_server",
+        "model": "gpt-6-astra",
+        "effort": "low",
+        "auth_mode": "subscription",
+        "billing_mode": "allowance_only"
+      },
+      "effective": {
+        "provider": "openai",
+        "client": "codex_app_server",
+        "model": "gpt-6-astra",
+        "effort": "low",
+        "auth_mode": "subscription",
+        "billing_mode": "allowance_only"
+      },
+      "mapping_applied": null,
+      "is_primary": true
+    },
+    {
+      "requested": {
+        "provider": "google",
+        "client": "antigravity_cli",
+        "model": "gemini-3.8-flash-medium",
+        "effort": "medium",
+        "auth_mode": "subscription",
+        "billing_mode": "allowance_only"
+      },
+      "effective": {
+        "provider": "google",
+        "client": "antigravity_cli",
+        "model": "gemini-3.8-flash-medium",
+        "effort": "medium",
+        "auth_mode": "subscription",
+        "billing_mode": "allowance_only"
+      },
+      "mapping_applied": null,
+      "is_primary": false
+    }
+  ],
+  "operator_readiness": [
+    {
+      "model": "gemini-3.8-flash-medium",
+      "quota": "unknown",
+      "client": "antigravity_cli",
+      "effort": "medium",
+      "reason": "operator_trusted",
+      "admitted": true,
+      "evidence": [],
+      "provider": "google",
+      "warnings": [
+        "approved_tools_unproved",
+        "operator_trusted",
+        "client_build_changed"
+      ],
+      "auth_mode": "subscription",
+      "configured": true,
+      "billing_mode": "allowance_only",
+      "quota_reset_at": null,
+      "quota_revision": 0,
+      "schema_version": 2,
+      "quota_next_probe_at": null
+    },
+    {
+      "model": "gpt-6-astra",
+      "quota": "unknown",
+      "client": "codex_app_server",
+      "effort": "low",
+      "reason": "operator_trusted",
+      "admitted": true,
+      "evidence": [],
+      "provider": "openai",
+      "warnings": [
+        "operator_trusted"
+      ],
+      "auth_mode": "subscription",
+      "configured": true,
+      "billing_mode": "allowance_only",
+      "quota_reset_at": null,
+      "quota_revision": 0,
+      "schema_version": 2,
+      "quota_next_probe_at": null
+    }
+  ],
+  "bounds": {
+    "primary_budget": {
+      "max_duration_seconds": 2700,
+      "max_tool_calls": 200,
+      "max_named_checks": 18,
+      "max_provider_attempts": 12,
+      "max_repairs": 4,
+      "max_input_tokens": 2000000,
+      "max_output_tokens": 192000,
+      "unknown_telemetry_policy": {
+        "max_uncertain_attempts": 12
+      }
+    },
+    "attempt_budget": {
+      "max_duration_seconds": 300,
+      "max_tool_calls": 25,
+      "max_named_checks": 3,
+      "max_provider_attempts": 1,
+      "max_repairs": 0,
+      "max_input_tokens": 600000,
+      "max_output_tokens": 64000,
+      "unknown_telemetry_policy": {
+        "max_uncertain_attempts": 8
+      }
+    },
+    "wall_seconds": 2700
+  },
+  "runner_image": "sha256:2ce67e0be0f92b32e7ac533323d67deb89bbd1dfd682ae982b279ed8df01f658",
+  "worker_handoff": {
+    "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+    "task_id": "a1017d61-d04e-46d1-94fd-6d6f65288790",
+    "attempt_id": "4ad2751a-afec-4603-803a-6eb328d28a14",
+    "status": "completed",
+    "candidate_commit": null,
+    "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+    "changed_paths": [
+      "src/counter.py",
+      "tests/test_counter.py"
+    ],
+    "check_results": [
+      {
+        "command_name": "unit",
+        "exit_code": 1,
+        "passed": false,
+        "output_digest": "37686b6b2992a6769595675427e8d309aac198e1a0c2f12a2fc036007b85dbb9",
+        "duration_ms": 901,
+        "receipt_id": "a168e159-a67c-5803-b343-6b21cf77f599"
+      },
+      {
+        "command_name": "unit",
+        "exit_code": 0,
+        "passed": true,
+        "output_digest": "20dc20d1e34c1938b8c5f2be9d7cf35cf8600176aabfbc895c565c02599dd4d2",
+        "duration_ms": 876,
+        "receipt_id": "8bd3d8d8-2b7f-52b2-b067-dae3cf7504f5"
+      }
+    ],
+    "evidence_receipt_ids": [
+      "a168e159-a67c-5803-b343-6b21cf77f599",
+      "8bd3d8d8-2b7f-52b2-b067-dae3cf7504f5",
+      "668d53a0-ec48-5b79-a6b7-5e8884493e13"
+    ],
+    "residual_concerns": [],
+    "summary": "Repaired increment implementation in src/counter.py to add 1 and added boundary test assertion for -1 in tests/test_counter.py. Observed intentional controlled failure on value + 0, then verified passing unit check after repair and conducted self-review.",
+    "scope_request_paths": []
+  },
+  "worker_attempt_id": "4ad2751a-afec-4603-803a-6eb328d28a14",
+  "named_checks": [
+    {
+      "receipt_id": "a168e159-a67c-5803-b343-6b21cf77f599",
+      "tool_call_id": "a168e159-a67c-5803-b343-6b21cf77f599",
+      "attempt_id": "4ad2751a-afec-4603-803a-6eb328d28a14",
+      "command_name": "unit",
+      "exit_code": 1,
+      "command_result_digest": "37686b6b2992a6769595675427e8d309aac198e1a0c2f12a2fc036007b85dbb9",
+      "duration_ms": 901,
+      "tree_before": "60b5038caeeee9ce135911ebcfdd76540c57c9cdf71c09fab26d03bdadeabd95",
+      "tree_after": "60b5038caeeee9ce135911ebcfdd76540c57c9cdf71c09fab26d03bdadeabd95"
+    },
+    {
+      "receipt_id": "8bd3d8d8-2b7f-52b2-b067-dae3cf7504f5",
+      "tool_call_id": "8bd3d8d8-2b7f-52b2-b067-dae3cf7504f5",
+      "attempt_id": "4ad2751a-afec-4603-803a-6eb328d28a14",
+      "command_name": "unit",
+      "exit_code": 0,
+      "command_result_digest": "20dc20d1e34c1938b8c5f2be9d7cf35cf8600176aabfbc895c565c02599dd4d2",
+      "duration_ms": 876,
+      "tree_before": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+      "tree_after": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338"
+    }
+  ],
+  "grader_results": [
+    [
+      {
+        "tests/test_counter.py": true,
+        "tests/test_format.py": true
+      },
+      {
+        "increment_adds_one": true,
+        "boundary_negative_one": true,
+        "format_preserved": true
+      }
+    ]
+  ],
+  "controller_validation": [
+    {
+      "manifest_digest": "7665fe071f20854459bc9006159f4bd6cef799ec1a8de69f3c8133eed8ed9214",
+      "schema_version": 2,
+      "kind": "validation",
+      "evidence_set_id": "78c4107d-aff9-5c21-9dca-c0a16190a687",
+      "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+      "step_id": "d3b7a9b6-8857-5d03-9755-5acf9ea54cf1",
+      "policy_version": 1,
+      "head_sha": "0b726f763300f7f33765b7d04eaf5732545f2f89",
+      "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+      "prior_review_evidence_set_id": null,
+      "members": [
+        {
+          "result_id": "0fc4b258-af8e-5beb-b636-a8e4e391dc10",
+          "check_name": "slow-unit",
+          "command_name": "slow-unit",
+          "command_version": 1,
+          "command_digest": "ea495186f3c64a97c719fed46e38dc39089d46b1d4b5940d8f99d9af2a1ceafa",
+          "command_result_digest": "c45cdafa6a9604511675b9001ac135025b5e62ea4ccdcd6a53372740b192111a",
+          "controller_receipt_digest": "9f22fd621081405cf429819e6cc4cdbbc6078dcbfe3f2fe7c94e5f9119315339",
+          "stdout_digest": "c64b9e07bb7faf38719a67f9e119261a76d72742e124a7463e1a361012e171f3",
+          "stderr_digest": "7c8a544bc8866f032a0d77b1a94025d3ab4a14016e8d8d322f2b95cebc940d58",
+          "status": "PASSED",
+          "exit_code": 0,
+          "started_at": "2026-09-25T10:02:06.801975Z",
+          "completed_at": "2026-09-25T10:02:07.679975Z"
+        },
+        {
+          "result_id": "e01a55e3-0248-5c3f-bd48-e44d55922356",
+          "check_name": "unit",
+          "command_name": "unit",
+          "command_version": 1,
+          "command_digest": "282b8ebc32b183bf1f8d2f03777acf05a3124f691c8fab5a133c7937d0f6c8c7",
+          "command_result_digest": "d62c7582b26f9447d9f377db037266a44120e97cc115da0a2ec462656d9f66ba",
+          "controller_receipt_digest": "4560c8412c490dd71e78a63b1ee4a1d13632a5d8816a2f93efe968ebd57727ae",
+          "stdout_digest": "5dd7c5c65a8413808a0b15257b129a8083572c92c3d67eb5ac9534080e072cb8",
+          "stderr_digest": "7c8a544bc8866f032a0d77b1a94025d3ab4a14016e8d8d322f2b95cebc940d58",
+          "status": "PASSED",
+          "exit_code": 0,
+          "started_at": "2026-09-25T10:02:00.548254Z",
+          "completed_at": "2026-09-25T10:02:01.467254Z"
+        }
+      ],
+      "reports": [
+        {
+          "report_version": 1,
+          "fixture_version": "v0.2-acceptance-2",
+          "case_key": "counter-service",
+          "command_name": "slow-unit",
+          "tests": {
+            "tests/test_counter.py": true,
+            "tests/test_format.py": true
+          },
+          "assertions": {
+            "increment_adds_one": true,
+            "boundary_negative_one": true,
+            "format_preserved": true
+          }
+        },
+        {
+          "report_version": 1,
+          "fixture_version": "v0.2-acceptance-2",
+          "case_key": "counter-service",
+          "command_name": "unit",
+          "tests": {
+            "tests/test_counter.py": true,
+            "tests/test_format.py": true
+          },
+          "assertions": {
+            "increment_adds_one": true,
+            "boundary_negative_one": true,
+            "format_preserved": true
+          }
+        }
+      ]
+    }
+  ],
+  "final_acceptance": {
+    "schema_version": 1,
+    "kind": "acceptance",
+    "evidence_set_id": "e297a1b1-e25e-53db-90e0-b77958c81a44",
+    "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+    "step_id": "d3b7a9b6-8857-5d03-9755-5acf9ea54cf1",
+    "policy_version": 1,
+    "head_sha": "0b726f763300f7f33765b7d04eaf5732545f2f89",
+    "base_sha": "fe034c39e3865f5fd64f166a0145f4bf4591ee4f",
+    "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+    "candidate_manifest_digest": "91cec5fed6d30cbf6d3f66bb98db9a49711a9dcd53d5d799a251935fe81bd5c5",
+    "candidate_epoch": 1,
+    "producer_task_id": "d305e338-1036-50ef-87dd-555102c02cc2",
+    "producer_attempt_id": "b04a1c69-a10f-4059-854a-f63f48a47491",
+    "producer_result_digest": "70b535f0dc753cae81597f71a06ae5e291bfc6d2a6dc8449458c375614418f7a",
+    "acceptance": {
+      "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+      "task_id": "d305e338-1036-50ef-87dd-555102c02cc2",
+      "candidate_commit": "0b726f763300f7f33765b7d04eaf5732545f2f89",
+      "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+      "evidence_receipt_ids": [
+        "b44b0272-79f3-5650-9b3f-f078668fd108"
+      ],
+      "rationale": "Propose final integrated acceptance of the closed candidate. A fresh snapshot confirms the exact selected commit and tree digest, with changes confined to src/counter.py and tests/test_counter.py; current Git status is clean. The candidate-bound review selection records a proportionate no-review rationale for the localized arithmetic repair and boundary assertion. The worker handoff was previously accepted; its historical check claims are not presented as fresh validation. Controller validation, including required unit and slow-unit checks, and human publication approval remain outstanding. No publication, push, or merge is authorized by this proposal."
+    },
+    "selection_attempt_id": "dd5803bc-55aa-46cd-84e0-9cbba0327509",
+    "selection_result_digest": "273b004683cae6bd15673c5d284be844dfeb1ffbe59ecb8c54a07090e5337e73",
+    "selection_application_digest": "3cb6d4530e4d6d9a1a42da807db6025d3013dc18b01846eeee7fcd0fc0a42d7a",
+    "selection": {
+      "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+      "candidate_commit": "0b726f763300f7f33765b7d04eaf5732545f2f89",
+      "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+      "review_required": false,
+      "no_review_reason": "The checkpointed candidate is a localized arithmetic repair with one boundary assertion. Primary inspection of the integrated textual diff confirmed increment adds one, existing assertions are preserved, and changes are confined to the two authorized files. CRLF-to-LF normalization does not change runtime behavior. Focused unit evidence and self-review are proportionate; an independent review is unlikely to add meaningful confidence. Snapshot receipt 0b98b088-b5f3-506b-b573-ae23884b6f0d confirms the committed tree matches the accepted child's snapshot. Validation-results access was denied, so no new validation success is claimed. Final acceptance, controller validation, and human PR approval remain outstanding.",
+      "reviewer_route": null,
+      "review_task_id": null,
+      "complexity_reason": null,
+      "exceptional_maximum_effort": false
+    },
+    "review_handoff": null,
+    "review_result_digest": null,
+    "review_application_digest": null,
+    "receipt_evidence_digest": "4cc122974bff280c17460c2b4d545486637b706579cb8d7a522c866d37643231",
+    "validation_evidence_set_id": "78c4107d-aff9-5c21-9dca-c0a16190a687"
+  },
+  "candidate_diff": "diff --git a/src/counter.py b/src/counter.py\nindex e0d7ecd..9884ff5 100644\n--- a/src/counter.py\n+++ b/src/counter.py\n@@ -1,5 +1,5 @@\n-\"\"\"Counter service implementation.\"\"\"\n-\n-def increment(value: int) -> int:\n-    \"\"\"Increment value by one (faulty initial adds two).\"\"\"\n-    return value + 2\n+\"\"\"Counter service implementation.\"\"\"\n+\n+def increment(value: int) -> int:\n+    \"\"\"Increment value by one (faulty initial adds two).\"\"\"\n+    return value + 1\ndiff --git a/tests/test_counter.py b/tests/test_counter.py\nindex c630b78..17a7a5d 100644\n--- a/tests/test_counter.py\n+++ b/tests/test_counter.py\n@@ -1,7 +1,8 @@\n-\"\"\"Tests for counter.\"\"\"\n-\n-from counter import increment\n-\n-def test_increment() -> None:\n-    assert increment(0) == 1\n-    assert increment(10) == 11\n+\"\"\"Tests for counter.\"\"\"\n+\n+from counter import increment\n+\n+def test_increment() -> None:\n+    assert increment(0) == 1\n+    assert increment(10) == 11\n+    assert increment(-1) == 0\n",
+  "primary_decisions": [
+    {
+      "attempt_id": "9438b190-8d1a-4a91-819a-941add8b11e1",
+      "disposition": "task_accepted",
+      "decision": {
+        "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+        "task_id": "a1017d61-d04e-46d1-94fd-6d6f65288790",
+        "candidate_commit": null,
+        "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+        "evidence_receipt_ids": [
+          "a168e159-a67c-5803-b343-6b21cf77f599",
+          "8bd3d8d8-2b7f-52b2-b067-dae3cf7504f5",
+          "668d53a0-ec48-5b79-a6b7-5e8884493e13"
+        ],
+        "rationale": "Accept the child's completed bounded handoff: it reports the required controlled failure, repair to add one, boundary assertion for -1, passing unit check, textual self-review, and final uncommitted snapshot, with changes limited to the two owned files. The receipts retain the failed and passing checks in execution order and the final snapshot. This acknowledges the historical child handoff only; checkpointing the integrated candidate, review selection, final acceptance, controller validation, and human PR approval remain outstanding."
+      }
+    },
+    {
+      "attempt_id": "dd5803bc-55aa-46cd-84e0-9cbba0327509",
+      "disposition": "review_selected",
+      "decision": {
+        "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+        "candidate_commit": "0b726f763300f7f33765b7d04eaf5732545f2f89",
+        "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+        "review_required": false,
+        "no_review_reason": "The checkpointed candidate is a localized arithmetic repair with one boundary assertion. Primary inspection of the integrated textual diff confirmed increment adds one, existing assertions are preserved, and changes are confined to the two authorized files. CRLF-to-LF normalization does not change runtime behavior. Focused unit evidence and self-review are proportionate; an independent review is unlikely to add meaningful confidence. Snapshot receipt 0b98b088-b5f3-506b-b573-ae23884b6f0d confirms the committed tree matches the accepted child's snapshot. Validation-results access was denied, so no new validation success is claimed. Final acceptance, controller validation, and human PR approval remain outstanding.",
+        "reviewer_route": null,
+        "review_task_id": null,
+        "complexity_reason": null,
+        "exceptional_maximum_effort": false
+      }
+    },
+    {
+      "attempt_id": "b04a1c69-a10f-4059-854a-f63f48a47491",
+      "disposition": "acceptance_prepared",
+      "decision": {
+        "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+        "task_id": "d305e338-1036-50ef-87dd-555102c02cc2",
+        "candidate_commit": "0b726f763300f7f33765b7d04eaf5732545f2f89",
+        "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338",
+        "evidence_receipt_ids": [
+          "b44b0272-79f3-5650-9b3f-f078668fd108"
+        ],
+        "rationale": "Propose final integrated acceptance of the closed candidate. A fresh snapshot confirms the exact selected commit and tree digest, with changes confined to src/counter.py and tests/test_counter.py; current Git status is clean. The candidate-bound review selection records a proportionate no-review rationale for the localized arithmetic repair and boundary assertion. The worker handoff was previously accepted; its historical check claims are not presented as fresh validation. Controller validation, including required unit and slow-unit checks, and human publication approval remain outstanding. No publication, push, or merge is authorized by this proposal."
+      }
+    }
+  ],
+  "attempt_outcomes": [
+    {
+      "attempt_id": "46444d9d-8eda-42e0-b71b-efc5dba114e9",
+      "disposition": "plan_approval",
+      "failure": null,
+      "failure_detail": null
+    },
+    {
+      "attempt_id": "2051ce8e-c05c-48d2-922e-cc85ec66ca7e",
+      "disposition": "delegated",
+      "failure": null,
+      "failure_detail": null
+    },
+    {
+      "attempt_id": "4ad2751a-afec-4603-803a-6eb328d28a14",
+      "disposition": "handoff_completed",
+      "failure": null,
+      "failure_detail": null
+    },
+    {
+      "attempt_id": "9438b190-8d1a-4a91-819a-941add8b11e1",
+      "disposition": "task_accepted",
+      "failure": null,
+      "failure_detail": null
+    },
+    {
+      "attempt_id": "dd5803bc-55aa-46cd-84e0-9cbba0327509",
+      "disposition": "review_selected",
+      "failure": null,
+      "failure_detail": null
+    },
+    {
+      "attempt_id": "4dd064a9-f86a-496b-9446-6205ac69fcd0",
+      "disposition": "acceptance_repair_queued",
+      "failure": null,
+      "failure_detail": null
+    },
+    {
+      "attempt_id": "67f96aa6-91f9-4e81-a38b-d941cec6e640",
+      "disposition": "repair_queued",
+      "failure": "deadline",
+      "failure_detail": "attempt duration limit reached"
+    },
+    {
+      "attempt_id": "0c148cdd-1f80-4179-8e62-b4c744d66c75",
+      "disposition": "stale",
+      "failure": "interrupted",
+      "failure_detail": "Codex attempt interrupted"
+    },
+    {
+      "attempt_id": "b04a1c69-a10f-4059-854a-f63f48a47491",
+      "disposition": "acceptance_prepared",
+      "failure": null,
+      "failure_detail": null
+    }
+  ],
+  "publication_gate": {
+    "pending_gate": "pr",
+    "evidence_digest": "680458b3ab56a04a4a1bd54db8e3f7c013efd133acdc6bd50f26b29d3cb59abe",
+    "evidence": {
+      "candidate_commit": "0b726f763300f7f33765b7d04eaf5732545f2f89",
+      "diff_digest": "5d1264c4e2cb7327328896cff38e0386fb0fd432459409ff2da7979b18c985c0",
+      "validation_digest": "7665fe071f20854459bc9006159f4bd6cef799ec1a8de69f3c8133eed8ed9214",
+      "repository": "example/counter-service",
+      "base_ref": "refs/heads/main",
+      "base_sha": "fe034c39e3865f5fd64f166a0145f4bf4591ee4f",
+      "title": "A1 autonomous counter repair",
+      "body_digest": "31b5d02bf27cf7c62ebc1e67f19b609b275ce0c1208af93910b8c554f3961a05",
+      "runner_mode": "docker",
+      "runner_evidence_digest": "e0143c07bd5d044efb958abf1b0fad170c144bdfad98dbebf4276154850f4082",
+      "remote_remediation_limit": 3,
+      "schema_version": 2,
+      "acceptance_digest": "24677c84ec255696a4cea735edd9ad943888ebb3bb219263f7a5d81147dcd2c2",
+      "candidate_tree_digest": "bd8621ffb7236dbe77bf8fae803fd12d95bdd25c96161a88e7c8359eb5317338"
+    }
+  },
+  "settlement": {
+    "no_active_launches": true,
+    "no_unresolved_effects": true,
+    "antigravity_private_homes_removed": true
+  },
+  "outstanding_reservations": {
+    "duration_ms": 0,
+    "tool_calls": 0,
+    "named_checks": 0,
+    "provider_attempts": 0,
+    "repairs": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_minor": 0
+  },
+  "reported_usage": {
+    "input_tokens": 415236,
+    "output_tokens": 10591,
+    "cached_input_tokens": 438743,
+    "unknown_token_attempts": 0,
+    "physical_launches": 9,
+    "admitted_attempts": 9,
+    "subscription_charge": null,
+    "quota": "unknown"
+  },
+  "session_usage": {
+    "runtime": {
+      "launches": 128,
+      "admissions": 129,
+      "input_tokens": 4834217,
+      "output_tokens": 291793,
+      "cached_input_tokens": 6939515,
+      "unknown_token_attempts": 50
+    },
+    "including_model_diagnostics": {
+      "input_tokens": 4977852,
+      "output_tokens": 302159,
+      "cached_input_tokens": 7015118,
+      "unknown_token_attempts": 56,
+      "model_diagnostic_attempts": 13,
+      "subscription_charge": null,
+      "quota": "unknown"
+    },
+    "all_stopped": true,
+    "zero_outstanding": true
+  }
+}

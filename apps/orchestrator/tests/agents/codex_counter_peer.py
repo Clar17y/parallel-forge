@@ -87,9 +87,9 @@ turn = receive("turn/start")
 params = turn["params"]
 assert params["threadId"] == "counter-thread" and params["environments"] == []
 assert params["model"] == model and params["effort"] == effort
-context = params["additionalContext"]["forge_task"]
+context = json.loads(params["input"][1]["text"])["forge_task"]
 assert context["kind"] == "untrusted"
-request = json.loads(context["value"])
+request = context["value"]
 task, evidence = request["task"], request["context"]
 assert task["purpose"] == "primary"
 assert task["route"]["effective"]["model"] == model

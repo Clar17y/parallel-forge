@@ -455,6 +455,53 @@ class _TerminalError:
             self.quota = replace(quota, reset_at=max(resets))
 
 
+class _AccountBindingChanged(RuntimeError):
+    """An account update invalidated this attempt's authenticated identity."""
+
+
+def _client_status_notification(
+    frame: Mapping[str, Any],
+    *,
+    thread_id: str | None = None,
+    allow_account_update: bool = False,
+) -> bool:
+    """Consume known notices without granting tool or route authority."""
+    method = frame.get("method")
+    if method not in {
+        "configWarning",
+        "remoteControl/status/changed",
+        "account/updated",
+        "warning",
+    }:
+        return False
+    params = frame.get("params")
+    if "id" in frame or not isinstance(params, Mapping):
+        raise ProtocolError("invalid client status notification")
+    if method == "configWarning":
+        valid = isinstance(params.get("summary"), str)
+    elif method == "warning":
+        valid = isinstance(params.get("message"), str) and params.get("threadId") in (
+            None,
+            thread_id,
+        )
+    elif method == "remoteControl/status/changed":
+        valid = (
+            params.get("status") in ("disabled", "connecting", "connected", "errored")
+            and isinstance(params.get("installationId"), str)
+            and isinstance(params.get("serverName"), str)
+        )
+    else:
+        # Only startup has a subsequent account/read that binds the exact
+        # identity. Later notices do not identify the account, so stop before
+        # dispatching another tool or accepting output under a stale binding.
+        if not allow_account_update:
+            raise _AccountBindingChanged
+        valid = params.get("authMode") == "chatgpt"
+    if not valid:
+        raise ProtocolError("invalid client status notification")
+    return True
+
+
 class CodexGateway:
     def __init__(
         self,
@@ -594,7 +641,17 @@ class CodexGateway:
             result = failed(SubscriptionFailure.UNCERTAIN)
         except CapabilityEvidenceSourceError:
             result = failed(SubscriptionFailure.UNAVAILABLE)
-        except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
+        except _AccountBindingChanged:
+            result = replace(
+                failed(SubscriptionFailure.AUTHENTICATION),
+                failure_detail="Codex account update invalidated the authenticated binding",
+            )
+        except ProtocolError as error:
+            # ProtocolError messages are Forge-owned constants, never provider payloads.
+            result = replace(
+                failed(SubscriptionFailure.PROTOCOL), failure_detail=f"Codex protocol: {error}"
+            )
+        except ClientProcessError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)
         except Exception:  # noqa: BLE001 - provider/verifier/broker errors must remain sanitized
             result = failed(SubscriptionFailure.PROTOCOL)
@@ -793,14 +850,15 @@ class CodexGateway:
                     {
                         "type": "text",
                         "text": "Complete the bounded task and return its structured result.",
-                    }
+                    },
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {"forge_task": {"kind": "untrusted", "value": context}},
+                            allow_nan=False,
+                        ),
+                    },
                 ],
-                "additionalContext": {
-                    "forge_task": {
-                        "kind": "untrusted",
-                        "value": json.dumps(context, allow_nan=False),
-                    }
-                },
                 "model": self._installation.model,
                 "effort": self._installation.effort,
                 "environments": [],
@@ -815,11 +873,17 @@ class CodexGateway:
         candidate: SubscriptionInvocationResult | None = None
         candidate_item: str | None = None
         while (frame := await session.receive()) is not None:
+            if _client_status_notification(frame, thread_id=thread_id):
+                continue
             if terminal_error.account_notification(frame, self._now()):
                 continue
             method, params = frame.get("method"), frame.get("params")
             if not isinstance(params, Mapping):
                 raise ProtocolError("invalid provider event")
+            if method == "thread/started":
+                if "id" in frame or self._id(params.get("thread")) != thread_id:
+                    raise ProtocolError("foreign provider thread announcement")
+                continue
             if params.get("threadId") != thread_id:
                 raise ProtocolError("foreign provider thread")
             if "id" in frame and method != "item/tool/call":
@@ -972,6 +1036,12 @@ class CodexGateway:
             frame = await session.receive()
             if not isinstance(frame, Mapping):
                 raise ProtocolError("provider ended before response")
+            if _client_status_notification(
+                frame,
+                thread_id=thread_id or announced,
+                allow_account_update=method in {"initialize", "account/read"},
+            ):
+                continue
             if terminal_error.account_notification(frame, self._now()):
                 continue
             if "id" in frame:
@@ -1000,6 +1070,11 @@ class CodexGateway:
                 if announced not in (None, current):
                     raise ProtocolError("conflicting announced identity")
                 announced = current
+            elif event == "thread/started" and method == "turn/start":
+                # The server may publish the thread notification after replying
+                # to thread/start. Bind it to that reply, not the new turn ID.
+                if self._id(value.get("thread")) != thread_id:
+                    raise ProtocolError("foreign provider thread announcement")
             elif event == "thread/status/changed" and value.get("threadId") == (
                 thread_id or announced
             ):
@@ -1108,6 +1183,8 @@ def codex_dynamic_tools(tools: Sequence[ToolName]) -> list[dict[str, object]]:
 
     if any(not isinstance(tool, ToolName) for tool in tools):
         raise TypeError("Codex dynamic tools require controlled Forge tools")
+    if not tools:
+        return []
     return [
         {
             "type": "namespace",

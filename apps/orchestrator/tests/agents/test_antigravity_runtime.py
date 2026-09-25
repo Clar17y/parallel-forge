@@ -68,7 +68,7 @@ def launch_directories(monkeypatch):
     return paths
 
 
-@pytest.mark.parametrize("scenario", ["success", "optional_startup"])
+@pytest.mark.parametrize("scenario", ["success", "optional_startup", "roots_startup"])
 async def test_antigravity_uses_real_mcp_and_supervised_stream_without_capability_evidence(
     tmp_path, launch_directories, scenario
 ):
@@ -104,6 +104,58 @@ async def test_runtime_uses_review_mode_with_only_its_forge_server_allowed(tmp_p
     assert observed[0]["useG1Credits"] is False
     assert len(runtime.broker.calls) == 1 and runtime.broker.revoked
     assert result.launch_proof.stop_confirmed
+
+
+async def test_forge_rules_and_response_contract_reach_the_default_runtime(tmp_path, monkeypatch):
+    observed = []
+    original_start = ClientProcessSupervisor.start
+    value = replace(
+        request(),
+        trusted_system_prompt="Trusted Forge execution rules.",
+        untrusted_context={"task": "UNTRUSTED_TASK_MARKER"},
+    )
+
+    async def capture_agent(self, spec, **kwargs):
+        assert "--agent" not in spec.argv
+        observed.append((Path(spec.cwd) / ".gemini/GEMINI.md").read_text(encoding="utf-8"))
+        return await original_start(self, spec, **kwargs)
+
+    monkeypatch.setattr(ClientProcessSupervisor, "start", capture_agent)
+    runtime, _ = gateway(tmp_path, "rules_contract")
+    result = await runtime.execute(value)
+    assert result.failure is None
+    assert len(observed) == 1
+    assert value.trusted_system_prompt in observed[0]
+    assert "output_digest=metadata.command_result_digest" in observed[0]
+    assert "duration_ms=metadata.command_duration_ms" in observed[0]
+    assert "receipt_id=operation_id" in observed[0]
+    assert "candidate_commit must be null without a git.commit receipt" in observed[0]
+    assert "Use the client's finish tool to return the final structured decision" in observed[0]
+    assert "a handoff is not a Forge tool or a repository file" in observed[0]
+    assert "UNTRUSTED_TASK_MARKER" not in observed[0]
+    assert value.authorization.broker_token not in observed[0]
+    assert len(observed[0].encode("utf-8")) < 24000
+    assert f"forge_{value.attempt.attempt_id.hex}" in observed[0]
+    assert len(runtime.broker.calls) == 1 and runtime.broker.revoked
+    assert result.launch_proof.stop_confirmed
+
+
+async def test_worker_can_correct_named_check_arguments_in_one_supervised_turn(tmp_path):
+    value = request()
+    value = replace(
+        value,
+        authorization=replace(
+            value.authorization,
+            permitted_tools=value.authorization.permitted_tools | {ToolName.BUILD_RUN_NAMED_CHECK},
+        ),
+    )
+    broker = _Broker()
+    runtime, _ = gateway(tmp_path, "repair_arguments", broker=broker)
+    result = await runtime.execute(value)
+    assert result.failure is None and result.decision is not None
+    assert [call.name for call in broker.calls] == ["build.run_named_check", "repository.read_file"]
+    assert result.telemetry.tool_call_count == 3 and result.telemetry.named_check_count == 1
+    assert broker.revoked and result.launch_proof.stop_confirmed
 
 
 @pytest.mark.parametrize("force_hard_link", [False, True])
@@ -189,6 +241,8 @@ async def test_private_home_is_not_created_when_temp_directory_is_inside_a_repos
         ("bad_usage", SubscriptionFailure.PROTOCOL),
         ("429", SubscriptionFailure.THROTTLED),
         ("401", SubscriptionFailure.AUTHENTICATION),
+        ("verification", SubscriptionFailure.AUTHENTICATION),
+        ("eligibility", SubscriptionFailure.AUTHENTICATION),
         ("provider_cancel", SubscriptionFailure.INTERRUPTED),
         ("bad_tool", SubscriptionFailure.PROTOCOL),
     ],
@@ -201,6 +255,41 @@ async def test_antigravity_rejects_bad_data_and_never_invents_exhaustion(
     assert result.failure is expected
     assert result.quota_exhaustion is None
     assert result.launch_proof.stop_confirmed
+
+
+@pytest.mark.parametrize(
+    "scenario,expected,tokens",
+    [
+        ("startup_429", SubscriptionFailure.THROTTLED, 0),
+        ("startup_401", SubscriptionFailure.AUTHENTICATION, 0),
+        ("startup_verification", SubscriptionFailure.AUTHENTICATION, 0),
+        ("startup_eligibility", SubscriptionFailure.AUTHENTICATION, 0),
+        ("startup_cancel", SubscriptionFailure.INTERRUPTED, 0),
+        ("startup_outage", SubscriptionFailure.OUTAGE, 0),
+        ("startup_unknown", SubscriptionFailure.OUTAGE, None),
+        ("startup_over_budget", SubscriptionFailure.BUDGET, 999999),
+        ("startup_success", SubscriptionFailure.PROTOCOL, None),
+        ("startup_bad_usage", SubscriptionFailure.PROTOCOL, None),
+    ],
+)
+async def test_startup_failure_preserves_classification_usage_and_cleanup(
+    tmp_path, launch_directories, scenario, expected, tokens
+):
+    broker = _Broker()
+    runtime, _ = gateway(tmp_path, scenario, broker=broker)
+    value = request()
+    value = replace(
+        value, task=replace(value.task, budget=replace(value.task.budget, max_input_tokens=1000))
+    )
+    result = await runtime.execute(value)
+    assert result.failure is expected
+    assert result.decision is None and result.quota_exhaustion is None
+    assert result.telemetry.input_tokens == tokens
+    assert not broker.calls and broker.revoked
+    assert result.launch_proof.stop_confirmed
+    assert not launch_directories[0].exists()
+    if expected is not SubscriptionFailure.PROTOCOL:
+        assert result.failure_detail == "Antigravity failed before initialization"
 
 
 async def test_antigravity_cancellation_settles_the_mcp_child(tmp_path, launch_directories):
@@ -261,7 +350,9 @@ async def test_invalid_output_retains_usage_and_explains_the_failure(tmp_path, s
     assert result.launch_proof.stop_confirmed
 
 
-@pytest.mark.parametrize("scenario", ["permission_denied", "permission_denied_with_output"])
+@pytest.mark.parametrize(
+    "scenario", ["permission_denied", "permission_denied_with_output", "permission_denied_object"]
+)
 async def test_headless_permission_denial_is_not_a_successful_forge_decision(tmp_path, scenario):
     broker = _Broker()
     runtime, _ = gateway(tmp_path, scenario, broker=broker)
@@ -274,8 +365,9 @@ async def test_headless_permission_denial_is_not_a_successful_forge_decision(tmp
     assert result.launch_proof.stop_confirmed
 
 
-async def test_malformed_denied_actions_cannot_be_accepted_as_success(tmp_path):
-    runtime, _ = gateway(tmp_path, "invalid_denied_actions")
+@pytest.mark.parametrize("scenario", ["invalid_denied_actions", "invalid_denied_action_object"])
+async def test_malformed_denied_actions_cannot_be_accepted_as_success(tmp_path, scenario):
+    runtime, _ = gateway(tmp_path, scenario)
     result = await runtime.execute(request())
     assert result.failure is SubscriptionFailure.PROTOCOL
     assert result.decision is None

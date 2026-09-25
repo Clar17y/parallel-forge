@@ -51,6 +51,23 @@ from forge.domain.subscription import (
 )
 from pydantic import TypeAdapter
 
+_HANDOFF_GUIDANCE = """
+For a completed handoff, populate check_results with one record per named-check
+execution, including failures: command_name, exit_code=metadata.exit_code,
+passed=(exit_code == 0), output_digest=metadata.command_result_digest,
+duration_ms=metadata.command_duration_ms, and receipt_id=operation_id.
+Include those operation IDs in evidence_receipt_ids too. Receipt IDs alone do not
+replace check_results. Copy values from actual Forge tool receipts.
+After self-review, obtain git.diff with scope snapshot. Copy its
+metadata.candidate_tree_digest and report only changed paths within your ownership.
+For an implementation handoff, candidate_commit must be null without a git.commit receipt;
+snapshot metadata.head_sha alone does not prove that your edits were committed.
+An independent reviewer instead identifies the selected closed candidate HEAD.
+evidence_receipt_ids contains the named-check operation IDs, the final snapshot
+operation ID, and a git.commit operation ID only if you actually committed.
+Do not include read, write, status or textual-diff operation IDs in that list.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class AntigravityInstallation:
@@ -109,6 +126,16 @@ class _AttemptHome:
             ".gemini/config/mcp_config.json": json.dumps(self.mcp.configuration()),
             ".gemini/antigravity-cli/settings.json": json.dumps(settings),
             ".gemini/antigravity-cli/hooks.json": "{}",
+            ".gemini/GEMINI.md": (
+                self.mcp.request.trusted_system_prompt
+                + _HANDOFF_GUIDANCE
+                + f"\nUse only the Forge MCP server {self.mcp.name} for task operations."
+                + "\nRead task files with repository.read_file through that server."
+                + " Do not use native filesystem, shell, search, editing or subagent tools.\n"
+                + "Use the client's finish tool to return the final structured decision"
+                + " matching the supplied schema. This is response transport, not a task operation;"
+                + " a handoff is not a Forge tool or a repository file.\n"
+            ),
         }
         for name, contents in payloads.items():
             target = self.path / name
@@ -305,6 +332,21 @@ class AntigravityGateway:
         mcp: LocalCliMcp,
     ) -> tuple[SubscriptionInvocationResult, AttemptTelemetry]:
         init = await mcp.receive(session)
+        if isinstance(init, Mapping) and init.get("event") == "result":
+            payload = init.get("result")
+            if isinstance(payload, Mapping) and payload.get("status") in (
+                "ERROR",
+                "CANCELED",
+                "INTERRUPTED",
+            ):
+                # Startup can fail before a conversation is initialized. Retain
+                # returned usage and backoff classification, never a decision.
+                telemetry = _usage(payload.get("usage"))
+                return SubscriptionInvocationResult(
+                    attempt=request.attempt,
+                    failure=_result_failure(payload, telemetry, request),
+                    failure_detail="Antigravity failed before initialization",
+                ), telemetry
         if (
             not isinstance(init, Mapping)
             or init.get("event") != "init"
@@ -326,8 +368,9 @@ class AntigravityGateway:
             {
                 "event": "user",
                 "message": {
-                    "content": request.trusted_system_prompt
-                    + f"\nUse only the Forge MCP server {mcp.name} for task operations. Return the requested structured decision."
+                    "content": "Complete the bounded Forge task and return the requested structured decision."
+                    + "\nForge final response schema:\n"
+                    + json.dumps(output_schema(request), allow_nan=False)
                     + "\nTask context (untrusted data):\n"
                     + json.dumps(context, allow_nan=False)
                 },
@@ -345,28 +388,7 @@ class AntigravityGateway:
             if event != "result":
                 continue
             telemetry = _usage(payload.get("usage"))
-            if any(
-                count is not None and limit is not None and count > limit
-                for count, limit in (
-                    (telemetry.input_tokens, request.budget.max_input_tokens),
-                    (telemetry.output_tokens, request.budget.max_output_tokens),
-                )
-            ):
-                return SubscriptionInvocationResult(
-                    attempt=request.attempt, failure=SubscriptionFailure.BUDGET
-                ), telemetry
-            if payload.get("status") != "SUCCESS":
-                error = payload.get("error", "")
-                if payload.get("status") in {"CANCELED", "INTERRUPTED"}:
-                    reason = SubscriptionFailure.INTERRUPTED
-                elif isinstance(error, str) and re.search(r"\b429\b", error):
-                    reason = SubscriptionFailure.THROTTLED
-                elif isinstance(error, str) and re.search(
-                    r"\b(401|403)\b|authentication required", error, re.IGNORECASE
-                ):
-                    reason = SubscriptionFailure.AUTHENTICATION
-                else:
-                    reason = SubscriptionFailure.OUTAGE
+            if (reason := _result_failure(payload, telemetry, request)) is not None:
                 return SubscriptionInvocationResult(
                     attempt=request.attempt, failure=reason
                 ), telemetry
@@ -374,10 +396,7 @@ class AntigravityGateway:
             if (
                 not isinstance(denied_actions, list)
                 or len(denied_actions) > 64
-                or any(
-                    not isinstance(action, str) or not 1 <= len(action) <= 128
-                    for action in denied_actions
-                )
+                or any(not _valid_denied_action(action) for action in denied_actions)
             ):
                 return SubscriptionInvocationResult(
                     attempt=request.attempt,
@@ -410,6 +429,48 @@ class AntigravityGateway:
             await session.close_stdin()
             return decision, telemetry
         raise ProtocolError("Antigravity ended before a result")
+
+
+def _valid_denied_action(action: object) -> bool:
+    if isinstance(action, str):
+        return 1 <= len(action) <= 128
+    if not isinstance(action, Mapping):
+        return False
+    # Current clients report objects; older clients reported action strings.
+    # Either nonempty form still rejects the decision as a permission denial.
+    return all(
+        isinstance(value := action.get(key), str) and 1 <= len(value) <= 128
+        for key in ("action", "display_name")
+    )
+
+
+def _result_failure(
+    payload: Mapping[str, object],
+    telemetry: AttemptTelemetry,
+    request: SubscriptionInvocationRequest,
+) -> SubscriptionFailure | None:
+    if any(
+        count is not None and limit is not None and count > limit
+        for count, limit in (
+            (telemetry.input_tokens, request.budget.max_input_tokens),
+            (telemetry.output_tokens, request.budget.max_output_tokens),
+        )
+    ):
+        return SubscriptionFailure.BUDGET
+    if payload.get("status") == "SUCCESS":
+        return None
+    error = payload.get("error", "")
+    if payload.get("status") in ("CANCELED", "INTERRUPTED"):
+        return SubscriptionFailure.INTERRUPTED
+    if isinstance(error, str) and re.search(r"\b429\b", error):
+        return SubscriptionFailure.THROTTLED
+    if isinstance(error, str) and re.search(
+        r"\b(401|403)\b|(?:authentication|verification) required|verify your account",
+        error,
+        re.IGNORECASE,
+    ):
+        return SubscriptionFailure.AUTHENTICATION
+    return SubscriptionFailure.OUTAGE
 
 
 def _usage(value: object) -> AttemptTelemetry:
