@@ -83,6 +83,15 @@ class LocalCliMcp:
         method, ident = frame.get("method"), frame.get("id")
         if method == "notifications/initialized" and ident is None and self._initialized:
             return None
+        if method == "notifications/roots/list_changed" and "id" not in frame:
+            if not isinstance(frame.get("params", {}), Mapping):
+                raise ProtocolError("invalid MCP parameters")
+            self.metadata_calls += 1
+            if self.metadata_calls > 64:
+                raise ProtocolError("MCP metadata limit exceeded")
+            # Some clients emit this advisory notice before initialize. Forge's
+            # frozen task/worktree authority never comes from client roots.
+            return None
         if type(ident) not in (str, int) or not 1 <= len(str(ident)) <= 128:
             raise ProtocolError("invalid MCP request identity")
         if not isinstance(method, str) or not method:

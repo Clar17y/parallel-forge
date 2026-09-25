@@ -77,8 +77,13 @@ def start_mcp():
         stdout=subprocess.PIPE,
         text=True,
     )
-    if scenario == "optional_startup":
+    if scenario in {"optional_startup", "roots_startup"}:
         assert rpc(child, 0, "server/discover")["error"]["code"] == -32601
+    if scenario == "roots_startup":
+        child.stdin.write(
+            '{"jsonrpc":"2.0","method":"notifications/roots/list_changed","params":{}}\n'
+        )
+        child.stdin.flush()
     assert "result" in rpc(
         child,
         1,
@@ -97,7 +102,7 @@ def start_mcp():
     return child
 
 
-child = start_mcp() if scenario == "optional_startup" else None
+child = start_mcp() if scenario in {"optional_startup", "roots_startup"} else None
 send(
     {
         "event": "init",

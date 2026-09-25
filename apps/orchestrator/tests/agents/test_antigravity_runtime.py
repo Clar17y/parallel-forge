@@ -68,7 +68,7 @@ def launch_directories(monkeypatch):
     return paths
 
 
-@pytest.mark.parametrize("scenario", ["success", "optional_startup"])
+@pytest.mark.parametrize("scenario", ["success", "optional_startup", "roots_startup"])
 async def test_antigravity_uses_real_mcp_and_supervised_stream_without_capability_evidence(
     tmp_path, launch_directories, scenario
 ):

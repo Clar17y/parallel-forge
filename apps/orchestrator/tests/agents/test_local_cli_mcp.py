@@ -20,6 +20,56 @@ async def initialize(mcp):
 
 
 @pytest.mark.parametrize("already_initialized", [False, True])
+async def test_roots_notification_is_advisory_and_preserves_handshake_and_authority(
+    already_initialized,
+):
+    broker = _Broker()
+    value = request()
+    mcp = LocalCliMcp(value, broker)
+    if already_initialized:
+        await initialize(mcp)
+    before = mcp.metadata_calls
+    notification = {
+        "jsonrpc": "2.0",
+        "method": "notifications/roots/list_changed",
+        "params": {"_meta": {}},
+    }
+    assert await mcp._handle(notification) is None
+    assert mcp.metadata_calls == before + 1
+    assert mcp.allowed == value.authorization.permitted_tools
+    assert mcp.request == value and not broker.calls
+    assert mcp._initialized is already_initialized
+    call = {
+        "jsonrpc": "2.0",
+        "id": "read",
+        "method": "tools/call",
+        "params": {"name": "repository.read_file", "arguments": {"path": "README.md"}},
+    }
+    if not already_initialized:
+        with pytest.raises(ProtocolError, match="MCP tools unavailable"):
+            await mcp._handle(call)
+        await initialize(mcp)
+    assert (await mcp._handle(call))["result"]["isError"] is False
+    assert len(broker.calls) == 1 and mcp.calls == 1
+    await mcp.revoke()
+    with pytest.raises(ProtocolError, match="closed or invalid"):
+        await mcp._handle(notification)
+
+
+async def test_roots_notifications_are_bounded_and_malformed_frames_still_fail():
+    mcp = LocalCliMcp(request(), _Broker())
+    frame = {"jsonrpc": "2.0", "method": "notifications/roots/list_changed"}
+    for invalid in ({"id": None}, {"params": []}, {"method": "notifications/unknown"}):
+        with pytest.raises(ProtocolError):
+            await mcp._handle(frame | invalid)
+    for _ in range(64):
+        assert await mcp._handle(frame) is None
+    with pytest.raises(ProtocolError, match="MCP metadata limit exceeded"):
+        await mcp._handle(frame)
+    assert not mcp._initialized and mcp.calls == 0
+
+
+@pytest.mark.parametrize("already_initialized", [False, True])
 async def test_unsupported_method_returns_rpc_error_and_allows_normal_handshake(
     already_initialized,
 ):
