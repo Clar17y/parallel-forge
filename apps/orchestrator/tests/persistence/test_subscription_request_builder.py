@@ -124,4 +124,7 @@ async def test_closed_candidate_request_advertises_only_inspection_tools(session
         ToolName.VALIDATION_RESULTS_READ, ToolName.REVIEW_ARTIFACTS_READ,
     })
     assert "candidate is CLOSED" in request.trusted_system_prompt
+    # Acceptance dispatches controller validation. Requiring its result here
+    # leaves a live primary waiting for work that only its proposal can start.
+    assert "controller runs final validation after this proposal" in request.trusted_system_prompt
     assert request.untrusted_context["candidate_epoch"] == epoch + 1
