@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from forge import __version__
 from forge.api.docs import install_docs
 from forge.api.openapi import install_openapi
 from forge.api.routes.approvals import router_for as approval_router_for
@@ -168,7 +169,7 @@ def create_app(
 
     app = FastAPI(
         title="Parallel Forge",
-        version="0.1.0",
+        version=__version__,
         openapi_url="/api/openapi.json",
         docs_url=None,
         redoc_url=None,

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "parallel-forge"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.14,<3.15"
 dependencies = [
   "alembic>=1.16,<2",

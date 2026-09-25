@@ -53,6 +53,27 @@ ARCHIVE_PATHS = (
 )
 
 
+def _assert_matching_environment(historical_root, current_root):
+    metadata = []
+    locks = []
+    for root in (historical_root, current_root):
+        document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+        project = document["project"]
+        assert project["name"] == "parallel-forge"
+        local = [package for package in lock["package"] if package["name"] == project["name"]]
+        assert len(local) == 1 and local[0]["source"] == {"editable": "."}
+        # Historical source is imported through its own PYTHONPATH. Only its
+        # first-party release label may differ, bound to that project's lock entry.
+        assert local[0].pop("version") == project.pop("version")
+        # Test marker registration does not alter the interpreter environment.
+        document.get("tool", {}).get("pytest", {}).get("ini_options", {}).pop("markers", None)
+        metadata.append(document)
+        locks.append(lock)
+    assert locks[0] == locks[1], "Historical execution needs its exact locked dependencies"
+    assert metadata[0] == metadata[1], "Historical execution needs matching environment metadata"
+
+
 def historical_source():
     # Local Git objects only. CI must fetch the retained history; tests never
     # fetch a moving branch or download source from an unpinned external URL.
@@ -79,16 +100,7 @@ def historical_source():
             with path.open("xb") as stream:
                 stream.write(value)
             files[item.filename] = hashlib.sha256(value).hexdigest()
-    assert (target / "uv.lock").read_bytes() == (ROOT / "uv.lock").read_bytes(), (
-        "Historical execution needs its exact dependency lock"
-    )
-    metadata = []
-    for root in (target, ROOT):
-        document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-        # Test marker registration does not alter the interpreter environment.
-        document.get("tool", {}).get("pytest", {}).get("ini_options", {}).pop("markers", None)
-        metadata.append(document)
-    assert metadata[0] == metadata[1], "Historical execution needs matching environment metadata"
+    _assert_matching_environment(target, ROOT)
     return SimpleNamespace(
         root=target,
         files=files,
@@ -267,7 +279,11 @@ async def _historical_case(
             "old_reader_after_head_upgrade": True,
             "old_reader_preserved_rows_and_artifacts": True,
             "limits": [
-                "Historical v0.1 Python source; shared test environment with identical lockfile and metadata apart from test markers",
+                (
+                    "Historical v0.1 Python source; shared environment with identical locked "
+                    "dependencies and metadata apart from the bound first-party release "
+                    "version and test markers"
+                ),
                 "Current test harness and explicitly scripted provider responses",
                 "No historical deployment, rolling writer compatibility or rollback claim",
                 "Current authenticated API components after upgrade; no browser or live provider call",

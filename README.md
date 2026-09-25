@@ -1,9 +1,10 @@
 # Parallel Forge
 
-> **Status: v0.1 deterministic acceptance passed.** Tasks 1–29 and required
-> independent review repairs are complete. Full backend, Docker and cross-platform
-> checks passed; see the [acceptance evidence](docs/acceptance-v0.1.md).
-> Merging, live-provider/GitHub checks and deployment require separate authorization.
+> **Status: v0.2 functional acceptance complete for personal operator use.**
+> A1–A9 and the remaining filesystem checks have recorded outcomes. See the
+> [release handoff](docs/v0.2-release.md) for supported behavior, evidence,
+> platform limitations and the final delivery gates. Historical full-suite
+> failures remain explicit; focused acceptance is not a new full-CI pass.
 
 Parallel Forge is a local-first control plane for durable, reviewable
 agent-assisted software delivery. It began as the engineering system for
@@ -19,12 +20,19 @@ building Parallel, but is designed to manage other repositories independently.
 - protected local secrets, isolated PostgreSQL resources, and environment staging
 - Docker-first and explicit trusted-host command execution bound to exact managed
   worktrees
+- subscription-backed local CLI orchestration, bounded specialist delegation,
+  shared-worktree ownership and independent-worktree concurrency
+- frozen routing profiles, durable quota/fallback state, per-task controls,
+  operator feedback and measured/unknown usage reporting
 
 ## Safety model
 
-Model-driven agents never receive push, pull-request write, merge, approval,
-credential, policy-write, or Forge-database authority. Remote writes are reserved
-for a deterministic Release Controller and require exact human-approved evidence.
+Forge-controlled agent tools grant no push, pull-request write, merge, approval,
+credential, policy-write, or Forge-database authority. Forge's remote writes are
+reserved for a deterministic Release Controller and require exact human-approved evidence.
+Operator-trusted clients may expose their own native tools; the
+[accepted provider policy](docs/v0.2-release.md#accepted-provider-policy) describes
+that limitation and the controls Forge continues to enforce.
 
 ## Architecture
 
@@ -38,17 +46,20 @@ the deterministic Release Controller owns approved GitHub effects. Candidate-spe
 ## Local development
 
 Use Python 3.14, Node.js 24, uv, npm, Git and Docker, with the repository's
-PostgreSQL compose service healthy. Configure the control database, data root,
-provider secret reference and pricing catalog as described in the
-[operator runbook](docs/operator-runbook.md).
+PostgreSQL compose service healthy. Configure the control database and data root
+as described in the [operator runbook](docs/operator-runbook.md). For subscription
+work, use the [local CLI setup guide](docs/v0.2-profile-cli.md) and an installation
+manifest pointing to existing official-client logins. The default is operator
+trust; provider API keys and capability publication are not startup prerequisites.
+Antigravity retains its `approved_tools_unproved` warning.
 
 Run `npm run dev` (or `scripts/dev.ps1` / `bash scripts/dev.sh`) to install the
 frozen dependencies, migrate, build the runner and supervise the API, worker and
 web app. This command rotates the operator session and prints a fresh bootstrap
-URL. Hosted startup, recovery and shutdown acceptance has passed.
+URL. The operator runbook records retained supervisor startup/shutdown evidence.
 
 Use `npm run test`, `npm run lint`, `npm run typecheck` and `npm run build` for
-focused development checks. `npm run verify` includes the deterministic backend
+development checks. `npm run verify` includes the deterministic backend
 and web checks; PostgreSQL and Docker must be available. Browser acceptance is a
 separate `npm run test:e2e` command covering the approval flow, restart/cancellation
 and keyboard/accessibility behavior.
@@ -64,11 +75,11 @@ cleanup under `.llm-output/local-verification/`. See
 
 ## Development status and roadmap
 
-Tasks 1–29 are implemented, including release/queue recovery, dashboard/resource
-controls, evaluations, process acceptance and cross-platform CI. Independent
-review findings are closed. Final integrated backend verification passed on `4d42e0d`.
-The [progress ledger](docs/v0.1-progress.md) distinguishes current evidence from
-historical test results and is the authoritative continuation record.
+The [v0.2 release handoff](docs/v0.2-release.md) combines the completed functional
+work, current setup and stopped-upgrade guidance. The
+[v0.2 progress ledger](docs/v0.2-progress.md) distinguishes current outcomes from
+historical checkpoints. The [remaining issue queue](docs/v0.2-issue-backlog.md)
+tracks final publication and merge; one-run profile overrides are post-v0.2.
 
 ## Prerequisites and verification
 
@@ -84,14 +95,18 @@ historical test results and is the authoritative continuation record.
   `.venv/Scripts/python.exe -m mypy apps/orchestrator/src` on Windows, with the
   equivalent `.venv/bin/python` commands on POSIX
 
-The one-command development supervisor has passed hosted startup acceptance.
 Manual process startup, configuration, approvals and recovery are described in the
 [operator runbook](docs/operator-runbook.md).
 
 ## Documentation
 
 - [Operator runbook](docs/operator-runbook.md)
-- [Verified progress](docs/v0.1-progress.md)
+- [v0.2 release handoff](docs/v0.2-release.md)
+- [Local CLI profiles and readiness](docs/v0.2-profile-cli.md)
+- [Subscription task controls](docs/v0.2-task-inspector.md)
+- [Stopped upgrade and recovery](docs/v0.2-upgrade.md)
+- [v0.2 progress](docs/v0.2-progress.md)
+- [Historical v0.1 acceptance](docs/acceptance-v0.1.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)
 - [Full v0.1 design](docs/superpowers/specs/2026-08-21-forge-v0-1-design.md)

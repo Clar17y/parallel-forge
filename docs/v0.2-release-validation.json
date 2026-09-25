@@ -1,0 +1,84 @@
+{
+  "release": "0.2.0",
+  "prepared_at": "2026-09-25T20:02:00.202843+00:00",
+  "integration_base": "64e0187134080d3d05fdb0f4f2ecdbede2a60fb5",
+  "target_branch": "main",
+  "scope": "Bundled #28 release review/summary, #29 publication preparation and #30 merge handoff. Publication and merge require separate authorization.",
+  "fresh_checks": [
+    {
+      "name": "version_api_and_dependency_guard",
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 6.267,
+      "junit": ".llm-output/release-handoff/version-api-junit.xml"
+    },
+    {
+      "name": "stopped_upgrade_and_schema_drift",
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 165.783,
+      "junit": ".llm-output/release-handoff/stopped-upgrade-junit.xml"
+    }
+  ],
+  "distinct_passing_cases": 21,
+  "static_checks": {
+    "scoped_ruff": "passed",
+    "scoped_format": "passed",
+    "source_mypy": "passed for the two changed source modules, with follow-imports=silent",
+    "frozen_lock": "passed offline; only first-party version changed",
+    "openapi": "passed; only info.version changed",
+    "whitespace": "passed"
+  },
+  "upgrade_evidence": {
+    "historical_source": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+    "old_schema": "20260909_0006",
+    "new_schema": "20260920_0024",
+    "manifests_verified": 4,
+    "artifact_files_verified": 62,
+    "states": [
+      {
+        "state": "plan",
+        "filesystem_files_verified": 27
+      },
+      {
+        "state": "review-cancel",
+        "filesystem_files_verified": 76
+      },
+      {
+        "state": "review-pause",
+        "filesystem_files_verified": 76
+      },
+      {
+        "state": "unfinished",
+        "filesystem_files_verified": 47
+      }
+    ],
+    "backup_restore_performed": false
+  },
+  "repairs": [
+    "The new release-label compatibility test first failed on exact lock-byte equality. The helper now ignores only the bound editable first-party release version and existing test markers; six negative mutations prove dependency, interpreter, source, checksum and version-binding drift still fail.",
+    "Scoped lint required parentheses around a long manifest string. The formatting repair preserves the tested ASTs; matching test evidence is reused."
+  ],
+  "reused_evidence": "A1-A9 and #17 retain their individual result records and PR outcomes. The four stopped-upgrade scenarios reran for the changed release-version compatibility helper; unchanged plan/feedback and other scenario evidence is not rerun or recounted.",
+  "review": "Primary self-review of the integrated acceptance records and release-preparation delta. No separate development AI review or fresh provider certification is claimed.",
+  "main_rules_preflight": {
+    "ruleset_id": 23602278,
+    "required_approving_reviews": 1,
+    "resolve_review_threads": true,
+    "code_owner_review_when_applicable": true,
+    "bypass_actors": [],
+    "required_status_checks_configured": [],
+    "note": "Recheck the exact published PR, required review and current rules before requesting the final merge authorization."
+  },
+  "known_limits": [
+    "Windows linked-quarantine rejection remains unverified on this host due to WinError 1314.",
+    "#17 Linux real bind-mount rejection passed; its isolated container was removed.",
+    "Historical-source upgrades use the provisioned matching dependency environment; no historical installer, production migration, rolling writers or backup restore is claimed.",
+    "Historical full Python/runtime CI remains failed. No full workflow was dispatched for this preparation.",
+    "Antigravity native tools may be available; operator_trusted and approved_tools_unproved remain explicit."
+  ],
+  "evidence_directory": ".llm-output/release-handoff/",
+  "live_provider_calls": 0
+}
