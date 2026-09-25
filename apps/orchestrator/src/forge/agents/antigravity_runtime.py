@@ -368,10 +368,7 @@ class AntigravityGateway:
             if (
                 not isinstance(denied_actions, list)
                 or len(denied_actions) > 64
-                or any(
-                    not isinstance(action, str) or not 1 <= len(action) <= 128
-                    for action in denied_actions
-                )
+                or any(not _valid_denied_action(action) for action in denied_actions)
             ):
                 return SubscriptionInvocationResult(
                     attempt=request.attempt,
@@ -404,6 +401,19 @@ class AntigravityGateway:
             await session.close_stdin()
             return decision, telemetry
         raise ProtocolError("Antigravity ended before a result")
+
+
+def _valid_denied_action(action: object) -> bool:
+    if isinstance(action, str):
+        return 1 <= len(action) <= 128
+    if not isinstance(action, Mapping):
+        return False
+    # Current clients report objects; older clients reported action strings.
+    # Either nonempty form still rejects the decision as a permission denial.
+    return all(
+        isinstance(value := action.get(key), str) and 1 <= len(value) <= 128
+        for key in ("action", "display_name")
+    )
 
 
 def _result_failure(

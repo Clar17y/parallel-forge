@@ -185,9 +185,13 @@ if scenario == "provider_cancel":
     result.update(status="CANCELED")
 if scenario.startswith("permission_denied"):
     result["denied_actions"] = ["mcp"]
+    if scenario == "permission_denied_object":
+        result["denied_actions"] = [{"action": "mcp", "display_name": "McpTool"}]
     if scenario == "permission_denied":
         result.pop("structured_output")
 if scenario == "invalid_denied_actions":
     result["denied_actions"] = "mcp"
+if scenario == "invalid_denied_action_object":
+    result["denied_actions"] = [{"action": "mcp", "display_name": None}]
 send({"event": "result", "result": result})
 sys.stdin.read()

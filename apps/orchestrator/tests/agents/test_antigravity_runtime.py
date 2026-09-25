@@ -316,7 +316,9 @@ async def test_invalid_output_retains_usage_and_explains_the_failure(tmp_path, s
     assert result.launch_proof.stop_confirmed
 
 
-@pytest.mark.parametrize("scenario", ["permission_denied", "permission_denied_with_output"])
+@pytest.mark.parametrize(
+    "scenario", ["permission_denied", "permission_denied_with_output", "permission_denied_object"]
+)
 async def test_headless_permission_denial_is_not_a_successful_forge_decision(tmp_path, scenario):
     broker = _Broker()
     runtime, _ = gateway(tmp_path, scenario, broker=broker)
@@ -329,8 +331,9 @@ async def test_headless_permission_denial_is_not_a_successful_forge_decision(tmp
     assert result.launch_proof.stop_confirmed
 
 
-async def test_malformed_denied_actions_cannot_be_accepted_as_success(tmp_path):
-    runtime, _ = gateway(tmp_path, "invalid_denied_actions")
+@pytest.mark.parametrize("scenario", ["invalid_denied_actions", "invalid_denied_action_object"])
+async def test_malformed_denied_actions_cannot_be_accepted_as_success(tmp_path, scenario):
+    runtime, _ = gateway(tmp_path, scenario)
     result = await runtime.execute(request())
     assert result.failure is SubscriptionFailure.PROTOCOL
     assert result.decision is None
