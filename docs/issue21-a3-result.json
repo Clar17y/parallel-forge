@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/Clar17y/parallel-forge/issues/21",
+  "date": "2026-09-25",
+  "outcome": "functional_acceptance_complete_locally",
+  "delivery": "documentation_pending_push_and_pr_authorization",
+  "source_commit": "4d694f85ccaaab995e3ce42c329b6363e05a912e",
+  "branch": "codex/issue-21-a3",
+  "runtime_changes": [],
+  "test_changes": [],
+  "environment": {
+    "platform": "Windows",
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "database": "PostgreSQL 17.11; disposable forge_test databases",
+    "runner_mode": "trusted_host",
+    "providers": "scripted adapters; frozen routes unchanged"
+  },
+  "validation": {
+    "command": [
+      ".venv/Scripts/python.exe",
+      "-m",
+      "pytest",
+      "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py",
+      "apps/orchestrator/tests/persistence/test_subscription_capacity_projection.py",
+      "-q",
+      "--junitxml=.llm-output/issue21/a3-junit.xml"
+    ],
+    "environment_override": {
+      "FORGE_ACCEPTANCE_OUTPUT_ROOT": "<managed-worktree>/.llm-output/issue21/acceptance"
+    },
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 5,
+    "warning_kind": "dependency deprecations",
+    "pytest_duration_seconds": 155.89,
+    "exit_code": 0,
+    "log": ".llm-output/issue21/a3.log",
+    "junit": ".llm-output/issue21/a3-junit.xml"
+  },
+  "criteria": {
+    "b_completes_while_a_holds_check_checkpoint_pause_or_reconciliation": "passed in all four cases",
+    "same_project_origin_and_relative_paths_have_separate_worktree_ownership": "passed",
+    "a_control_effect_and_budget_state_preserved_while_b_completes": "passed",
+    "b_handoff_applies_once_through_recreated_worker_composition": "passed",
+    "global_run_provider_limits_and_fair_waits": "passed in six capacity cases",
+    "no_debit_for_work_that_does_not_start": "matching A2 result reused; admission reserves only after a successful claim",
+    "public_worker_concurrent_slots": "existing entry-point implementation and coverage inspected; A1 live composition reused"
+  },
+  "scenario_capacity": {
+    "global_limit": 2,
+    "run_limit": 3,
+    "provider_limit": 2
+  },
+  "pairs": [
+    {
+      "held_condition": "check",
+      "a_run_id": "67d9ad6f-d84f-4749-a02b-4f9853762b87",
+      "a_manifest_digest": "1fb6016a2ec7e3277b8f0ff651c95560f20d0410373fc3320e6e65c2851b563b",
+      "a_artifacts_verified": 11,
+      "a_state_while_b_completed": "leased",
+      "a_pause_requested": false,
+      "a_unsettled_effects_while_b_completed": 1,
+      "b_run_id": "45fdb9a7-3ba3-4bf6-9129-fe9434df4a1e",
+      "b_manifest_digest": "2d64a4bb12049bd2dd74fbbfa584acb68f6422fda8c81da569c776c5155da36f",
+      "b_artifacts_verified": 8,
+      "b_candidate_tree_digest": "3b670e42532d3d31ed7f2d980d973b089f0a7d469f6de48319e40ea220414f61",
+      "active_at_b_admission": 2,
+      "b_handoff_applied_before_a_release": true,
+      "a_task_state_preserved": true
+    },
+    {
+      "held_condition": "checkpoint",
+      "a_run_id": "a2d85621-31c7-4257-8e42-ea7be0883487",
+      "a_manifest_digest": "1a908ac32ec54e653d5ed72c119ee4166f46dab4cbce395c8fb9b9b5f970ba49",
+      "a_artifacts_verified": 9,
+      "a_state_while_b_completed": "leased",
+      "a_pause_requested": false,
+      "a_unsettled_effects_while_b_completed": 1,
+      "b_run_id": "84772cf3-769a-417a-bf8d-541dd8d12a9f",
+      "b_manifest_digest": "18192e34f4935bbf4be9b8968ac3577d980c35ad75c31416c8020e61ffb78ddc",
+      "b_artifacts_verified": 8,
+      "b_candidate_tree_digest": "3b670e42532d3d31ed7f2d980d973b089f0a7d469f6de48319e40ea220414f61",
+      "active_at_b_admission": 2,
+      "b_handoff_applied_before_a_release": true,
+      "a_task_state_preserved": true
+    },
+    {
+      "held_condition": "paused",
+      "a_run_id": "749b8481-f03b-4c38-b011-e936cf180263",
+      "a_manifest_digest": "68320032ac6c850ce72e1998916f68b79468c50e3056c13ef1e2afe31bc3d354",
+      "a_artifacts_verified": 8,
+      "a_state_while_b_completed": "reconciling",
+      "a_pause_requested": true,
+      "a_unsettled_effects_while_b_completed": 0,
+      "b_run_id": "4765bd1c-fc17-474c-9a0a-f16a801bd31f",
+      "b_manifest_digest": "52c24bdd65a8d069dab1275dae0b7916c6c76dfa43cdbe3a619b2e6f7d018d93",
+      "b_artifacts_verified": 8,
+      "b_candidate_tree_digest": "3b670e42532d3d31ed7f2d980d973b089f0a7d469f6de48319e40ea220414f61",
+      "active_at_b_admission": 1,
+      "b_handoff_applied_before_a_release": true,
+      "a_task_state_preserved": true
+    },
+    {
+      "held_condition": "reconciliation",
+      "a_run_id": "2930a119-ed77-4bfa-9fd4-b6055f99a085",
+      "a_manifest_digest": "7def0211df90112138687f386c2dd93f930ec673bf8dbda702541f7bd4eb2681",
+      "a_artifacts_verified": 3,
+      "a_state_while_b_completed": "reconciling",
+      "a_pause_requested": false,
+      "a_unsettled_effects_while_b_completed": 1,
+      "b_run_id": "7327aa73-a4ae-4373-8e4e-065cba50c04e",
+      "b_manifest_digest": "d910399d38c3c22b7f38ac415e7e568381b11ee8fd7ee3aa1639ba0f7783f785",
+      "b_artifacts_verified": 8,
+      "b_candidate_tree_digest": "3b670e42532d3d31ed7f2d980d973b089f0a7d469f6de48319e40ea220414f61",
+      "active_at_b_admission": 2,
+      "b_handoff_applied_before_a_release": true,
+      "a_task_state_preserved": true
+    }
+  ],
+  "evidence_inspection": {
+    "manifests_verified": 8,
+    "artifact_files_verified": 63,
+    "manifest_digests_artifact_bytes_and_parent_closures": "passed",
+    "same_origin_distinct_worktrees_and_actual_owned_file_contents": "passed",
+    "held_a_state_preserved_and_b_grader_handoff_acceptance": "passed",
+    "local_manifest_pattern": ".llm-output/issue21/acceptance/<run_id>/manifest.json",
+    "scripted_attempts_per_run": 3,
+    "b_controlled_receipts_per_run": 3,
+    "outstanding_attempt_reservations_at_retention": 0
+  },
+  "reused_evidence": [
+    {
+      "source": "docs/issue19-a1-result.json",
+      "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+      "scope": "normal API, separate worker, PostgreSQL and live operator-trusted runtime composition"
+    },
+    {
+      "source": "docs/issue20-a2-result.json",
+      "scope": "conflicting work queues without attempt debit and ownership/barrier checks",
+      "matching_inputs": "apps, agents, tests, pyproject.toml and uv.lock unchanged between tested A2 source 7e6e41c and source_commit"
+    },
+    {
+      "source": "docs/v0.2-progress.md",
+      "scope": "historical scheduler and process evidence retained; no new whole-suite or public-process run claimed"
+    }
+  ],
+  "self_review": "Primary traced the worker invocation slots, short admission transaction and worktree-scoped fences, and checked current criteria against the tests and retained evidence. No concrete missing public-process behavior was found.",
+  "live_provider_calls": 0,
+  "usage_note": "The eight scenario runs use 24 scripted attempts. Token and cost telemetry is synthetic, not measured subscription usage.",
+  "limitations": [
+    "Fresh validation composes worker services in the test process with scripted providers, real Git/checks and PostgreSQL; it does not launch real provider clients or separate public API/worker processes.",
+    "B completes its child handoff with an uncommitted alpha edit; this scenario does not claim final run acceptance, a committed B candidate or publication.",
+    "A pause and unresolved receipt intentionally remain durable in those variants; completing B does not repair or clear them.",
+    "Current validation used Windows trusted-host commands. Existing platform/process results are retained without a new Linux or Docker-runner campaign.",
+    "Full manifests and artifacts are local ignored evidence under .llm-output/issue21.",
+    "No full CI, fixture publication, push, PR, merge or A4 work was performed."
+  ]
+}
