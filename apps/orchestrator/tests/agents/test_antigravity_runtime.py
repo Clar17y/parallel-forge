@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 from forge.agents.antigravity_runtime import AntigravityGateway, AntigravityInstallation
 from forge.agents.client_process import ClientProcessSupervisor
-from forge.agents.subscription_protocol import output_schema
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
@@ -107,7 +106,7 @@ async def test_runtime_uses_review_mode_with_only_its_forge_server_allowed(tmp_p
     assert result.launch_proof.stop_confirmed
 
 
-async def test_forge_instructions_bind_the_selected_runtime_agent(tmp_path, monkeypatch):
+async def test_forge_rules_and_response_contract_reach_the_default_runtime(tmp_path, monkeypatch):
     observed = []
     original_start = ClientProcessSupervisor.start
     value = replace(
@@ -117,15 +116,12 @@ async def test_forge_instructions_bind_the_selected_runtime_agent(tmp_path, monk
     )
 
     async def capture_agent(self, spec, **kwargs):
-        if "--agent" in spec.argv:
-            name = spec.argv[spec.argv.index("--agent") + 1]
-            observed.append(
-                (Path(spec.cwd) / f".gemini/config/agents/{name}.md").read_text(encoding="utf-8")
-            )
+        assert "--agent" not in spec.argv
+        observed.append((Path(spec.cwd) / ".gemini/GEMINI.md").read_text(encoding="utf-8"))
         return await original_start(self, spec, **kwargs)
 
     monkeypatch.setattr(ClientProcessSupervisor, "start", capture_agent)
-    runtime, _ = gateway(tmp_path, "success")
+    runtime, _ = gateway(tmp_path, "rules_contract")
     result = await runtime.execute(value)
     assert result.failure is None
     assert len(observed) == 1
@@ -134,13 +130,11 @@ async def test_forge_instructions_bind_the_selected_runtime_agent(tmp_path, monk
     assert "duration_ms=metadata.command_duration_ms" in observed[0]
     assert "receipt_id=operation_id" in observed[0]
     assert "candidate_commit must be null without a git.commit receipt" in observed[0]
-    schema_text = observed[0].split("\nForge final response schema:\n", 1)[1]
-    assert json.loads(schema_text) == output_schema(value)
     assert "Use the client's finish tool to return the final structured decision" in observed[0]
     assert "a handoff is not a Forge tool or a repository file" in observed[0]
     assert "UNTRUSTED_TASK_MARKER" not in observed[0]
     assert value.authorization.broker_token not in observed[0]
-    assert "subagent: false" in observed[0]
+    assert len(observed[0].encode("utf-8")) < 24000
     assert f"forge_{value.attempt.attempt_id.hex}" in observed[0]
     assert len(runtime.broker.calls) == 1 and runtime.broker.revoked
     assert result.launch_proof.stop_confirmed

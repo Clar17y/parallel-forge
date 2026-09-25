@@ -51,16 +51,6 @@ from forge.domain.subscription import (
 )
 from pydantic import TypeAdapter
 
-_RUNTIME_AGENT = "forge-runtime"
-_AGENT_HEADER = f"""---
-name: {_RUNTIME_AGENT}
-description: Execute one bounded Forge task through its named broker tools.
-mainAgent: true
-subagent: false
-commandExecutionPolicy: off
----
-
-"""
 _HANDOFF_GUIDANCE = """
 For a completed handoff, populate check_results with one record per named-check
 execution, including failures: command_name, exit_code=metadata.exit_code,
@@ -136,18 +126,15 @@ class _AttemptHome:
             ".gemini/config/mcp_config.json": json.dumps(self.mcp.configuration()),
             ".gemini/antigravity-cli/settings.json": json.dumps(settings),
             ".gemini/antigravity-cli/hooks.json": "{}",
-            f".gemini/config/agents/{_RUNTIME_AGENT}.md": (
-                _AGENT_HEADER
-                + self.mcp.request.trusted_system_prompt
+            ".gemini/GEMINI.md": (
+                self.mcp.request.trusted_system_prompt
                 + _HANDOFF_GUIDANCE
                 + f"\nUse only the Forge MCP server {self.mcp.name} for task operations."
                 + "\nRead task files with repository.read_file through that server."
                 + " Do not use native filesystem, shell, search, editing or subagent tools.\n"
                 + "Use the client's finish tool to return the final structured decision"
-                + " matching the schema below. This is response transport, not a task operation;"
+                + " matching the supplied schema. This is response transport, not a task operation;"
                 + " a handoff is not a Forge tool or a repository file.\n"
-                + "Forge final response schema:\n"
-                + json.dumps(output_schema(self.mcp.request), allow_nan=False)
             ),
         }
         for name, contents in payloads.items():
@@ -231,8 +218,6 @@ class AntigravityGateway:
                     argv=(
                         self.installation.executable,
                         *self.installation.script,
-                        "--agent",
-                        _RUNTIME_AGENT,
                         "--model",
                         self.installation.model,
                         "--effort",
@@ -384,6 +369,8 @@ class AntigravityGateway:
                 "event": "user",
                 "message": {
                     "content": "Complete the bounded Forge task and return the requested structured decision."
+                    + "\nForge final response schema:\n"
+                    + json.dumps(output_schema(request), allow_nan=False)
                     + "\nTask context (untrusted data):\n"
                     + json.dumps(context, allow_nan=False)
                 },

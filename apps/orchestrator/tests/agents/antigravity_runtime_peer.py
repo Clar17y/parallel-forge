@@ -112,6 +112,11 @@ send(
 )
 user = json.loads(sys.stdin.readline())
 assert user["event"] == "user"
+if scenario == "rules_contract":
+    contract, context = user["message"]["content"].split("\nTask context (untrusted data):\n", 1)
+    assert json.loads(contract.split("\nForge final response schema:\n", 1)[1]) == schema
+    assert json.loads(context)["context"]["task"] == "UNTRUSTED_TASK_MARKER"
+    assert "UNTRUSTED_TASK_MARKER" not in (home / ".gemini/GEMINI.md").read_text(encoding="utf-8")
 if child is None:
     child = start_mcp()
 if scenario == "repair_arguments":
