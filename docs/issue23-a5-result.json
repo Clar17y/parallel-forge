@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/Clar17y/parallel-forge/issues/23",
+  "date": "2026-09-25",
+  "outcome": "functional_acceptance_complete_locally",
+  "source_commit": "c46656e06dbca58d0342eb9f2bb396eba0505fdc",
+  "delivery": "Local pre-delivery record for the development change; fixture publication and merge remain unapproved",
+  "runtime_changes": [],
+  "test_changes": [],
+  "evidence_class": "scripted primary with real PostgreSQL, managed Git and trusted-host named checks",
+  "validation": {
+    "command": [
+      ".venv/Scripts/python.exe", "-m", "pytest",
+      "apps/orchestrator/tests/persistence/test_subscription_trivial_acceptance.py",
+      "apps/orchestrator/tests/persistence/test_subscription_review_evidence_source.py",
+      "apps/orchestrator/tests/persistence/test_subscription_pr_publication.py",
+      "-q", "--junitxml=.llm-output/issue23/a5-junit.xml"
+    ],
+    "python": "3.14.5",
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 5,
+    "duration_seconds": 83.06,
+    "exit_code": 0,
+    "log": ".llm-output/issue23/a5.log"
+  },
+  "run_id": "db10e35e-d064-4a0e-b26f-d5c243997a7a",
+  "candidate_commit": "7e1ed94b1a426cc9e48f29a20f217da320dfcf55",
+  "candidate_tree_digest": "fb02e48107de629852a0b40b7c3bc1b7285e6e253686cffe3109ef06128fa7f6",
+  "changed_paths": ["docs/result.md"],
+  "diff": {"added_lines": 1, "removed_lines": 1},
+  "state": "AWAITING_PR_APPROVAL",
+  "pending_gate": "pr",
+  "pending_evidence_digest": "4003bab62e03d976867da3fe17665210fa4fb0989398887e3eed5261b0caf7c6",
+  "frozen_scripted_primary": {
+    "provider": "openai", "client": "codex", "model": "gpt-6-astra", "effort": "low"
+  },
+  "review": {
+    "required": false,
+    "reason": "trivial exact-text documentation correction",
+    "review_task_id": null,
+    "human_approval_gates": ["plan"]
+  },
+  "evidence": {
+    "manifest": ".llm-output/issue23/acceptance/db10e35e-d064-4a0e-b26f-d5c243997a7a/manifest.json",
+    "manifest_digest": "71e14b7ec50563fad760442cc8663d23fbd578efe01625c13c610e2060ac2cbe",
+    "artifact_files_verified": 20,
+    "artifact_bytes_and_parent_closure": "passed",
+    "implementation_attempts": 1,
+    "separate_plan_and_acceptance_attempts": 2,
+    "controlled_receipts": 5,
+    "named_checks": 1,
+    "automatic_repair_debits": 0,
+    "outstanding_attempt_reservations": 0
+  },
+  "gate_coverage": [
+    "Out-of-plan write denied; only the approved one-line documentation repair is committed",
+    "No-review evidence retains its explicit source without a fabricated reviewer approval",
+    "Open, superseded, digest-altered, foreign-primary and pending-review sources rejected",
+    "Fake-GitHub publication/restart recovers without repeating push or PR effects",
+    "Separate exact-candidate human merge gate retains actual acceptance through recovery"
+  ],
+  "reused_evidence": [
+    "docs/issue19-a1-result.json: delivered live primary API/worker/runtime integration",
+    "docs/issue22-a4-result.json: unchanged review-selection finalization, rollback and concurrent replay coverage"
+  ],
+  "self_review": "Primary verified the revised scope, exact diff, named check, no-review source and retained human gates. No uncovered primary integration question required another live call.",
+  "live_provider_calls": 0,
+  "limitations": [
+    "The primary responses and process proof are scripted; counters do not measure live subscription usage or remaining allowance.",
+    "Publication and merge recovery use fake GitHub in separate deterministic cases; the A5 fixture itself stops before publication.",
+    "Historical routes remain frozen. No runtime behavior change, full CI or new provider certification was needed."
+  ]
+}
