@@ -129,6 +129,9 @@ async def test_forge_instructions_bind_the_selected_runtime_agent(tmp_path, monk
     assert result.failure is None
     assert len(observed) == 1
     assert value.trusted_system_prompt in observed[0]
+    assert "output_digest=metadata.command_result_digest" in observed[0]
+    assert "duration_ms=metadata.command_duration_ms" in observed[0]
+    assert "receipt_id=operation_id" in observed[0]
     assert "UNTRUSTED_TASK_MARKER" not in observed[0]
     assert value.authorization.broker_token not in observed[0]
     assert "subagent: false" in observed[0]

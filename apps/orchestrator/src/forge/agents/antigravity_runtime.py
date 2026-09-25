@@ -61,6 +61,14 @@ commandExecutionPolicy: off
 ---
 
 """
+_HANDOFF_GUIDANCE = """
+For a completed handoff, populate check_results with one record per named-check
+execution, including failures: command_name, exit_code=metadata.exit_code,
+passed=(exit_code == 0), output_digest=metadata.command_result_digest,
+duration_ms=metadata.command_duration_ms, and receipt_id=operation_id.
+Include those operation IDs in evidence_receipt_ids too. Receipt IDs alone do not
+replace check_results. Copy values from actual Forge tool receipts.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +131,7 @@ class _AttemptHome:
             f".gemini/config/agents/{_RUNTIME_AGENT}.md": (
                 _AGENT_HEADER
                 + self.mcp.request.trusted_system_prompt
+                + _HANDOFF_GUIDANCE
                 + f"\nUse only the Forge MCP server {self.mcp.name} for task operations."
                 + "\nRead task files with repository.read_file through that server."
                 + " Do not use the client's native ViewFile or other native tools.\n"
