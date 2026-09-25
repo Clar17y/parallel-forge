@@ -135,6 +135,9 @@ class _AttemptHome:
                 + f"\nUse only the Forge MCP server {self.mcp.name} for task operations."
                 + "\nRead task files with repository.read_file through that server."
                 + " Do not use the client's native ViewFile or other native tools.\n"
+                + "Return the JSON response directly; a handoff is not a tool or a file.\n"
+                + "Forge final response schema:\n"
+                + json.dumps(output_schema(self.mcp.request), allow_nan=False)
             ),
         }
         for name, contents in payloads.items():

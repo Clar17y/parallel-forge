@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from forge.agents.antigravity_runtime import AntigravityGateway, AntigravityInstallation
 from forge.agents.client_process import ClientProcessSupervisor
+from forge.agents.subscription_protocol import output_schema
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
@@ -132,6 +133,9 @@ async def test_forge_instructions_bind_the_selected_runtime_agent(tmp_path, monk
     assert "output_digest=metadata.command_result_digest" in observed[0]
     assert "duration_ms=metadata.command_duration_ms" in observed[0]
     assert "receipt_id=operation_id" in observed[0]
+    schema_text = observed[0].split("\nForge final response schema:\n", 1)[1]
+    assert json.loads(schema_text) == output_schema(value)
+    assert "Return the JSON response directly; a handoff is not a tool or a file." in observed[0]
     assert "UNTRUSTED_TASK_MARKER" not in observed[0]
     assert value.authorization.broker_token not in observed[0]
     assert "subagent: false" in observed[0]
