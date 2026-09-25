@@ -1,3 +1,4 @@
+import shlex
 from pathlib import Path
 
 import yaml
@@ -59,3 +60,22 @@ def test_pull_requests_run_only_one_bounded_smoke_job() -> None:
     assert "gitleaks_8.30.1_linux_x64.tar.gz" in scan_command
     assert "sha256sum --check --strict" in scan_command
     assert "git archive HEAD" in scan_command
+
+
+def test_stopped_upgrade_runs_in_the_history_aware_postgres_docker_job() -> None:
+    workflow = _load_workflow(WORKFLOWS / "python-contract.yml")
+    job = workflow["jobs"]["postgres-contract"]
+    assert "postgres" in job["services"]
+    steps = job["steps"]
+    checkout = next(
+        step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+    assert checkout["with"]["fetch-depth"] == "0"
+    path = "apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py"
+    selected = [step for step in steps if path in shlex.split(step.get("run", ""))]
+    assert selected, "Stopped-upgrade rehearsal is missing from the Docker-capable job"
+    for step in selected:
+        command = shlex.split(step["run"])
+        if "-m" in command[command.index("pytest") + 1 :]:
+            marker = command[command.index("-m", command.index("pytest")) + 1]
+            assert marker == "docker"

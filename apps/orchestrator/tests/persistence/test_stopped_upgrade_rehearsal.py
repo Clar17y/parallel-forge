@@ -22,8 +22,9 @@ from forge.agents.client_process import (
 )
 from forge.domain.operation import canonical_digest
 from forge.evaluations.credentials import assert_credential_free
+from forge.persistence.database import create_engine
 from legacy_upgrade_manifest import LEGACY_REVISION
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 
 
@@ -42,6 +43,38 @@ async def _tables(session_factory):
             assert row_count < 10000, name
             tables[name] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
         return tables
+
+
+async def _schema(session_factory):
+    def snapshot(connection):
+        inspector = inspect(connection)
+        schema = {}
+        for name in sorted(inspector.get_table_names()):
+            if name == "alembic_version":
+                continue
+            columns = {}
+            for column in inspector.get_columns(name):
+                columns[column["name"]] = {
+                    "type": column["type"].compile(dialect=connection.dialect),
+                    "enum_values": getattr(column["type"], "enums", None),
+                    **{
+                        key: column.get(key)
+                        for key in ("nullable", "default", "identity", "computed")
+                    },
+                }
+            schema[name] = {
+                "columns": columns,
+                "primary_key": inspector.get_pk_constraint(name),
+                "foreign_keys": inspector.get_foreign_keys(name),
+                "unique_constraints": inspector.get_unique_constraints(name),
+                "checks": inspector.get_check_constraints(name),
+                "indexes": inspector.get_indexes(name),
+            }
+        return schema
+
+    async with session_factory() as session:
+        connection = await session.connection()
+        return await connection.run_sync(snapshot)
 
 
 def _assert_original_rows(before, after):
@@ -143,6 +176,7 @@ async def test_stopped_upgrade_backup_rollback_and_recovery(
     async def stopped_upgrade(case, factory, database_url, config):
         assert len(processes) == 1, "The old writer must stop before backup or migration"
         frozen = await _tables(factory)
+        original_schema = await _schema(factory)
         backup = await asyncio.to_thread(_backup, case, database_url, tmp_path / "backup")
         after_backup = await _tables(factory)
         assert set(after_backup) == set(frozen)
@@ -153,6 +187,8 @@ async def test_stopped_upgrade_backup_rollback_and_recovery(
         # No new-version effects have been admitted: exercise only that rollback boundary.
         assert all(not rows for name, rows in upgraded.items() if name not in frozen)
         await asyncio.to_thread(command.downgrade, config, LEGACY_REVISION)
+        restored_schema = await _schema(factory)
+        assert restored_schema == original_schema, "Rollback schema differs from the v0.1 boundary"
         _assert_original_rows(frozen, await _tables(factory))
         await asyncio.to_thread(command.upgrade, config, "head")
         _assert_original_rows(frozen, await _tables(factory))
@@ -167,6 +203,9 @@ async def test_stopped_upgrade_backup_rollback_and_recovery(
                 "new_migration": head,
                 "old_writer_stopped_before_backup": True,
                 "pre_subscription_rollback": "passed",
+                "original_schema_digest": canonical_digest(original_schema),
+                "restored_schema_digest": canonical_digest(restored_schema),
+                "restored_schema_matches": True,
                 "original_table_digests": {
                     name: canonical_digest(rows) for name, rows in frozen.items()
                 },
@@ -204,3 +243,38 @@ async def test_stopped_upgrade_backup_rollback_and_recovery(
         + "\n",
         encoding="utf-8",
     )
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.parametrize("drift", ["extra-table", "empty-table-column", "column-definition"])
+async def test_stopped_upgrade_rejects_rollback_schema_drift(
+    test_database_url, alembic_config_factory, tmp_path, monkeypatch, drift
+):
+    original_downgrade = command.downgrade
+
+    def downgrade_with_drift(config, revision):
+        original_downgrade(config, revision)
+        if revision != LEGACY_REVISION:
+            return
+
+        async def corrupt():
+            engine = create_engine(test_database_url)
+            try:
+                async with engine.begin() as connection:
+                    statement = {
+                        "extra-table": "CREATE TABLE leftover_subscription (id integer)",
+                        "empty-table-column": "ALTER TABLE pull_requests ADD COLUMN leftover text",
+                        "column-definition": "ALTER TABLE pull_requests ALTER COLUMN run_id DROP NOT NULL",
+                    }[drift]
+                    await connection.execute(text(statement))
+            finally:
+                await engine.dispose()
+
+        asyncio.run(corrupt())
+
+    monkeypatch.setattr(command, "downgrade", downgrade_with_drift)
+    with pytest.raises(AssertionError, match="Rollback schema"):
+        await test_stopped_upgrade_backup_rollback_and_recovery(
+            test_database_url, alembic_config_factory, tmp_path, monkeypatch, "plan"
+        )

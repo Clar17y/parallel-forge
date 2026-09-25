@@ -9,6 +9,7 @@
   "old_source_commit": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
   "source_commit_initial": "77f4c993ffa00e5158bf7774ef7e97015f4a681f",
   "source_commit_final_rehearsal": "3088947f51db69fa87fc95fb49f764d89b48d9bb",
+  "source_commit_review_repair": "c724af2225fbe4e35a2999d0250ac881669a12d2",
   "delivery_base": "70f7308050e575ea862c82a8c2c2ee9bc98ff7ed",
   "test_input_git_blobs": [
     {
@@ -17,7 +18,7 @@
     },
     {
       "path": "apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py",
-      "git_blob": "4bf64f222a2564321bd02fcaa4b1f70ca6e6bc91"
+      "git_blob": "d6ef4cafbcfc13071cd3734a59dbf60d2e428eba"
     },
     {
       "path": "apps/orchestrator/tests/persistence/test_subscription_runtime_upgrade.py",
@@ -42,6 +43,14 @@
     {
       "path": "apps/orchestrator/tests/persistence/legacy_upgrade_manifest.py",
       "git_blob": "b6dd117b201d18697f042dd7ff32b398943b5ff5"
+    },
+    {
+      "path": "tests/ci/test_workflow_policy.py",
+      "git_blob": "093848cceb8d26e2be1423f1d246f8f8e3662481"
+    },
+    {
+      "path": ".github/workflows/python-contract.yml",
+      "git_blob": "c72d69feb208c26869092f2e188ecd3d8cde3d50"
     }
   ],
   "runtime_changes": [],
@@ -53,12 +62,13 @@
   "validation": {
     "python": "3.14.5",
     "postgresql": "17.11",
-    "distinct_passing_cases": 11,
-    "accounting": "Four complete stopped-upgrade cases, six plan/feedback gate cases, and the repaired diagnostic migration case. Initial failures are retained and superseded. Four rehearsals were repeated after sanitizing failure diagnostics; repeats are not added to the distinct count.",
+    "distinct_passing_cases": 16,
+    "accounting": "Four complete stopped-upgrade cases, three adversarial rollback-schema cases, two workflow-selection checks, six plan/feedback gate cases and one diagnostic migration case. Repeated cases are not added to the distinct count. Initial failures and superseded checkpoints are retained.",
     "final_rehearsal_reason": "Self-review found that inline row-length/digest calls could include raw authentication rows in a failing pytest assertion. Bind only counts and digests before comparison, then rerun the four affected rehearsals.",
     "invocation": "python -m pytest <recorded test cases/files> -q --junitxml=<retained path>",
+    "review_repair_reason": "PR55 found that row projection alone missed leftover tables or columns after downgrade, and the docker-marked rehearsal was absent from the workflow command. Red tests confirmed both findings. Snapshot full table/column/constraint/index definitions, test three deliberate drifts, and select the rehearsal in the existing history-aware PostgreSQL Docker job.",
     "rehearsal_environment": {
-      "FORGE_ACCEPTANCE_OUTPUT_ROOT": ".llm-output/issue27/acceptance-final"
+      "FORGE_ACCEPTANCE_OUTPUT_ROOT": ".llm-output/issue27/acceptance-schema"
     },
     "runs": [
       {
@@ -150,6 +160,59 @@
           "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-pause]",
           "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-cancel]"
         ]
+      },
+      {
+        "junit": ".llm-output/issue27/schema-red-junit.xml",
+        "log": ".llm-output/issue27/schema-red.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "1",
+        "skipped": "0",
+        "tests": "1",
+        "time": "15.460",
+        "timestamp": "2026-09-25T18:18:34.669424+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_rejects_rollback_schema_drift[empty-table-column]"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/workflow-red-junit.xml",
+        "log": ".llm-output/issue27/workflow-red.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "1",
+        "skipped": "0",
+        "tests": "1",
+        "time": "0.192",
+        "timestamp": "2026-09-25T18:19:30.853823+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "tests.ci.test_workflow_policy::test_stopped_upgrade_runs_in_the_history_aware_postgres_docker_job"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/schema-repair-junit.xml",
+        "log": ".llm-output/issue27/schema-repair.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "9",
+        "time": "150.866",
+        "timestamp": "2026-09-25T18:20:44.875210+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[plan]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[unfinished]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-pause]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-cancel]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_rejects_rollback_schema_drift[extra-table]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_rejects_rollback_schema_drift[empty-table-column]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_rejects_rollback_schema_drift[column-definition]",
+          "tests.ci.test_workflow_policy::test_pull_requests_run_only_one_bounded_smoke_job",
+          "tests.ci.test_workflow_policy::test_stopped_upgrade_runs_in_the_history_aware_postgres_docker_job"
+        ]
       }
     ],
     "scoped_ruff_check_format_and_diff": "passed"
@@ -161,18 +224,19 @@
     "rollback_before_any_subscription_effects": "passed",
     "all_new_tables_empty_before_rollback": true,
     "original_columns_preserved": true,
+    "rollback_schema_identity_verified": true,
     "original_authentication_rows_compared_without_recording_values": true,
     "backup_restored": false,
     "production_database_modified": false
   },
   "backup_rehearsals": [
     {
-      "manifest": ".llm-output/issue27/acceptance-final/stopped-upgrade-plan.json",
-      "digest": "838dd7c7af9359b33eaaf1a12b269f381e4b4e82b129b3213f38d5fa2ee9a96d",
-      "database_archive_sha256": "1a6e0bc743ee275c0b54eaa3b49bf4287aec56ce92a13e78e6578cd96eb57254",
-      "database_archive_bytes": 126917,
+      "manifest": ".llm-output/issue27/acceptance-schema/stopped-upgrade-plan.json",
+      "digest": "65ee4b65d4a4fd78093c4dbc52a0c5f1b9b13a9e939252f43f23b3521f599ed8",
+      "database_archive_sha256": "e56be38bf8f41ee93c0b45e5db28ce44dbf24084643d9c4c4a1ee8ec949f5d17",
+      "database_archive_bytes": 126924,
       "database_archive_catalog_verified": true,
-      "filesystem_archive_sha256": "0d8c2ba4ef526335b0a6792bc6126374cb922407359a3171f8d81600dd489b54",
+      "filesystem_archive_sha256": "bbd100142eda69e0a18bf38d34ef122efbeb25811a880add75de53de11451d3d",
       "filesystem_files_verified": 27,
       "backup_restored": false,
       "state": "plan",
@@ -181,6 +245,9 @@
       "new_migration": "20260920_0024",
       "old_writer_stopped_before_backup": true,
       "pre_subscription_rollback": "passed",
+      "original_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_matches": true,
       "original_table_row_counts": {
         "operator_sessions": 0,
         "artifact_lineages": 4,
@@ -214,12 +281,12 @@
       "historical_processes_stopped": 2
     },
     {
-      "manifest": ".llm-output/issue27/acceptance-final/stopped-upgrade-review-cancel.json",
-      "digest": "340c8fa10b95ce131cc98e64d943ba5a8078a25bfe2f8c2a0e229ca34431d204",
-      "database_archive_sha256": "c3e5972c87ab7e767377550d3d721027878a3bf5a8f66f0d840f2d7e662cca7d",
-      "database_archive_bytes": 144429,
+      "manifest": ".llm-output/issue27/acceptance-schema/stopped-upgrade-review-cancel.json",
+      "digest": "8e7e0dcc41ee9e31213892f53d8767617bb383e36e27870c8f4a0b6122f03d8b",
+      "database_archive_sha256": "0390d1459329a4c0853b70341488ce3a85fee22085f0b6d5b7bd2568e60475f4",
+      "database_archive_bytes": 144348,
       "database_archive_catalog_verified": true,
-      "filesystem_archive_sha256": "f41a94e768e52b849a91219cc176e2c0c6c732ed2915f81240ddcc498d3b5a10",
+      "filesystem_archive_sha256": "ead966e8843021a1f4c59b1aff7f4132ff47b0c90b6fcd47be8ca15e3a0ad356",
       "filesystem_files_verified": 76,
       "backup_restored": false,
       "state": "review-cancel",
@@ -228,6 +295,9 @@
       "new_migration": "20260920_0024",
       "old_writer_stopped_before_backup": true,
       "pre_subscription_rollback": "passed",
+      "original_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_matches": true,
       "original_table_row_counts": {
         "operator_sessions": 2,
         "artifact_lineages": 26,
@@ -261,12 +331,12 @@
       "historical_processes_stopped": 2
     },
     {
-      "manifest": ".llm-output/issue27/acceptance-final/stopped-upgrade-review-pause.json",
-      "digest": "8ac503a8b73f169499708e09c785211cc4ae76232845b516eb1124c445a683f6",
-      "database_archive_sha256": "7b6a8d33092cc9aeee20dbd3caf4897ca8e94214b59c5efcea0ada50db078e64",
-      "database_archive_bytes": 144424,
+      "manifest": ".llm-output/issue27/acceptance-schema/stopped-upgrade-review-pause.json",
+      "digest": "294453262cf9c9b517c725ae3a75389a62cebdefcee50db09d8da31888188ad3",
+      "database_archive_sha256": "6906a5047be9ec83954567eb6818e6366ae98a70807bc991347238d776d65cad",
+      "database_archive_bytes": 144365,
       "database_archive_catalog_verified": true,
-      "filesystem_archive_sha256": "487e2d1de1de8f17790844ab6c02987b1de27f8a47c4e1a499c0973c430a1308",
+      "filesystem_archive_sha256": "129b866c4ea557894e050c5850f1c0b9b1f96f85370a0423a50d6a06af71e0db",
       "filesystem_files_verified": 76,
       "backup_restored": false,
       "state": "review-pause",
@@ -275,6 +345,9 @@
       "new_migration": "20260920_0024",
       "old_writer_stopped_before_backup": true,
       "pre_subscription_rollback": "passed",
+      "original_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_matches": true,
       "original_table_row_counts": {
         "operator_sessions": 2,
         "artifact_lineages": 26,
@@ -308,12 +381,12 @@
       "historical_processes_stopped": 2
     },
     {
-      "manifest": ".llm-output/issue27/acceptance-final/stopped-upgrade-unfinished.json",
-      "digest": "043985c6ffe16aac119d2bee130cfa6f46f5855f03118e3cfec7c0a020421895",
-      "database_archive_sha256": "1651103dc433610215bab75b4765cbd78fe91862687cfde35b6f6ad95ef5fdb0",
-      "database_archive_bytes": 132025,
+      "manifest": ".llm-output/issue27/acceptance-schema/stopped-upgrade-unfinished.json",
+      "digest": "16f47e2bb1c1f1713da7be127213c229769ca6edc0700c66b77f8a2d828f13c0",
+      "database_archive_sha256": "69f898863f63e4e8fa0c358f501feed283c486e5c1b9b624a22e4aa9373c1cf5",
+      "database_archive_bytes": 132040,
       "database_archive_catalog_verified": true,
-      "filesystem_archive_sha256": "6012f6f967c63920412ea8a9e0e8e93d83466d78e11892e991e6752f0b16e937",
+      "filesystem_archive_sha256": "7cd2b53911c859f3ffa9a73d67133e8b066fe0fb3d2226e391a503219be81404",
       "filesystem_files_verified": 47,
       "backup_restored": false,
       "state": "unfinished",
@@ -322,6 +395,9 @@
       "new_migration": "20260920_0024",
       "old_writer_stopped_before_backup": true,
       "pre_subscription_rollback": "passed",
+      "original_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_matches": true,
       "original_table_row_counts": {
         "operator_sessions": 2,
         "artifact_lineages": 6,
@@ -357,62 +433,62 @@
   ],
   "retained_states": [
     {
-      "manifest": ".llm-output/issue27/acceptance-final/8205622b-deda-4d3c-9836-9afd6114a4c8/manifest.json",
-      "digest": "9614ef0729d2434b6d500959201ccd564f913c81ca20589473f1cb794d8bf2c0",
+      "manifest": ".llm-output/issue27/acceptance-schema/10327b1f-12d9-400e-b408-0be8f7497c60/manifest.json",
+      "digest": "6101e32f673d51d3d593cb7ba238e9002c12c82c4a562219021f0c291eb3d0a7",
       "scenario": "A9-historical-v01-review-cancel",
-      "before_row_digest": "837862d31b02ff9318f97d37b1a161c21efdce63d331d6c90ab20ae772952793",
-      "after_row_digest": "a0714ff0de4740947d4974fa2c08d10321829c5b06cf2030e6cd61eb83b83d67",
+      "before_row_digest": "77ee738ac1b28ed3290a66753499df82438b83eecd1c87107fd855c838192df8",
+      "after_row_digest": "2cc1c3c0b8933ede2b2e85d4ab1087336428be5a565fc4c3244fd4516aa90d5b",
       "artifacts": {
-        "e67a51802359811a4047b27006db0657a92acf9164d4ff528c0fbcdb2d9c890b": 1217,
+        "528eb4d0d916821450f8154549e15908a62be1e054db7c9875ec653ef35edfc1": 1217,
         "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
         "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
         "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556,
-        "7985bd394a0531316e5aea0df42081db47ee0fdaa4e5dda605591f7accee0e92": 1030,
-        "878edf0b30d68f4ea4d18bf0e6679a72f62db75d119841ec96ee406999bc16bf": 578,
-        "27673de0c800875a49080461b9a42205c95bdbfd920789f0ba9956a8eb936efc": 585,
+        "ca616df8ba2dee6b16229507ef704117eb4535007e25515cfd2c1f076cb6385d": 1030,
+        "1d94492458b88102042086f7279788bc411b9548d4ce32a1615d50cba9007c6e": 578,
+        "7416e3f069afa7a7a258ba13b49917d156bbefc5d4c1837c3b5ceb136c1ba576": 585,
         "3ac4c6e1ef706151810eed0f786319f7cdeb35eb4dbfb1eac6a88783e1575bad": 453,
-        "4a7901d7fc52150bd719227a5457e44a3efc2f081db02ed4b3f2619aa8ddf25d": 609,
+        "421a31f20705327173197082db5e6cbdf66e17ad46bac2286da15d17cdb203ee": 1130,
         "7c8a544bc8866f032a0d77b1a94025d3ab4a14016e8d8d322f2b95cebc940d58": 126,
-        "d16f406c6ffa43e930e5f38ba65f54403a3507f81e0068e090915af13538c02b": 1130,
-        "1d3ef46cd1e1a1b14bbe5b233f304066d904ad1be3c7028cda14ec78e030d508": 1130,
-        "4aadfeeea7167b451e23332eaa0244fe4cafd3b83e5564161df1eb9ff30b523b": 392,
+        "7ff1603ef0008f085deae2d42eb4b30ec837980ec456cdce105e7a32ac8dfd9f": 609,
+        "2cc9be096007a02f202ea2c2ed71068f0bf47e1458be81903e90c63b82c893cf": 1130,
+        "206a5446f9ce5dd213b22dfd7cf43b77996985424f4a600b7d33664992360cf7": 392,
         "53217cf772a949875eafda72f135d8d6e8a4d7cc3a9870fbf3b7eff69c8a1101": 386,
-        "38b74695b9c497d2e80f7194310d1b627dd3f0763fee203f7065d833c9bbe690": 609,
-        "3912c28e2a67d4b458a3c3c232c387a306c252330053f31727ba56f17e7cd455": 1064,
+        "5039c414e55f275ae3fade76765b77c5273efc26cd262827f98b342a61e049a8": 609,
+        "dabf2aa47c99e74400b5803cd77ecb710f80cb29d2b6676ade6160920202983d": 1064,
+        "0229c5b9b30924bae5decc12927acd0c9c01e1bcc6d05f9883824ef22f505b27": 614,
+        "568dab224d3d2ed091bb9159e296eecc57a54767e602434b2040e1f8d94fceb3": 1069,
         "5dc12347f8e6a9b4495fa2fb5e848a41d66d0ca113e32ac0f83b0e4413d3696f": 458,
-        "a716caaeff9a65775b2adaba668b05f61386702303c00b340229bac8f869931f": 614,
-        "adeb0bedc11af4993e290ee8d22c8566c156fed80a7f7a9a9019909c639dccc8": 1069,
-        "b005758c7aabf5d3e34334f78c788ec5530ee6a9354cc0be20a4049bf5468044": 1497,
-        "1a18d6acb7d64988c818123958397330dc0c5c354276c21f66ffa18e25094ff2": 3665,
+        "f6c9bb2a6bf177a628cc334bfb4a0a4ac4bd631b8d394e130d619cccc98f6e57": 1497,
+        "14f835c691a069ca7702f0923d6a10a4c0ea683e2d4c6c02b2fef7fedd946d14": 3665,
         "597f4904d04937b0ea3715723bac7604489f38ce2ffab3a3609a485494cdccd1": 386,
-        "f7dcf6cd5d1d8b21bd61311244d94d9a1266863309096bae747d51df00cfbe46": 583,
-        "1f3829616a37e91bf018e978c511613379a331cd7adafd7fe554411602182ec9": 581,
-        "9eaa28e5b50a5dc0facde9e54384dc083d138d8578dcaa6e7c92a6f98f697d23": 1722,
-        "a7caddc414e4b1e0e18bafa9d5dc0ef01e6d7b393ec79ee3d5214eab8888dc5c": 693
+        "8bdbb1018b3626650280dacb096446cc045766a67704adf97d82495707aadb3e": 583,
+        "36e223dc5a94278ad6529dae87cb2204785302f5717eee313ac1d8863b245e1c": 1722,
+        "59ba562e5ad732f0335ba731fa9ac608b610dbf396e00863a7825accccdec5ff": 581,
+        "87418c16ee6d9170968ca58e258403012fb3975907e1a209823c78e9c538eb33": 693
       },
       "controls": [
         {
-          "id": "9f052463-c0b3-4973-9af0-894ec5585657",
-          "run_id": "8205622b-deda-4d3c-9836-9afd6114a4c8",
+          "id": "4eed2285-fae5-4d19-ad49-6bd078b9c62a",
+          "run_id": "10327b1f-12d9-400e-b408-0be8f7497c60",
           "command_type": "cancel",
           "status": "pending",
           "expected_run_version": 12
         },
         {
-          "id": "9f052463-c0b3-4973-9af0-894ec5585657",
-          "run_id": "8205622b-deda-4d3c-9836-9afd6114a4c8",
+          "id": "4eed2285-fae5-4d19-ad49-6bd078b9c62a",
+          "run_id": "10327b1f-12d9-400e-b408-0be8f7497c60",
           "command_type": "cancel",
           "status": "completed",
           "expected_run_version": 12
         },
         {
-          "id": "8205622b-deda-4d3c-9836-9afd6114a4c8",
+          "id": "10327b1f-12d9-400e-b408-0be8f7497c60",
           "state": "CANCELLED",
           "version": 13,
           "suspended_state": null
         },
         {
-          "projection_digest": "98e0a48871ec7e783a37bd31a8efde7793cf2ded2f19e6366402c6b24c37752b"
+          "projection_digest": "f266702a4979ba75196f795174b9d29698f05f7a14b4f959f143e0485306a314"
         }
       ],
       "historical_source": {
@@ -426,9 +502,9 @@
       "historical_process_terminal_proofs": [
         {
           "schema_version": 1,
-          "launch_id": "041c2a57-797d-44cf-bdca-8eb27c378854",
-          "pid": 134260,
-          "process_identity": "134348292964862909",
+          "launch_id": "fe017fe4-7eec-4382-8db8-e95a0850a831",
+          "pid": 133804,
+          "process_identity": "134348305286412744",
           "outcome": "completed",
           "return_code": 1,
           "stop_confirmed": true,
@@ -439,9 +515,9 @@
         },
         {
           "schema_version": 1,
-          "launch_id": "fcddeb72-c6b8-4128-971a-f9bf3a664211",
-          "pid": 124152,
-          "process_identity": "134348293363495367",
+          "launch_id": "a809d2d5-a849-4bc4-8544-14d59724d0bf",
+          "pid": 78892,
+          "process_identity": "134348305687466111",
           "outcome": "completed",
           "return_code": 1,
           "stop_confirmed": true,
@@ -453,158 +529,62 @@
       ]
     },
     {
-      "manifest": ".llm-output/issue27/acceptance-final/85700efb-7826-42ad-b1f8-f328b9848c2b/manifest.json",
-      "digest": "0bb3d129e1cccc7807056e5dcd8a6db399983e18a88923ca8b2b8c41a5879b60",
-      "scenario": "A9-historical-v01-review-pause",
-      "before_row_digest": "f9cca966058ce06ea65d9cf0e2bc7b9aa84e9f8bb5814c1f1882961941cae094",
-      "after_row_digest": "047d17d2cccb6a6ba1bd00ccde1359abff6afeccdb5148cc9c7989918d91c2a1",
-      "artifacts": {
-        "a32e72c7b9f39c34c3caf90f0d42d51afdad3367f20924be1d39d8a717f1792e": 1217,
-        "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
-        "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
-        "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556,
-        "eac7269b2c508e1d6d23fc37765103bc4aaf0a9761fef691fc9d81cc2b7737a3": 1030,
-        "43aac99f8d06631c1691a2fc151c44faf9850cf291c52a2a569f6cfed4b6a40e": 578,
-        "ac91dea9a65fbd388417362c8d0470196b17f2e677ac7889d8bc334db533bda2": 585,
-        "3ac4c6e1ef706151810eed0f786319f7cdeb35eb4dbfb1eac6a88783e1575bad": 453,
-        "53e24b8db1c62ed2040ca2c3f4887c611ce68d1740c54e08ffd6e4513e601d17": 1130,
-        "7c8a544bc8866f032a0d77b1a94025d3ab4a14016e8d8d322f2b95cebc940d58": 126,
-        "de9f151f088f997e6142273f9e3f30ec7407d82a6033894ee8109c2750362fba": 609,
-        "b3d03f1755c23cf561f2c704c8159303bc1a8a729d28c0e1ce3decf2719f9a26": 1130,
-        "53217cf772a949875eafda72f135d8d6e8a4d7cc3a9870fbf3b7eff69c8a1101": 386,
-        "b95838fa243d72df2ca6231716650e658d30f26dbbf7eb674fc2f518d179a710": 392,
-        "1bd2e23a6437dac370f0bdac7a6a74e13e2665620a04fbeba6c54f7a5f18584d": 609,
-        "49ef8eda77de9499051233e061c2bab29cfbedce9a7f374d22fa4ecc034c0e2b": 1064,
-        "240f314aead9dddffdf6fc33396bd561eced5b8ebc691cdd0c1c677551043d1e": 614,
-        "5dc12347f8e6a9b4495fa2fb5e848a41d66d0ca113e32ac0f83b0e4413d3696f": 458,
-        "a7e85731bf9f2800fa46c9fe01ac974681450bb4065c0db0f4d27848451204e0": 1069,
-        "284debb36ff04a9e5d6d1d89173f4f13a0fc73f24baa8c529d61e411d8759adc": 1497,
-        "7806f52437db33c53fe17078149eba97fc8986737948dd45f0d3eb7d7ffaddfd": 3665,
-        "597f4904d04937b0ea3715723bac7604489f38ce2ffab3a3609a485494cdccd1": 386,
-        "8230fadff6da7c87b901ca1e3b0efc59feb54826f5ef409171daffe624050100": 583,
-        "0127ec34dc182f1fc9be474a46ea2bdb9160d343910af2ccb08deca34b69b907": 581,
-        "94cc5332d599bd106101dea39f8783dc237a59d703dbf052abf92e0b45b35422": 693,
-        "b158b2d0c86f5a894baca10b853343a0022aae59bde56bcba041dc7a8bc18c59": 1722
-      },
-      "controls": [
-        {
-          "id": "99242af6-e5b8-4b3e-a1dc-b46f12762b57",
-          "run_id": "85700efb-7826-42ad-b1f8-f328b9848c2b",
-          "command_type": "pause",
-          "status": "pending",
-          "expected_run_version": 12
-        },
-        {
-          "id": "99242af6-e5b8-4b3e-a1dc-b46f12762b57",
-          "run_id": "85700efb-7826-42ad-b1f8-f328b9848c2b",
-          "command_type": "pause",
-          "status": "completed",
-          "expected_run_version": 12
-        },
-        {
-          "id": "85700efb-7826-42ad-b1f8-f328b9848c2b",
-          "state": "AWAITING_PR_APPROVAL",
-          "version": 14,
-          "suspended_state": null
-        },
-        {
-          "projection_digest": "35adbf67bcb44c7dce73683c5f2392b10e92e7cf88d49911e21618e8bf2f1516"
-        }
-      ],
-      "historical_source": {
-        "revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
-        "archive_sha256": "2cd06c9108d8602b2c3d0981f7e2d60a3031db616d06d4f223110dd00e9109ac",
-        "lock_sha256": "139a733fd295ab8b96399e3271c47fee742ef35c2738d3abbe96ba2f47db24e6",
-        "project_metadata_sha256": "6fdf98c7c16c2f86b672c3b832ae21e583bae4a50fd1d0e881cd924741369a8c",
-        "old_reader_after_head_upgrade": true,
-        "old_reader_preserved_rows_and_artifacts": true
-      },
-      "historical_process_terminal_proofs": [
-        {
-          "schema_version": 1,
-          "launch_id": "8aacce3f-41cc-437b-bf27-e65233d3db82",
-          "pid": 13876,
-          "process_identity": "134348292512987173",
-          "outcome": "completed",
-          "return_code": 1,
-          "stop_confirmed": true,
-          "stdout_bytes": 35248,
-          "stderr_bytes": 1313,
-          "stdout_truncated": false,
-          "stderr_truncated": false
-        },
-        {
-          "schema_version": 1,
-          "launch_id": "ebf4bcfc-e7de-418b-9de5-f740e8d4562b",
-          "pid": 132156,
-          "process_identity": "134348292913193471",
-          "outcome": "completed",
-          "return_code": 1,
-          "stop_confirmed": true,
-          "stdout_bytes": 33702,
-          "stderr_bytes": 0,
-          "stdout_truncated": false,
-          "stderr_truncated": false
-        }
-      ]
-    },
-    {
-      "manifest": ".llm-output/issue27/acceptance-final/9d5fe844-2ed8-44e2-99d5-82fb5e41ca3c/manifest.json",
-      "digest": "ca561e96e37dca5c8896d4296f2e5cfef6b21c2ecf5879c8b1d5e1b86306a2c6",
+      "manifest": ".llm-output/issue27/acceptance-schema/2a2386ac-1190-4021-b551-cab08a8d83c5/manifest.json",
+      "digest": "2a4b8ade6fc9673bd99e472de6e5338cd2558c2f744c11cce1f0cc8cd2f9a29d",
       "scenario": "A9-historical-v01-plan",
-      "before_row_digest": "221893128efb69226a52851dc381bfeb60d7ac3ef6451dc09a64c464965dfea7",
-      "after_row_digest": "cf69b1691658f1e2dbc1e359a543379d363729d136ce5c20712abc8910286aa9",
+      "before_row_digest": "a0d2c652862a6e0bc9d3b551f0b9047534ce2161fb27b4dced79d73962cc3642",
+      "after_row_digest": "0a5e9ce0e9078f81e8238e0b347d548edb1d925a571b7536cb5573081085f7e8",
       "artifacts": {
-        "1dc4fc51000e30d702e74f7c08e18b431835d3a7596467824a568a6b3df32eaf": 1217,
+        "5e127c42a62ac2200b7563be9c2e02c092b9e0b771445c0e38a393d073d5237c": 1217,
         "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
         "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
         "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556
       },
       "controls": [
         {
-          "id": "9d5fe844-2ed8-44e2-99d5-82fb5e41ca3c",
+          "id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
           "state": "AWAITING_PLAN_APPROVAL",
           "version": 2,
           "suspended_state": null
         },
         {
-          "id": "82d9b491-e7ff-4d97-91b9-d30e049dc1bb",
-          "run_id": "9d5fe844-2ed8-44e2-99d5-82fb5e41ca3c",
+          "id": "9ed5afe5-1e08-46f8-abad-7a8ffcd552a9",
+          "run_id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
           "command_type": "pause",
           "status": "pending",
           "expected_run_version": 2
         },
         {
-          "id": "9d5fe844-2ed8-44e2-99d5-82fb5e41ca3c",
+          "id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
           "state": "PAUSED",
           "version": 3,
           "suspended_state": "AWAITING_PLAN_APPROVAL"
         },
         {
-          "id": "82d9b491-e7ff-4d97-91b9-d30e049dc1bb",
-          "run_id": "9d5fe844-2ed8-44e2-99d5-82fb5e41ca3c",
+          "id": "9ed5afe5-1e08-46f8-abad-7a8ffcd552a9",
+          "run_id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
           "command_type": "pause",
           "status": "completed",
           "expected_run_version": 2
         },
         {
-          "id": "8229ed42-9bfe-4f84-bc1f-1c6b60dfe289",
-          "run_id": "9d5fe844-2ed8-44e2-99d5-82fb5e41ca3c",
+          "id": "03d7abc4-d14d-4c36-a012-7d655bd22453",
+          "run_id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
           "command_type": "resume",
           "status": "pending",
           "expected_run_version": 3
         },
         {
-          "id": "9d5fe844-2ed8-44e2-99d5-82fb5e41ca3c",
+          "id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
           "state": "AWAITING_PLAN_APPROVAL",
           "version": 4,
           "suspended_state": null
         },
         {
-          "approval_id": "e8bb052f-f44c-4bee-ae9e-a766f16a8153"
+          "approval_id": "dd4e4c30-d197-4ab9-8380-b83d7f1c047f"
         },
         {
-          "id": "9d5fe844-2ed8-44e2-99d5-82fb5e41ca3c",
+          "id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
           "state": "PREPARING_WORKTREE",
           "version": 5,
           "suspended_state": null
@@ -621,9 +601,9 @@
       "historical_process_terminal_proofs": [
         {
           "schema_version": 1,
-          "launch_id": "62b2b2f3-1f2b-4082-a697-e4dcc24c1c12",
-          "pid": 128648,
-          "process_identity": "134348292098483233",
+          "launch_id": "0694dc51-9763-44d8-a4cd-098ee14b3f51",
+          "pid": 19972,
+          "process_identity": "134348304479368618",
           "outcome": "completed",
           "return_code": 1,
           "stop_confirmed": true,
@@ -634,9 +614,9 @@
         },
         {
           "schema_version": 1,
-          "launch_id": "851e9db1-986e-4fa3-9297-cf3c07a80fcd",
-          "pid": 57120,
-          "process_identity": "134348292163723083",
+          "launch_id": "fa93159d-16af-45ad-a9d6-33d9102ed223",
+          "pid": 20492,
+          "process_identity": "134348304549398511",
           "outcome": "completed",
           "return_code": 1,
           "stop_confirmed": true,
@@ -648,18 +628,18 @@
       ]
     },
     {
-      "manifest": ".llm-output/issue27/acceptance-final/e3384083-94db-40b3-8a85-44142b1b8a47/manifest.json",
-      "digest": "69f4abc8c55aef9ebdf17d14c36a64d657dc3bd7d43ed836fab5fe70b6a1bea9",
+      "manifest": ".llm-output/issue27/acceptance-schema/568e14dc-18ca-4e10-a278-587128299be7/manifest.json",
+      "digest": "acd68db2fa6a84fb258e272bcff9403a896230b091ff88ace68db0cd2b5a1700",
       "scenario": "A9-historical-v01-unfinished",
-      "before_row_digest": "a82e2f6a552416b46aa9182c245c75c38db84d4ead0e5f765edbb83750026333",
-      "after_row_digest": "5f4c723c60012e926d2246cd810764a20cd1f3626c5d4e221490a52c185baeee",
+      "before_row_digest": "c6d85169ea2d62f79ed203b18cb6a7d10768967b02b1233a583ebd08b04cd912",
+      "after_row_digest": "258adf25d646e0c53f50463704be228df91a584d61b27b541233eae833ea3b24",
       "artifacts": {
-        "17145558f2cdd362f4356d3001b1bb422ff1d5409f4b95897a4acb55e68200f6": 1217,
+        "56c533cfd75e304117bcd5666b648f05aaf08cdd4ee6397c6ffba406e2773c08": 1217,
         "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
         "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
         "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556,
-        "86f4305491902c41c4e3bb0cc3e7a34504f41f1894ff7d92a8f935b8885e1990": 1030,
-        "fbfaf43a5ee65e2cb2d1d21dec309b1f13c9c5ee6b196f1311fead2a4aac640c": 577
+        "594df0380cc7d14a28c7757095e11e4f84b491f7cdbebd1ece2f45132ca3da24": 1030,
+        "8fe919b77edec832b58dbd79e530092fd4580cff3d665b6dce6e10f9f0d03a08": 577
       },
       "controls": [],
       "historical_source": {
@@ -673,9 +653,9 @@
       "historical_process_terminal_proofs": [
         {
           "schema_version": 1,
-          "launch_id": "8c6688dc-ed2d-4130-9194-4a6ab3d8fd02",
-          "pid": 122028,
-          "process_identity": "134348292287677106",
+          "launch_id": "1eb58253-4b9e-4504-b888-55f4a695e863",
+          "pid": 78352,
+          "process_identity": "134348304611851510",
           "outcome": "completed",
           "return_code": 1,
           "stop_confirmed": true,
@@ -686,13 +666,109 @@
         },
         {
           "schema_version": 1,
-          "launch_id": "8a2d0952-ecd0-4649-8a1a-42f08ecfb45b",
-          "pid": 122860,
-          "process_identity": "134348292453659067",
+          "launch_id": "be61df40-9139-4554-866e-99f9f07efeb2",
+          "pid": 109480,
+          "process_identity": "134348304777998090",
           "outcome": "completed",
           "return_code": 1,
           "stop_confirmed": true,
           "stdout_bytes": 33635,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        }
+      ]
+    },
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/d7da52ae-c6a3-4d30-a211-ff969f45738a/manifest.json",
+      "digest": "63324c70c972e778dc6e41e6a4d4a6132958ab4f994bb6c18a735c712765ef7a",
+      "scenario": "A9-historical-v01-review-pause",
+      "before_row_digest": "d7a0239db33374f4d36e8b52ff636145b90ad3055b234204ac32075b155b5ac5",
+      "after_row_digest": "8734969477ec055b4264b13a3c6b4d4f1174d411f1a4185b19ec2d43efd80020",
+      "artifacts": {
+        "0cf6b4b66202cfc5c87593536ac7958ab3a7264d8082289d30ad231d538efc74": 1217,
+        "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
+        "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
+        "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556,
+        "e6b2cf1d9f9e31b6e805fea7e46479f7ab92c72fbad94b3e792a177782b6dfbd": 1030,
+        "787dbd6e0a7d9fa696fdbcef7381f70b9f0cdf35a0211987d5743fe4bb978b36": 578,
+        "9b63a331e2ad1e56c48bc5b00abf264e31cafde09961d46da7c3e6ad654bc4d8": 585,
+        "18c9cf13b24dcb27c75e698c363b436b0eae7da0cc62479b46cce39caaf9da34": 1130,
+        "3ac4c6e1ef706151810eed0f786319f7cdeb35eb4dbfb1eac6a88783e1575bad": 453,
+        "7c8a544bc8866f032a0d77b1a94025d3ab4a14016e8d8d322f2b95cebc940d58": 126,
+        "b3b3df5f956bf2928e4f3ee8ea1d70dd91d17ab141b2ec09da174489a4b30e65": 609,
+        "1198625b76d9b1609a16d2b01d71daf85d5575fbde490ad822eb44a492ef2f52": 1130,
+        "05553106075363793b9fcd5691ae04cdd5d3132f33f5ae0e0f4d1838cf439141": 392,
+        "53217cf772a949875eafda72f135d8d6e8a4d7cc3a9870fbf3b7eff69c8a1101": 386,
+        "1693210eb198ad1759061fb33239fdbc09480c9872879dd7d7174e65c25d421a": 1064,
+        "9b63bf5d1013b1920d759e9118cb470ac8a134e33ceefe6ab418b6dc842f766a": 609,
+        "5dc12347f8e6a9b4495fa2fb5e848a41d66d0ca113e32ac0f83b0e4413d3696f": 458,
+        "877d435565488e71f82ce92be3d9852dc79593b449fc8b293e5c1b620130cdc2": 614,
+        "fbcab5802ff2fed78b28cb6b3b14683fac16e752e05f1a22535335529276eca5": 1069,
+        "0df0281ec606e6f6583e7dc38b32e4a4353724ede179bb4268f547a3c01cde47": 1497,
+        "2fe69ae4fdc5e9b57ab6744bb74b60a359de612310910c79fc46d6c5982f2157": 3665,
+        "597f4904d04937b0ea3715723bac7604489f38ce2ffab3a3609a485494cdccd1": 386,
+        "e68f0962473df5b2d0ff0ba8913a993537b7087c99d0a722228f58fa1d794b74": 583,
+        "339b579f4810fc497f2ca3a7bf2af68b500a12aa9a426d969111ed80f23f3ea6": 581,
+        "757823e736b076b186ea4bf518cd9d7c4863d5736640a8f7dd913400eb179d5c": 1722,
+        "a6cb9259a724cbb0bb4765106a38c22eca6f61063b0e3eefd915d788f587bbcb": 693
+      },
+      "controls": [
+        {
+          "id": "a7904e75-2689-4582-9409-86d03767fd24",
+          "run_id": "d7da52ae-c6a3-4d30-a211-ff969f45738a",
+          "command_type": "pause",
+          "status": "pending",
+          "expected_run_version": 12
+        },
+        {
+          "id": "a7904e75-2689-4582-9409-86d03767fd24",
+          "run_id": "d7da52ae-c6a3-4d30-a211-ff969f45738a",
+          "command_type": "pause",
+          "status": "completed",
+          "expected_run_version": 12
+        },
+        {
+          "id": "d7da52ae-c6a3-4d30-a211-ff969f45738a",
+          "state": "AWAITING_PR_APPROVAL",
+          "version": 14,
+          "suspended_state": null
+        },
+        {
+          "projection_digest": "b4fce55ed01f4d338b22f623aa2b5de0c7195aa10c0d1b2f64051c12180a2529"
+        }
+      ],
+      "historical_source": {
+        "revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+        "archive_sha256": "2cd06c9108d8602b2c3d0981f7e2d60a3031db616d06d4f223110dd00e9109ac",
+        "lock_sha256": "139a733fd295ab8b96399e3271c47fee742ef35c2738d3abbe96ba2f47db24e6",
+        "project_metadata_sha256": "6fdf98c7c16c2f86b672c3b832ae21e583bae4a50fd1d0e881cd924741369a8c",
+        "old_reader_after_head_upgrade": true,
+        "old_reader_preserved_rows_and_artifacts": true
+      },
+      "historical_process_terminal_proofs": [
+        {
+          "schema_version": 1,
+          "launch_id": "2b5185c1-2996-46db-bc73-a6eb06e4198e",
+          "pid": 81216,
+          "process_identity": "134348304836073806",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 35248,
+          "stderr_bytes": 1313,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        },
+        {
+          "schema_version": 1,
+          "launch_id": "85733159-a89a-48c3-b73a-d992adda07a8",
+          "pid": 133736,
+          "process_identity": "134348305234994143",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 33702,
           "stderr_bytes": 0,
           "stdout_truncated": false,
           "stderr_truncated": false
@@ -719,6 +795,7 @@
     "Feedback after restart retains its target and budgets; stale/foreign/cancelled requests fail and a paused target waits for causal resume."
   ],
   "live_provider_calls": 0,
+  "ci_selection": "The manual full Python/runtime workflow now includes the rehearsal in its PostgreSQL Docker step with full Git history. No full CI dispatch was made; local selection checks and ordinary PR smoke validate this change.",
   "self_review": "Primary checked stopped-process boundaries, guarded disposable targets, coordinated backup verification, original-row preservation, empty-new-table rollback precondition, gate/control replay and evidence identities. No application or migration behavior changed.",
   "limitations": [
     "Historical Python source runs in separate supervised interpreters using the provisioned matching dependency environment and current test driver; no historical installer/deployed binary is tested.",
