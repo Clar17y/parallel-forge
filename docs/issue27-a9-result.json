@@ -1,0 +1,808 @@
+{
+  "schema_version": 1,
+  "issues": [
+    "https://github.com/Clar17y/parallel-forge/issues/27",
+    "https://github.com/Clar17y/parallel-forge/issues/18"
+  ],
+  "date": "2026-09-25",
+  "outcome": "functional_acceptance_complete_locally",
+  "old_source_commit": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+  "source_commit_initial": "77f4c993ffa00e5158bf7774ef7e97015f4a681f",
+  "source_commit_final_rehearsal": "3088947f51db69fa87fc95fb49f764d89b48d9bb",
+  "source_commit_review_repair": "c724af2225fbe4e35a2999d0250ac881669a12d2",
+  "delivery_base": "70f7308050e575ea862c82a8c2c2ee9bc98ff7ed",
+  "test_input_git_blobs": [
+    {
+      "path": "apps/orchestrator/tests/persistence/historical_v01.py",
+      "git_blob": "ef5d6453ae9ad1ea6da2bbbc145d97e50bbf87e0"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py",
+      "git_blob": "d6ef4cafbcfc13071cd3734a59dbf60d2e428eba"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_subscription_runtime_upgrade.py",
+      "git_blob": "ad8a81415c6e162ed32e6307f845722311984416"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_subscription_pending_plan_resume.py",
+      "git_blob": "a0c3d8ed366674b54b210383f0bcaa010018941a"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_subscription_feedback.py",
+      "git_blob": "9922c83c35475b12b5ebd58162e81001d349f43d"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_historical_v01_upgrade.py",
+      "git_blob": "99c52060436513ecf855c0c22eb00b597f5c71c3"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_historical_v01_recovery.py",
+      "git_blob": "68970b94e9dccd12055f0100f4b235485ddbbac6"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/legacy_upgrade_manifest.py",
+      "git_blob": "b6dd117b201d18697f042dd7ff32b398943b5ff5"
+    },
+    {
+      "path": "tests/ci/test_workflow_policy.py",
+      "git_blob": "093848cceb8d26e2be1423f1d246f8f8e3662481"
+    },
+    {
+      "path": ".github/workflows/python-contract.yml",
+      "git_blob": "c72d69feb208c26869092f2e188ecd3d8cde3d50"
+    }
+  ],
+  "runtime_changes": [],
+  "migration_changes": [],
+  "test_repairs": [
+    "Historical source requires identical uv.lock bytes and all parsed project metadata except pytest marker registration; a new test-only marker previously prevented execution.",
+    "Pin the worker-status diagnostic migration case to its intended 0021 boundary instead of a moving head with additional tables."
+  ],
+  "validation": {
+    "python": "3.14.5",
+    "postgresql": "17.11",
+    "distinct_passing_cases": 16,
+    "accounting": "Four complete stopped-upgrade cases, three adversarial rollback-schema cases, two workflow-selection checks, six plan/feedback gate cases and one diagnostic migration case. Repeated cases are not added to the distinct count. Initial failures and superseded checkpoints are retained.",
+    "final_rehearsal_reason": "Self-review found that inline row-length/digest calls could include raw authentication rows in a failing pytest assertion. Bind only counts and digests before comparison, then rerun the four affected rehearsals.",
+    "invocation": "python -m pytest <recorded test cases/files> -q --junitxml=<retained path>",
+    "review_repair_reason": "PR55 found that row projection alone missed leftover tables or columns after downgrade, and the docker-marked rehearsal was absent from the workflow command. Red tests confirmed both findings. Snapshot full table/column/constraint/index definitions, test three deliberate drifts, and select the rehearsal in the existing history-aware PostgreSQL Docker job.",
+    "rehearsal_environment": {
+      "FORGE_ACCEPTANCE_OUTPUT_ROOT": ".llm-output/issue27/acceptance-schema"
+    },
+    "runs": [
+      {
+        "junit": ".llm-output/issue27/runtime-baseline-junit.xml",
+        "log": ".llm-output/issue27/runtime-baseline.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "1",
+        "skipped": "0",
+        "tests": "1",
+        "time": "3.849",
+        "timestamp": "2026-09-25T17:32:51.074117+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_subscription_runtime_upgrade::test_runtime_status_upgrade_and_downgrade_preserve_other_tables"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/a9-junit.xml",
+        "log": ".llm-output/issue27/a9.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "4",
+        "skipped": "0",
+        "tests": "5",
+        "time": "10.726",
+        "timestamp": "2026-09-25T17:37:45.069705+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[plan]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[unfinished]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-pause]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-cancel]",
+          "apps.orchestrator.tests.persistence.test_subscription_runtime_upgrade::test_runtime_status_upgrade_and_downgrade_preserve_other_tables"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/a9-rehearsal-junit.xml",
+        "log": ".llm-output/issue27/a9-rehearsal.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "4",
+        "time": "127.325",
+        "timestamp": "2026-09-25T17:43:44.237260+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[plan]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[unfinished]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-pause]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-cancel]"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/gates-junit.xml",
+        "log": ".llm-output/issue27/gates.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "6",
+        "time": "20.308",
+        "timestamp": "2026-09-25T17:48:30.101697+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_subscription_pending_plan_resume::test_pending_plan_resume_preserves_result_and_reaches_human_gate[False]",
+          "apps.orchestrator.tests.persistence.test_subscription_pending_plan_resume::test_pending_plan_resume_preserves_result_and_reaches_human_gate[True]",
+          "apps.orchestrator.tests.persistence.test_subscription_feedback::test_feedback_survives_restart_and_reaches_exact_worker_without_new_task",
+          "apps.orchestrator.tests.persistence.test_subscription_feedback::test_feedback_replay_rejects_a_foreign_operator_in_the_stored_receipt",
+          "apps.orchestrator.tests.persistence.test_subscription_feedback::test_paused_feedback_waits_for_causal_resume_and_cancelled_feedback_closes",
+          "apps.orchestrator.tests.persistence.test_subscription_feedback::test_feedback_rejects_stale_foreign_cancelled_and_credential_requests"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/a9-final-junit.xml",
+        "log": ".llm-output/issue27/a9-final.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "4",
+        "time": "133.597",
+        "timestamp": "2026-09-25T18:00:06.851233+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[plan]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[unfinished]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-pause]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-cancel]"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/schema-red-junit.xml",
+        "log": ".llm-output/issue27/schema-red.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "1",
+        "skipped": "0",
+        "tests": "1",
+        "time": "15.460",
+        "timestamp": "2026-09-25T18:18:34.669424+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_rejects_rollback_schema_drift[empty-table-column]"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/workflow-red-junit.xml",
+        "log": ".llm-output/issue27/workflow-red.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "1",
+        "skipped": "0",
+        "tests": "1",
+        "time": "0.192",
+        "timestamp": "2026-09-25T18:19:30.853823+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "tests.ci.test_workflow_policy::test_stopped_upgrade_runs_in_the_history_aware_postgres_docker_job"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue27/schema-repair-junit.xml",
+        "log": ".llm-output/issue27/schema-repair.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "9",
+        "time": "150.866",
+        "timestamp": "2026-09-25T18:20:44.875210+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[plan]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[unfinished]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-pause]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_backup_rollback_and_recovery[review-cancel]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_rejects_rollback_schema_drift[extra-table]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_rejects_rollback_schema_drift[empty-table-column]",
+          "apps.orchestrator.tests.persistence.test_stopped_upgrade_rehearsal::test_stopped_upgrade_rejects_rollback_schema_drift[column-definition]",
+          "tests.ci.test_workflow_policy::test_pull_requests_run_only_one_bounded_smoke_job",
+          "tests.ci.test_workflow_policy::test_stopped_upgrade_runs_in_the_history_aware_postgres_docker_job"
+        ]
+      }
+    ],
+    "scoped_ruff_check_format_and_diff": "passed"
+  },
+  "migration": {
+    "from": "20260909_0006",
+    "to": "20260920_0024",
+    "head_upgrade_repeated": true,
+    "rollback_before_any_subscription_effects": "passed",
+    "all_new_tables_empty_before_rollback": true,
+    "original_columns_preserved": true,
+    "rollback_schema_identity_verified": true,
+    "original_authentication_rows_compared_without_recording_values": true,
+    "backup_restored": false,
+    "production_database_modified": false
+  },
+  "backup_rehearsals": [
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/stopped-upgrade-plan.json",
+      "digest": "65ee4b65d4a4fd78093c4dbc52a0c5f1b9b13a9e939252f43f23b3521f599ed8",
+      "database_archive_sha256": "e56be38bf8f41ee93c0b45e5db28ce44dbf24084643d9c4c4a1ee8ec949f5d17",
+      "database_archive_bytes": 126924,
+      "database_archive_catalog_verified": true,
+      "filesystem_archive_sha256": "bbd100142eda69e0a18bf38d34ef122efbeb25811a880add75de53de11451d3d",
+      "filesystem_files_verified": 27,
+      "backup_restored": false,
+      "state": "plan",
+      "old_revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+      "old_migration": "20260909_0006",
+      "new_migration": "20260920_0024",
+      "old_writer_stopped_before_backup": true,
+      "pre_subscription_rollback": "passed",
+      "original_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_matches": true,
+      "original_table_row_counts": {
+        "operator_sessions": 0,
+        "artifact_lineages": 4,
+        "artifact_lineage_parents": 1,
+        "project_policy_versions": 1,
+        "approval_challenges": 0,
+        "run_commands": 1,
+        "run_events": 5,
+        "steps": 1,
+        "approvals": 0,
+        "tool_calls": 0,
+        "model_usage": 1,
+        "artifacts": 4,
+        "validation_results": 0,
+        "reviews": 0,
+        "operation_intents": 0,
+        "projects": 1,
+        "tasks": 1,
+        "api_mutations": 3,
+        "operator_audit_events": 2,
+        "evidence_sets": 0,
+        "agent_execution_evidence_inputs": 0,
+        "evaluation_suites": 0,
+        "evaluation_cases": 0,
+        "runs": 1,
+        "pull_requests": 0,
+        "recovery_barrier": 1,
+        "agent_executions": 1,
+        "evaluation_baselines": 0
+      },
+      "historical_processes_stopped": 2
+    },
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/stopped-upgrade-review-cancel.json",
+      "digest": "8e7e0dcc41ee9e31213892f53d8767617bb383e36e27870c8f4a0b6122f03d8b",
+      "database_archive_sha256": "0390d1459329a4c0853b70341488ce3a85fee22085f0b6d5b7bd2568e60475f4",
+      "database_archive_bytes": 144348,
+      "database_archive_catalog_verified": true,
+      "filesystem_archive_sha256": "ead966e8843021a1f4c59b1aff7f4132ff47b0c90b6fcd47be8ca15e3a0ad356",
+      "filesystem_files_verified": 76,
+      "backup_restored": false,
+      "state": "review-cancel",
+      "old_revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+      "old_migration": "20260909_0006",
+      "new_migration": "20260920_0024",
+      "old_writer_stopped_before_backup": true,
+      "pre_subscription_rollback": "passed",
+      "original_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_matches": true,
+      "original_table_row_counts": {
+        "operator_sessions": 2,
+        "artifact_lineages": 26,
+        "artifact_lineage_parents": 31,
+        "project_policy_versions": 1,
+        "approval_challenges": 1,
+        "run_commands": 7,
+        "run_events": 44,
+        "steps": 4,
+        "approvals": 1,
+        "tool_calls": 6,
+        "model_usage": 3,
+        "artifacts": 26,
+        "validation_results": 2,
+        "reviews": 0,
+        "operation_intents": 9,
+        "projects": 1,
+        "tasks": 1,
+        "api_mutations": 3,
+        "operator_audit_events": 2,
+        "evidence_sets": 2,
+        "agent_execution_evidence_inputs": 1,
+        "evaluation_suites": 0,
+        "evaluation_cases": 0,
+        "runs": 1,
+        "pull_requests": 0,
+        "recovery_barrier": 1,
+        "agent_executions": 3,
+        "evaluation_baselines": 0
+      },
+      "historical_processes_stopped": 2
+    },
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/stopped-upgrade-review-pause.json",
+      "digest": "294453262cf9c9b517c725ae3a75389a62cebdefcee50db09d8da31888188ad3",
+      "database_archive_sha256": "6906a5047be9ec83954567eb6818e6366ae98a70807bc991347238d776d65cad",
+      "database_archive_bytes": 144365,
+      "database_archive_catalog_verified": true,
+      "filesystem_archive_sha256": "129b866c4ea557894e050c5850f1c0b9b1f96f85370a0423a50d6a06af71e0db",
+      "filesystem_files_verified": 76,
+      "backup_restored": false,
+      "state": "review-pause",
+      "old_revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+      "old_migration": "20260909_0006",
+      "new_migration": "20260920_0024",
+      "old_writer_stopped_before_backup": true,
+      "pre_subscription_rollback": "passed",
+      "original_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_matches": true,
+      "original_table_row_counts": {
+        "operator_sessions": 2,
+        "artifact_lineages": 26,
+        "artifact_lineage_parents": 31,
+        "project_policy_versions": 1,
+        "approval_challenges": 1,
+        "run_commands": 7,
+        "run_events": 44,
+        "steps": 4,
+        "approvals": 1,
+        "tool_calls": 6,
+        "model_usage": 3,
+        "artifacts": 26,
+        "validation_results": 2,
+        "reviews": 0,
+        "operation_intents": 9,
+        "projects": 1,
+        "tasks": 1,
+        "api_mutations": 3,
+        "operator_audit_events": 2,
+        "evidence_sets": 2,
+        "agent_execution_evidence_inputs": 1,
+        "evaluation_suites": 0,
+        "evaluation_cases": 0,
+        "runs": 1,
+        "pull_requests": 0,
+        "recovery_barrier": 1,
+        "agent_executions": 3,
+        "evaluation_baselines": 0
+      },
+      "historical_processes_stopped": 2
+    },
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/stopped-upgrade-unfinished.json",
+      "digest": "16f47e2bb1c1f1713da7be127213c229769ca6edc0700c66b77f8a2d828f13c0",
+      "database_archive_sha256": "69f898863f63e4e8fa0c358f501feed283c486e5c1b9b624a22e4aa9373c1cf5",
+      "database_archive_bytes": 132040,
+      "database_archive_catalog_verified": true,
+      "filesystem_archive_sha256": "7cd2b53911c859f3ffa9a73d67133e8b066fe0fb3d2226e391a503219be81404",
+      "filesystem_files_verified": 47,
+      "backup_restored": false,
+      "state": "unfinished",
+      "old_revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+      "old_migration": "20260909_0006",
+      "new_migration": "20260920_0024",
+      "old_writer_stopped_before_backup": true,
+      "pre_subscription_rollback": "passed",
+      "original_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_digest": "c98e78fe5ba4e370ab40a62208cff006456d786bfee073de064f97397a4f8a6f",
+      "restored_schema_matches": true,
+      "original_table_row_counts": {
+        "operator_sessions": 2,
+        "artifact_lineages": 6,
+        "artifact_lineage_parents": 1,
+        "project_policy_versions": 1,
+        "approval_challenges": 1,
+        "run_commands": 4,
+        "run_events": 18,
+        "steps": 2,
+        "approvals": 1,
+        "tool_calls": 1,
+        "model_usage": 1,
+        "artifacts": 6,
+        "validation_results": 0,
+        "reviews": 0,
+        "operation_intents": 3,
+        "projects": 1,
+        "tasks": 1,
+        "api_mutations": 3,
+        "operator_audit_events": 2,
+        "evidence_sets": 0,
+        "agent_execution_evidence_inputs": 0,
+        "evaluation_suites": 0,
+        "evaluation_cases": 0,
+        "runs": 1,
+        "pull_requests": 0,
+        "recovery_barrier": 1,
+        "agent_executions": 2,
+        "evaluation_baselines": 0
+      },
+      "historical_processes_stopped": 2
+    }
+  ],
+  "retained_states": [
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/10327b1f-12d9-400e-b408-0be8f7497c60/manifest.json",
+      "digest": "6101e32f673d51d3d593cb7ba238e9002c12c82c4a562219021f0c291eb3d0a7",
+      "scenario": "A9-historical-v01-review-cancel",
+      "before_row_digest": "77ee738ac1b28ed3290a66753499df82438b83eecd1c87107fd855c838192df8",
+      "after_row_digest": "2cc1c3c0b8933ede2b2e85d4ab1087336428be5a565fc4c3244fd4516aa90d5b",
+      "artifacts": {
+        "528eb4d0d916821450f8154549e15908a62be1e054db7c9875ec653ef35edfc1": 1217,
+        "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
+        "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
+        "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556,
+        "ca616df8ba2dee6b16229507ef704117eb4535007e25515cfd2c1f076cb6385d": 1030,
+        "1d94492458b88102042086f7279788bc411b9548d4ce32a1615d50cba9007c6e": 578,
+        "7416e3f069afa7a7a258ba13b49917d156bbefc5d4c1837c3b5ceb136c1ba576": 585,
+        "3ac4c6e1ef706151810eed0f786319f7cdeb35eb4dbfb1eac6a88783e1575bad": 453,
+        "421a31f20705327173197082db5e6cbdf66e17ad46bac2286da15d17cdb203ee": 1130,
+        "7c8a544bc8866f032a0d77b1a94025d3ab4a14016e8d8d322f2b95cebc940d58": 126,
+        "7ff1603ef0008f085deae2d42eb4b30ec837980ec456cdce105e7a32ac8dfd9f": 609,
+        "2cc9be096007a02f202ea2c2ed71068f0bf47e1458be81903e90c63b82c893cf": 1130,
+        "206a5446f9ce5dd213b22dfd7cf43b77996985424f4a600b7d33664992360cf7": 392,
+        "53217cf772a949875eafda72f135d8d6e8a4d7cc3a9870fbf3b7eff69c8a1101": 386,
+        "5039c414e55f275ae3fade76765b77c5273efc26cd262827f98b342a61e049a8": 609,
+        "dabf2aa47c99e74400b5803cd77ecb710f80cb29d2b6676ade6160920202983d": 1064,
+        "0229c5b9b30924bae5decc12927acd0c9c01e1bcc6d05f9883824ef22f505b27": 614,
+        "568dab224d3d2ed091bb9159e296eecc57a54767e602434b2040e1f8d94fceb3": 1069,
+        "5dc12347f8e6a9b4495fa2fb5e848a41d66d0ca113e32ac0f83b0e4413d3696f": 458,
+        "f6c9bb2a6bf177a628cc334bfb4a0a4ac4bd631b8d394e130d619cccc98f6e57": 1497,
+        "14f835c691a069ca7702f0923d6a10a4c0ea683e2d4c6c02b2fef7fedd946d14": 3665,
+        "597f4904d04937b0ea3715723bac7604489f38ce2ffab3a3609a485494cdccd1": 386,
+        "8bdbb1018b3626650280dacb096446cc045766a67704adf97d82495707aadb3e": 583,
+        "36e223dc5a94278ad6529dae87cb2204785302f5717eee313ac1d8863b245e1c": 1722,
+        "59ba562e5ad732f0335ba731fa9ac608b610dbf396e00863a7825accccdec5ff": 581,
+        "87418c16ee6d9170968ca58e258403012fb3975907e1a209823c78e9c538eb33": 693
+      },
+      "controls": [
+        {
+          "id": "4eed2285-fae5-4d19-ad49-6bd078b9c62a",
+          "run_id": "10327b1f-12d9-400e-b408-0be8f7497c60",
+          "command_type": "cancel",
+          "status": "pending",
+          "expected_run_version": 12
+        },
+        {
+          "id": "4eed2285-fae5-4d19-ad49-6bd078b9c62a",
+          "run_id": "10327b1f-12d9-400e-b408-0be8f7497c60",
+          "command_type": "cancel",
+          "status": "completed",
+          "expected_run_version": 12
+        },
+        {
+          "id": "10327b1f-12d9-400e-b408-0be8f7497c60",
+          "state": "CANCELLED",
+          "version": 13,
+          "suspended_state": null
+        },
+        {
+          "projection_digest": "f266702a4979ba75196f795174b9d29698f05f7a14b4f959f143e0485306a314"
+        }
+      ],
+      "historical_source": {
+        "revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+        "archive_sha256": "2cd06c9108d8602b2c3d0981f7e2d60a3031db616d06d4f223110dd00e9109ac",
+        "lock_sha256": "139a733fd295ab8b96399e3271c47fee742ef35c2738d3abbe96ba2f47db24e6",
+        "project_metadata_sha256": "6fdf98c7c16c2f86b672c3b832ae21e583bae4a50fd1d0e881cd924741369a8c",
+        "old_reader_after_head_upgrade": true,
+        "old_reader_preserved_rows_and_artifacts": true
+      },
+      "historical_process_terminal_proofs": [
+        {
+          "schema_version": 1,
+          "launch_id": "fe017fe4-7eec-4382-8db8-e95a0850a831",
+          "pid": 133804,
+          "process_identity": "134348305286412744",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 35249,
+          "stderr_bytes": 1313,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        },
+        {
+          "schema_version": 1,
+          "launch_id": "a809d2d5-a849-4bc4-8544-14d59724d0bf",
+          "pid": 78892,
+          "process_identity": "134348305687466111",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 33702,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        }
+      ]
+    },
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/2a2386ac-1190-4021-b551-cab08a8d83c5/manifest.json",
+      "digest": "2a4b8ade6fc9673bd99e472de6e5338cd2558c2f744c11cce1f0cc8cd2f9a29d",
+      "scenario": "A9-historical-v01-plan",
+      "before_row_digest": "a0d2c652862a6e0bc9d3b551f0b9047534ce2161fb27b4dced79d73962cc3642",
+      "after_row_digest": "0a5e9ce0e9078f81e8238e0b347d548edb1d925a571b7536cb5573081085f7e8",
+      "artifacts": {
+        "5e127c42a62ac2200b7563be9c2e02c092b9e0b771445c0e38a393d073d5237c": 1217,
+        "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
+        "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
+        "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556
+      },
+      "controls": [
+        {
+          "id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
+          "state": "AWAITING_PLAN_APPROVAL",
+          "version": 2,
+          "suspended_state": null
+        },
+        {
+          "id": "9ed5afe5-1e08-46f8-abad-7a8ffcd552a9",
+          "run_id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
+          "command_type": "pause",
+          "status": "pending",
+          "expected_run_version": 2
+        },
+        {
+          "id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
+          "state": "PAUSED",
+          "version": 3,
+          "suspended_state": "AWAITING_PLAN_APPROVAL"
+        },
+        {
+          "id": "9ed5afe5-1e08-46f8-abad-7a8ffcd552a9",
+          "run_id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
+          "command_type": "pause",
+          "status": "completed",
+          "expected_run_version": 2
+        },
+        {
+          "id": "03d7abc4-d14d-4c36-a012-7d655bd22453",
+          "run_id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
+          "command_type": "resume",
+          "status": "pending",
+          "expected_run_version": 3
+        },
+        {
+          "id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
+          "state": "AWAITING_PLAN_APPROVAL",
+          "version": 4,
+          "suspended_state": null
+        },
+        {
+          "approval_id": "dd4e4c30-d197-4ab9-8380-b83d7f1c047f"
+        },
+        {
+          "id": "2a2386ac-1190-4021-b551-cab08a8d83c5",
+          "state": "PREPARING_WORKTREE",
+          "version": 5,
+          "suspended_state": null
+        }
+      ],
+      "historical_source": {
+        "revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+        "archive_sha256": "2cd06c9108d8602b2c3d0981f7e2d60a3031db616d06d4f223110dd00e9109ac",
+        "lock_sha256": "139a733fd295ab8b96399e3271c47fee742ef35c2738d3abbe96ba2f47db24e6",
+        "project_metadata_sha256": "6fdf98c7c16c2f86b672c3b832ae21e583bae4a50fd1d0e881cd924741369a8c",
+        "old_reader_after_head_upgrade": true,
+        "old_reader_preserved_rows_and_artifacts": true
+      },
+      "historical_process_terminal_proofs": [
+        {
+          "schema_version": 1,
+          "launch_id": "0694dc51-9763-44d8-a4cd-098ee14b3f51",
+          "pid": 19972,
+          "process_identity": "134348304479368618",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 33994,
+          "stderr_bytes": 1313,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        },
+        {
+          "schema_version": 1,
+          "launch_id": "fa93159d-16af-45ad-a9d6-33d9102ed223",
+          "pid": 20492,
+          "process_identity": "134348304549398511",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 33700,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        }
+      ]
+    },
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/568e14dc-18ca-4e10-a278-587128299be7/manifest.json",
+      "digest": "acd68db2fa6a84fb258e272bcff9403a896230b091ff88ace68db0cd2b5a1700",
+      "scenario": "A9-historical-v01-unfinished",
+      "before_row_digest": "c6d85169ea2d62f79ed203b18cb6a7d10768967b02b1233a583ebd08b04cd912",
+      "after_row_digest": "258adf25d646e0c53f50463704be228df91a584d61b27b541233eae833ea3b24",
+      "artifacts": {
+        "56c533cfd75e304117bcd5666b648f05aaf08cdd4ee6397c6ffba406e2773c08": 1217,
+        "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
+        "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
+        "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556,
+        "594df0380cc7d14a28c7757095e11e4f84b491f7cdbebd1ece2f45132ca3da24": 1030,
+        "8fe919b77edec832b58dbd79e530092fd4580cff3d665b6dce6e10f9f0d03a08": 577
+      },
+      "controls": [],
+      "historical_source": {
+        "revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+        "archive_sha256": "2cd06c9108d8602b2c3d0981f7e2d60a3031db616d06d4f223110dd00e9109ac",
+        "lock_sha256": "139a733fd295ab8b96399e3271c47fee742ef35c2738d3abbe96ba2f47db24e6",
+        "project_metadata_sha256": "6fdf98c7c16c2f86b672c3b832ae21e583bae4a50fd1d0e881cd924741369a8c",
+        "old_reader_after_head_upgrade": true,
+        "old_reader_preserved_rows_and_artifacts": true
+      },
+      "historical_process_terminal_proofs": [
+        {
+          "schema_version": 1,
+          "launch_id": "1eb58253-4b9e-4504-b888-55f4a695e863",
+          "pid": 78352,
+          "process_identity": "134348304611851510",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 35570,
+          "stderr_bytes": 2150,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        },
+        {
+          "schema_version": 1,
+          "launch_id": "be61df40-9139-4554-866e-99f9f07efeb2",
+          "pid": 109480,
+          "process_identity": "134348304777998090",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 33635,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        }
+      ]
+    },
+    {
+      "manifest": ".llm-output/issue27/acceptance-schema/d7da52ae-c6a3-4d30-a211-ff969f45738a/manifest.json",
+      "digest": "63324c70c972e778dc6e41e6a4d4a6132958ab4f994bb6c18a735c712765ef7a",
+      "scenario": "A9-historical-v01-review-pause",
+      "before_row_digest": "d7a0239db33374f4d36e8b52ff636145b90ad3055b234204ac32075b155b5ac5",
+      "after_row_digest": "8734969477ec055b4264b13a3c6b4d4f1174d411f1a4185b19ec2d43efd80020",
+      "artifacts": {
+        "0cf6b4b66202cfc5c87593536ac7958ab3a7264d8082289d30ad231d538efc74": 1217,
+        "06d335ea48148e564db9f9bad8fd270b5b2db8db46ad88f9615ca60c003f0d68": 313,
+        "589b10fe1ef5cad5864ddbff05f66f08359ab38b43944be1b90cf3cb07caa687": 386,
+        "e1c4a5175c070ba57f8a3d6bceb544c3a438149c577d38eaca0a8e2a5fd8adaf": 556,
+        "e6b2cf1d9f9e31b6e805fea7e46479f7ab92c72fbad94b3e792a177782b6dfbd": 1030,
+        "787dbd6e0a7d9fa696fdbcef7381f70b9f0cdf35a0211987d5743fe4bb978b36": 578,
+        "9b63a331e2ad1e56c48bc5b00abf264e31cafde09961d46da7c3e6ad654bc4d8": 585,
+        "18c9cf13b24dcb27c75e698c363b436b0eae7da0cc62479b46cce39caaf9da34": 1130,
+        "3ac4c6e1ef706151810eed0f786319f7cdeb35eb4dbfb1eac6a88783e1575bad": 453,
+        "7c8a544bc8866f032a0d77b1a94025d3ab4a14016e8d8d322f2b95cebc940d58": 126,
+        "b3b3df5f956bf2928e4f3ee8ea1d70dd91d17ab141b2ec09da174489a4b30e65": 609,
+        "1198625b76d9b1609a16d2b01d71daf85d5575fbde490ad822eb44a492ef2f52": 1130,
+        "05553106075363793b9fcd5691ae04cdd5d3132f33f5ae0e0f4d1838cf439141": 392,
+        "53217cf772a949875eafda72f135d8d6e8a4d7cc3a9870fbf3b7eff69c8a1101": 386,
+        "1693210eb198ad1759061fb33239fdbc09480c9872879dd7d7174e65c25d421a": 1064,
+        "9b63bf5d1013b1920d759e9118cb470ac8a134e33ceefe6ab418b6dc842f766a": 609,
+        "5dc12347f8e6a9b4495fa2fb5e848a41d66d0ca113e32ac0f83b0e4413d3696f": 458,
+        "877d435565488e71f82ce92be3d9852dc79593b449fc8b293e5c1b620130cdc2": 614,
+        "fbcab5802ff2fed78b28cb6b3b14683fac16e752e05f1a22535335529276eca5": 1069,
+        "0df0281ec606e6f6583e7dc38b32e4a4353724ede179bb4268f547a3c01cde47": 1497,
+        "2fe69ae4fdc5e9b57ab6744bb74b60a359de612310910c79fc46d6c5982f2157": 3665,
+        "597f4904d04937b0ea3715723bac7604489f38ce2ffab3a3609a485494cdccd1": 386,
+        "e68f0962473df5b2d0ff0ba8913a993537b7087c99d0a722228f58fa1d794b74": 583,
+        "339b579f4810fc497f2ca3a7bf2af68b500a12aa9a426d969111ed80f23f3ea6": 581,
+        "757823e736b076b186ea4bf518cd9d7c4863d5736640a8f7dd913400eb179d5c": 1722,
+        "a6cb9259a724cbb0bb4765106a38c22eca6f61063b0e3eefd915d788f587bbcb": 693
+      },
+      "controls": [
+        {
+          "id": "a7904e75-2689-4582-9409-86d03767fd24",
+          "run_id": "d7da52ae-c6a3-4d30-a211-ff969f45738a",
+          "command_type": "pause",
+          "status": "pending",
+          "expected_run_version": 12
+        },
+        {
+          "id": "a7904e75-2689-4582-9409-86d03767fd24",
+          "run_id": "d7da52ae-c6a3-4d30-a211-ff969f45738a",
+          "command_type": "pause",
+          "status": "completed",
+          "expected_run_version": 12
+        },
+        {
+          "id": "d7da52ae-c6a3-4d30-a211-ff969f45738a",
+          "state": "AWAITING_PR_APPROVAL",
+          "version": 14,
+          "suspended_state": null
+        },
+        {
+          "projection_digest": "b4fce55ed01f4d338b22f623aa2b5de0c7195aa10c0d1b2f64051c12180a2529"
+        }
+      ],
+      "historical_source": {
+        "revision": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
+        "archive_sha256": "2cd06c9108d8602b2c3d0981f7e2d60a3031db616d06d4f223110dd00e9109ac",
+        "lock_sha256": "139a733fd295ab8b96399e3271c47fee742ef35c2738d3abbe96ba2f47db24e6",
+        "project_metadata_sha256": "6fdf98c7c16c2f86b672c3b832ae21e583bae4a50fd1d0e881cd924741369a8c",
+        "old_reader_after_head_upgrade": true,
+        "old_reader_preserved_rows_and_artifacts": true
+      },
+      "historical_process_terminal_proofs": [
+        {
+          "schema_version": 1,
+          "launch_id": "2b5185c1-2996-46db-bc73-a6eb06e4198e",
+          "pid": 81216,
+          "process_identity": "134348304836073806",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 35248,
+          "stderr_bytes": 1313,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        },
+        {
+          "schema_version": 1,
+          "launch_id": "85733159-a89a-48c3-b73a-d992adda07a8",
+          "pid": 133736,
+          "process_identity": "134348305234994143",
+          "outcome": "completed",
+          "return_code": 1,
+          "stop_confirmed": true,
+          "stdout_bytes": 33702,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        }
+      ]
+    }
+  ],
+  "artifact_verification": {
+    "manifests": 4,
+    "artifact_files": 62,
+    "bytes_and_sha256": "passed"
+  },
+  "reused_evidence": [
+    "docs/issue23-a5-result.json: explicit no-review acceptance and separate publication/merge gates; retry tests use the same service instances with fresh transactions",
+    "docs/issue24-a6-result.json: retained quota evidence prevents destructive downgrade",
+    "docs/issue25-a7-result.json: old result schemas remain preserved and fenced; current process/effect recovery and authority transfer",
+    "docs/issue26-a8-result.json: public restart, two-tab replay, operator readiness and active controlled feedback/cancellation"
+  ],
+  "human_gates": [
+    "Legacy plan stays at AWAITING_PLAN_APPROVAL after pause/resume; authenticated evidence-bound approval alone advances it.",
+    "Legacy review/pause returns to AWAITING_PR_APPROVAL; cancel reaches CANCELLED; old authenticated sessions and immutable replay remain valid.",
+    "Interrupted legacy write reuses its receipt without a second mutation; unknown provider completion requires intervention.",
+    "Two pending subscription plan variants retain exact result bytes and repair count and reach the human plan gate.",
+    "Feedback after restart retains its target and budgets; stale/foreign/cancelled requests fail and a paused target waits for causal resume."
+  ],
+  "live_provider_calls": 0,
+  "ci_selection": "The manual full Python/runtime workflow now includes the rehearsal in its PostgreSQL Docker step with full Git history. No full CI dispatch was made; local selection checks and ordinary PR smoke validate this change.",
+  "self_review": "Primary checked stopped-process boundaries, guarded disposable targets, coordinated backup verification, original-row preservation, empty-new-table rollback precondition, gate/control replay and evidence identities. No application or migration behavior changed.",
+  "limitations": [
+    "Historical Python source runs in separate supervised interpreters using the provisioned matching dependency environment and current test driver; no historical installer/deployed binary is tested.",
+    "Providers are scripted. Managed Git, controlled writes/checks, PostgreSQL migration and backup commands are real.",
+    "The dump and filesystem archive are temporary disposable fixture outputs; retained manifests keep checksums/catalog verification, not backup contents. No restore was attempted.",
+    "Old writer, new migrator/current components and old read-only reader are sequential. Rolling mixed-version writers and production restore are unsupported.",
+    "Rollback is shown only before subscription effects. Retained v0.2 effects require forward reconciliation; old schemas do not acquire fabricated process proof.",
+    "Human fixture publication and merge remain unapproved; development delivery is separately authorized."
+  ]
+}

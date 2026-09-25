@@ -37,11 +37,11 @@ def test_runtime_status_upgrade_and_downgrade_preserve_other_tables(
 
     command.upgrade(config, "20260912_0020")
     before = asyncio.run(tables())
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260912_0021")
     assert asyncio.run(tables()) == before | {"subscription_worker_status"}
     asyncio.run(retain_report())
     command.downgrade(config, "20260912_0020")
     assert asyncio.run(tables()) == before
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260912_0021")
     asyncio.run(retain_report())
     command.downgrade(config, "base")

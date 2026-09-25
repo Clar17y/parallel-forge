@@ -120,4 +120,5 @@ jobs:
           apps/orchestrator/tests/persistence/test_subscription_counter_quota.py
           apps/orchestrator/tests/persistence/test_subscription_codex_counter_acceptance.py
           apps/orchestrator/tests/persistence/test_subscription_active_client_controls.py
+          apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py
           -q -ra -m docker
