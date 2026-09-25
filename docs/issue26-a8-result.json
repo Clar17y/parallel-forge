@@ -49,6 +49,26 @@
     {
       "path": "tests/acceptance/test_subscription_profile_process.py",
       "git_blob": "7ec587b77964c028b1043e8321e30405d6ae01da"
+    },
+    {
+      "path": "apps/orchestrator/tests/agents/test_antigravity_configuration.py",
+      "git_blob": "66acc464ff49b2a8ccc39de2a0d461ac9def25ac"
+    },
+    {
+      "path": "apps/orchestrator/tests/agents/test_claude_configuration.py",
+      "git_blob": "55270a5abd01f4aa643b194db72404fa6cb680ce"
+    },
+    {
+      "path": "apps/orchestrator/tests/agents/test_codex_configuration.py",
+      "git_blob": "375b56940940b111c0414fde786bbb402723f510"
+    },
+    {
+      "path": "apps/orchestrator/tests/agents/test_gemini_gateway.py",
+      "git_blob": "f283f19ec0322b4590727ebc20ebf71227f2d73b"
+    },
+    {
+      "path": "apps/orchestrator/tests/domain/test_subscription.py",
+      "git_blob": "d79ea5e0ed7735ea2feccaf376b4296d5259d57f"
     }
   ],
   "runtime_changes": [],
@@ -57,9 +77,9 @@
   "validation": {
     "python": "3.14.5",
     "node": "24.20.0",
-    "python_distinct_passing_cases": 65,
+    "python_distinct_passing_cases": 75,
     "web_passing_cases": 9,
-    "accounting": "57 unchanged initial passes plus one repaired active-browser case plus seven CLI cases; nine separate web component checks. The initial active-browser failure is retained and superseded.",
+    "accounting": "57 unchanged initial passes plus one repaired active-browser case plus seven CLI cases; nine separate web component checks. The initial active-browser failure is retained and superseded. Ten additional paid-route/credential-filtering checks pass; one platform-specific filesystem case is skipped with its exact reason retained.",
     "python_invocation": "python -m pytest <listed cases/files> -q --junitxml=<retained path>",
     "browser_environment": {
       "FORGE_SUBSCRIPTION_BROWSER_TEST": "1",
@@ -173,6 +193,37 @@
           "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_runtime_cli_missing_evidence_points_to_offline_verification",
           "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_runtime_cli_warns_that_antigravity_tools_are_not_guaranteed"
         ]
+      },
+      {
+        "junit": ".llm-output/issue26/paid-route-guards-junit.xml",
+        "log": ".llm-output/issue26/paid-route-guards.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "1",
+        "tests": "11",
+        "time": "1.256",
+        "timestamp": "2026-09-25T18:06:31.651304+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.domain.test_subscription::test_execution_envelope_rejects_api_key_in_allowance_only_mode",
+          "apps.orchestrator.tests.agents.test_codex_configuration::test_launch_selects_the_trusted_home_without_inheriting_ambient_credentials",
+          "apps.orchestrator.tests.agents.test_claude_configuration::test_claude_launch_uses_only_the_verified_client_home",
+          "apps.orchestrator.tests.agents.test_gemini_gateway::test_launch_materializes_configuration_before_start_and_cleans_after_stop",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_settings_and_home_bind_the_documented_client_locations",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_managed_home_is_a_closed_canonical_tree",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_home_rejects_drift_links_and_unowned_contents[extra]",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_home_rejects_drift_links_and_unowned_contents[changed]",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_home_rejects_drift_links_and_unowned_contents[link]",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_existing_or_relative_managed_home_is_refused",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_closed_argv_and_environment_cannot_use_ambient_paid_credentials"
+        ],
+        "skips": [
+          {
+            "case": "test_home_rejects_drift_links_and_unowned_contents[link]",
+            "reason": "symlinks unavailable"
+          }
+        ]
       }
     ],
     "web_command": "npm run test:web -- --run src/components/subscription-profiles/runtime-status.test.tsx",
@@ -180,7 +231,8 @@
     "web_duration_seconds": 1.76,
     "manifest_digests_and_terminal_process_records": "passed",
     "diff_check": "passed",
-    "secret_scan": "An API-test filename followed by its Git blob SHA1 triggered generic-api-key. Verified the value with git hash-object, represented paths and blob IDs as explicit fields, and reran the unchanged pinned scanner without suppressions."
+    "secret_scan": "An API-test filename followed by its Git blob SHA1 triggered generic-api-key. Verified the value with git hash-object, represented paths and blob IDs as explicit fields, and reran the unchanged pinned scanner without suppressions.",
+    "python_skipped_cases": 1
   },
   "manifests": [
     {
@@ -365,11 +417,13 @@
     "Profile edits affect future envelopes; existing profiles, routes and human controls survive restart and stale-tab/replayed requests.",
     "Chromium and Next.js exercise two tabs, lost-response replay, active specialist feedback and pause/resume/cancel. Partial work survives; cancelled task is terminal with zero outstanding attempts and unsettled effects.",
     "Operator trust admits configured routes without capability evidence; worker, runtime model/CLI JSON and web tests retain Ready to attempt, operator_trusted, Antigravity approved_tools_unproved and advisory client_build_changed.",
-    "Usage assessment distinguishes measured zero, unknown and missing coverage; durable repairs, waits and approved fallback retain causal attribution. Subscription charges and remaining allowance remain unknown."
+    "Usage assessment distinguishes measured zero, unknown and missing coverage; durable repairs, waits and approved fallback retain causal attribution. Subscription charges and remaining allowance remain unknown.",
+    "Allowance-only envelope rejects an API-key/paid-opt-in route; Codex, Claude, Gemini and Antigravity launch configuration excludes ambient paid credentials and retains configured controls. These are offline fixtures, not billing attestations."
   ],
   "reused_evidence": [
     "docs/issue19-a1-result.json: configured real operator-trusted Astra and Antigravity invocation through normal separate API/worker, broker and stopped-process settlement",
-    "docs/issue25-a7-result.json: active fake-client executable binding, physical stop and effect reconciliation"
+    "docs/issue25-a7-result.json: active fake-client executable binding, physical stop and effect reconciliation",
+    "docs/issue24-a6-result.json: approved fallback binding preserves auth/billing boundaries; the four domain fallback cases are part of its passing focused run"
   ],
   "live_provider_calls": 0,
   "self_review": "Primary checked scenario limits, actual public-process termination, frozen envelope identity, replay counts, unknown-usage assertions and test provenance. No application change or further live invocation was required.",
@@ -378,5 +432,6 @@
     "The active browser fixture uses public UI/API and a separate public worker, while its specialist execution is driven by a test-host composed worker with a real supervised fake Gemini peer and MCP descendant.",
     "Readiness and usage tests are deterministic; they do not establish balances, provider billing or native-tool isolation.",
     "No paid route, account mutation, live balance query, full CI or fixture publication/merge was performed."
-  ]
+  ],
+  "review_resolution": "PR54 requested negative admission/billing evidence. Added ten focused passing credential/route checks, reused A6 fallback-binding evidence, and clarified the historical design: the 24 September operator policy supersedes mandatory proof of provider-wide billing/native-tool isolation; actual route and credential checks remain required."
 }
