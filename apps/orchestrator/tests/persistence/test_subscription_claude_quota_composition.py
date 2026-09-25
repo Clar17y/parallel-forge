@@ -23,9 +23,6 @@ from forge.persistence.models.subscription_quota import SubscriptionQuotaObserva
 from forge.worker.subscription_broker import DurableClientProcessLifecycle
 from forge.worker.subscription_runtime import SubscriptionAttemptRunner
 from sqlalchemy import func, select
-from test_claude_supervised import (  # noqa: F401 - imported autouse fixture
-    _supported_isolation_platform,
-)
 from test_scheduler_acceptance import (  # noqa: F401
     _admit_run,
     _enqueue,
@@ -36,6 +33,14 @@ from test_subscription_quota import _factory
 from test_subscription_usage import _reservation
 
 from apps.orchestrator.tests.agents.capability_support import bind_fake_capability_report
+
+
+@pytest.fixture(autouse=True)
+def _supported_isolation_platform(monkeypatch):
+    # The scripted peer is supported even where official-client isolation is unavailable.
+    monkeypatch.setattr(
+        "forge.agents.claude_gateway.claude_isolation_platform_supported", lambda: True
+    )
 
 
 @pytest.mark.integration
