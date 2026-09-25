@@ -4,7 +4,7 @@
   "date": "2026-09-25",
   "outcome": "functional_acceptance_complete_locally",
   "source_commit": "2d02dc03942747bd6392c2a9d3e7edfb6034096e",
-  "delivery": "PR publication and merge authorized; local pre-delivery record",
+  "delivery": "Local pre-delivery record for the development change; fixture publication and merge remain unapproved",
   "runtime_changes": [],
   "test_changes": [],
   "evidence_class": "scripted specialists with real PostgreSQL, managed Git and trusted-host named checks",
