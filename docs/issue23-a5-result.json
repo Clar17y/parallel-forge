@@ -58,7 +58,7 @@
     "Out-of-plan write denied; only the approved one-line documentation repair is committed",
     "No-review evidence retains its explicit source without a fabricated reviewer approval",
     "Open, superseded, digest-altered, foreign-primary and pending-review sources rejected",
-    "Fake-GitHub publication/restart recovers without repeating push or PR effects",
+    "Fake-GitHub publication retries with fresh database transactions without repeating push or PR effects",
     "Separate exact-candidate human merge gate retains actual acceptance through recovery"
   ],
   "reused_evidence": [
@@ -69,7 +69,7 @@
   "live_provider_calls": 0,
   "limitations": [
     "The primary responses and process proof are scripted; counters do not measure live subscription usage or remaining allowance.",
-    "Publication and merge recovery use fake GitHub in separate deterministic cases; the A5 fixture itself stops before publication.",
+    "Publication and merge retry recovery use fake GitHub and fresh database transactions on the same service instances; these cases do not prove service/process restart. The A5 fixture itself stops before publication.",
     "Historical routes remain frozen. No runtime behavior change, full CI or new provider certification was needed."
   ]
 }
