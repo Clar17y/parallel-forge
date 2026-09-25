@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
@@ -78,11 +79,16 @@ def historical_source():
             with path.open("xb") as stream:
                 stream.write(value)
             files[item.filename] = hashlib.sha256(value).hexdigest()
-    for name in ("pyproject.toml", "uv.lock"):
-        assert (target / name).read_bytes() == (ROOT / name).read_bytes(), (
-            "Historical execution needs its exact dependency environment",
-            name,
-        )
+    assert (target / "uv.lock").read_bytes() == (ROOT / "uv.lock").read_bytes(), (
+        "Historical execution needs its exact dependency lock"
+    )
+    metadata = []
+    for root in (target, ROOT):
+        document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        # Test marker registration does not alter the interpreter environment.
+        document.get("tool", {}).get("pytest", {}).get("ini_options", {}).pop("markers", None)
+        metadata.append(document)
+    assert metadata[0] == metadata[1], "Historical execution needs matching environment metadata"
     return SimpleNamespace(
         root=target,
         files=files,
@@ -261,7 +267,7 @@ async def _historical_case(
             "old_reader_after_head_upgrade": True,
             "old_reader_preserved_rows_and_artifacts": True,
             "limits": [
-                "Historical v0.1 Python source; shared test environment with byte-identical project metadata and lockfile",
+                "Historical v0.1 Python source; shared test environment with identical lockfile and metadata apart from test markers",
                 "Current test harness and explicitly scripted provider responses",
                 "No historical deployment, rolling writer compatibility or rollback claim",
                 "Current authenticated API components after upgrade; no browser or live provider call",
