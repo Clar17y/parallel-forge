@@ -7,6 +7,15 @@ import tomllib
 scenario, model, effort, reset_text = sys.argv[1:5]
 reset_at = int(reset_text)
 configuration_args = sys.argv[5:]
+account_update_scenarios = {
+    "account_update_model_list",
+    "account_update_config_read",
+    "account_update_thread_start",
+    "account_update_turn_start",
+    "account_update_in_stream",
+    "account_update_after_tool",
+    "account_update_after_final",
+}
 assert len(configuration_args) % 2 == 0 and set(configuration_args[::2]) == {"-c"}
 configuration = tomllib.loads("\n".join(configuration_args[1::2]))
 assert configuration["model_provider"] == "openai"
@@ -30,6 +39,8 @@ def flatten(values, prefix=""):
 def receive(method):
     frame = json.loads(sys.stdin.readline())
     assert frame.get("method") == method
+    if scenario == "account_update_" + method.replace("/", "_"):
+        account_update()
     return frame
 
 
@@ -39,6 +50,10 @@ def send(frame):
 
 def respond(frame, result):
     send({"id": frame["id"], "result": result})
+
+
+def account_update():
+    send({"method": "account/updated", "params": {"authMode": "chatgpt", "planType": "plus"}})
 
 
 def limits(**changes):
@@ -51,8 +66,8 @@ def limits(**changes):
     send({"method": "account/rateLimits/updated", "params": {"rateLimits": snapshot}})
 
 
-def client_notices():
-    # Observed in Codex 0.156.1 before account/read and allowed during a turn.
+def client_notices(*, include_account=True):
+    # Account notices are advisory only before the account response binds identity.
     for method, params in (
         ("configWarning", {"summary": "An unrelated setting is ignored"}),
         (
@@ -61,6 +76,8 @@ def client_notices():
         ),
         ("account/updated", {"authMode": "chatgpt", "planType": "plus"}),
     ):
+        if method == "account/updated" and not include_account:
+            continue
         frame = {"method": method, "params": params}
         if scenario == "advisory_request":
             frame["id"] = 81
@@ -74,12 +91,26 @@ def client_notices():
 respond(receive("initialize"), {"userAgent": "offline-fake/0.153.4"})
 receive("initialized")
 account = receive("account/read")
-if scenario in {"startup_advisory", "advisory_request", "malformed_advisory", "changed_auth"}:
+if scenario in {
+    "startup_advisory",
+    "startup_advisory_mismatch",
+    "advisory_request",
+    "malformed_advisory",
+    "changed_auth",
+}:
     client_notices()
 limits()
 respond(
     account,
-    {"account": {"type": "chatgpt", "email": "codex@example.invalid", "planType": "plus"}},
+    {
+        "account": {
+            "type": "chatgpt",
+            "email": "other@example.invalid"
+            if scenario == "startup_advisory_mismatch"
+            else "codex@example.invalid",
+            "planType": "plus",
+        }
+    },
 )
 respond(
     receive("model/list"),
@@ -138,7 +169,9 @@ if scenario in {"before_ack", "wrong_ack"}:
     send(notice)
 respond(turn, {"turn": {"id": "wrong-turn" if scenario == "wrong_ack" else "turn-actual"}})
 if scenario == "turn_advisory":
-    client_notices()
+    client_notices(include_account=False)
+if scenario == "account_update_in_stream":
+    account_update()
 if scenario in {"warning_in_stream", "warning_request"}:
     frame = {
         "method": "warning",
@@ -153,7 +186,7 @@ if scenario in {"late_thread_start_stream", "late_thread_start_request"}:
         frame["id"] = 99
     send(frame)
 
-if scenario in {"partial_tool", "plan"}:
+if scenario in {"partial_tool", "plan", "account_update_after_tool", "account_update_in_stream"}:
     send(
         {
             "id": 80,
@@ -169,6 +202,23 @@ if scenario in {"partial_tool", "plan"}:
     )
     receipt = json.loads(sys.stdin.readline())
     assert receipt["id"] == 80 and receipt["result"]["success"] is True
+    if scenario == "account_update_after_tool":
+        account_update()
+        send(
+            {
+                "id": 81,
+                "method": "item/tool/call",
+                "params": {
+                    **identity,
+                    "callId": "read-after-account-change",
+                    "namespace": "forge",
+                    "tool": "forge_repository_read_file",
+                    "arguments": {"path": "README.md"},
+                },
+            }
+        )
+        receipt = json.loads(sys.stdin.readline())
+        assert receipt["id"] == 81
 
 # Match handle_token_count_event: token counters, then sparse account telemetry.
 send(
@@ -194,7 +244,7 @@ else:
         notice["id"] = 81
     if scenario == "missing_retry":
         notice["params"].pop("willRetry")
-    if scenario not in {
+    if scenario not in account_update_scenarios | {
         "global_success",
         "before_ack",
         "plan",
@@ -225,7 +275,7 @@ else:
                 },
             }
         )
-    success = scenario in {
+    success = scenario in account_update_scenarios | {
         "retry",
         "global_success",
         "contradiction",
@@ -278,6 +328,8 @@ else:
                 },
             }
         )
+        if scenario == "account_update_after_final":
+            account_update()
     status = "interrupted" if scenario == "interrupted" else "completed" if success else "failed"
     send(
         {

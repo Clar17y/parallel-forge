@@ -455,7 +455,16 @@ class _TerminalError:
             self.quota = replace(quota, reset_at=max(resets))
 
 
-def _client_status_notification(frame: Mapping[str, Any], *, thread_id: str | None = None) -> bool:
+class _AccountBindingChanged(RuntimeError):
+    """An account update invalidated this attempt's authenticated identity."""
+
+
+def _client_status_notification(
+    frame: Mapping[str, Any],
+    *,
+    thread_id: str | None = None,
+    allow_account_update: bool = False,
+) -> bool:
     """Consume known notices without granting tool or route authority."""
     method = frame.get("method")
     if method not in {
@@ -482,8 +491,11 @@ def _client_status_notification(frame: Mapping[str, Any], *, thread_id: str | No
             and isinstance(params.get("serverName"), str)
         )
     else:
-        # The subsequent account/read still binds the exact account. A notice
-        # cannot switch this subscription attempt to another authentication mode.
+        # Only startup has a subsequent account/read that binds the exact
+        # identity. Later notices do not identify the account, so stop before
+        # dispatching another tool or accepting output under a stale binding.
+        if not allow_account_update:
+            raise _AccountBindingChanged
         valid = params.get("authMode") == "chatgpt"
     if not valid:
         raise ProtocolError("invalid client status notification")
@@ -629,6 +641,11 @@ class CodexGateway:
             result = failed(SubscriptionFailure.UNCERTAIN)
         except CapabilityEvidenceSourceError:
             result = failed(SubscriptionFailure.UNAVAILABLE)
+        except _AccountBindingChanged:
+            result = replace(
+                failed(SubscriptionFailure.AUTHENTICATION),
+                failure_detail="Codex account update invalidated the authenticated binding",
+            )
         except ProtocolError as error:
             # ProtocolError messages are Forge-owned constants, never provider payloads.
             result = replace(
@@ -1019,7 +1036,11 @@ class CodexGateway:
             frame = await session.receive()
             if not isinstance(frame, Mapping):
                 raise ProtocolError("provider ended before response")
-            if _client_status_notification(frame, thread_id=thread_id or announced):
+            if _client_status_notification(
+                frame,
+                thread_id=thread_id or announced,
+                allow_account_update=method in {"initialize", "account/read"},
+            ):
                 continue
             if terminal_error.account_notification(frame, self._now()):
                 continue
