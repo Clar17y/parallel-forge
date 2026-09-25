@@ -159,7 +159,9 @@ class ActiveClientScript(CounterScript):
                     model=WRITER.model,
                     effort=WRITER.effort.value,
                     account="test-account",
-                    executable_digest="c" * 64,
+                    executable_digest=hashlib.sha256(
+                        Path(sys.executable).resolve(strict=True).read_bytes()
+                    ).hexdigest(),
                     duration_seconds=45,
                     script=(
                         str(Path(__file__).parents[1] / "agents/gemini_acp_peer.py"),

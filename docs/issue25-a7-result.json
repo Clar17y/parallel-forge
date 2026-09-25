@@ -1,0 +1,560 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/Clar17y/parallel-forge/issues/25",
+  "date": "2026-09-25",
+  "outcome": "functional_acceptance_complete_locally",
+  "source_commit_tested": "77f4c993ffa00e5158bf7774ef7e97015f4a681f",
+  "delivery_base": "644aa643a59edc6482375494e65e7bb72c58b0e6",
+  "test_input_git_blob": {
+    "apps/orchestrator/tests/persistence/test_subscription_active_client_controls.py": "45864763fa6cf7633413ba1bed8f21bcf684f29b"
+  },
+  "runtime_changes": [],
+  "test_repair": "Bind the supervised fake Gemini peer to the actual Python executable digest. The former placeholder was rejected by the real launch binding before the intended control boundary.",
+  "validation": {
+    "python": "3.14.5",
+    "distinct_passing_cases": 78,
+    "accounting": "63 unchanged passes from the initial run, four repaired active-client cases and 11 additional commit-recovery cases. The four initial failures are preserved and superseded.",
+    "invocation": "python -m pytest <listed cases/files> -q --junitxml=<retained path>",
+    "runs": [
+      {
+        "junit": ".llm-output/issue25/a7-junit.xml",
+        "log": ".llm-output/issue25/a7.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "4",
+        "skipped": "0",
+        "tests": "67",
+        "time": "336.996",
+        "timestamp": "2026-09-25T17:17:08.860393+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_subscription_active_client_controls::test_active_client_stop_preserves_write_and_quota_across_restart[write-pause]",
+          "apps.orchestrator.tests.persistence.test_subscription_active_client_controls::test_active_client_stop_preserves_write_and_quota_across_restart[write-cancel]",
+          "apps.orchestrator.tests.persistence.test_subscription_active_client_controls::test_active_client_stop_preserves_write_and_quota_across_restart[docker-check-pause]",
+          "apps.orchestrator.tests.persistence.test_subscription_active_client_controls::test_active_client_stop_preserves_write_and_quota_across_restart[docker-check-cancel]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_noninvoked_terminal_mutation_denial_can_close_stale_effect",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_actual_predispatch_mutation_denial_recovers_without_writer_execution",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_keeps_unproved_synthetic_mutation_fenced",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_keeps_missing_foreign_or_active_effect_fenced[False-True-False-False]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_keeps_missing_foreign_or_active_effect_fenced[True-False-False-False]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_keeps_missing_foreign_or_active_effect_fenced[True-True-True-False]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_keeps_missing_foreign_or_active_effect_fenced[True-True-False-True]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_keeps_nonterminal_or_foreign_operation_intent_fenced[PENDING-repository.write_file]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_keeps_nonterminal_or_foreign_operation_intent_fenced[SUCCEEDED-repository.delete_file]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_distinguishes_live_and_stale_effect_states[admitted-True-0-admitted]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_recovery_excludes_legacy_tool_lineage",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_actual_controlled_terminal_evidence_recovers_lost_broker_receipt[repository.read_file-admitted-False]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_actual_controlled_terminal_evidence_recovers_lost_broker_receipt[repository.read_file-reconciling-False]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_actual_controlled_terminal_evidence_recovers_lost_broker_receipt[repository.write_file-admitted-False]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_actual_controlled_terminal_evidence_recovers_lost_broker_receipt[repository.write_file-reconciling-False]",
+          "apps.orchestrator.tests.persistence.test_subscription_effect_recovery::test_actual_controlled_terminal_evidence_recovers_lost_broker_receipt[repository.read_file-admitted-True]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_new_launch_refuses_stopped_admission[run_pause]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_new_launch_refuses_stopped_admission[task_cancel]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_new_launch_refuses_stopped_admission[expired_lease]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_existing_launch_can_record_stop_after_run_pause",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_success_without_client_launch_is_fenced",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[none]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[result_pid]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[result_launch]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[missing_started]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[legacy_terminal]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[uncertain]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[missing_result_proof]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[foreign_worker]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_decision_requires_exact_terminal_launch[cancelled]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_supervisor_receipt_is_durable_before_decision_settlement",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_older_result_shapes_replay_without_new_usage[2]",
+          "apps.orchestrator.tests.persistence.test_subscription_launch_settlement::test_older_result_shapes_replay_without_new_usage[3]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_restart_applies_primary_reassignment_and_preserves_task_budget[failure]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_restart_applies_primary_reassignment_and_preserves_task_budget[scope]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_restart_applies_primary_reassignment_and_preserves_task_budget[handoff]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_rollback_and_concurrent_recovery",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[pause]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[cancel]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[version]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[generation]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[paths]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[provider]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[leased]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[effect]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[child_launch]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[parent_launch]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_defers_unsafe_current_target_without_repair[history]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_invalid_reassignment_is_bounded_primary_repair[route]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_invalid_reassignment_is_bounded_primary_repair[auth]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_invalid_reassignment_is_bounded_primary_repair[billing]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_invalid_reassignment_is_bounded_primary_repair[discard]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_invalid_reassignment_is_bounded_primary_repair[target]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_invalid_reassignment_is_bounded_primary_repair[source]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_invalid_reassignment_is_bounded_primary_repair[primary]",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_keeps_quota_and_admission_budgets",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_unbound_historical_reassignment_grants_no_new_authority",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_reassignment_replay_checks_immutable_application_receipt",
+          "apps.orchestrator.tests.persistence.test_subscription_reassignment::test_old_stopped_attempt_cannot_reassign_a_newer_failure",
+          "tests.integration.test_worker_restart::test_worker_crash_and_restart_during_development[file_write]",
+          "tests.integration.test_worker_restart::test_worker_crash_and_restart_during_development[local_commit]",
+          "tests.integration.test_dev_scripts::test_subprocess_managed_process_kill_tree_kills_descendants",
+          "tests.integration.test_dev_scripts::test_cleanup_terminates_descendants_when_parent_already_exited"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue25/active-repair-commit-junit.xml",
+        "log": ".llm-output/issue25/active-repair-commit.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "15",
+        "time": "149.827",
+        "timestamp": "2026-09-25T17:28:35.741736+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.persistence.test_subscription_active_client_controls::test_active_client_stop_preserves_write_and_quota_across_restart[write-pause]",
+          "apps.orchestrator.tests.persistence.test_subscription_active_client_controls::test_active_client_stop_preserves_write_and_quota_across_restart[write-cancel]",
+          "apps.orchestrator.tests.persistence.test_subscription_active_client_controls::test_active_client_stop_preserves_write_and_quota_across_restart[docker-check-pause]",
+          "apps.orchestrator.tests.persistence.test_subscription_active_client_controls::test_active_client_stop_preserves_write_and_quota_across_restart[docker-check-cancel]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_runs_two_phases_once_and_replays[False]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_runs_two_phases_once_and_replays[True]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[False-None]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[False-preparation_attempt]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[False-publication_attempt]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[True-None]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[True-preparation_attempt]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[True-publication_attempt]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[True-preparation_scope]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[True-publication_scope]",
+          "apps.orchestrator.tests.persistence.test_subscription_git_commit::test_subscription_commit_recovers_historical_receipts_without_live_lease[True-old_codec]"
+        ]
+      }
+    ],
+    "scoped_ruff_check_format_and_diff": "passed"
+  },
+  "manifests": [
+    {
+      "scenario": "A7-active-docker-check-pause",
+      "run_id": "0509a246-39b0-4c8d-bf6c-57d1db05ae29",
+      "state": "IMPLEMENTING",
+      "manifest": ".llm-output/issue25/acceptance/0509a246-39b0-4c8d-bf6c-57d1db05ae29/manifest.json",
+      "manifest_digest": "b4e0b0144b51aa6e63954bd9223bb0e7e32971c38fa792a75a0cccc86f67be1a",
+      "artifact_files_verified": 7,
+      "routes": [
+        [
+          "primary",
+          "openai",
+          "codex",
+          "gpt-6-astra",
+          "low"
+        ],
+        [
+          "routine_implementation",
+          "google",
+          "gemini_cli",
+          "gemini-3.8-flash-medium",
+          "medium"
+        ]
+      ],
+      "usage": {
+        "consumed": {
+          "duration_ms": 12792,
+          "tool_calls": 3,
+          "named_checks": 1,
+          "provider_attempts": 3,
+          "repairs": 1,
+          "input_tokens": null,
+          "output_tokens": null,
+          "cost_minor": null
+        },
+        "outstanding": {
+          "duration_ms": 0,
+          "tool_calls": 0,
+          "named_checks": 0,
+          "provider_attempts": 1,
+          "repairs": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cost_minor": 0
+        },
+        "uncertain_attempts": 1,
+        "policy_violations": []
+      },
+      "observations": {
+        "hook": "check_dispatched_before_result_receipt",
+        "original_control": {
+          "receipt_id": "201dd6bb-1285-4d56-b554-b37becc382f3",
+          "run_id": "0509a246-39b0-4c8d-bf6c-57d1db05ae29",
+          "task_id": "35de517c-f55f-49f2-9427-5fc19d72c862",
+          "action": "pause",
+          "status": "pause_requested",
+          "run_version": 9,
+          "task_version": 2,
+          "observed_at": "2026-09-25T16:29:27.363777Z",
+          "reason": "A7 active controlled Docker check",
+          "pause_receipt_id": null
+        },
+        "resume": {
+          "receipt_id": "146387b1-5628-4cd5-8dc9-d8416235fad3",
+          "run_id": "0509a246-39b0-4c8d-bf6c-57d1db05ae29",
+          "task_id": "35de517c-f55f-49f2-9427-5fc19d72c862",
+          "action": "resume",
+          "status": "queued",
+          "run_version": 9,
+          "task_version": 4,
+          "observed_at": "2026-09-25T16:29:34.565839Z",
+          "reason": "Resume retained partial work with quota admission",
+          "pause_receipt_id": "201dd6bb-1285-4d56-b554-b37becc382f3"
+        },
+        "file_digests_preserved": {
+          "src/counter.py": "05c58c98d3801a69f1785a19cf0be7dadfb4ceafb25fd575ba950e95aae6a1d7",
+          "tests/test_counter.py": "c412ca3c51f980c72efee23967ff8ca6907cf06c9ea56e8afbb1c24289c45911"
+        },
+        "result_digest_preserved": "4cc8005a9cdc1d0621771cce89c0f7dd131e896ac782e3abc5f51624f94c0a4e",
+        "physical_processes": [
+          {
+            "pid": 43076,
+            "process_identity": "134348273611060651",
+            "role": "fake-client"
+          },
+          {
+            "pid": 117776,
+            "process_identity": "134348273612136702",
+            "role": "mcp-descendant"
+          }
+        ],
+        "physical_processes_alive_before_control": true,
+        "physical_processes_gone_after_control": true,
+        "physical_proof_scope": "Gemini fake client and its actual MCP descendant; primary planning/delegation retains synthetic fixture lifecycle",
+        "late_broker_effect_denied": true,
+        "attempts_or_repairs_from_suppressed_poll": 0,
+        "ordinary_interruption_resume_repairs": 1,
+        "interrupted_effects_reconciled_once": 1,
+        "docker_container_before_control": {
+          "container_id": "df39de01df687aaf8811f0a6c10ecf589fbd4b5e364094a792bf86ba03fd0315",
+          "name": "/forge-runner-7d4981cab24c4326ba9e418d37522353",
+          "started_at": "2026-09-25T16:29:26.792694335Z",
+          "running": true,
+          "image_reference": "sha256:23ae98e9c4d5b4f495b6b02b9de2540017df2bf6ef6c73edeac79fa0f16f935d",
+          "user": "10001:10001",
+          "network_mode": "none",
+          "readonly_rootfs": true,
+          "privileged": false
+        },
+        "docker_container_after_control": {
+          "container_id": "df39de01df687aaf8811f0a6c10ecf589fbd4b5e364094a792bf86ba03fd0315",
+          "gone": true
+        }
+      }
+    },
+    {
+      "scenario": "A7-active-client-cancel",
+      "run_id": "287f8b10-9465-4312-9501-12a1b48d02fe",
+      "state": "IMPLEMENTING",
+      "manifest": ".llm-output/issue25/acceptance/287f8b10-9465-4312-9501-12a1b48d02fe/manifest.json",
+      "manifest_digest": "5f8f722bb0c2613cdac85ac0b6de3086f37e9144bc8aac8f6534d9563edf1ec5",
+      "artifact_files_verified": 3,
+      "routes": [
+        [
+          "primary",
+          "openai",
+          "codex",
+          "gpt-6-astra",
+          "low"
+        ],
+        [
+          "routine_implementation",
+          "google",
+          "gemini_cli",
+          "gemini-3.8-flash-medium",
+          "medium"
+        ]
+      ],
+      "usage": {
+        "consumed": {
+          "duration_ms": 5041,
+          "tool_calls": 2,
+          "named_checks": 0,
+          "provider_attempts": 3,
+          "repairs": 0,
+          "input_tokens": null,
+          "output_tokens": null,
+          "cost_minor": null
+        },
+        "outstanding": {
+          "duration_ms": 0,
+          "tool_calls": 0,
+          "named_checks": 0,
+          "provider_attempts": 0,
+          "repairs": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cost_minor": 0
+        },
+        "uncertain_attempts": 1,
+        "policy_violations": []
+      },
+      "observations": {
+        "hook": "active_task_stop_committed_before_provider_result",
+        "original_control": {
+          "receipt_id": "cb721891-49ed-4276-922b-ea3a59ca059f",
+          "run_id": "287f8b10-9465-4312-9501-12a1b48d02fe",
+          "task_id": "9fabb586-0fde-4905-8f26-d7f58cf503ac",
+          "action": "cancel",
+          "status": "cancel_requested",
+          "run_version": 9,
+          "task_version": 2,
+          "observed_at": "2026-09-25T16:29:05.816952Z",
+          "reason": "A7 active client after controlled write",
+          "pause_receipt_id": null
+        },
+        "resume": null,
+        "file_digests_preserved": {
+          "src/counter.py": "05c58c98d3801a69f1785a19cf0be7dadfb4ceafb25fd575ba950e95aae6a1d7",
+          "tests/test_counter.py": "c412ca3c51f980c72efee23967ff8ca6907cf06c9ea56e8afbb1c24289c45911"
+        },
+        "result_digest_preserved": "dbb4bd52764f113131d52136e3a440dfb52c03fc0349eadcfddcdf110e457ac5",
+        "physical_processes": [
+          {
+            "pid": 82268,
+            "process_identity": "134348273429679629",
+            "role": "fake-client"
+          },
+          {
+            "pid": 100744,
+            "process_identity": "134348273430673097",
+            "role": "mcp-descendant"
+          }
+        ],
+        "physical_processes_alive_before_control": true,
+        "physical_processes_gone_after_control": true,
+        "physical_proof_scope": "Gemini fake client and its actual MCP descendant; primary planning/delegation retains synthetic fixture lifecycle",
+        "late_broker_effect_denied": true,
+        "attempts_or_repairs_from_suppressed_poll": 0,
+        "ordinary_interruption_resume_repairs": 0,
+        "interrupted_effects_reconciled_once": 0,
+        "docker_container_before_control": null,
+        "docker_container_after_control": null
+      }
+    },
+    {
+      "scenario": "A7-active-client-pause",
+      "run_id": "d3a3b420-fae1-495a-9713-7455a3f3ef73",
+      "state": "IMPLEMENTING",
+      "manifest": ".llm-output/issue25/acceptance/d3a3b420-fae1-495a-9713-7455a3f3ef73/manifest.json",
+      "manifest_digest": "4669f66b686f6cea9c50e9183dffe5896e6427ef9515268d60b3cf4432cf7c18",
+      "artifact_files_verified": 3,
+      "routes": [
+        [
+          "primary",
+          "openai",
+          "codex",
+          "gpt-6-astra",
+          "low"
+        ],
+        [
+          "routine_implementation",
+          "google",
+          "gemini_cli",
+          "gemini-3.8-flash-medium",
+          "medium"
+        ]
+      ],
+      "usage": {
+        "consumed": {
+          "duration_ms": 5035,
+          "tool_calls": 2,
+          "named_checks": 0,
+          "provider_attempts": 3,
+          "repairs": 1,
+          "input_tokens": null,
+          "output_tokens": null,
+          "cost_minor": null
+        },
+        "outstanding": {
+          "duration_ms": 0,
+          "tool_calls": 0,
+          "named_checks": 0,
+          "provider_attempts": 1,
+          "repairs": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cost_minor": 0
+        },
+        "uncertain_attempts": 1,
+        "policy_violations": []
+      },
+      "observations": {
+        "hook": "active_task_stop_committed_before_provider_result",
+        "original_control": {
+          "receipt_id": "a176f0ec-5a26-4bf4-8417-a4a39f51bc34",
+          "run_id": "d3a3b420-fae1-495a-9713-7455a3f3ef73",
+          "task_id": "652266b7-87a8-43a0-8045-8c15cb75d003",
+          "action": "pause",
+          "status": "pause_requested",
+          "run_version": 9,
+          "task_version": 2,
+          "observed_at": "2026-09-25T16:28:50.399993Z",
+          "reason": "A7 active client after controlled write",
+          "pause_receipt_id": null
+        },
+        "resume": {
+          "receipt_id": "d294332c-57b5-4768-b871-a031bffc8614",
+          "run_id": "d3a3b420-fae1-495a-9713-7455a3f3ef73",
+          "task_id": "652266b7-87a8-43a0-8045-8c15cb75d003",
+          "action": "resume",
+          "status": "queued",
+          "run_version": 9,
+          "task_version": 4,
+          "observed_at": "2026-09-25T16:28:52.800883Z",
+          "reason": "Resume retained partial work with quota admission",
+          "pause_receipt_id": "a176f0ec-5a26-4bf4-8417-a4a39f51bc34"
+        },
+        "file_digests_preserved": {
+          "src/counter.py": "05c58c98d3801a69f1785a19cf0be7dadfb4ceafb25fd575ba950e95aae6a1d7",
+          "tests/test_counter.py": "c412ca3c51f980c72efee23967ff8ca6907cf06c9ea56e8afbb1c24289c45911"
+        },
+        "result_digest_preserved": "6fa2f12f7700359a65ed72079023a13d0033e0fdbc2038797953db2643a34cf3",
+        "physical_processes": [
+          {
+            "pid": 132024,
+            "process_identity": "134348273274381349",
+            "role": "fake-client"
+          },
+          {
+            "pid": 74876,
+            "process_identity": "134348273275412300",
+            "role": "mcp-descendant"
+          }
+        ],
+        "physical_processes_alive_before_control": true,
+        "physical_processes_gone_after_control": true,
+        "physical_proof_scope": "Gemini fake client and its actual MCP descendant; primary planning/delegation retains synthetic fixture lifecycle",
+        "late_broker_effect_denied": true,
+        "attempts_or_repairs_from_suppressed_poll": 0,
+        "ordinary_interruption_resume_repairs": 1,
+        "interrupted_effects_reconciled_once": 0,
+        "docker_container_before_control": null,
+        "docker_container_after_control": null
+      }
+    },
+    {
+      "scenario": "A7-active-docker-check-cancel",
+      "run_id": "f65c0b45-bb7f-490c-b484-a0c3675a9f5e",
+      "state": "IMPLEMENTING",
+      "manifest": ".llm-output/issue25/acceptance/f65c0b45-bb7f-490c-b484-a0c3675a9f5e/manifest.json",
+      "manifest_digest": "da3a9477fa8193203f0c86fcd3b6f1d1f8ae69369903048abe7d7e0df449de54",
+      "artifact_files_verified": 7,
+      "routes": [
+        [
+          "primary",
+          "openai",
+          "codex",
+          "gpt-6-astra",
+          "low"
+        ],
+        [
+          "routine_implementation",
+          "google",
+          "gemini_cli",
+          "gemini-3.8-flash-medium",
+          "medium"
+        ]
+      ],
+      "usage": {
+        "consumed": {
+          "duration_ms": 12838,
+          "tool_calls": 3,
+          "named_checks": 1,
+          "provider_attempts": 3,
+          "repairs": 0,
+          "input_tokens": null,
+          "output_tokens": null,
+          "cost_minor": null
+        },
+        "outstanding": {
+          "duration_ms": 0,
+          "tool_calls": 0,
+          "named_checks": 0,
+          "provider_attempts": 0,
+          "repairs": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cost_minor": 0
+        },
+        "uncertain_attempts": 1,
+        "policy_violations": []
+      },
+      "observations": {
+        "hook": "check_dispatched_before_result_receipt",
+        "original_control": {
+          "receipt_id": "005e2743-39d3-4cda-b415-b9281b449483",
+          "run_id": "f65c0b45-bb7f-490c-b484-a0c3675a9f5e",
+          "task_id": "db150723-5f3c-4436-b722-b04d8b8802be",
+          "action": "cancel",
+          "status": "cancel_requested",
+          "run_version": 9,
+          "task_version": 2,
+          "observed_at": "2026-09-25T16:29:50.847342Z",
+          "reason": "A7 active controlled Docker check",
+          "pause_receipt_id": null
+        },
+        "resume": null,
+        "file_digests_preserved": {
+          "src/counter.py": "05c58c98d3801a69f1785a19cf0be7dadfb4ceafb25fd575ba950e95aae6a1d7",
+          "tests/test_counter.py": "c412ca3c51f980c72efee23967ff8ca6907cf06c9ea56e8afbb1c24289c45911"
+        },
+        "result_digest_preserved": "25e44e95d1cfa617e524ae142422acadd92ce1ed7c0cadb20e2b7b558592da65",
+        "physical_processes": [
+          {
+            "pid": 124212,
+            "process_identity": "134348273844838174",
+            "role": "fake-client"
+          },
+          {
+            "pid": 84128,
+            "process_identity": "134348273845834758",
+            "role": "mcp-descendant"
+          }
+        ],
+        "physical_processes_alive_before_control": true,
+        "physical_processes_gone_after_control": true,
+        "physical_proof_scope": "Gemini fake client and its actual MCP descendant; primary planning/delegation retains synthetic fixture lifecycle",
+        "late_broker_effect_denied": true,
+        "attempts_or_repairs_from_suppressed_poll": 0,
+        "ordinary_interruption_resume_repairs": 0,
+        "interrupted_effects_reconciled_once": 1,
+        "docker_container_before_control": {
+          "container_id": "af722323b0b8c97da8d8e240c8a5d73d24a78e798dd976b8c78f615073955e18",
+          "name": "/forge-runner-c553e83a0e704cba9077cf16fb66f9d3",
+          "started_at": "2026-09-25T16:29:50.267416686Z",
+          "running": true,
+          "image_reference": "sha256:23ae98e9c4d5b4f495b6b02b9de2540017df2bf6ef6c73edeac79fa0f16f935d",
+          "user": "10001:10001",
+          "network_mode": "none",
+          "readonly_rootfs": true,
+          "privileged": false
+        },
+        "docker_container_after_control": {
+          "container_id": "af722323b0b8c97da8d8e240c8a5d73d24a78e798dd976b8c78f615073955e18",
+          "gone": true
+        }
+      }
+    }
+  ],
+  "artifact_verification": {
+    "manifests": 4,
+    "files": 20,
+    "digest_bytes_parent_closure": "passed"
+  },
+  "reused_evidence": [
+    "docs/issue21-a3-result.json: unrelated worktree progresses while uncertain authority is fenced",
+    "docs/issue19-a1-result.json: actual installed-client process termination and retained reconciliation",
+    "A6 delivery changes unrelated quota test inputs and documentation; it does not invalidate these runtime/control results"
+  ],
+  "self_review": "Primary inspected launch binding, stop/restart transitions, commit and ownership recovery, evidence counts and scope. No lifecycle gap required another installed-client call.",
+  "live_provider_calls": 0,
+  "limitations": [
+    "Planning/delegation use scripted primary responses and synthetic primary process proof; the specialist and its MCP descendant are real supervised fake-client processes.",
+    "Run state remains IMPLEMENTING. No final acceptance, publication or merge of the fixture is claimed.",
+    "Pause/resume consumes the existing ordinary repair debit and retains one reserved attempt; cancellation has zero outstanding reservations. A quota-blocked poll adds no attempt or repair.",
+    "Reported and unknown usage come from scripted peers and do not measure subscription allowance."
+  ]
+}
