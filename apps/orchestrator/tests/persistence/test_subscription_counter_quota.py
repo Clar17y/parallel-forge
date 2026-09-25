@@ -52,7 +52,7 @@ LUNA = RouteSpec(
 )
 # Keep the original envelope unchanged; new operator inputs have a distinct scenario ID.
 OPERATOR_LUNA = RouteSpec(
-    provider="openai", client="codex", model="gpt-6-luna", effort=ReasoningEffort.MEDIUM
+    provider="openai", client="codex_app_server", model="gpt-6-luna", effort=ReasoningEffort.MEDIUM
 )
 
 
@@ -178,8 +178,8 @@ class QuotaCounterScript(CounterScript):
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "fallback_route,scenario_suffix",
-    [(LUNA, ""), (OPERATOR_LUNA, "-operator-luna6-1")],
-    ids=["historical-luna", "operator-luna6-v1"],
+    [(LUNA, ""), (OPERATOR_LUNA, "-operator-luna6-2")],
+    ids=["historical-luna", "operator-luna6-v2"],
 )
 @pytest.mark.parametrize("approved", [False, True])
 @pytest.mark.parametrize(

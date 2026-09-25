@@ -11,7 +11,7 @@
     "apps/orchestrator/tests/persistence/test_subscription_codex_quota_composition.py"
   ],
   "test_git_blob_ids": {
-    "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py": "1439d4cf55ae5512861069cb4ce96e386909d45d",
+    "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py": "c48b549938627f90f16adfac5ba934e906754817",
     "apps/orchestrator/tests/persistence/test_subscription_claude_quota_composition.py": "876d336a07e9d9c69f93d38bb9a735db058b4468",
     "apps/orchestrator/tests/persistence/test_subscription_codex_quota_composition.py": "f30a799ede4835b3ad7f8ae32a494d9de6fa3835"
   },
@@ -63,8 +63,21 @@
     },
     "unique_passing_cases": 69,
     "unresolved_failures": 0,
-    "reused_results": "The 29 unchanged successful combined cases and 38 classification cases remain valid; only the two repaired Codex cases were rerun.",
-    "other_checks": "Scoped Ruff check, Ruff format and git diff --check passed for the three changed test files."
+    "reused_results": "The four new v2 cases replace v1 evidence. The 25 other successful combined cases, two repaired Codex cases and 38 classification cases remain valid: 69 distinct current cases.",
+    "other_checks": "Scoped Ruff check, Ruff format and git diff --check passed for the three changed test files.",
+    "operator_route_rerun": {
+      "file": "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py",
+      "arguments": [
+        "-k",
+        "operator-luna6-v2",
+        "-q",
+        "--junitxml=.llm-output/issue24/operator-v2-junit.xml"
+      ],
+      "passed": 4,
+      "failed": 0,
+      "deselected": 4,
+      "duration_seconds": 80.38
+    }
   },
   "repairs": [
     {
@@ -76,12 +89,18 @@
       "observed_failure": "Both Codex cases reported unknown for the fixture pool because inherited personal installation settings remapped the worker quota policy.",
       "resolution": "Explicitly disable dotenv and ambient installation manifests in this injected-adapter fixture and assert its quota policy stays unchanged.",
       "evidence": "a6.log/a6-junit.xml followed by codex-repair.log/codex-repair-junit.xml"
+    },
+    {
+      "observed_failure": "PR #52 review identified that the new operator route used codex, whereas the production CodexRuntimeAdapter registers codex_app_server.",
+      "resolution": "Use codex_app_server only for the new operator route and version those inputs as operator-luna6-2; preserve historical routes and superseded v1 evidence.",
+      "evidence": "All four operator-v2 cases passed; adjacent adapter route fields were checked against CodexRuntimeAdapter."
     }
   ],
   "versioned_inputs": {
     "historical": "A6-deferred / A6-approved-fallback retain gpt-5.6-luna medium",
-    "current": "A6-deferred-operator-luna6-1 / A6-approved-fallback-operator-luna6-1 use gpt-6-luna medium when approved",
-    "unchanged_fixture": "v0.2-acceptance-2 counter-service and its grader"
+    "current": "A6-deferred-operator-luna6-2 / A6-approved-fallback-operator-luna6-2 use gpt-6-luna medium through codex_app_server when approved",
+    "unchanged_fixture": "v0.2-acceptance-2 counter-service and its grader",
+    "superseded": "The v1 operator scenarios used the historical codex client alias. Their local evidence is retained for audit but excluded from current acceptance."
   },
   "outcomes": [
     "Blocked pools survive cross-run scheduling and worker composition recreation; known reset and unknown cooldown remain distinct.",
@@ -102,26 +121,6 @@
     ],
     "runs": [
       {
-        "scenario": "A6-approved-fallback-operator-luna6-1",
-        "run_id": "12855d9b-e644-46d1-9709-24145c2fc7ff",
-        "state": "IMPLEMENTING",
-        "runner_mode": "docker",
-        "manifest_digest": "27909b2202ec92de5e93f456f39619af697f26ecabeb7d961d567379616f9df9",
-        "artifact_files_verified": 10,
-        "scripted_attempts": 5,
-        "controlled_receipts": 8
-      },
-      {
-        "scenario": "A6-approved-fallback-operator-luna6-1",
-        "run_id": "268bfdac-fd77-49e2-b9e0-54515412a2ef",
-        "state": "IMPLEMENTING",
-        "runner_mode": "trusted_host",
-        "manifest_digest": "4564f9f6a0e0b0534df443f3d59903c9d74d0e8b0110102fef73a02aafdf1853",
-        "artifact_files_verified": 10,
-        "scripted_attempts": 5,
-        "controlled_receipts": 8
-      },
-      {
         "scenario": "A6-approved-fallback",
         "run_id": "32142adb-b99e-49f2-885b-98f5cd8f9599",
         "state": "IMPLEMENTING",
@@ -132,14 +131,34 @@
         "controlled_receipts": 8
       },
       {
-        "scenario": "A6-deferred-operator-luna6-1",
-        "run_id": "807815ed-670b-4d06-a1d4-5c1da8c0b4e5",
+        "scenario": "A6-deferred-operator-luna6-2",
+        "run_id": "4c936beb-bc79-4c37-bc0a-641d0df269fe",
         "state": "IMPLEMENTING",
-        "runner_mode": "trusted_host",
-        "manifest_digest": "4fb43721d3046dc2082f9f1990ef0bd4b292c059f667c0e36752997e7fdad3b5",
+        "runner_mode": "docker",
+        "manifest_digest": "90869a562c4f4101021cc99eefd47f53d3403b22f5fa9a4bd1e5bd367ce8730d",
         "artifact_files_verified": 3,
         "scripted_attempts": 3,
         "controlled_receipts": 2
+      },
+      {
+        "scenario": "A6-approved-fallback-operator-luna6-2",
+        "run_id": "6d85a9a9-3fef-4a67-a6ac-135534f2e900",
+        "state": "IMPLEMENTING",
+        "runner_mode": "docker",
+        "manifest_digest": "86deacdd65909a01d0f312147a5c8c6e06425c8382e296b17aa6a55fcee6130b",
+        "artifact_files_verified": 10,
+        "scripted_attempts": 5,
+        "controlled_receipts": 8
+      },
+      {
+        "scenario": "A6-approved-fallback-operator-luna6-2",
+        "run_id": "7ae4b159-331b-48ae-a4e9-29047072187c",
+        "state": "IMPLEMENTING",
+        "runner_mode": "trusted_host",
+        "manifest_digest": "a52f40bc142ff6a34ae133c77ee14fb03122f7338dc030bfee25dfc3dd2916ba",
+        "artifact_files_verified": 10,
+        "scripted_attempts": 5,
+        "controlled_receipts": 8
       },
       {
         "scenario": "A6-deferred",
@@ -147,16 +166,6 @@
         "state": "IMPLEMENTING",
         "runner_mode": "trusted_host",
         "manifest_digest": "119ab7a481e255310ccc05859b5cf78ca60fc2266fff3cc358295647e446c90d",
-        "artifact_files_verified": 3,
-        "scripted_attempts": 3,
-        "controlled_receipts": 2
-      },
-      {
-        "scenario": "A6-deferred-operator-luna6-1",
-        "run_id": "b485c82c-b6d1-4385-ad61-ed868cb2ca02",
-        "state": "IMPLEMENTING",
-        "runner_mode": "docker",
-        "manifest_digest": "9ab1cc6fcd8fce76122e66736c1335f588fd8f9278b2c6313d0ce1d3aafc2586",
         "artifact_files_verified": 3,
         "scripted_attempts": 3,
         "controlled_receipts": 2
@@ -177,6 +186,16 @@
         "state": "IMPLEMENTING",
         "runner_mode": "docker",
         "manifest_digest": "d63d54146a2ce8bb5d19f999d89cddd91512d451bb0ba389d5ba77f5138ff548",
+        "artifact_files_verified": 3,
+        "scripted_attempts": 3,
+        "controlled_receipts": 2
+      },
+      {
+        "scenario": "A6-deferred-operator-luna6-2",
+        "run_id": "e322ad88-1ea8-4245-b3e8-9bde7fb7af1b",
+        "state": "IMPLEMENTING",
+        "runner_mode": "trusted_host",
+        "manifest_digest": "f93829f2662cc9e128d84859e9569cac87c017608e5758a95ea789b6f582ad43",
         "artifact_files_verified": 3,
         "scripted_attempts": 3,
         "controlled_receipts": 2
