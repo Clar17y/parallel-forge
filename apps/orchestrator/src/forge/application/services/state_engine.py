@@ -43,6 +43,8 @@ LEGAL: Mapping[RunState, frozenset[RunState]] = MappingProxyType(
         RunState.VALIDATING: frozenset(
             {
                 RunState.REVIEWING,
+                RunState.AWAITING_PR_APPROVAL,
+                RunState.MONITORING_PR,
                 RunState.REMEDIATING,
                 RunState.AWAITING_HUMAN_INTERVENTION,
                 RunState.FAILED,

@@ -12,7 +12,16 @@ from forge.application.services.paused_approvals import approval_gate_origin
 from forge.application.services.pr_evidence import PrEvidenceValidationError, PrEvidenceValidator
 from forge.application.services.release_resume import resumed_release_origin
 from forge.artifacts._errors import ArtifactIntegrityError, ArtifactStoreError
-from forge.domain.approval import ApprovalGate, MergeApprovalEvidence, canonical_digest
+from forge.domain.approval import (
+    ApprovalGate,
+    MergePublicationEvidence,
+    SubscriptionMergeApprovalEvidence,
+    SubscriptionPrApprovalEvidence,
+    canonical_digest,
+    decision_evidence_digest,
+    decision_evidence_fields,
+    decode_merge_approval_evidence,
+)
 from forge.domain.operation import canonical_digest as payload_digest
 from forge.domain.run import RunState
 from forge.persistence.models import Approval
@@ -28,14 +37,16 @@ class MergeEvidenceValidator:
         self._store, self._publication, self._controller = store, publication, controller
 
     async def queue_required(
-        self, work: UnitOfWork, run_id: UUID, approval_id: UUID, approved: MergeApprovalEvidence
+        self, work: UnitOfWork, run_id: UUID, approval_id: UUID, approved: MergePublicationEvidence
     ) -> bool:
         """Choose the effect from the frozen observation, never from mutable remote state."""
         approval = await work.auth.get_approval(approval_id=approval_id, for_update=True)
         record = await work.releases.get_for_run(run_id)
         if (
-            not isinstance(approval, Approval) or record is None
-            or approval.run_id != run_id or approval.gate != "merge"
+            not isinstance(approval, Approval)
+            or record is None
+            or approval.run_id != run_id
+            or approval.gate != "merge"
             or approval.evidence_digest != canonical_digest(approved)
         ):
             raise StaleMergeEvidence()
@@ -44,8 +55,10 @@ class MergeEvidenceValidator:
                 work, run_id, approval.run_version, "merge", approval.evidence_digest
             )
             events = [
-                event for event in await work.events.list_for_version(run_id, version)
-                if event.event_type == "run.merge_ready" and event.actor_class == "worker"
+                event
+                for event in await work.events.list_for_version(run_id, version)
+                if event.event_type == "run.merge_ready"
+                and event.actor_class == "worker"
                 and event.payload.get("merge_evidence_digest") == approval.evidence_digest
                 and event.payload.get("pull_request_id") == str(record.id)
             ]
@@ -55,10 +68,13 @@ class MergeEvidenceValidator:
             descriptor = await work.artifacts.get_by_digest(digest, run_id=run_id)
             wire = await self._store.open_bytes(digest, max_bytes=1_000_000)
             if (
-                hashlib.sha256(wire).hexdigest() != digest or descriptor.digest != digest
+                hashlib.sha256(wire).hexdigest() != digest
+                or descriptor.digest != digest
                 or descriptor.producer_type != "remote_pr_observation"
-                or descriptor.producer_id != record.id or descriptor.truncated
-                or descriptor.media_type != "application/json" or descriptor.byte_count != len(wire)
+                or descriptor.producer_id != record.id
+                or descriptor.truncated
+                or descriptor.media_type != "application/json"
+                or descriptor.byte_count != len(wire)
             ):
                 raise StaleMergeEvidence()
             raw = json.loads(wire)
@@ -72,19 +88,22 @@ class MergeEvidenceValidator:
             ):
                 raise StaleMergeEvidence()
             queue = protection["merge_queue_enabled"]
-            if (
-                (queue and protection.get("merge_queue_method") != approved.merge_method)
-                or (not queue and protection.get("strict_required_checks") is not True)
+            if (queue and protection.get("merge_queue_method") != approved.merge_method) or (
+                not queue and protection.get("strict_required_checks") is not True
             ):
                 raise StaleMergeEvidence()
             return bool(queue)
         except (
-            ValueError, OSError, ArtifactNotFound, ArtifactIntegrityError,
-            ArtifactStoreError, CommandRecoveryRequired,
+            ValueError,
+            OSError,
+            ArtifactNotFound,
+            ArtifactIntegrityError,
+            ArtifactStoreError,
+            CommandRecoveryRequired,
         ):
             raise StaleMergeEvidence() from None
 
-    async def validate(self, work: UnitOfWork, run_id: UUID) -> MergeApprovalEvidence:
+    async def validate(self, work: UnitOfWork, run_id: UUID) -> MergePublicationEvidence:
         run = await work.runs.get_for_update(run_id)
         if (
             run.state is not RunState.AWAITING_MERGE_APPROVAL
@@ -98,7 +117,7 @@ class MergeEvidenceValidator:
 
     async def for_recovery(
         self, work: UnitOfWork, run_id: UUID, approval_id: UUID
-    ) -> MergeApprovalEvidence:
+    ) -> MergePublicationEvidence:
         """Load historical admitted authority without authorizing another merge."""
         from forge.application.services.merge_authority import verify_merge_delivery
 
@@ -139,7 +158,7 @@ class MergeEvidenceValidator:
 
     async def consumed(
         self, work: UnitOfWork, run_id: UUID, approval_id: UUID, *, recheck: bool
-    ) -> MergeApprovalEvidence:
+    ) -> MergePublicationEvidence:
         run = await work.runs.get_for_update(run_id)
         approval = await work.auth.get_approval(approval_id=approval_id, for_update=True)
         if (
@@ -191,14 +210,14 @@ class MergeEvidenceValidator:
 
     async def _validate_gate(
         self, work: UnitOfWork, run_id: UUID, digest: str, gate_version: int, *, recheck: bool
-    ) -> MergeApprovalEvidence:
+    ) -> MergePublicationEvidence:
         record = await work.releases.get_for_run(run_id)
         if record is None:
             raise StaleMergeEvidence()
         try:
             descriptor = await work.artifacts.get_by_digest(digest, run_id=run_id)
             wire = await self._store.open_bytes(digest, max_bytes=1_000_000)
-            frozen = MergeApprovalEvidence.model_validate_json(wire)
+            frozen = decode_merge_approval_evidence(wire)
         except ValueError, OSError, ArtifactNotFound, ArtifactIntegrityError, ArtifactStoreError:
             raise StaleMergeEvidence() from None
         try:
@@ -224,7 +243,11 @@ class MergeEvidenceValidator:
             or descriptor.parent_digests
             != tuple(
                 sorted(
-                    {frozen.validation_digest, frozen.review_digest, frozen.runner_evidence_digest}
+                    {
+                        frozen.validation_digest,
+                        decision_evidence_digest(frozen),
+                        frozen.runner_evidence_digest,
+                    }
                 )
             )
         ):
@@ -240,6 +263,10 @@ class MergeEvidenceValidator:
             raise StaleMergeEvidence() from None
         if frozen.merge_method not in local.approved.policy.allowed_merge_methods:
             raise StaleMergeEvidence()
+        if isinstance(frozen, SubscriptionMergeApprovalEvidence) != isinstance(
+            local.evidence, SubscriptionPrApprovalEvidence
+        ):
+            raise StaleMergeEvidence()
         current = frozen.model_copy(
             update={
                 "repository": local.evidence.repository,
@@ -248,7 +275,7 @@ class MergeEvidenceValidator:
                 "base_ref": local.evidence.base_ref,
                 "base_sha": local.remote_base_sha,
                 "validation_digest": local.evidence.validation_digest,
-                "review_digest": local.evidence.review_digest,
+                **decision_evidence_fields(local.evidence),
                 "runner_mode": local.evidence.runner_mode,
                 "runner_evidence_digest": local.evidence.runner_evidence_digest,
                 "policy_version": local.approved.policy.version,

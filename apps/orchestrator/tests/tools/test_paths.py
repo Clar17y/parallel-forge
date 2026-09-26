@@ -7,11 +7,13 @@ import stat
 import subprocess
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from forge.tools import paths
 from forge.tools.paths import CanonicalRoot, PathEscape, RepositoryAccessDenied
 from forge.tools.process import ProcessRunner
+from forge.tools.repository import RepositoryReader
 
 
 def _make_root(tmp_path: Path) -> Path:
@@ -19,6 +21,48 @@ def _make_root(tmp_path: Path) -> Path:
     (root / "src").mkdir(parents=True)
     (root / "src" / "main.py").write_bytes(b"print('ok')\n")
     return root
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows mutation lock API")
+@pytest.mark.parametrize("code", [32, 33, 5, None])
+def test_windows_mutation_lock_distinguishes_contention_from_access_errors(
+    tmp_path, monkeypatch, code
+):
+    api = object.__new__(paths._WindowsPathApi)
+    failure = OSError("untrusted error text says busy")
+    if code is not None:
+        failure.winerror = code
+
+    def fail(_raw):
+        raise failure
+
+    api._create_file = lambda *args: 0
+    api._value = fail
+    monkeypatch.setattr(paths, "_set_last_error", lambda _: None)
+    with pytest.raises(RepositoryAccessDenied) as captured:
+        api.open_mutation_lock(tmp_path / "lock")
+    assert isinstance(captured.value, paths.RepositoryLockBusy) is (code in (32, 33))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock error classification")
+@pytest.mark.parametrize("code", ["EAGAIN", "EACCES", "EIO"])
+def test_posix_mutation_lock_distinguishes_contention_from_access_errors(
+    tmp_path, monkeypatch, code
+):
+    import errno
+    import fcntl
+
+    def fail(*args):
+        raise OSError(getattr(errno, code), "untrusted error text says busy")
+
+    monkeypatch.setattr(fcntl, "flock", fail)
+    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(RepositoryAccessDenied) as captured:
+            paths._open_posix_mutation_lock(parent)
+        assert isinstance(captured.value, paths.RepositoryLockBusy) is (code == "EAGAIN")
+    finally:
+        os.close(parent)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle close behavior")
@@ -266,6 +310,51 @@ def test_managed_worktree_access_binds_target_registration_and_common_git_paths(
         else:
             assert fds == (access.capability, access.registration_capability, access.git_capability)
             assert len(set(fds)) == 3
+
+
+def test_managed_worktree_lock_is_scoped_to_its_validated_registration(tmp_path: Path) -> None:
+    root_path, target_a, registration_a = _make_real_quarantine_fixture(tmp_path)
+    target_b = root_path / ".worktrees" / "target-b"
+    git = shutil.which("git") or "git"
+    result = subprocess.run(
+        [git, "-C", str(root_path), "worktree", "add", "-b", "feature-b", str(target_b), "HEAD"],
+        capture_output=True,
+        check=False,
+        shell=False,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    registration_b = next(
+        registration
+        for registration in (root_path / ".git" / "worktrees").iterdir()
+        if registration != registration_a
+    )
+    root = CanonicalRoot(root_path)
+    competing = CanonicalRoot(root_path)
+
+    with root._open_managed_worktree(target_a.name, registration_a.name):
+        # Both worktrees contain this path; the retained A operation must not
+        # reserve B, while a second mutation in B remains excluded.
+        assert (target_a / "README.md").read_text(encoding="utf-8") == "forge\n"
+        with competing._open_managed_worktree(target_b.name, registration_b.name):
+            assert (target_b / "README.md").read_text(encoding="utf-8") == "forge\n"
+            with (
+                pytest.raises(RepositoryAccessDenied, match="busy"),
+                CanonicalRoot(root_path)._open_managed_worktree(target_b.name, registration_b.name),
+            ):
+                pass
+
+
+def test_managed_worktree_rejects_a_linked_registration_lock(tmp_path: Path) -> None:
+    root_path, target, registration = _make_opaque_real_quarantine_fixture(tmp_path)
+    outside = tmp_path / "outside-lock-target"
+    outside.mkdir()
+    _make_symlink(registration / "forge-worktree.lock", outside, directory=True)
+
+    with (
+        pytest.raises(RepositoryAccessDenied),
+        CanonicalRoot(root_path)._open_managed_worktree(target.name, registration.name),
+    ):
+        pass
 
 
 def test_managed_worktree_access_rejects_foreign_and_retired_capabilities(
@@ -702,6 +791,311 @@ def test_normalize_and_contains_use_repository_relative_forward_slashes(tmp_path
     assert root.contains("src/main.py") is True
     assert root.contains("src") is True
     assert root.contains("src/../outside.txt") is False
+
+
+def test_exact_digest_delete_and_rename_are_regular_file_only(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    original = source.read_bytes()
+    digest = paths._repository_file_digest(original)
+
+    with pytest.raises(RepositoryAccessDenied):
+        root.delete_file("src/main.py", expected_digest="0" * 64, maximum=1024, mutation_id=uuid4())
+    assert source.read_bytes() == original
+
+    moved_digest, moved_size = root.rename_file(
+        "src/main.py", "src/renamed.py", expected_digest=digest, maximum=1024, mutation_id=uuid4()
+    )
+    assert (moved_digest, moved_size) == (digest, len(original))
+    assert not source.exists()
+    assert (root_path / "src" / "renamed.py").read_bytes() == original
+
+    deleted_digest, deleted_size = root.delete_file(
+        "src/renamed.py", expected_digest=digest, maximum=1024, mutation_id=uuid4()
+    )
+    assert (deleted_digest, deleted_size) == (digest, len(original))
+    assert not (root_path / "src" / "renamed.py").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX rename race")
+def test_rename_preserves_destination_created_after_absence_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    destination = root_path / "src" / "renamed.py"
+    original = source.read_bytes()
+    mutation_id = uuid4()
+    original_stat = os.stat
+    inserted = False
+
+    def racing_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        nonlocal inserted
+        if path == "renamed.py" and "dir_fd" in kwargs and not inserted:
+            inserted = True
+            destination.write_bytes(b"human edit")
+            raise FileNotFoundError("destination was absent at inspection")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(paths.os, "stat", racing_stat)
+    with pytest.raises(RepositoryAccessDenied):
+        root.rename_file(
+            "src/main.py",
+            "src/renamed.py",
+            expected_digest=paths._repository_file_digest(original),
+            maximum=1024,
+            mutation_id=mutation_id,
+        )
+    assert inserted
+    assert not source.exists()
+    assert (
+        root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}"
+    ).read_bytes() == original
+    assert destination.read_bytes() == b"human edit"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+def test_posix_source_change_is_retained_in_operation_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    original = source.read_bytes()
+    mutation_id = uuid4()
+    inspect = paths._inspect_repository_file
+    changed = False
+
+    def change_after_inspection(*args, **kwargs):
+        nonlocal changed
+        result = inspect(*args, **kwargs)
+        if not changed:
+            changed = True
+            source.write_bytes(b"human change")
+        return result
+
+    monkeypatch.setattr(paths, "_inspect_repository_file", change_after_inspection)
+    with pytest.raises(RepositoryAccessDenied, match="precondition changed"):
+        if operation == "delete":
+            root.delete_file(
+                "src/main.py",
+                expected_digest=paths._repository_file_digest(original),
+                maximum=1024,
+                mutation_id=mutation_id,
+            )
+        else:
+            root.rename_file(
+                "src/main.py",
+                "src/renamed.py",
+                expected_digest=paths._repository_file_digest(original),
+                maximum=1024,
+                mutation_id=mutation_id,
+            )
+    stage = root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}"
+    assert changed and not source.exists()
+    assert stage.read_bytes() == b"human change"
+    assert not (root_path / "src" / "renamed.py").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+def test_posix_rename_retains_stage_when_destination_appears_after_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    destination = root_path / "src" / "renamed.py"
+    original = source.read_bytes()
+    mutation_id = uuid4()
+    stage_source = paths._stage_posix_repository_file
+
+    def create_destination(*args, **kwargs):
+        name = stage_source(*args, **kwargs)
+        destination.write_bytes(b"human destination")
+        return name
+
+    monkeypatch.setattr(paths, "_stage_posix_repository_file", create_destination)
+    with pytest.raises(RepositoryAccessDenied):
+        root.rename_file(
+            "src/main.py",
+            "src/renamed.py",
+            expected_digest=paths._repository_file_digest(original),
+            maximum=1024,
+            mutation_id=mutation_id,
+        )
+    assert destination.read_bytes() == b"human destination"
+    assert (
+        root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}"
+    ).read_bytes() == original
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+def test_posix_mutation_stage_collision_or_symlink_preserves_source(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    original = source.read_bytes()
+    mutation_id = uuid4()
+    stage = root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}"
+    outside = tmp_path / "outside-stage"
+    outside.write_bytes(b"outside")
+    stage.parent.mkdir(parents=True, mode=0o700)
+    _make_symlink(stage, outside, directory=False)
+
+    with pytest.raises(RepositoryAccessDenied):
+        root.delete_file(
+            "src/main.py",
+            expected_digest=paths._repository_file_digest(original),
+            maximum=1024,
+            mutation_id=mutation_id,
+        )
+    assert source.read_bytes() == original
+    assert outside.read_bytes() == b"outside"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+@pytest.mark.parametrize("replacement", [b"external replacement", b"print('ok')\n"])
+def test_posix_replaced_private_stage_is_never_completed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, replacement: bytes
+) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    original = source.read_bytes()
+    mutation_id = uuid4()
+    stage_source = paths._stage_posix_repository_file
+
+    def replace_stage(*args, **kwargs):
+        name = stage_source(*args, **kwargs)
+        stage = root_path / ".forge" / "mutations" / name.name
+        stage.unlink()
+        stage.write_bytes(replacement)
+        return name
+
+    monkeypatch.setattr(paths, "_stage_posix_repository_file", replace_stage)
+    with pytest.raises(RepositoryAccessDenied):
+        if operation == "delete":
+            root.delete_file(
+                "src/main.py",
+                expected_digest=paths._repository_file_digest(original),
+                maximum=1024,
+                mutation_id=mutation_id,
+            )
+        else:
+            root.rename_file(
+                "src/main.py",
+                "src/renamed.py",
+                expected_digest=paths._repository_file_digest(original),
+                maximum=1024,
+                mutation_id=mutation_id,
+            )
+    stage = root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}"
+    assert stage.read_bytes() == replacement
+    assert not (root_path / "src" / "renamed.py").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+def test_private_mutation_stage_is_owner_only_and_excluded_from_reader(tmp_path: Path) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    mutation_id = uuid4()
+    with pytest.raises(RepositoryAccessDenied):
+        root.delete_file(
+            "src/main.py", expected_digest="0" * 64, maximum=1024, mutation_id=mutation_id
+        )
+    # A successful controlled effect creates the namespace; ordinary controlled
+    # reads still cannot name it.
+    root.delete_file(
+        "src/main.py",
+        expected_digest=paths._repository_file_digest(source.read_bytes()),
+        maximum=1024,
+        mutation_id=mutation_id,
+    )
+    stage_root = root_path / ".forge" / "mutations"
+    metadata = stage_root.stat()
+    assert stat.S_IMODE(metadata.st_mode) == 0o700
+    assert metadata.st_uid == os.getuid() != 10001
+    reader = RepositoryReader(root_path, force_python_search=True)
+    with pytest.raises(RepositoryAccessDenied):
+        reader.read_file(f".forge/mutations/.forge-mutation-{mutation_id.hex}")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+def test_private_stage_directory_entries_are_durable_before_source_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    original = source.read_bytes()
+    fsync_calls: list[int] = []
+    original_fsync = paths.os.fsync
+    original_rename = paths._LINUX_RENAMEAT2
+    assert original_rename is not None
+
+    def track_fsync(descriptor: int) -> None:
+        fsync_calls.append(descriptor)
+        original_fsync(descriptor)
+
+    def assert_staging_is_durable(*args):
+        assert len(fsync_calls) >= 2
+        return original_rename(*args)
+
+    monkeypatch.setattr(paths.os, "fsync", track_fsync)
+    monkeypatch.setattr(paths, "_LINUX_RENAMEAT2", assert_staging_is_durable)
+    root.delete_file(
+        "src/main.py",
+        expected_digest=paths._repository_file_digest(original),
+        maximum=1024,
+        mutation_id=uuid4(),
+    )
+    assert len(fsync_calls) >= 4
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows exclusive mutation handle")
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+def test_mutation_source_change_is_rechecked_on_exclusive_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    root_path = _make_root(tmp_path)
+    root = CanonicalRoot(root_path)
+    source = root_path / "src" / "main.py"
+    original = source.read_bytes()
+    inspect = paths._inspect_repository_file
+    changed = False
+
+    def change_after_inspection(*args, **kwargs):
+        nonlocal changed
+        result = inspect(*args, **kwargs)
+        if not changed:
+            changed = True
+            source.write_bytes(b"human change")
+        return result
+
+    monkeypatch.setattr(paths, "_inspect_repository_file", change_after_inspection)
+    with pytest.raises(RepositoryAccessDenied):
+        if operation == "delete":
+            root.delete_file(
+                "src/main.py",
+                expected_digest=paths._repository_file_digest(original),
+                maximum=1024,
+                mutation_id=uuid4(),
+            )
+        else:
+            root.rename_file(
+                "src/main.py",
+                "src/renamed.py",
+                expected_digest=paths._repository_file_digest(original),
+                maximum=1024,
+                mutation_id=uuid4(),
+            )
+    assert source.read_bytes() == b"human change"
+    assert not (root_path / "src" / "renamed.py").exists()
 
 
 def test_matcher_is_exact_or_descendant_not_a_string_prefix(tmp_path: Path) -> None:

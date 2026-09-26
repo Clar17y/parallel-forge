@@ -1,16 +1,17 @@
 import type { components } from '@/lib/api/schema';
+import { publicationDecisionFields, PublicationDecisionEvidence, type PublicationDecision } from './publication-decision-evidence';
 
-export type MergeEvidence = {
+export type MergeEvidence = PublicationDecision & {
   repository: string; pull_request_number: number; head_sha: string; base_ref: string; base_sha: string;
   required_checks: Record<string, string>; unresolved_blocking_findings: number;
-  validation_digest: string; review_digest: string; runner_mode: 'docker' | 'trusted_host';
+  validation_digest: string; runner_mode: 'docker' | 'trusted_host';
   runner_evidence_digest: string; protection_digest: string; merge_method: string; policy_version: number;
 };
 
 export function parseMergeEvidence(value: Record<string, unknown>): MergeEvidence {
-  const digests = ['validation_digest', 'review_digest', 'runner_evidence_digest', 'protection_digest'];
+  const digests = ['validation_digest', 'runner_evidence_digest', 'protection_digest'];
   const commits = ['head_sha', 'base_sha'];
-  const fields = [...digests, ...commits, 'repository', 'pull_request_number', 'base_ref', 'required_checks', 'unresolved_blocking_findings', 'runner_mode', 'merge_method', 'policy_version'];
+  const fields = [...publicationDecisionFields(value), ...digests, ...commits, 'repository', 'pull_request_number', 'base_ref', 'required_checks', 'unresolved_blocking_findings', 'runner_mode', 'merge_method', 'policy_version'];
   const checks = value.required_checks;
   if (Object.keys(value).some(key => !fields.includes(key))
     || digests.some(key => typeof value[key] !== 'string' || !/^[a-f0-9]{64}$/.test(value[key]))
@@ -33,7 +34,7 @@ export function MergeApprovalEvidence({ evidence, protection }: { evidence: Merg
       <dt>Observed base</dt><dd>{evidence.base_ref} · <code>{evidence.base_sha}</code></dd>
       <dt>Blocking findings</dt><dd>{evidence.unresolved_blocking_findings}</dd>
       <dt>Validation digest</dt><dd><code>{evidence.validation_digest}</code></dd>
-      <dt>Review digest</dt><dd><code>{evidence.review_digest}</code></dd>
+      <PublicationDecisionEvidence evidence={evidence} />
       <dt>Runner</dt><dd>{evidence.runner_mode === 'trusted_host' ? 'Trusted host · unsandboxed' : 'Docker'}</dd>
       <dt>Runner evidence digest</dt><dd><code>{evidence.runner_evidence_digest}</code></dd>
       <dt>GitHub protection source</dt><dd>{protection.evidence_source}</dd>

@@ -33,8 +33,18 @@ from forge.application.services.resume_reconciliation import ResumeReconciler
 from forge.application.services.resume_source import continuation_binding, resume_command_ids
 from forge.application.services.runs import cancellation_rejection_reason
 from forge.application.services.state_engine import StateEngine
+from forge.application.services.subscription_delivery_ack import ACKNOWLEDGMENTS
+from forge.application.services.subscription_remote_remediation import (
+    SubscriptionRemoteRemediationController,
+)
+from forge.application.services.subscription_run_resume import (
+    failed_repair_bindings,
+    settle_subscription_remote_deliveries,
+    subscription_resume_binding,
+)
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
+from forge.domain.operation import canonical_digest
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.commands import CommandNotFound
 
@@ -77,8 +87,10 @@ class ResumeRunHandler:
         *,
         artifact_store: ArtifactStore | None = None,
         preparation_inspector: PreparedWorktreeInspector | None = None,
+        subscription_remote_repairs: SubscriptionRemoteRemediationController | None = None,
     ) -> None:
         self._store = artifact_store
+        self._subscription_remote_repairs = subscription_remote_repairs
         self._reconciler = ResumeReconciler(artifact_store)
         self._preparation = (
             PreparationResumeService(ApprovedPlanLoader(artifact_store), preparation_inspector)
@@ -122,6 +134,8 @@ class ResumeRunHandler:
                         run,
                         pause_authority.id,
                         resumed[2] if resumed is not None else None,
+                        self._store,
+                        self._subscription_remote_repairs,
                     ),
                 )
             ):
@@ -145,14 +159,35 @@ class ResumeRunHandler:
 
         pause_command = await _validate_pause_authority(work, run)
         await _settle_redundant_resumes(work, command, pause_command)
+        resumptions = await work.subscription_execution.resume_paused_attempts(
+            command, pause_command
+        )
         await settle_published_deliveries(work, command, run)
         await settle_reviewed_push_deliveries(work, command, run, self._store)
-        await settle_base_updates(work, command, run, self._store)
+        await settle_base_updates(
+            work,
+            command,
+            run,
+            self._store,
+            self._subscription_remote_repairs.base_updates
+            if self._subscription_remote_repairs
+            else None,
+        )
         await settle_observed_monitors(work, command, run, self._store)
+        await settle_subscription_remote_deliveries(
+            work, command, run, self._store, self._subscription_remote_repairs
+        )
         from forge.application.services.queue_resume import settle_queue_admission_deliveries
 
         await settle_queue_admission_deliveries(work, command, run)
         payload = _resume_payload(command, target, pause_command.id, run=run)
+        acknowledged = await failed_repair_bindings(
+            work, command, target, self._store, self._subscription_remote_repairs
+        )
+        if acknowledged:
+            payload[ACKNOWLEDGMENTS] = list(acknowledged)
+        if resumptions:
+            payload["subscription_attempt_resumptions"] = [item.payload() for item in resumptions]
         if target in {RunState.PUBLISHING_PR, RunState.MERGING}:
             source, queued = await resume_release(work, command, run, pause_command)
             payload["continuation"] = continuation_binding(queued, source.id)
@@ -190,16 +225,36 @@ class ResumeRunHandler:
             payload["continuation"] = continuation_binding(prepared.queued, prepared.source.id)
         elif target in _ACTIVE_RESUME_STATES:
             sources = await self._reconciler.reconcile(work, command)
-            if not sources:
-                sources = await settle_failed_delivery(work, command, run)
-            queued = await enqueue_resumed_stage(work, command, run, sources)
-            payload["continuation"] = continuation_binding(queued, sources[0].id)
+            failed = (
+                await work.commands.list_failed_normal(run_id=run.id, exclude_command_id=command.id)
+                if not sources
+                else ()
+            )
+            subscription = (
+                await subscription_resume_binding(work, run)
+                if not sources
+                and not any(
+                    source.expected_run_version == run.version - 1
+                    and str(source.id) not in {item["source_command_id"] for item in acknowledged}
+                    for source in failed
+                )
+                else None
+            )
+            if subscription is not None:
+                payload["continuation"] = subscription
+            else:
+                if not sources:
+                    sources = await settle_failed_delivery(work, command, run)
+                queued = await enqueue_resumed_stage(work, command, run, sources)
+                payload["continuation"] = continuation_binding(queued, sources[0].id)
         else:
             await settle_paused_approvals(work, command, run, pause_command)
             proof = await work.runs.prove_quiescent(run.id, exclude_command_id=command.id)
             if not proof.is_quiescent:
                 raise CommandRecoveryRequired("paused run has unsettled durable work")
 
+        if not _same_delivery(command, await work.commands.assert_current_lease(command)):
+            raise CommandRecoveryRequired("resume command delivery differs from its lease")
         await work.runs.resume(
             run.id,
             run.version,
@@ -208,6 +263,8 @@ class ResumeRunHandler:
             actor_class="operator",
             actor_id=command.actor_id,
         )
+        if not _same_delivery(command, await work.commands.assert_current_lease(command)):
+            raise CommandRecoveryRequired("resume command delivery differs from its lease")
         await work.commit()
 
 
@@ -284,6 +341,8 @@ async def _execute(command: CommandEnvelope, work: UnitOfWork, *, target: RunSta
             work, command, run.version, event_type, payload
         ):
             raise CommandRecoveryRequired("control command replay requires recovery")
+        if target is RunState.CANCELLED:
+            await work.subscription_feedback.close_run_cancelled(run.id)
         await work.commit()
         return
     if run.version != command.expected_run_version:
@@ -307,6 +366,7 @@ async def _execute(command: CommandEnvelope, work: UnitOfWork, *, target: RunSta
             actor_class="operator",
             actor_id=command.actor_id,
         )
+        await work.subscription_feedback.close_run_cancelled(run.id)
     await work.commit()
 
 
@@ -472,8 +532,16 @@ async def _resume_replay_payload(
     run: RunSnapshot,
     pause_id: UUID,
     continuation: object,
+    store: ArtifactStore | None,
+    repairs: SubscriptionRemoteRemediationController | None,
 ) -> dict[str, object]:
     payload = _resume_payload(command, run.state, pause_id, run=run)
+    acknowledged = await failed_repair_bindings(work, command, run.state, store, repairs)
+    if acknowledged:
+        payload[ACKNOWLEDGMENTS] = list(acknowledged)
+    resumptions = await work.subscription_execution.verify_paused_attempts(command)
+    if resumptions:
+        payload["subscription_attempt_resumptions"] = [item.payload() for item in resumptions]
     if run.state in {RunState.MONITORING_PR, RunState.PUBLISHING_PR, RunState.MERGING}:
         if not isinstance(continuation, Mapping):
             raise CommandRecoveryRequired("resumed monitor continuation is missing")
@@ -499,6 +567,12 @@ async def _resume_replay_payload(
         return payload
     if not isinstance(continuation, Mapping):
         raise CommandRecoveryRequired("resumed stage continuation is missing")
+    if continuation.get("kind") == "subscription_scheduler":
+        subscription = await subscription_resume_binding(work, run, historical=True)
+        if subscription is None or continuation != subscription:
+            raise CommandRecoveryRequired("resumed subscription continuation differs")
+        payload["continuation"] = subscription
+        return payload
     try:
         queued = await work.commands.get(UUID(str(continuation.get("command_id"))))
         identities = resume_command_ids(queued.payload)
@@ -550,7 +624,7 @@ async def _replayed(
     ]
     return (
         len(events) == 1
-        and events[0].payload == payload
+        and canonical_digest(events[0].payload) == canonical_digest(payload)
         and events[0].actor_class == "operator"
         and events[0].actor_id == command.actor_id
         and events[0].payload_schema_version == 1

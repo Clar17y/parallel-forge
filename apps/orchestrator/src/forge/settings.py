@@ -8,6 +8,13 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.application.ports.provider_credentials import validate_provider_secret_reference
+from forge.domain.local_cli import LocalCliTrust
+from forge.domain.subscription import TaskBudget
+from forge.domain.subscription_installations import (
+    load_subscription_installation_manifest,
+    merge_installation_quota_policy,
+)
+from forge.domain.subscription_quota import QuotaPolicy
 from forge.domain.validation import validate_runner_image_reference
 from forge.release.credentials import validate_github_credential_reference
 
@@ -35,6 +42,49 @@ class Settings(BaseSettings):
     github_token_reference: str = Field(default="", repr=False)
     pricing_catalog_path: Path | None = None
     prompt_root: Path | None = None
+    subscription_installations_path: Path | None = None
+    subscription_client_trust: LocalCliTrust = LocalCliTrust.OPERATOR
+    subscription_quota_policy: QuotaPolicy = Field(default_factory=QuotaPolicy)
+    subscription_primary_budget: TaskBudget = Field(
+        default_factory=lambda: TaskBudget(max_provider_attempts=64)
+    )
+    subscription_worker_concurrency: int = Field(default=3, ge=1, le=64, strict=True)
+    # Advisory search ranking. "shadow" measures without changing agent input;
+    # "on" also collapses the low-relevance tail. Both require TYPESAFE_API_KEY
+    # in the process environment and degrade to "off" without it. Enabling
+    # either sends bounded, redacted repository match text to TypeSafe.
+    search_ranking_mode: Literal["off", "shadow", "on"] = "off"
+    search_ranking_top_k: int = Field(default=15, ge=1, le=100, strict=True)
+    search_ranking_model: str = Field(default="jev-latest", min_length=1, max_length=128)
+    subscription_attempt_budget: TaskBudget = Field(
+        default_factory=lambda: TaskBudget(
+            max_duration_seconds=300,
+            max_tool_calls=25,
+            max_named_checks=2,
+            max_provider_attempts=1,
+            max_repairs=0,
+        )
+    )
+
+    @field_validator("subscription_worker_concurrency", mode="before")
+    @classmethod
+    def subscription_concurrency_from_environment(cls, value: object) -> object:
+        if isinstance(value, str) and value.isascii() and value.isdecimal():
+            return int(value)
+        return value
+
+    @field_validator("subscription_attempt_budget")
+    @classmethod
+    def subscription_attempt_is_bounded(cls, value: TaskBudget) -> TaskBudget:
+        if (
+            value.max_provider_attempts != 1
+            or value.max_repairs != 0
+            or value.max_duration_seconds < 1
+        ):
+            raise ValueError(
+                "subscription attempt requires positive duration, one attempt and no repair"
+            )
+        return value
 
     @property
     def artifact_root(self) -> Path:
@@ -72,6 +122,11 @@ class Settings(BaseSettings):
             and self.provider_secret_reference != self.google_api_key_reference
         ):
             raise ValueError("generic and Google provider references conflict")
+        manifest = load_subscription_installation_manifest(self.subscription_installations_path)
+        if manifest is not None:
+            merged = merge_installation_quota_policy(self.subscription_quota_policy, manifest)
+            if merged is not None:
+                self.subscription_quota_policy = merged
         return self
 
     @property

@@ -22,6 +22,7 @@ class RunQuiescence:
     running_executions: int
     running_tools: int
     unresolved_operations: int
+    unsettled_subscription_work: int = 0
 
     @property
     def is_quiescent(self) -> bool:
@@ -32,6 +33,7 @@ class RunQuiescence:
                 self.running_executions,
                 self.running_tools,
                 self.unresolved_operations,
+                self.unsettled_subscription_work,
             )
         )
 

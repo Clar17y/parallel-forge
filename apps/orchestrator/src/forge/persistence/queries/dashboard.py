@@ -79,6 +79,7 @@ class DashboardQuery:
             agents = await _agents(session, run, policy)
             validation = await _latest_evidence(session, run_id, "validation")
             review = await _latest_evidence(session, run_id, "review")
+            acceptance = await _latest_evidence(session, run_id, "acceptance")
             checks = (
                 list(
                     await session.scalars(
@@ -130,12 +131,19 @@ class DashboardQuery:
                 .order_by(PullRequest.updated_at.desc(), PullRequest.id)
                 .limit(1)
             )
-            queue_status = await session.scalar(
-                select(OperationIntent.status)
-                .where(OperationIntent.run_id == run_id, OperationIntent.operation_kind == "enqueue_pr")
-                .order_by(OperationIntent.created_at.desc(), OperationIntent.id)
-                .limit(1)
-            ) if pr else None
+            queue_status = (
+                await session.scalar(
+                    select(OperationIntent.status)
+                    .where(
+                        OperationIntent.run_id == run_id,
+                        OperationIntent.operation_kind == "enqueue_pr",
+                    )
+                    .order_by(OperationIntent.created_at.desc(), OperationIntent.id)
+                    .limit(1)
+                )
+                if pr
+                else None
+            )
             events = list(
                 await session.scalars(
                     select(RunEvent)
@@ -179,6 +187,20 @@ class DashboardQuery:
                 # Display the candidate from the current linked immutable evidence.
                 # The delivery pipeline does not populate the run candidate column.
                 candidate_commit = review.head_sha
+            acceptance_digest = None
+            candidate_tree_digest = None
+            if (
+                acceptance is not None
+                and validation is not None
+                and acceptance.validation_evidence_set_id == validation.id
+                and acceptance.head_sha == validation.head_sha
+                and acceptance.candidate_tree_digest is not None
+                and acceptance.candidate_tree_digest == validation.candidate_tree_digest
+                and acceptance.policy_version == validation.policy_version == run.policy_version
+            ):
+                candidate_commit = acceptance.head_sha
+                acceptance_digest = await _digest(session, acceptance.manifest_artifact_id)
+                candidate_tree_digest = acceptance.candidate_tree_digest
             return {
                 "run": {name: getattr(snapshot, name) for name in run_fields},
                 "task": {
@@ -215,6 +237,8 @@ class DashboardQuery:
                     "pending_evidence_digest": run.pending_evidence_digest,
                     "validation_evidence_digest": validation_digest,
                     "review_evidence_digest": review_digest,
+                    "acceptance_evidence_digest": acceptance_digest,
+                    "candidate_tree_digest": candidate_tree_digest,
                 },
                 "pull_request": {
                     "number": pr.pull_request_number,
@@ -227,9 +251,13 @@ class DashboardQuery:
                     "merge_state": pr.merge_state,
                     "merge_sha": pr.merge_sha,
                     "queue_admission": {
-                        "PENDING": "pending", "SUCCEEDED": "accepted",
-                        "FAILED": "rejected", "NEEDS_RECONCILIATION": "uncertain",
-                    }.get(queue_status) if queue_status is not None else None,
+                        "PENDING": "pending",
+                        "SUCCEEDED": "accepted",
+                        "FAILED": "rejected",
+                        "NEEDS_RECONCILIATION": "uncertain",
+                    }.get(queue_status)
+                    if queue_status is not None
+                    else None,
                 }
                 if pr
                 else None,

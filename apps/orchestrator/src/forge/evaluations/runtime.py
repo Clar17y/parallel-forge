@@ -9,11 +9,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from forge.agents.adk_gateway import AdkToolProvider, GoogleAdkGateway
+from forge.agents.adk_gateway import AdkToolProvider
 from forge.agents.adk_runtime import AdkRuntime, AdkRuntimeProtocol
 from forge.agents.prompt_loader import PromptLoader
+from forge.agents.runtime_factory import (
+    AgentRuntimeFactory,
+    GoogleAdkRuntimeAdapter,
+    LegacyGoogleRequestGateway,
+)
+from forge.application.ports.agents import AgentGateway
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.provider_credentials import ProviderCredentialResolverPort
+from forge.domain.subscription import AuthMode, BillingMode, RouteBinding, RouteSpec
 from forge.domain.tool import ToolCallStatus, ToolName
 from forge.evaluations.check_evidence import read_check_evidence
 from forge.evaluations.contracts import EvaluationCaseContract
@@ -232,24 +239,49 @@ def resolve_live_evaluation_gateway(
     currency: str = "USD",
     supported_provider: str = "google",
     tool_provider: AdkToolProvider | None = None,
-) -> GoogleAdkGateway:
-    """Resolve configured GoogleADK gateway behind Forge interfaces for live evaluation."""
-    active_runtime = runtime or AdkRuntime(
-        credential_resolver=credential_resolver,
-        credential_reference=provider_reference,
-    )
-    active_pricing = pricing_catalog or default_evaluation_pricing_catalog()
+    route_binding: RouteBinding | None = None,
+    runtime_factory: AgentRuntimeFactory | None = None,
+) -> AgentGateway:
+    """Resolve a live gateway through the same frozen-route factory as workers.
+
+    The old arguments are retained only for explicit v0.1 Google/API-key evaluation.
+    A v0.2 caller must provide its already-built route-aware factory.
+    """
     if tool_provider is None:
         raise ValueError("live evaluation requires a Forge-controlled tool provider")
+    if route_binding is None:
 
-    return GoogleAdkGateway(
-        runtime=active_runtime,
-        prompt_loader=prompt_loader,
-        tool_provider=tool_provider,
-        pricing_catalog=active_pricing,
-        supported_provider=supported_provider,
-        currency=currency,
-    )
+        def legacy_adapter(route: RouteSpec) -> GoogleAdkRuntimeAdapter | None:
+            if (
+                route.provider != supported_provider
+                or route.provider != "google"
+                or route.client != "google_adk"
+                or route.auth_mode is not AuthMode.API_KEY
+                or route.billing_mode is not BillingMode.PAID_OPT_IN
+            ):
+                return None
+            return GoogleAdkRuntimeAdapter(
+                route=route,
+                prompt_loader=prompt_loader,
+                runtime_supplier=lambda: (
+                    runtime
+                    or AdkRuntime(
+                        credential_resolver=credential_resolver,
+                        credential_reference=provider_reference,
+                    )
+                ),
+                pricing_catalog_supplier=lambda: (
+                    pricing_catalog or default_evaluation_pricing_catalog()
+                ),
+                currency=currency,
+            )
+
+        return LegacyGoogleRequestGateway(
+            AgentRuntimeFactory.with_resolver(legacy_adapter), tool_provider
+        )
+    if runtime_factory is None:
+        raise ValueError("live evaluation route has no configured runtime factory")
+    return runtime_factory.gateway_for(route_binding, tool_provider)
 
 
 __all__ = [

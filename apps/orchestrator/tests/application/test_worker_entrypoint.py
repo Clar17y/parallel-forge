@@ -9,6 +9,241 @@ from forge.application.ports.commands import CommandLane
 from forge.worker import main
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registration_source", ["explicit-empty", "explicit", "operator"])
+async def test_production_worker_polls_composed_subscription_invocations(
+    monkeypatch, registration_source
+):
+    from forge.worker.composition import WorkerHandlers
+
+    calls = []
+    invoked, stop = asyncio.Event(), asyncio.Event()
+
+    class FakeSettings:
+        database_url = "postgresql+asyncpg://unused/forge"
+        subscription_worker_concurrency = 2
+        subscription_installations_path = object() if registration_source == "operator" else None
+        artifact_root = "."
+        subscription_quota_policy = object()
+
+    class Engine:
+        async def dispose(self):
+            calls.append("dispose")
+
+    class Recovery:
+        def __init__(self, _operations):
+            pass
+
+        async def reconcile_all(self, _adapters, *, allow_unresolved):
+            calls.append("recovered")
+
+    class Commands:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def tick(self):
+            try:
+                await asyncio.wait_for(invoked.wait(), 0.1)
+            except TimeoutError:
+                pass
+            stop.set()
+
+        async def drain(self):
+            calls.append("drain")
+
+    class Invocation:
+        async def run_once(self, *, stop_event):
+            assert "recovered" in calls
+            assert "closed" not in calls
+            assert stop_event is stop
+            calls.append("invoked")
+            invoked.set()
+            await stop.wait()
+            calls.append("settled")
+
+    handlers = WorkerHandlers({})
+    owners = []
+
+    class StatusReporter:
+        async def publish(self):
+            calls.append("registration-published")
+
+        async def run(self, stopped):
+            await stopped.wait()
+
+        async def close(self):
+            calls.append("registration-stopped")
+
+    handlers.subscription_status = StatusReporter()
+
+    def invocation_for(owner):
+        owners.append(owner)
+        return Invocation()
+
+    handlers.subscription_invocations = invocation_for
+
+    async def close():
+        calls.append("closed")
+
+    handlers.resources.push_async_callback(close)
+    monkeypatch.setattr(main, "create_engine", lambda _url: Engine())
+    monkeypatch.setattr(main, "create_session_factory", lambda _engine: lambda: None)
+    monkeypatch.setattr(main, "PostgresCommandRepository", lambda _factory: object())
+    monkeypatch.setattr(main, "PostgresOperationRepository", lambda _factory: object())
+    monkeypatch.setattr(main, "RecoveryService", Recovery)
+    monkeypatch.setattr(main, "Worker", Commands)
+    registrations = () if registration_source == "explicit-empty" else (object(),)
+    composed = []
+
+    def compose(
+        _settings,
+        _factory,
+        *,
+        subscription_adapters,
+        subscription_readiness,
+        subscription_readiness_supplier,
+    ):
+        composed.append(
+            (subscription_adapters, subscription_readiness, subscription_readiness_supplier)
+        )
+        return handlers
+
+    monkeypatch.setattr(main, "compose_worker_handlers", compose)
+    loader_calls = []
+    monkeypatch.setattr(
+        main,
+        "production_subscription_verifiers",
+        lambda factory, root: loader_calls.append((factory, root)) or object(),
+    )
+    monkeypatch.setattr(
+        main,
+        "load_subscription_installations_diagnostic",
+        lambda settings, verifiers: type(
+            "InstallationLoad",
+            (),
+            {"adapters": registrations, "readiness": (), "specs": ()},
+        )(),
+    )
+
+    kwargs = {}
+    if registration_source != "operator":
+        kwargs["subscription_adapters"] = iter(registrations)
+    await main.run_worker(FakeSettings(), stop_event=stop, worker_id="process-one", **kwargs)
+
+    assert len(composed) == 1 and composed[0][0] == registrations
+    assert composed[0][1] == (() if registration_source == "operator" else None)
+    assert (composed[0][2] is not None) is (registration_source == "operator")
+    assert len(loader_calls) == (1 if registration_source == "operator" else 0)
+    assert invoked.is_set(), "production startup never polled the subscription executor"
+    assert len(owners) == len(set(owners)) == 2
+    assert all(owner.startswith("process-one-subscription-") for owner in owners)
+    assert calls.index("settled") < calls.index("closed") < calls.index("dispose")
+    assert calls.index("registration-published") < calls.index("invoked")
+    assert calls.index("closed") < calls.index("registration-stopped") < calls.index("dispose")
+
+
+async def test_explicit_handlers_cannot_silently_ignore_subscription_registration(monkeypatch):
+    def no_database(_url):
+        raise AssertionError("ambiguous dependency ownership must fail before database creation")
+
+    monkeypatch.setattr(main, "create_engine", no_database)
+    with pytest.raises(ValueError, match="subscription adapters require worker-owned composition"):
+        await main.run_worker(handlers={}, subscription_adapters=(object(),))
+
+
+@pytest.mark.parametrize("trigger", ["cancel", "command_error"])
+async def test_repeated_process_shutdown_drains_subscription_owner_before_resources(
+    monkeypatch, trigger
+):
+    from forge.domain.subscription import TaskBudget
+    from forge.worker.composition import WorkerHandlers
+    from forge.worker.subscription_invocation import SubscriptionInvocationWorker
+
+    started, settling, release, stop = (asyncio.Event() for _ in range(4))
+    order = []
+
+    class FakeSettings:
+        database_url = "postgresql+asyncpg://unused/forge"
+        subscription_worker_concurrency = 1
+
+    class Engine:
+        async def dispose(self):
+            order.append("disposed")
+
+    class Recovery:
+        def __init__(self, _operations):
+            pass
+
+        async def reconcile_all(self, _adapters, **_kwargs):
+            pass
+
+    class Commands:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def tick(self):
+            await started.wait()
+            if trigger == "command_error":
+                raise RuntimeError("injected command lane failure")
+            await stop.wait()
+
+        async def drain(self):
+            order.append("command-drained")
+
+    invocation = SubscriptionInvocationWorker(
+        lambda: None,
+        lambda *args: None,
+        artifacts=object(),
+        owner="invocation-owner",
+        reservation=TaskBudget(max_provider_attempts=1, max_repairs=0),
+    )
+
+    async def in_flight(stop_event):
+        started.set()
+        await stop_event.wait()
+        settling.set()
+        await release.wait()
+        order.append("subscription-settled")
+
+    invocation._run_once = in_flight
+    handlers = WorkerHandlers({})
+    handlers.subscription_invocations = lambda _owner: invocation
+
+    async def close():
+        order.append("closed")
+
+    handlers.resources.push_async_callback(close)
+    monkeypatch.setattr(main, "create_engine", lambda _url: Engine())
+    monkeypatch.setattr(main, "create_session_factory", lambda _engine: object())
+    monkeypatch.setattr(main, "PostgresCommandRepository", lambda _factory: object())
+    monkeypatch.setattr(main, "PostgresOperationRepository", lambda _factory: object())
+    monkeypatch.setattr(main, "RecoveryService", Recovery)
+    monkeypatch.setattr(main, "Worker", Commands)
+    monkeypatch.setattr(main, "compose_worker_handlers", lambda *_args, **_kwargs: handlers)
+    running = asyncio.create_task(main.run_worker(FakeSettings(), stop_event=stop))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        if trigger == "cancel":
+            running.cancel()
+        await asyncio.wait_for(settling.wait(), 1)
+        running.cancel()
+        await asyncio.sleep(0)
+        running.cancel()
+        await asyncio.sleep(0)
+        assert not running.done() and not order
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(running, 1)
+    assert order == [
+        "subscription-settled",
+        "command-drained",
+        "command-drained",
+        "closed",
+        "disposed",
+    ]
+
+
 @pytest.fixture(autouse=True)
 def terminal_recovery_stub(monkeypatch):
     from uuid import uuid4
@@ -41,6 +276,15 @@ def terminal_recovery_stub(monkeypatch):
             return ()
 
     monkeypatch.setattr(main, "TerminalMergeRecovery", TerminalRecovery)
+
+    class SubscriptionRecovery:
+        def __init__(self, _factory, *, terminal_verifier=None):
+            pass
+
+        async def reconcile_all(self):
+            return 0
+
+    monkeypatch.setattr(main, "SubscriptionEffectRecovery", SubscriptionRecovery)
 
     class InterventionRecovery:
         def __init__(self, _factory):
@@ -178,7 +422,7 @@ async def test_worker_startup_recovers_before_first_poll(monkeypatch, terminal_f
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("recovery_failure", ["none", "operation", "tool"])
+@pytest.mark.parametrize("recovery_failure", ["none", "operation", "tool", "decision"])
 async def test_worker_default_handlers_none_constructs_real_handlers(
     monkeypatch, recovery_failure
 ) -> None:
@@ -203,6 +447,29 @@ async def test_worker_default_handlers_none_constructs_real_handlers(
                 raise main.RecoveryError("reconciliation failed")
 
     constructed_handlers.tool_recovery = Tools()
+
+    class Decisions:
+        async def reconcile_all(self):
+            from forge.application.services.subscription_decision_recovery import (
+                SubscriptionDecisionRecoveryReport,
+            )
+
+            calls.append("decisions")
+            if recovery_failure == "decision":
+                raise main.RecoveryError("reconciliation failed")
+            return SubscriptionDecisionRecoveryReport(applied=1, deferred=1)
+
+    constructed_handlers.subscription_decision_recovery = Decisions()
+
+    class SubscriptionRecovery:
+        def __init__(self, _factory, *, terminal_verifier):
+            assert terminal_verifier is constructed_handlers.tool_recovery
+
+        async def reconcile_all(self):
+            calls.append("effects")
+            return 0
+
+    monkeypatch.setattr(main, "SubscriptionEffectRecovery", SubscriptionRecovery)
 
     async def close() -> None:
         calls.append("close")
@@ -248,13 +515,25 @@ async def test_worker_default_handlers_none_constructs_real_handlers(
     monkeypatch.setattr(main, "RecoveryService", FakeRecovery)
     monkeypatch.setattr(main, "Worker", FakeWorker)
     monkeypatch.setattr(
-        main, "compose_worker_handlers", lambda _settings, _factory: constructed_handlers
+        main, "compose_worker_handlers", lambda _settings, _factory, **_kwargs: constructed_handlers
     )
+
+    async def decision_poll(recovery, stopped, interval):
+        assert recovery is constructed_handlers.subscription_decision_recovery
+        assert stopped is stop and interval == 5.0
+        calls.append("decision_poll")
+
+    monkeypatch.setattr(main, "_poll_decisions", decision_poll)
 
     if recovery_failure != "none":
         with pytest.raises(main.RecoveryError, match="reconciliation failed"):
             await main.run_worker(FakeSettings(), adapters={}, handlers=None, stop_event=stop)
-        assert calls == ["recovery"] + (["tools"] if recovery_failure == "tool" else []) + [
+        before_failure = {
+            "operation": ["recovery"],
+            "tool": ["recovery", "tools"],
+            "decision": ["recovery", "tools", "effects", "decisions"],
+        }
+        assert calls == before_failure[recovery_failure] + [
             "close",
             "dispose",
         ]
@@ -264,9 +543,12 @@ async def test_worker_default_handlers_none_constructs_real_handlers(
     assert calls == [
         "recovery",
         "tools",
+        "effects",
+        "decisions",
         "worker_init",
         "worker_init",
         "poll",
+        "decision_poll",
         "drain",
         "drain",
         "close",
@@ -295,7 +577,7 @@ async def test_worker_engine_disposal_on_composition_failure(monkeypatch) -> Non
             calls.append("recovery")
             return ()
 
-    def fail_compose(_settings, _factory):
+    def fail_compose(_settings, _factory, **_kwargs):
         calls.append("compose_failed")
         from forge.worker.composition import WorkerCompositionError
 
@@ -367,7 +649,7 @@ async def test_handler_cleanup_ownership_and_failure_disposal(
     monkeypatch.setattr(main, "PostgresOperationRepository", lambda _: object())
     monkeypatch.setattr(main, "RecoveryService", Recovery)
     monkeypatch.setattr(main, "Worker", Worker)
-    monkeypatch.setattr(main, "compose_worker_handlers", lambda *_: owned)
+    monkeypatch.setattr(main, "compose_worker_handlers", lambda *_, **_kwargs: owned)
 
     async def run():
         await main.run_worker(Settings(), handlers=owned if caller_owned else None, stop_event=stop)
@@ -378,3 +660,102 @@ async def test_handler_cleanup_ownership_and_failure_disposal(
     else:
         await run()
     assert calls == ["drain", "drain"] + ([] if caller_owned else ["close"]) + ["dispose"]
+
+
+@pytest.mark.asyncio
+async def test_worker_startup_fails_closed_without_aborting_on_whitespace_only_model_manifest(
+    tmp_path, monkeypatch
+):
+    import json
+    import sys
+    from pathlib import Path
+
+    from forge.worker.composition import WorkerHandlers
+
+    manifest_path = tmp_path / "whitespace_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "installations": [
+                    {
+                        "client": "codex_app_server",
+                        "executable": str(Path(sys.executable).resolve(strict=True)),
+                        "cwd": str(tmp_path),
+                        "home": str(tmp_path),
+                        "model": "   ",
+                        "effort": "low",
+                        "account": "a" * 64,
+                        "executable_digest": "b" * 64,
+                        "client_version": "0.154.0",
+                        "quota": {"account": "personal", "pool": "weekly"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calls = []
+    stop = asyncio.Event()
+
+    class FakeSettings:
+        database_url = "postgresql+asyncpg://unused/forge"
+        subscription_worker_concurrency = 1
+        subscription_installations_path = manifest_path
+        artifact_root = str(tmp_path)
+        subscription_quota_policy = None
+
+    class Engine:
+        async def dispose(self):
+            calls.append("dispose")
+
+    class Recovery:
+        def __init__(self, _operations):
+            pass
+
+        async def reconcile_all(self, _adapters, *, allow_unresolved):
+            calls.append("recovered")
+
+    class Commands:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def tick(self):
+            stop.set()
+
+        async def drain(self):
+            calls.append("drain")
+
+    handlers = WorkerHandlers({})
+    handlers.subscription_status = None
+    handlers.subscription_invocations = lambda _owner: None
+
+    composed = []
+
+    def compose(
+        _settings,
+        _factory,
+        *,
+        subscription_adapters,
+        subscription_readiness,
+        subscription_readiness_supplier,
+    ):
+        composed.append((subscription_adapters, subscription_readiness))
+        return handlers
+
+    monkeypatch.setattr(main, "create_engine", lambda _url: Engine())
+    monkeypatch.setattr(main, "create_session_factory", lambda _engine: lambda: None)
+    monkeypatch.setattr(main, "PostgresCommandRepository", lambda _factory: object())
+    monkeypatch.setattr(main, "PostgresOperationRepository", lambda _factory: object())
+    monkeypatch.setattr(main, "RecoveryService", Recovery)
+    monkeypatch.setattr(main, "Worker", Commands)
+    monkeypatch.setattr(main, "compose_worker_handlers", compose)
+
+    await main.run_worker(FakeSettings(), stop_event=stop, worker_id="process-whitespace")
+
+    assert len(composed) == 1
+    assert composed[0][0] == ()
+    assert composed[0][1] == ()
+    assert "recovered" in calls
+    assert "dispose" in calls

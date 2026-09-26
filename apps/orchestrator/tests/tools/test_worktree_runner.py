@@ -306,6 +306,106 @@ def test_operational_capability_rejects_head_changes_during_its_lifetime(managed
         capability.revalidate()
 
 
+def test_writer_retries_contended_worktree_admission_before_writing(managed_case, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from forge.tools.git import ControlledGitError
+    from forge.tools.repository_writer import WorktreeRepositoryWriter
+
+    controlled, worktree, policy, _ = managed_case
+    writer = WorktreeRepositoryWriter(controlled, worktree, policy)
+    busy_seen = threading.Event()
+    original_open = ControlledGit.open_worktree_capability
+
+    @contextlib.contextmanager
+    def observed_open(*args, **kwargs):
+        try:
+            with original_open(*args, **kwargs) as capability:
+                yield capability
+        except ControlledGitError:
+            busy_seen.set()
+            raise
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with controlled.open_worktree_capability(worktree, policy):
+            monkeypatch.setattr(ControlledGit, "open_worktree_capability", observed_open)
+            pending = executor.submit(writer.write_file, "README.md", "after contention\n")
+            assert busy_seen.wait(10), "second writer must encounter the held OS lock"
+            assert (worktree.path / "README.md").read_text() != "after contention\n"
+        result = pending.result(timeout=10)
+    assert result.path == "README.md"
+    assert (worktree.path / "README.md").read_text() == "after contention\n"
+
+
+@pytest.mark.parametrize("phase", ["admission", "body", "release"])
+def test_writer_does_not_retry_safety_denials_or_admitted_effects(managed_case, monkeypatch, phase):
+    from types import SimpleNamespace
+
+    from forge.tools import repository_writer
+    from forge.tools.git import ControlledGitBusy, ControlledGitError
+    from forge.tools.repository_writer import RepositoryWriteError, WorktreeRepositoryWriter
+
+    controlled, worktree, policy, _ = managed_case
+    calls = []
+
+    def failed_write(*args, **kwargs):
+        calls.append("write")
+        if phase == "body":
+            raise ControlledGitBusy()
+        return None, "a" * 64, 1, "README.md"
+
+    @contextlib.contextmanager
+    def denied_open(*args, **kwargs):
+        calls.append("open")
+        if phase == "admission":
+            raise ControlledGitError()
+        yield SimpleNamespace(write_repository_file=failed_write)
+        if phase == "release":
+            raise ControlledGitBusy()
+
+    monkeypatch.setattr(ControlledGit, "open_worktree_capability", denied_open)
+    monkeypatch.setattr(
+        repository_writer,
+        "time",
+        SimpleNamespace(monotonic=lambda: 0, sleep=lambda _: pytest.fail("unsafe retry")),
+    )
+    with pytest.raises(RepositoryWriteError):
+        WorktreeRepositoryWriter(controlled, worktree, policy).write_file("README.md", "x")
+    assert calls == (["open"] if phase == "admission" else ["open", "write"])
+
+
+def test_writer_lock_admission_deadline_is_bounded_without_real_waits(managed_case, monkeypatch):
+    from types import SimpleNamespace
+
+    from forge.tools import repository_writer
+    from forge.tools.git import ControlledGitBusy
+    from forge.tools.repository_writer import RepositoryWriteError, WorktreeRepositoryWriter
+
+    controlled, worktree, policy, _ = managed_case
+    now = 0.0
+    attempts = []
+
+    def advance(seconds):
+        nonlocal now
+        assert 0 < seconds <= 0.05
+        now += seconds
+
+    @contextlib.contextmanager
+    def busy_open(*args, **kwargs):
+        attempts.append(now)
+        raise ControlledGitBusy()
+        yield  # pragma: no cover - retain the context-manager protocol
+
+    monkeypatch.setattr(ControlledGit, "open_worktree_capability", busy_open)
+    monkeypatch.setattr(
+        repository_writer, "time", SimpleNamespace(monotonic=lambda: now, sleep=advance)
+    )
+    with pytest.raises(RepositoryWriteError):
+        WorktreeRepositoryWriter(controlled, worktree, policy).write_file("README.md", "x")
+    assert now == 5.0
+    assert 2 <= len(attempts) <= 102
+
+
 def test_bound_docker_runner_uses_one_capability_mount_and_ownership_label(
     managed_case: tuple[ControlledGit, ManagedWorktree, ProjectPolicy, _Process],
 ) -> None:
@@ -439,12 +539,23 @@ async def test_bound_docker_cancellation_survives_access_lease_restoration_failu
         except asyncio.CancelledError:
             return CommandTerminalResult(
                 result=CommandResult(
-                    command_name="bound-test", kind=StepKind.TEST, command_digest="a" * 64,
-                    policy_version=1, exit_code=0, timed_out=False, started_at=datetime.now(UTC),
-                    duration_ms=0, stdout_digest="b" * 64, stderr_digest="c" * 64,
-                    runner_mode=RunnerMode.DOCKER, image_digest="sha256:" + "e" * 64,
-                    network_enabled=False, stdout_original_byte_count=0,
-                    stderr_original_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+                    command_name="bound-test",
+                    kind=StepKind.TEST,
+                    command_digest="a" * 64,
+                    policy_version=1,
+                    exit_code=0,
+                    timed_out=False,
+                    started_at=datetime.now(UTC),
+                    duration_ms=0,
+                    stdout_digest="b" * 64,
+                    stderr_digest="c" * 64,
+                    runner_mode=RunnerMode.DOCKER,
+                    image_digest="sha256:" + "e" * 64,
+                    network_enabled=False,
+                    stdout_original_byte_count=0,
+                    stderr_original_byte_count=0,
+                    stdout_truncated=False,
+                    stderr_truncated=False,
                     unsandboxed=False,
                 ),
                 caller_cancelled=True,

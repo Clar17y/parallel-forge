@@ -10,7 +10,8 @@
     "test:e2e": "playwright test",
     "api:generate": "openapi-typescript openapi.json -o src/lib/api/schema.d.ts",
     "start": "next start --hostname 127.0.0.1",
-    "api:check": "node scripts/check-api.mjs"
+    "api:check": "node scripts/check-api.mjs",
+    "test:ui-contract": "node --test scripts/check-ui-presentation.mjs"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.13",

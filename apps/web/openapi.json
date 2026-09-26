@@ -632,6 +632,45 @@
         "title": "ArtifactTextResponse",
         "type": "object"
       },
+      "AttemptRoute": {
+        "additionalProperties": false,
+        "properties": {
+          "auth_mode": {
+            "title": "Auth Mode",
+            "type": "string"
+          },
+          "billing_mode": {
+            "title": "Billing Mode",
+            "type": "string"
+          },
+          "client": {
+            "title": "Client",
+            "type": "string"
+          },
+          "effort": {
+            "title": "Effort",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "client",
+          "model",
+          "effort",
+          "auth_mode",
+          "billing_mode"
+        ],
+        "title": "AttemptRoute",
+        "type": "object"
+      },
       "AuditEventEvidence": {
         "additionalProperties": false,
         "properties": {
@@ -877,6 +916,15 @@
         "title": "AuditOperation",
         "type": "object"
       },
+      "AuthMode": {
+        "description": "Authentication mode used to access the provider client.",
+        "enum": [
+          "subscription",
+          "api_key"
+        ],
+        "title": "AuthMode",
+        "type": "string"
+      },
       "AvailableCommand": {
         "additionalProperties": false,
         "properties": {
@@ -938,6 +986,15 @@
         ],
         "title": "AvailableCommand",
         "type": "object"
+      },
+      "BillingMode": {
+        "description": "Forge-selected execution-route billing policy, not account billing state.",
+        "enum": [
+          "allowance_only",
+          "paid_opt_in"
+        ],
+        "title": "BillingMode",
+        "type": "string"
       },
       "BootstrapRequest": {
         "additionalProperties": false,
@@ -1049,6 +1106,28 @@
       "CandidateSection": {
         "additionalProperties": false,
         "properties": {
+          "acceptance_evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acceptance Evidence Digest"
+          },
+          "candidate_tree_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Tree Digest"
+          },
           "commit": {
             "anyOf": [
               {
@@ -1101,6 +1180,27 @@
           "review_evidence_digest"
         ],
         "title": "CandidateSection",
+        "type": "object"
+      },
+      "CapacityLimitView": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "minimum": 0.0,
+            "title": "Active",
+            "type": "integer"
+          },
+          "limit": {
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active",
+          "limit"
+        ],
+        "title": "CapacityLimitView",
         "type": "object"
       },
       "CheckHistoryItem": {
@@ -1777,6 +1877,44 @@
         "title": "EventItem",
         "type": "object"
       },
+      "EvidenceReferenceView": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_id": {
+            "format": "uuid",
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "evidence_id",
+          "revision",
+          "observed_at",
+          "expires_at"
+        ],
+        "title": "EvidenceReferenceView",
+        "type": "object"
+      },
       "FindingItem": {
         "additionalProperties": false,
         "properties": {
@@ -2199,6 +2337,36 @@
         "title": "ListPage[UsageItem]",
         "type": "object"
       },
+      "MappingInput": {
+        "additionalProperties": false,
+        "properties": {
+          "effective_model": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Effective Model",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "requested_model": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Requested Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requested_model",
+          "effective_model",
+          "reason"
+        ],
+        "title": "MappingInput",
+        "type": "object"
+      },
       "MergeProtectionResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2374,6 +2542,145 @@
           "limits"
         ],
         "title": "PolicyProjection",
+        "type": "object"
+      },
+      "PreferenceInput": {
+        "additionalProperties": false,
+        "properties": {
+          "fallback_routes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RouteInput"
+            },
+            "maxItems": 16,
+            "title": "Fallback Routes",
+            "type": "array"
+          },
+          "preferred_route": {
+            "$ref": "#/components/schemas/RouteInput"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/SpecialistPurpose"
+          }
+        },
+        "required": [
+          "purpose",
+          "preferred_route"
+        ],
+        "title": "PreferenceInput",
+        "type": "object"
+      },
+      "ProfileAppendRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_mappings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MappingInput"
+            },
+            "maxItems": 64,
+            "title": "Approved Mappings",
+            "type": "array"
+          },
+          "default_billing_mode": {
+            "$ref": "#/components/schemas/BillingMode",
+            "default": "allowance_only"
+          },
+          "expected_current_version": {
+            "minimum": 1.0,
+            "title": "Expected Current Version",
+            "type": "integer"
+          },
+          "preferences": {
+            "items": {
+              "$ref": "#/components/schemas/PreferenceInput"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "title": "Preferences",
+            "type": "array"
+          }
+        },
+        "required": [
+          "preferences",
+          "expected_current_version"
+        ],
+        "title": "ProfileAppendRequest",
+        "type": "object"
+      },
+      "ProfileCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_mappings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MappingInput"
+            },
+            "maxItems": 64,
+            "title": "Approved Mappings",
+            "type": "array"
+          },
+          "default_billing_mode": {
+            "$ref": "#/components/schemas/BillingMode",
+            "default": "allowance_only"
+          },
+          "preferences": {
+            "items": {
+              "$ref": "#/components/schemas/PreferenceInput"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "title": "Preferences",
+            "type": "array"
+          }
+        },
+        "required": [
+          "preferences"
+        ],
+        "title": "ProfileCreateRequest",
+        "type": "object"
+      },
+      "ProfileResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_mappings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Approved Mappings",
+            "type": "array"
+          },
+          "default_billing_mode": {
+            "title": "Default Billing Mode",
+            "type": "string"
+          },
+          "preferences": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Preferences",
+            "type": "array"
+          },
+          "profile_id": {
+            "format": "uuid",
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile_id",
+          "version",
+          "preferences",
+          "approved_mappings",
+          "default_billing_mode"
+        ],
+        "title": "ProfileResponse",
         "type": "object"
       },
       "ProjectCreateRequest": {
@@ -2751,6 +3058,51 @@
         "title": "ProjectPolicyUpdateRequest",
         "type": "object"
       },
+      "ProjectProfileSelectRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_profile_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Profile Id"
+          },
+          "expected_profile_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Profile Version"
+          },
+          "profile_id": {
+            "format": "uuid",
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "profile_version": {
+            "minimum": 1.0,
+            "title": "Profile Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile_id",
+          "profile_version"
+        ],
+        "title": "ProjectProfileSelectRequest",
+        "type": "object"
+      },
       "ProjectResponse": {
         "additionalProperties": false,
         "description": "Safe project identity and current policy summary.",
@@ -2966,6 +3318,32 @@
         "title": "ProtectionSnapshotResponse",
         "type": "object"
       },
+      "ProviderCapacityView": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "minimum": 0.0,
+            "title": "Active",
+            "type": "integer"
+          },
+          "limit": {
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "active",
+          "limit",
+          "provider"
+        ],
+        "title": "ProviderCapacityView",
+        "type": "object"
+      },
       "PullRequestSection": {
         "additionalProperties": false,
         "properties": {
@@ -3049,6 +3427,191 @@
         ],
         "title": "PullRequestSection",
         "type": "object"
+      },
+      "QuotaExhaustionReportRequest": {
+        "additionalProperties": false,
+        "description": "HTTP alias for the application-owned report command.",
+        "properties": {
+          "account": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Account",
+            "type": "string"
+          },
+          "pool": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Pool",
+            "type": "string"
+          },
+          "provider": {
+            "maxLength": 96,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "reset_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reset At"
+          }
+        },
+        "required": [
+          "provider",
+          "account",
+          "pool",
+          "reason"
+        ],
+        "title": "QuotaExhaustionReportRequest",
+        "type": "object"
+      },
+      "QuotaStatusResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "next_eligible_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Eligible At"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "pool": {
+            "title": "Pool",
+            "type": "string"
+          },
+          "probe_attempt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probe Attempt Id"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "recovered_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovered At"
+          },
+          "reset_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reset At"
+          },
+          "retry_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Basis"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "account",
+          "pool",
+          "status",
+          "revision",
+          "observed_at",
+          "reason",
+          "reset_at",
+          "next_eligible_at",
+          "retry_basis",
+          "probe_attempt_id",
+          "recovered_at"
+        ],
+        "title": "QuotaStatusResponse",
+        "type": "object"
+      },
+      "ReasoningEffort": {
+        "description": "Provider-agnostic reasoning effort level.",
+        "enum": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "maximum"
+        ],
+        "title": "ReasoningEffort",
+        "type": "string"
       },
       "RemoteCheckItem": {
         "additionalProperties": false,
@@ -3494,6 +4057,48 @@
           "truncated"
         ],
         "title": "ReviewerDiffResponse",
+        "type": "object"
+      },
+      "RouteInput": {
+        "additionalProperties": false,
+        "properties": {
+          "auth_mode": {
+            "$ref": "#/components/schemas/AuthMode",
+            "default": "subscription"
+          },
+          "billing_mode": {
+            "$ref": "#/components/schemas/BillingMode",
+            "default": "allowance_only"
+          },
+          "client": {
+            "maxLength": 96,
+            "minLength": 1,
+            "title": "Client",
+            "type": "string"
+          },
+          "effort": {
+            "$ref": "#/components/schemas/ReasoningEffort",
+            "default": "low"
+          },
+          "model": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "maxLength": 96,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "client",
+          "model"
+        ],
+        "title": "RouteInput",
         "type": "object"
       },
       "RunCommandRequest": {
@@ -4312,6 +4917,22 @@
         "title": "SessionResponse",
         "type": "object"
       },
+      "SpecialistPurpose": {
+        "description": "Closed vocabulary of specialist purposes separating purpose from tools.",
+        "enum": [
+          "primary",
+          "routine_implementation",
+          "complex_implementation",
+          "independent_review",
+          "planning",
+          "exploration",
+          "security",
+          "integration",
+          "verification"
+        ],
+        "title": "SpecialistPurpose",
+        "type": "string"
+      },
       "StepKind": {
         "description": "Closed set of operations that may be dispatched by a runner.",
         "enum": [
@@ -4328,6 +4949,1391 @@
         "title": "StepKind",
         "type": "string"
       },
+      "SubscriptionAttemptPage": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionAttemptView"
+            },
+            "maxItems": 100,
+            "title": "Attempts",
+            "type": "array"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "task_id",
+          "attempts",
+          "has_more"
+        ],
+        "title": "SubscriptionAttemptPage",
+        "type": "object"
+      },
+      "SubscriptionAttemptView": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "attempt_number": {
+            "title": "Attempt Number",
+            "type": "integer"
+          },
+          "cached_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cached Tokens"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "effective_route": {
+            "$ref": "#/components/schemas/AttemptRoute"
+          },
+          "estimated_api_cost_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Api Cost Minor"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "named_checks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Named Checks"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "quota_status": {
+            "title": "Quota Status",
+            "type": "string"
+          },
+          "requested_route": {
+            "$ref": "#/components/schemas/AttemptRoute"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "tool_calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Calls"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "attempt_number",
+          "state",
+          "requested_route",
+          "effective_route",
+          "input_tokens",
+          "output_tokens",
+          "cached_tokens",
+          "duration_ms",
+          "tool_calls",
+          "named_checks",
+          "estimated_api_cost_minor",
+          "currency",
+          "quota_status"
+        ],
+        "title": "SubscriptionAttemptView",
+        "type": "object"
+      },
+      "SubscriptionCapacityView": {
+        "additionalProperties": false,
+        "properties": {
+          "host": {
+            "$ref": "#/components/schemas/CapacityLimitView"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "policy_version": {
+            "minimum": 1.0,
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderCapacityView"
+            },
+            "maxItems": 100,
+            "title": "Providers",
+            "type": "array"
+          },
+          "queue_order": {
+            "const": "least_recently_served_run_then_oldest_task",
+            "title": "Queue Order",
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/components/schemas/CapacityLimitView"
+          }
+        },
+        "required": [
+          "observed_at",
+          "policy_version",
+          "host",
+          "run",
+          "providers",
+          "queue_order"
+        ],
+        "title": "SubscriptionCapacityView",
+        "type": "object"
+      },
+      "SubscriptionRuntimeRouteView": {
+        "additionalProperties": false,
+        "properties": {
+          "admitted": {
+            "title": "Admitted",
+            "type": "boolean"
+          },
+          "auth_mode": {
+            "title": "Auth Mode",
+            "type": "string"
+          },
+          "billing_mode": {
+            "title": "Billing Mode",
+            "type": "string"
+          },
+          "client": {
+            "title": "Client",
+            "type": "string"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "effective_reason": {
+            "enum": [
+              "ready",
+              "operator_trusted",
+              "missing_executable",
+              "executable_digest_mismatch",
+              "version_mismatch",
+              "unsupported_model_or_effort",
+              "signed_out",
+              "account_authentication_unproved",
+              "subscription_route_unbound",
+              "isolation_unproved",
+              "evidence_missing",
+              "evidence_stale_or_invalid",
+              "provider_unsupported",
+              "configuration_invalid",
+              "unknown",
+              "stale_worker",
+              "quota_exhausted"
+            ],
+            "title": "Effective Reason",
+            "type": "string"
+          },
+          "effort": {
+            "title": "Effort",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceReferenceView"
+            },
+            "maxItems": 32,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "quota": {
+            "enum": [
+              "blocked",
+              "unknown",
+              "eligible"
+            ],
+            "title": "Quota",
+            "type": "string"
+          },
+          "quota_next_probe_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quota Next Probe At"
+          },
+          "quota_reset_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quota Reset At"
+          },
+          "quota_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quota Revision"
+          },
+          "reason": {
+            "enum": [
+              "ready",
+              "operator_trusted",
+              "missing_executable",
+              "executable_digest_mismatch",
+              "version_mismatch",
+              "unsupported_model_or_effort",
+              "signed_out",
+              "account_authentication_unproved",
+              "subscription_route_unbound",
+              "isolation_unproved",
+              "evidence_missing",
+              "evidence_stale_or_invalid",
+              "provider_unsupported",
+              "configuration_invalid",
+              "unknown"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema_version": {
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "enum": [
+                "approved_tools_unproved",
+                "operator_trusted",
+                "client_build_changed"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "provider",
+          "client",
+          "model",
+          "effort",
+          "auth_mode",
+          "billing_mode",
+          "configured",
+          "admitted",
+          "reason",
+          "effective_reason",
+          "quota"
+        ],
+        "title": "SubscriptionRuntimeRouteView",
+        "type": "object"
+      },
+      "SubscriptionRuntimeStatusPage": {
+        "additionalProperties": false,
+        "properties": {
+          "fresh_for_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Fresh For Seconds",
+            "type": "integer"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "workers": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionWorkerStatusView"
+            },
+            "maxItems": 100,
+            "title": "Workers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "observed_at",
+          "fresh_for_seconds",
+          "workers",
+          "has_more"
+        ],
+        "title": "SubscriptionRuntimeStatusPage",
+        "type": "object"
+      },
+      "SubscriptionTaskControlView": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/TaskControlAction"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "pause_receipt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pause Receipt Id"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskControlStatus"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "action",
+          "status",
+          "reason",
+          "observed_at"
+        ],
+        "title": "SubscriptionTaskControlView",
+        "type": "object"
+      },
+      "SubscriptionTaskFeedbackView": {
+        "additionalProperties": false,
+        "properties": {
+          "closed_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "accepted",
+                  "cancelled",
+                  "budget_exhausted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed Reason"
+          },
+          "feedback_bytes": {
+            "maximum": 4096.0,
+            "minimum": 1.0,
+            "title": "Feedback Bytes",
+            "type": "integer"
+          },
+          "feedback_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Feedback Digest",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "primary_task_id": {
+            "format": "uuid",
+            "title": "Primary Task Id",
+            "type": "string"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskFeedbackStatus"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "primary_task_id",
+          "status",
+          "feedback_digest",
+          "feedback_bytes",
+          "observed_at"
+        ],
+        "title": "SubscriptionTaskFeedbackView",
+        "type": "object"
+      },
+      "SubscriptionTaskPage": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Epoch"
+          },
+          "candidate_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate State"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubscriptionCapacityView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "quota_statuses": {
+            "items": {
+              "$ref": "#/components/schemas/QuotaStatusResponse"
+            },
+            "maxItems": 100,
+            "title": "Quota Statuses",
+            "type": "array"
+          },
+          "run_allows_execution": {
+            "default": false,
+            "title": "Run Allows Execution",
+            "type": "boolean"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_is_terminal": {
+            "default": false,
+            "title": "Run Is Terminal",
+            "type": "boolean"
+          },
+          "run_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Version"
+          },
+          "subscription": {
+            "title": "Subscription",
+            "type": "boolean"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionTaskView"
+            },
+            "maxItems": 100,
+            "title": "Tasks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "subscription",
+          "tasks",
+          "has_more"
+        ],
+        "title": "SubscriptionTaskPage",
+        "type": "object"
+      },
+      "SubscriptionTaskView": {
+        "additionalProperties": false,
+        "properties": {
+          "cancel_requested": {
+            "title": "Cancel Requested",
+            "type": "boolean"
+          },
+          "capacity_waits": {
+            "items": {
+              "enum": [
+                "host",
+                "run",
+                "provider"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Capacity Waits",
+            "type": "array"
+          },
+          "control": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubscriptionTaskControlView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependency_task_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Dependency Task Ids",
+            "type": "array"
+          },
+          "effective_route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AttemptRoute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fallback_selected": {
+            "default": false,
+            "title": "Fallback Selected",
+            "type": "boolean"
+          },
+          "feedback_receipts": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionTaskFeedbackView"
+            },
+            "maxItems": 32,
+            "title": "Feedback Receipts",
+            "type": "array"
+          },
+          "owned_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Owned Paths",
+            "type": "array"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          },
+          "pause_requested": {
+            "title": "Pause Requested",
+            "type": "boolean"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "quota_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuotaStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repairs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repairs"
+          },
+          "requested_route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AttemptRoute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "unsettled_effects": {
+            "title": "Unsettled Effects",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_id",
+          "parent_task_id",
+          "dependency_task_ids",
+          "purpose",
+          "owned_paths",
+          "state",
+          "pause_requested",
+          "cancel_requested",
+          "version",
+          "repairs",
+          "unsettled_effects"
+        ],
+        "title": "SubscriptionTaskView",
+        "type": "object"
+      },
+      "SubscriptionUsageAssessment": {
+        "additionalProperties": false,
+        "properties": {
+          "all_attempts": {
+            "minimum": 0.0,
+            "title": "All Attempts",
+            "type": "integer"
+          },
+          "delegation_decisions": {
+            "minimum": 0.0,
+            "title": "Delegation Decisions",
+            "type": "integer"
+          },
+          "fallback_attempts": {
+            "minimum": 0.0,
+            "title": "Fallback Attempts",
+            "type": "integer"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionUsageOutcome"
+            },
+            "maxItems": 100,
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "outcomes_has_more": {
+            "title": "Outcomes Has More",
+            "type": "boolean"
+          },
+          "preferred_attempts": {
+            "minimum": 0.0,
+            "title": "Preferred Attempts",
+            "type": "integer"
+          },
+          "primary_turns": {
+            "minimum": 0.0,
+            "title": "Primary Turns",
+            "type": "integer"
+          },
+          "repair_debits": {
+            "minimum": 0.0,
+            "title": "Repair Debits",
+            "type": "integer"
+          },
+          "shares": {
+            "$ref": "#/components/schemas/SubscriptionUsageShares"
+          },
+          "unknown_route_attempts": {
+            "minimum": 0.0,
+            "title": "Unknown Route Attempts",
+            "type": "integer"
+          },
+          "unverified_decisions": {
+            "minimum": 0.0,
+            "title": "Unverified Decisions",
+            "type": "integer"
+          },
+          "wait_decisions": {
+            "minimum": 0.0,
+            "title": "Wait Decisions",
+            "type": "integer"
+          },
+          "waits": {
+            "$ref": "#/components/schemas/SubscriptionUsageWaits"
+          }
+        },
+        "required": [
+          "primary_turns",
+          "all_attempts",
+          "delegation_decisions",
+          "wait_decisions",
+          "repair_debits",
+          "fallback_attempts",
+          "preferred_attempts",
+          "unknown_route_attempts",
+          "unverified_decisions",
+          "shares",
+          "waits",
+          "outcomes",
+          "outcomes_has_more"
+        ],
+        "title": "SubscriptionUsageAssessment",
+        "type": "object"
+      },
+      "SubscriptionUsageItem": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "minimum": 1.0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "cached_input_tokens": {
+            "$ref": "#/components/schemas/SubscriptionUsageMetric"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "duration_ms": {
+            "$ref": "#/components/schemas/SubscriptionUsageMetric"
+          },
+          "effective_route": {
+            "$ref": "#/components/schemas/AttemptRoute"
+          },
+          "estimated_api_cost_minor": {
+            "$ref": "#/components/schemas/SubscriptionUsageMetric"
+          },
+          "failed_results": {
+            "minimum": 0.0,
+            "title": "Failed Results",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "$ref": "#/components/schemas/SubscriptionUsageMetric"
+          },
+          "named_checks": {
+            "$ref": "#/components/schemas/SubscriptionUsageMetric"
+          },
+          "output_tokens": {
+            "$ref": "#/components/schemas/SubscriptionUsageMetric"
+          },
+          "pending_results": {
+            "minimum": 0.0,
+            "title": "Pending Results",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "recorded_results": {
+            "minimum": 0.0,
+            "title": "Recorded Results",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "tool_calls": {
+            "$ref": "#/components/schemas/SubscriptionUsageMetric"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "purpose",
+          "effective_route",
+          "currency",
+          "attempts",
+          "recorded_results",
+          "failed_results",
+          "pending_results",
+          "input_tokens",
+          "output_tokens",
+          "cached_input_tokens",
+          "duration_ms",
+          "tool_calls",
+          "named_checks",
+          "estimated_api_cost_minor"
+        ],
+        "title": "SubscriptionUsageItem",
+        "type": "object"
+      },
+      "SubscriptionUsageMetric": {
+        "additionalProperties": false,
+        "properties": {
+          "known_total": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Known Total"
+          },
+          "measured_attempts": {
+            "minimum": 0.0,
+            "title": "Measured Attempts",
+            "type": "integer"
+          },
+          "unknown_attempts": {
+            "minimum": 0.0,
+            "title": "Unknown Attempts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "known_total",
+          "measured_attempts",
+          "unknown_attempts"
+        ],
+        "title": "SubscriptionUsageMetric",
+        "type": "object"
+      },
+      "SubscriptionUsageOutcome": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_decisions": {
+            "minimum": 0.0,
+            "title": "Applied Decisions",
+            "type": "integer"
+          },
+          "attempts": {
+            "minimum": 0.0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "completed_handoffs": {
+            "minimum": 0.0,
+            "title": "Completed Handoffs",
+            "type": "integer"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "distinct_tasks": {
+            "minimum": 0.0,
+            "title": "Distinct Tasks",
+            "type": "integer"
+          },
+          "effective_route": {
+            "$ref": "#/components/schemas/AttemptRoute"
+          },
+          "failed_results": {
+            "minimum": 0.0,
+            "title": "Failed Results",
+            "type": "integer"
+          },
+          "fallback_attempts": {
+            "minimum": 0.0,
+            "title": "Fallback Attempts",
+            "type": "integer"
+          },
+          "latest_fallback_reason": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Fallback Reason"
+          },
+          "latest_result_disposition": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Result Disposition"
+          },
+          "pending_results": {
+            "minimum": 0.0,
+            "title": "Pending Results",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "task_acceptances": {
+            "minimum": 0.0,
+            "title": "Task Acceptances",
+            "type": "integer"
+          },
+          "terminal_tasks": {
+            "minimum": 0.0,
+            "title": "Terminal Tasks",
+            "type": "integer"
+          },
+          "unverified_results": {
+            "minimum": 0.0,
+            "title": "Unverified Results",
+            "type": "integer"
+          },
+          "verified_results": {
+            "minimum": 0.0,
+            "title": "Verified Results",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "purpose",
+          "effective_route",
+          "currency",
+          "attempts",
+          "distinct_tasks",
+          "terminal_tasks",
+          "verified_results",
+          "unverified_results",
+          "pending_results",
+          "failed_results",
+          "applied_decisions",
+          "completed_handoffs",
+          "task_acceptances",
+          "fallback_attempts",
+          "latest_fallback_reason",
+          "latest_result_disposition"
+        ],
+        "title": "SubscriptionUsageOutcome",
+        "type": "object"
+      },
+      "SubscriptionUsagePage": {
+        "additionalProperties": false,
+        "properties": {
+          "assessment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubscriptionUsageAssessment"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionUsageItem"
+            },
+            "maxItems": 100,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "title": "SubscriptionUsagePage",
+        "type": "object"
+      },
+      "SubscriptionUsageShare": {
+        "additionalProperties": false,
+        "properties": {
+          "all_attempts": {
+            "minimum": 0.0,
+            "title": "All Attempts",
+            "type": "integer"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator"
+          },
+          "denominator_measured_attempts": {
+            "minimum": 0.0,
+            "title": "Denominator Measured Attempts",
+            "type": "integer"
+          },
+          "denominator_unknown_attempts": {
+            "minimum": 0.0,
+            "title": "Denominator Unknown Attempts",
+            "type": "integer"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator"
+          },
+          "numerator_measured_attempts": {
+            "minimum": 0.0,
+            "title": "Numerator Measured Attempts",
+            "type": "integer"
+          },
+          "numerator_unknown_attempts": {
+            "minimum": 0.0,
+            "title": "Numerator Unknown Attempts",
+            "type": "integer"
+          },
+          "primary_attempts": {
+            "minimum": 0.0,
+            "title": "Primary Attempts",
+            "type": "integer"
+          },
+          "share": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share"
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator",
+          "primary_attempts",
+          "all_attempts",
+          "numerator_measured_attempts",
+          "denominator_measured_attempts",
+          "numerator_unknown_attempts",
+          "denominator_unknown_attempts",
+          "coverage",
+          "share"
+        ],
+        "title": "SubscriptionUsageShare",
+        "type": "object"
+      },
+      "SubscriptionUsageShares": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "$ref": "#/components/schemas/SubscriptionUsageShare"
+          },
+          "input_tokens": {
+            "$ref": "#/components/schemas/SubscriptionUsageShare"
+          },
+          "output_tokens": {
+            "$ref": "#/components/schemas/SubscriptionUsageShare"
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "duration_ms"
+        ],
+        "title": "SubscriptionUsageShares",
+        "type": "object"
+      },
+      "SubscriptionUsageWaits": {
+        "additionalProperties": false,
+        "properties": {
+          "continued": {
+            "minimum": 0.0,
+            "title": "Continued",
+            "type": "integer"
+          },
+          "decisions": {
+            "minimum": 0.0,
+            "title": "Decisions",
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Ms"
+          },
+          "ended_without_continuation": {
+            "minimum": 0.0,
+            "title": "Ended Without Continuation",
+            "type": "integer"
+          },
+          "measured_intervals": {
+            "minimum": 0.0,
+            "title": "Measured Intervals",
+            "type": "integer"
+          },
+          "unfinished": {
+            "minimum": 0.0,
+            "title": "Unfinished",
+            "type": "integer"
+          },
+          "unknown_intervals": {
+            "minimum": 0.0,
+            "title": "Unknown Intervals",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decisions",
+          "continued",
+          "unfinished",
+          "ended_without_continuation",
+          "measured_intervals",
+          "unknown_intervals",
+          "elapsed_ms"
+        ],
+        "title": "SubscriptionUsageWaits",
+        "type": "object"
+      },
+      "SubscriptionWorkerStatusView": {
+        "additionalProperties": false,
+        "properties": {
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionRuntimeRouteView"
+            },
+            "maxItems": 64,
+            "title": "Routes",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "current",
+              "stale",
+              "stopped"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "stopped_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped At"
+          },
+          "worker_instance_id": {
+            "format": "uuid",
+            "title": "Worker Instance Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_instance_id",
+          "last_seen_at",
+          "stopped_at",
+          "state",
+          "routes"
+        ],
+        "title": "SubscriptionWorkerStatusView",
+        "type": "object"
+      },
       "SuspensionKind": {
         "description": "Why a run is retaining its previous state.",
         "enum": [
@@ -4335,6 +6341,143 @@
           "INTERVENTION"
         ],
         "title": "SuspensionKind",
+        "type": "string"
+      },
+      "TaskControlAction": {
+        "enum": [
+          "pause",
+          "cancel",
+          "resume"
+        ],
+        "type": "string"
+      },
+      "TaskControlReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/TaskControlAction"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "pause_receipt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pause Receipt Id"
+          },
+          "reason": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_version": {
+            "minimum": 0.0,
+            "title": "Run Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskControlStatus"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_version": {
+            "minimum": 1.0,
+            "title": "Task Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "run_id",
+          "task_id",
+          "action",
+          "status",
+          "run_version",
+          "task_version",
+          "observed_at",
+          "reason"
+        ],
+        "title": "TaskControlReceipt",
+        "type": "object"
+      },
+      "TaskControlRequest": {
+        "additionalProperties": false,
+        "description": "Parse JSON UUIDs while preserving strict optimistic-concurrency versions.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/TaskControlAction"
+          },
+          "expected_run_version": {
+            "minimum": 0.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "expected_task_version": {
+            "minimum": 0.0,
+            "title": "Expected Task Version",
+            "type": "integer"
+          },
+          "pause_receipt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pause Receipt Id"
+          },
+          "reason": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "expected_run_version",
+          "expected_task_version",
+          "reason"
+        ],
+        "title": "TaskControlRequest",
+        "type": "object"
+      },
+      "TaskControlStatus": {
+        "enum": [
+          "pause_requested",
+          "cancel_requested",
+          "paused",
+          "cancelled",
+          "queued",
+          "blocked",
+          "decision_pending"
+        ],
         "type": "string"
       },
       "TaskCreateRequest": {
@@ -4365,6 +6508,130 @@
         ],
         "title": "TaskCreateRequest",
         "type": "object"
+      },
+      "TaskFeedbackReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "binding_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Binding Digest",
+            "type": "string"
+          },
+          "feedback_bytes": {
+            "maximum": 4096.0,
+            "minimum": 1.0,
+            "title": "Feedback Bytes",
+            "type": "integer"
+          },
+          "feedback_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Feedback Digest",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "operator_id": {
+            "format": "uuid",
+            "title": "Operator Id",
+            "type": "string"
+          },
+          "primary_task_id": {
+            "format": "uuid",
+            "title": "Primary Task Id",
+            "type": "string"
+          },
+          "primary_task_version": {
+            "minimum": 0.0,
+            "title": "Primary Task Version",
+            "type": "integer"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_version": {
+            "minimum": 0.0,
+            "title": "Run Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskFeedbackStatus"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_version": {
+            "minimum": 0.0,
+            "title": "Task Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "operator_id",
+          "run_id",
+          "primary_task_id",
+          "task_id",
+          "status",
+          "run_version",
+          "task_version",
+          "primary_task_version",
+          "feedback_digest",
+          "binding_digest",
+          "feedback_bytes",
+          "observed_at"
+        ],
+        "title": "TaskFeedbackReceipt",
+        "type": "object"
+      },
+      "TaskFeedbackRequest": {
+        "additionalProperties": false,
+        "description": "Parse a closed JSON body while keeping version integers strict.",
+        "properties": {
+          "expected_run_version": {
+            "minimum": 0.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "expected_task_version": {
+            "minimum": 0.0,
+            "title": "Expected Task Version",
+            "type": "integer"
+          },
+          "feedback": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Feedback",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_run_version",
+          "expected_task_version",
+          "feedback"
+        ],
+        "title": "TaskFeedbackRequest",
+        "type": "object"
+      },
+      "TaskFeedbackStatus": {
+        "enum": [
+          "pending_primary",
+          "forwarded",
+          "delivered",
+          "closed"
+        ],
+        "type": "string"
       },
       "TaskResponse": {
         "additionalProperties": false,
@@ -4685,7 +6952,7 @@
   },
   "info": {
     "title": "Parallel Forge",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -5830,6 +8097,123 @@
         "summary": "Get Project Policy"
       }
     },
+    "/api/projects/{project_id}/subscription-profile": {
+      "get": {
+        "operationId": "selected_profile_api_projects__project_id__subscription_profile_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProfileResponse"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Selected Profile Api Projects  Project Id  Subscription Profile Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Selected Profile"
+      },
+      "put": {
+        "operationId": "select_profile_api_projects__project_id__subscription_profile_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectProfileSelectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Select Profile"
+      }
+    },
     "/api/run-projections": {
       "get": {
         "operationId": "run_projections_api_run_projections_get",
@@ -6556,6 +8940,306 @@
         "summary": "Projection"
       }
     },
+    "/api/runs/{run_id}/subscription-tasks": {
+      "get": {
+        "operationId": "tasks_api_runs__run_id__subscription_tasks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionTaskPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Tasks"
+      }
+    },
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/attempts": {
+      "get": {
+        "operationId": "attempts_api_runs__run_id__subscription_tasks__task_id__attempts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionAttemptPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Attempts"
+      }
+    },
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/controls": {
+      "post": {
+        "operationId": "control_task_api_runs__run_id__subscription_tasks__task_id__controls_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskControlReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Control Task"
+      }
+    },
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/feedback": {
+      "post": {
+        "operationId": "submit_feedback_api_runs__run_id__subscription_tasks__task_id__feedback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskFeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskFeedbackReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Submit Feedback"
+      }
+    },
     "/api/runs/{run_id}/usage": {
       "get": {
         "operationId": "run_usage_api_runs__run_id__usage_get",
@@ -6622,6 +9306,472 @@
           }
         ],
         "summary": "Run Usage"
+      }
+    },
+    "/api/subscription-profiles": {
+      "get": {
+        "operationId": "list_profiles_api_subscription_profiles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProfileResponse"
+                  },
+                  "title": "Response List Profiles Api Subscription Profiles Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Profiles"
+      },
+      "post": {
+        "operationId": "create_profile_api_subscription_profiles_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Create Profile"
+      }
+    },
+    "/api/subscription-profiles/{profile_id}/versions": {
+      "post": {
+        "operationId": "append_profile_api_subscription_profiles__profile_id__versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileAppendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Append Profile"
+      }
+    },
+    "/api/subscription-profiles/{profile_id}/versions/{version}": {
+      "get": {
+        "operationId": "get_profile_api_subscription_profiles__profile_id__versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Profile"
+      }
+    },
+    "/api/subscription-quota": {
+      "get": {
+        "operationId": "list_quota_api_subscription_quota_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/QuotaStatusResponse"
+                  },
+                  "title": "Response List Quota Api Subscription Quota Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Quota"
+      }
+    },
+    "/api/subscription-quota/reports": {
+      "post": {
+        "operationId": "report_quota_api_subscription_quota_reports_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuotaExhaustionReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Report Quota"
+      }
+    },
+    "/api/subscription-runtime": {
+      "get": {
+        "operationId": "runtime_status_api_subscription_runtime_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionRuntimeStatusPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Runtime Status"
+      }
+    },
+    "/api/subscription-usage": {
+      "get": {
+        "operationId": "usage_api_subscription_usage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_assessment",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Assessment",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionUsagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Usage"
       }
     },
     "/api/tasks": {

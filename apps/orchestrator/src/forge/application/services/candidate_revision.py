@@ -16,6 +16,9 @@ from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approvals import ApprovalCommandValidationError
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.subscription_candidate_revision import (
+    SubscriptionCandidateRevisionController,
+)
 from forge.domain.approval import ApprovalGate, PrApprovalEvidence, canonical_digest
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.policy import ProjectPolicy
@@ -40,6 +43,9 @@ class CandidateRevisionService:
         self._approved = approved_plans
         self._git_factory = git_factory
         self._clock = clock or SystemClock()
+        self._subscription = SubscriptionCandidateRevisionController(
+            artifact_store, git_factory, clock=self._clock
+        )
 
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         await self._fence(command, work)
@@ -65,6 +71,13 @@ class CandidateRevisionService:
         ).encode("utf-8")
         feedback_digest = hashlib.sha256(feedback_bytes).hexdigest()
         run = await work.runs.get_for_update(command.run_id)
+        if await work.subscription.envelope_for_run(run.id) is not None:
+            approved = await self._approved.load(work, command.run_id)
+            if await self._subscription.replay(command, work, approved) is None:
+                await self._subscription.reopen(command, work, approved)
+            await self._fence(command, work)
+            await work.commit()
+            return
         if (
             run.state is RunState.REMEDIATING
             and run.version == command.expected_run_version + 1

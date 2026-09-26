@@ -19,11 +19,16 @@ from forge.application.ports.evidence import (
     EvidenceReadScope,
     EvidenceSetDescriptor,
     ReviewEvidenceDraft,
+    SubscriptionAcceptanceEvidenceDraft,
     ValidationEvidenceDraft,
 )
+from forge.application.ports.executions import ExecutionStatus
+from forge.application.ports.subscription_decisions import SubscriptionDecisionError
 from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.evidence import (
+    EvidenceManifest,
     ReviewEvidenceManifest,
+    SubscriptionAcceptanceEvidenceManifest,
     ValidationEvidenceManifest,
     ValidationEvidenceMember,
     decode_evidence_manifest,
@@ -38,6 +43,12 @@ from forge.persistence.models import (
     Step,
     ValidationResult,
 )
+from forge.persistence.repositories.controller_steps import (
+    ControllerStepConflict,
+    ControllerStepDataError,
+    PostgresControllerStepRepository,
+)
+from forge.persistence.repositories.subscription_evidence import verify_acceptance_evidence_source
 
 _MEDIA_TYPE = "application/vnd.forge.evidence-manifest+json"
 
@@ -51,12 +62,19 @@ class PostgresEvidenceRepository:
 
     async def record_set(
         self,
-        draft: ValidationEvidenceDraft | ReviewEvidenceDraft,
+        draft: ValidationEvidenceDraft | ReviewEvidenceDraft | SubscriptionAcceptanceEvidenceDraft,
         artifact: CanonicalEvidenceArtifact,
     ) -> EvidenceSetDescriptor:
         manifest = draft.manifest
         encoded = encode_evidence_manifest(manifest)
         canonical_manifest = decode_evidence_manifest(encoded)
+        expected_type = {
+            ValidationEvidenceDraft: ValidationEvidenceManifest,
+            ReviewEvidenceDraft: ReviewEvidenceManifest,
+            SubscriptionAcceptanceEvidenceDraft: SubscriptionAcceptanceEvidenceManifest,
+        }.get(type(draft))
+        if expected_type is None or not isinstance(canonical_manifest, expected_type):
+            raise EvidenceCorruptLineage("evidence draft kind differs from its manifest")
         if canonical_manifest != manifest:
             raise EvidenceCorruptLineage("manifest changed during canonical encoding")
         manifest = canonical_manifest
@@ -76,7 +94,7 @@ class PostgresEvidenceRepository:
             descriptor.digest != hashlib.sha256(encoded).hexdigest()
             or descriptor.byte_count != len(encoded)
             or descriptor.media_type != _MEDIA_TYPE
-            or descriptor.schema_version != 1
+            or descriptor.schema_version != manifest.schema_version
             or descriptor.truncated
             or descriptor.run_id != manifest.run_id
             or descriptor.producer_type != "evidence_set"
@@ -103,7 +121,7 @@ class PostgresEvidenceRepository:
         await self._session.flush()
         if isinstance(manifest, ValidationEvidenceManifest):
             await self._project_validation(manifest, projection_members)
-        else:
+        elif isinstance(manifest, ReviewEvidenceManifest):
             await self._project_review(ReviewEvidenceDraft(manifest), row)
         return self._descriptor(row, descriptor)
 
@@ -235,7 +253,7 @@ class PostgresEvidenceRepository:
 
     async def _row(
         self,
-        manifest: ValidationEvidenceManifest | ReviewEvidenceManifest,
+        manifest: EvidenceManifest,
         descriptor: ArtifactDescriptor,
     ) -> EvidenceSet:
         artifact_id = descriptor.artifact_id
@@ -252,6 +270,7 @@ class PostgresEvidenceRepository:
                 kind="validation",
                 policy_version=manifest.policy_version,
                 head_sha=manifest.head_sha,
+                candidate_tree_digest=manifest.candidate_tree_digest,
                 manifest_artifact_id=artifact_id,
                 prior_review_evidence_set_id=manifest.prior_review_evidence_set_id,
                 prior_review_parent_policy_version=None if prior is None else prior.policy_version,
@@ -259,6 +278,59 @@ class PostgresEvidenceRepository:
                 review_finding_ids=None,
             )
         validation = await self._set(manifest.validation_evidence_set_id, manifest.run_id)
+        if isinstance(manifest, SubscriptionAcceptanceEvidenceManifest):
+            validation_artifact = await self._artifacts.get_by_digest(
+                await self._digest(validation.manifest_artifact_id), run_id=manifest.run_id
+            )
+            try:
+                step = await PostgresControllerStepRepository(self._session).get(
+                    manifest.run_id, manifest.step_id
+                )
+            except (ControllerStepConflict, ControllerStepDataError) as exc:
+                raise EvidenceCorruptLineage("acceptance validation controller is invalid") from exc
+            if (
+                validation.kind != "validation"
+                or validation.policy_version != manifest.policy_version
+                or validation.head_sha != manifest.head_sha
+                or validation.candidate_tree_digest != manifest.candidate_tree_digest
+                or validation_artifact.schema_version != 2
+                or validation_artifact.run_id != manifest.run_id
+                or validation_artifact.artifact_id != validation.manifest_artifact_id
+                or validation_artifact.producer_type != "evidence_set"
+                or validation_artifact.producer_id != validation.id
+                or validation_artifact.media_type != _MEDIA_TYPE
+                or validation_artifact.truncated
+                or validation.step_id != manifest.step_id
+                or step is None
+                or step.run_id != manifest.run_id
+                or step.kind != "validate"
+                or step.status is not ExecutionStatus.SUCCEEDED
+                or step.output_artifact_id != validation.manifest_artifact_id
+            ):
+                raise EvidenceCorruptLineage("acceptance validation parent is invalid")
+            try:
+                await verify_acceptance_evidence_source(self._session, self._artifacts, manifest)
+            except (SubscriptionDecisionError, ValueError, TypeError, KeyError) as exc:
+                raise EvidenceCorruptLineage("acceptance source proof is invalid") from exc
+            return EvidenceSet(
+                id=manifest.evidence_set_id,
+                run_id=manifest.run_id,
+                step_id=manifest.step_id,
+                kind="acceptance",
+                policy_version=manifest.policy_version,
+                head_sha=manifest.head_sha,
+                candidate_tree_digest=manifest.candidate_tree_digest,
+                producer_task_id=manifest.producer_task_id,
+                producer_attempt_id=manifest.producer_attempt_id,
+                manifest_artifact_id=artifact_id,
+                validation_evidence_set_id=validation.id,
+                validation_parent_policy_version=validation.policy_version,
+                validation_parent_kind=validation.kind,
+                validation_parent_head_sha=validation.head_sha,
+                review_finding_ids=None
+                if manifest.review_handoff is None
+                else sorted(f.finding_id for f in manifest.review_handoff.review_output.findings),
+            )
         producer = await self._session.get(AgentExecution, manifest.producer_execution_id)
         if (
             validation.kind != "validation"
@@ -289,9 +361,7 @@ class PostgresEvidenceRepository:
             review_finding_ids=list(finding_ids),
         )
 
-    async def _expected_parent_digests(
-        self, manifest: ValidationEvidenceManifest | ReviewEvidenceManifest
-    ) -> tuple[str, ...]:
+    async def _expected_parent_digests(self, manifest: EvidenceManifest) -> tuple[str, ...]:
         if isinstance(manifest, ValidationEvidenceManifest):
             parents = {
                 digest
@@ -305,8 +375,22 @@ class PostgresEvidenceRepository:
             if manifest.prior_review_evidence_set_id is not None:
                 prior = await self._set(manifest.prior_review_evidence_set_id, manifest.run_id)
                 parents.add(await self._digest(prior.manifest_artifact_id))
+            parents.update(
+                m.controller_receipt_digest
+                for m in manifest.members
+                if m.controller_receipt_digest is not None
+            )
             return tuple(sorted(parents))
         validation = await self._set(manifest.validation_evidence_set_id, manifest.run_id)
+        if isinstance(manifest, SubscriptionAcceptanceEvidenceManifest):
+            return tuple(
+                sorted(
+                    (
+                        await self._digest(validation.manifest_artifact_id),
+                        manifest.receipt_evidence_digest,
+                    )
+                )
+            )
         return (await self._digest(validation.manifest_artifact_id),)
 
     async def _project_validation(
@@ -420,7 +504,7 @@ class PostgresEvidenceRepository:
 
     async def _validate_members(
         self,
-        manifest: ValidationEvidenceManifest | ReviewEvidenceManifest,
+        manifest: EvidenceManifest,
         members: tuple[tuple[ValidationEvidenceMember, UUID], ...],
     ) -> None:
         if isinstance(manifest, ValidationEvidenceManifest):
@@ -430,6 +514,21 @@ class PostgresEvidenceRepository:
                 )
                 if artifact.artifact_id != output_artifact_id:
                     raise EvidenceCorruptLineage("validation output artifact differs from manifest")
+                if member.controller_receipt_digest is not None:
+                    receipt = await self._artifacts.get_by_digest(
+                        member.controller_receipt_digest, run_id=manifest.run_id
+                    )
+                    if (
+                        receipt.producer_type != "controller_named_check"
+                        or receipt.producer_id != member.result_id
+                        or receipt.schema_version != 2
+                        or receipt.media_type
+                        != "application/vnd.forge.controller-check-receipt+json"
+                        or receipt.truncated
+                    ):
+                        raise EvidenceCorruptLineage(
+                            "validation controller receipt lineage differs"
+                        )
 
     @staticmethod
     def _purpose_kind(purpose: EvidenceInputPurpose) -> EvidenceKind:
@@ -441,6 +540,14 @@ class PostgresEvidenceRepository:
 
     @staticmethod
     def _descriptor(row: EvidenceSet, artifact: ArtifactDescriptor) -> EvidenceSetDescriptor:
+        if (
+            row.kind == "validation"
+            and (
+                artifact.schema_version not in (1, 2)
+                or (artifact.schema_version == 2) != (row.candidate_tree_digest is not None)
+            )
+        ) or (row.kind != "validation" and artifact.schema_version != 1):
+            raise EvidenceCorruptLineage("evidence schema and candidate metadata differ")
         return EvidenceSetDescriptor(
             row.id,
             row.run_id,
@@ -457,12 +564,15 @@ class PostgresEvidenceRepository:
             row.validation_evidence_set_id,
             row.prior_review_evidence_set_id,
             None if row.review_finding_ids is None else tuple(row.review_finding_ids),
+            row.candidate_tree_digest,
+            row.producer_task_id,
+            row.producer_attempt_id,
         )
 
     @staticmethod
     def _matches(
         row: EvidenceSet,
-        manifest: ValidationEvidenceManifest | ReviewEvidenceManifest,
+        manifest: EvidenceManifest,
         descriptor: ArtifactDescriptor,
     ) -> bool:
         if (
@@ -478,12 +588,35 @@ class PostgresEvidenceRepository:
         if isinstance(manifest, ValidationEvidenceManifest):
             return (
                 row.producer_execution_id is None
+                and row.producer_task_id is None
+                and row.producer_attempt_id is None
+                and row.candidate_tree_digest == manifest.candidate_tree_digest
                 and row.validation_evidence_set_id is None
                 and row.prior_review_evidence_set_id == manifest.prior_review_evidence_set_id
                 and row.review_finding_ids is None
             )
+        if isinstance(manifest, SubscriptionAcceptanceEvidenceManifest):
+            return (
+                row.producer_execution_id is None
+                and row.producer_task_id == manifest.producer_task_id
+                and row.producer_attempt_id == manifest.producer_attempt_id
+                and row.candidate_tree_digest == manifest.candidate_tree_digest
+                and row.validation_evidence_set_id == manifest.validation_evidence_set_id
+                and row.prior_review_evidence_set_id is None
+                and row.review_finding_ids
+                == (
+                    None
+                    if manifest.review_handoff is None
+                    else sorted(
+                        f.finding_id for f in manifest.review_handoff.review_output.findings
+                    )
+                )
+            )
         return (
             row.producer_execution_id == manifest.producer_execution_id
+            and row.producer_task_id is None
+            and row.producer_attempt_id is None
+            and row.candidate_tree_digest is None
             and row.validation_evidence_set_id == manifest.validation_evidence_set_id
             and row.prior_review_evidence_set_id is None
             and tuple(row.review_finding_ids or ())

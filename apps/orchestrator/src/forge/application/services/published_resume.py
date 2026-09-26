@@ -14,9 +14,13 @@ from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.approved_plan import ApprovedPlanLoader
 from forge.application.services.resume_source import resume_origin
 from forge.application.services.review import _EXECUTION_NAMESPACE, _STEP_NAMESPACE, ReviewService
-from forge.application.services.validation import validation_command_binding
+from forge.application.services.validation import (
+    validation_acceptance_attempt,
+    validation_command_binding,
+)
 from forge.domain.actor import AgentRole
 from forge.domain.agent import AgentFinishStatus
+from forge.domain.approval import SubscriptionPlanApprovalEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.evidence import (
     EvidenceStatus,
@@ -109,6 +113,16 @@ async def _published_stage(
     approved = await ApprovedPlanLoader(store).load(work, run.id)
     if approved.run != run or source.actor_id != approved.approval_actor_id:
         raise CommandRecoveryRequired("published stage approval differs")
+    if kind == "validate" and (
+        isinstance(approved.evidence, SubscriptionPlanApprovalEvidence)
+        or validation_acceptance_attempt(source) is not None
+    ):
+        from forge.application.services.subscription_publication_evidence import (
+            SubscriptionPublicationEvidence,
+        )
+
+        await SubscriptionPublicationEvidence(store).verify_validation(work, approved, source)
+        return step_id, None, artifact_id
     # Historical projection for pure parsing only; never used to claim or dispatch.
     binding = replace(
         source,

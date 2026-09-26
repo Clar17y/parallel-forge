@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TextIO
+from urllib.parse import urlsplit
 
 
 class PrerequisiteError(RuntimeError):
@@ -25,8 +26,84 @@ class SupervisorError(RuntimeError):
     """Raised when a supervisor step fails."""
 
 
+class ConfigurationError(SupervisorError, ValueError):
+    """Raised when supervisor configuration is invalid."""
+
+
 class SupervisorCancelled(SupervisorError):
     """Raised when supervisor execution is cancelled via signal or stop_event."""
+
+
+# One immutable-addressing rule shared by the development supervisor and the
+# local verification harness, per the repository's runner-image requirement.
+IMMUTABLE_IMAGE_DIGEST_PATTERN = re.compile(r"\Asha256:[0-9a-f]{64}\Z", re.ASCII)
+
+
+def _without_ranking_key(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Copy the environment for a child that does not compose the worker ranker."""
+    env = dict(base_env if base_env is not None else os.environ)
+    env.pop("TYPESAFE_API_KEY", None)
+    return env
+
+
+@dataclass(frozen=True)
+class WebConfig:
+    """Resolved and validated configuration for the Next.js web process."""
+
+    web_origin: str
+    api_internal_origin: str
+    web_port: int
+
+    def to_web_env(self, base_env: dict[str, str] | None = None) -> dict[str, str]:
+        """Build isolated web child environment excluding root/provider secrets."""
+        env = _without_ranking_key(base_env)
+        for key in tuple(env):
+            if key == "DATABASE_URL" or (
+                key.startswith("FORGE_") and not key.startswith("FORGE_E2E_")
+            ):
+                del env[key]
+
+        env["FORGE_WEB_ORIGIN"] = self.web_origin
+        env["FORGE_API_INTERNAL_ORIGIN"] = self.api_internal_origin
+        env["PORT"] = str(self.web_port)
+        return env
+
+
+RESOLVE_WEB_CONFIG_CODE = (
+    "import json, os, sys\n"
+    "from urllib.parse import urlsplit\n"
+    "import dotenv\n"
+    "from forge.api.security import parse_web_origin\n"
+    "from forge.settings import Settings\n"
+    "try:\n"
+    "    dotenv_vals = dotenv.dotenv_values('.env') if os.path.exists('.env') else {}\n"
+    "    settings = Settings(process_role='api')\n"
+    "    web_origin_raw = settings.web_origin\n"
+    "    validated_web = parse_web_origin(web_origin_raw)\n"
+    "    if validated_web.scheme != 'http':\n"
+    "        sys.exit(1)\n"
+    "    api_internal_origin_raw = os.environ.get('FORGE_API_INTERNAL_ORIGIN') or dotenv_vals.get('FORGE_API_INTERNAL_ORIGIN')\n"
+    "    if not api_internal_origin_raw:\n"
+    "        bind_host = settings.bind_host\n"
+    "        if ':' in bind_host and not bind_host.startswith('['):\n"
+    "            bind_host = f'[{bind_host}]'\n"
+    "        api_internal_origin_raw = f'http://{bind_host}:{settings.api_port}'\n"
+    "    validated_api = parse_web_origin(api_internal_origin_raw)\n"
+    "    parsed_web = urlsplit(validated_web.value)\n"
+    "    web_port = parsed_web.port if parsed_web.port is not None else 80\n"
+    "    print(json.dumps({'web_origin': validated_web.value, 'api_internal_origin': validated_api.value, 'web_port': web_port}))\n"
+    "except Exception:\n"
+    "    sys.exit(1)\n"
+)
+
+RESOLVE_WEB_CONFIG_CMD = [
+    "uv",
+    "run",
+    "--frozen",
+    "python",
+    "-c",
+    RESOLVE_WEB_CONFIG_CODE,
+]
 
 
 @dataclass
@@ -140,7 +217,7 @@ def _create_windows_job_object() -> Any:
             kernel32.CloseHandle(job)
             raise SupervisorError(f"SetInformationJobObject failed with error {err}")
         return job
-    except (ImportError, AttributeError, OSError):
+    except ImportError, AttributeError, OSError:
         return None
 
 
@@ -298,6 +375,10 @@ class DefaultCommandRunner:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "text": True,
+            # Tool output is UTF-8 (docker, git, pytest); a non-UTF-8 byte must not
+            # crash the reader thread or silently truncate the captured result.
+            "encoding": "utf-8",
+            "errors": "backslashreplace",
         }
 
         if sys.platform == "win32":
@@ -385,6 +466,8 @@ class DefaultCommandRunner:
             "cwd": str(cwd) if cwd else None,
             "env": env,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "backslashreplace",
         }
 
         if sys.platform == "win32":
@@ -456,16 +539,13 @@ class DevSupervisor:
     ) -> CommandResult:
         """Run a command with cancellation check before and after."""
         self._check_cancelled()
-        try:
-            res = self.runner.run(
-                cmd,
-                cwd=cwd,
-                env=env,
-                timeout=timeout,
-                stop_event=self.stop_event,  # type: ignore[call-arg]
-            )
-        except TypeError:
-            res = self.runner.run(cmd, cwd=cwd, env=env, timeout=timeout)
+        res = self.runner.run(
+            cmd,
+            cwd=cwd,
+            env=_without_ranking_key(env),
+            timeout=timeout,
+            stop_event=self.stop_event,  # type: ignore[call-arg]
+        )
         self._check_cancelled()
         return res
 
@@ -473,9 +553,7 @@ class DevSupervisor:
         """Verify Python 3.14 runtime."""
         info = version_info or sys.version_info
         if (info[0], info[1]) != (3, 14):
-            raise PrerequisiteError(
-                f"Python 3.14 is required. Found Python {info[0]}.{info[1]}."
-            )
+            raise PrerequisiteError(f"Python 3.14 is required. Found Python {info[0]}.{info[1]}.")
 
     def verify_node_version(self) -> None:
         """Verify Node 24 runtime."""
@@ -484,9 +562,7 @@ class DevSupervisor:
             raise PrerequisiteError(f"Node.js is not available: {res.stderr.strip()}")
         version = res.stdout.strip()
         if not version.startswith("v24."):
-            raise PrerequisiteError(
-                f"Node 24 is required. Found Node {version}."
-            )
+            raise PrerequisiteError(f"Node 24 is required. Found Node {version}.")
 
     def verify_postgres_health(self) -> None:
         """Verify PostgreSQL container health scoped to repository compose file."""
@@ -510,7 +586,7 @@ class DevSupervisor:
                 items = json.loads(output)
             else:
                 items = [json.loads(line) for line in output.splitlines() if line.strip()]
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             raise PrerequisiteError(f"Failed to parse docker compose ps output: {output}")
 
         if not items:
@@ -590,7 +666,9 @@ class DevSupervisor:
             cwd=self.repo_root,
         )
         if res.returncode != 0:
-            raise SupervisorError(f"Alembic migration failed: {res.stderr.strip() or res.stdout.strip()}")
+            raise SupervisorError(
+                f"Alembic migration failed: {res.stderr.strip() or res.stdout.strip()}"
+            )
 
     def build_and_inspect_runner_image(self) -> str:
         """Build the Docker runner image and inspect its immutable digest."""
@@ -622,8 +700,7 @@ class DevSupervisor:
             raise SupervisorError(f"Docker inspect failed: {inspect_res.stderr.strip()}")
 
         image_id = inspect_res.stdout.strip()
-        digest_pattern = re.compile(r"\Asha256:[0-9a-f]{64}\Z", re.ASCII)
-        if not digest_pattern.match(image_id):
+        if not IMMUTABLE_IMAGE_DIGEST_PATTERN.match(image_id):
             raise SupervisorError(
                 f"Runner image inspect must return an immutable digest (sha256:hex), got: {image_id}"
             )
@@ -657,26 +734,67 @@ class DevSupervisor:
         print(f"\nForge Operator Bootstrap URL:\n{url}\n", file=self.stdout, flush=True)
         return url
 
-    def start_processes(self, runner_image: str) -> list[ManagedProcess]:
+    def resolve_web_configuration(self) -> WebConfig:
+        """Resolve, isolate, and validate loopback web and internal API origins."""
+        res = self.run_cmd(
+            RESOLVE_WEB_CONFIG_CMD,
+            cwd=self.repo_root,
+        )
+        if res.returncode != 0:
+            raise ConfigurationError("Invalid local development web configuration.")
+
+        try:
+            data = json.loads(res.stdout)
+            return WebConfig(
+                web_origin=str(data["web_origin"]),
+                api_internal_origin=str(data["api_internal_origin"]),
+                web_port=int(data["web_port"]),
+            )
+        except json.JSONDecodeError, KeyError, TypeError, ValueError:
+            raise ConfigurationError("Invalid local development web configuration.") from None
+
+    def start_processes(
+        self,
+        runner_image: str,
+        web_config: WebConfig | None = None,
+    ) -> list[ManagedProcess]:
         """Spawn separate forge-api, forge-worker, and Next.js processes."""
         self.log("Starting Forge processes...")
+        resolved_web_config = (
+            web_config if web_config is not None else self.resolve_web_configuration()
+        )
+
         api_cmd = ["uv", "run", "--frozen", "forge-api"]
         worker_cmd = ["uv", "run", "--frozen", "forge-worker"]
-        web_cmd = ["npm", "run", "dev:web"]
+        web_cmd = [
+            "npm",
+            "exec",
+            "--workspace",
+            "apps/web",
+            "--",
+            "next",
+            "dev",
+            "--hostname",
+            str(urlsplit(resolved_web_config.web_origin).hostname),
+        ]
 
         worker_env = os.environ.copy()
         worker_env["FORGE_RUNNER_IMAGE"] = runner_image
 
+        web_env = resolved_web_config.to_web_env()
+
         spawned: list[ManagedProcess] = []
         try:
             self._check_cancelled()
-            spawned.append(self.runner.spawn("api", api_cmd, cwd=self.repo_root))
+            spawned.append(
+                self.runner.spawn("api", api_cmd, cwd=self.repo_root, env=_without_ranking_key())
+            )
             self._check_cancelled()
             spawned.append(
                 self.runner.spawn("worker", worker_cmd, cwd=self.repo_root, env=worker_env)
             )
             self._check_cancelled()
-            spawned.append(self.runner.spawn("web", web_cmd, cwd=self.repo_root))
+            spawned.append(self.runner.spawn("web", web_cmd, cwd=self.repo_root, env=web_env))
             self.log("All processes started (forge-api, forge-worker, web).")
             return spawned
         except BaseException:
@@ -736,15 +854,20 @@ class DevSupervisor:
             self._check_cancelled()
             self.sync_dependencies()
             self._check_cancelled()
+            web_config = self.resolve_web_configuration()
+            self._check_cancelled()
             self.run_migrations()
             self._check_cancelled()
             runner_image = self.build_and_inspect_runner_image()
             self._check_cancelled()
             self.issue_operator_bootstrap()
             self._check_cancelled()
-            processes = self.start_processes(runner_image=runner_image)
+            processes = self.start_processes(
+                runner_image=runner_image,
+                web_config=web_config,
+            )
             return self.supervise(processes)
-        except (SupervisorCancelled, KeyboardInterrupt):
+        except SupervisorCancelled, KeyboardInterrupt:
             self.log("Supervisor cancelled.")
             if processes:
                 self.cleanup(processes)
@@ -777,7 +900,7 @@ def main() -> int:
     except SupervisorError as err:
         print(f"[dev error] Supervisor failed: {err}", file=sys.stderr)
         return 1
-    except (SupervisorCancelled, KeyboardInterrupt):
+    except SupervisorCancelled, KeyboardInterrupt:
         return 0
 
 

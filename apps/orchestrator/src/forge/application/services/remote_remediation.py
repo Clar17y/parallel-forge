@@ -2,11 +2,12 @@
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from uuid import UUID
 
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.commands import CommandRecoveryRequired
+from forge.application.ports.release import ReleaseRecord
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.approved_plan import ApprovedPlan
 from forge.application.services.base_review import base_review
@@ -14,7 +15,7 @@ from forge.application.services.resume_successor import resumed_successor
 from forge.domain.agent import UntrustedContent, UntrustedSourceKind
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.github import CheckSnapshot, MergeProtection, ReviewSnapshot
-from forge.domain.operation import OperationStatus
+from forge.domain.operation import OperationStatus, canonical_digest
 from forge.persistence.models import Approval
 from forge.release.monitor import assess_checks
 
@@ -81,6 +82,7 @@ async def reviewed_push_payload(
 async def remote_evidence(
     work: UnitOfWork, approved: ApprovedPlan, command: CommandEnvelope, store: ArtifactStore,
     *, allow_invalidated_approval: bool = False,
+    historical_publication: bool = False,
 ) -> UntrustedContent:
     # Only historical reconciliation opts in; live developer/push admission keeps the default.
     def invalid() -> CommandRecoveryRequired:
@@ -93,6 +95,8 @@ async def remote_evidence(
         and event.payload.get("remediation_command_id") == str(command.id)
     ]
     record = await work.releases.get_for_run(command.run_id)
+    if historical_publication:
+        record = await remote_publication_record(work, command)
     count = approved.run.remote_remediation_count
     if (
         len(events) != 1
@@ -177,3 +181,105 @@ async def remote_evidence(
     return UntrustedContent.from_text(
         wire.decode("utf-8"), source_kind=UntrustedSourceKind.CHECK, source_reference=digest
     )
+
+
+async def remote_publication_record(
+    work: UnitOfWork, command: CommandEnvelope
+) -> ReleaseRecord:
+    """Reconstruct the actual published snapshot preceding this observation.
+
+    Current release rows may advance after a repair. Historical verification uses
+    the succeeded effect and its causal settlement, never a caller-supplied head.
+    """
+    def invalid() -> CommandRecoveryRequired:
+        return CommandRecoveryRequired("remote observation publication source differs")
+
+    record = await work.releases.get_for_run(command.run_id)
+    if record is None:
+        raise invalid()
+    events = [
+        event for event in await work.events.list_after(command.run_id, 0)
+        if event.event_type in {"run.pr_published", "run.pr_updated"}
+        and event.run_version < command.expected_run_version
+    ]
+    if not events:
+        raise invalid()
+    latest = max(event.run_version for event in events)
+    events = [event for event in events if event.run_version == latest]
+    if len(events) != 1:
+        raise invalid()
+    event = events[0]
+    updated = event.event_type == "run.pr_updated"
+    try:
+        source = await work.commands.get(UUID(str(event.payload["source_command_id"])))
+        intent = await work.operations.get(UUID(str(event.payload[
+            "push_intent_id" if updated else "publication_intent_id"
+        ])))
+        head, base = intent.request_payload.get("head_sha"), intent.request_payload.get("base_sha")
+        if (
+            not isinstance(head, str) or not isinstance(base, str)
+            or any(len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha)
+                   for sha in (head, base))
+        ):
+            raise invalid()
+        pull = replace(
+            record.pull_request, head_sha=head, base_sha=base,
+            state="open", merged=False, merge_sha=None,
+        )
+        if (
+            event.payload_schema_version != 1
+            or event.actor_class != "worker"
+            or event.actor_id != source.actor_id
+            or event.payload.get("pull_request_id") != str(record.id)
+            or source.run_id != command.run_id
+            or source.command_type != ("push_reviewed_pr" if updated else "publish_pr")
+            or source.status is not CommandStatus.COMPLETED
+            or source.expected_run_version + int(not updated) != event.run_version
+            or intent.run_id != command.run_id
+            or intent.status is not OperationStatus.SUCCEEDED
+            or intent.kind != ("push_branch" if updated else "create_pr")
+            or intent.request_schema_version != 1
+            or intent.request_digest != canonical_digest(intent.request_payload)
+            or intent.outcome != asdict(pull)
+            or intent.remote_resource_id != record.pull_request.node_id
+            or pull.node_id != record.pull_request.node_id
+            or pull.head_repository != record.pull_request.head_repository
+            or pull.base_repository != record.pull_request.base_repository
+            or pull.head_ref != record.pull_request.head_ref
+            or pull.base_ref != record.pull_request.base_ref
+            or pull.number != record.pull_request.number
+            or pull.head_sha != intent.request_payload.get("head_sha")
+            or pull.base_sha != intent.request_payload.get("base_sha")
+            or source.payload.get("approval_id") != intent.request_payload.get("approval_id")
+            or (
+                updated and (
+                    intent.request_payload.get("pull_request_id") != str(record.id)
+                    or event.payload.get("candidate_evidence_digest")
+                    != intent.request_payload.get("candidate_evidence_digest")
+                    or source.payload.get("candidate_evidence_digest")
+                    != intent.request_payload.get("candidate_evidence_digest")
+                    or source.payload.get("previous_head_sha")
+                    != intent.request_payload.get("previous_head_sha")
+                )
+            )
+            or (not updated and intent.id != record.publication_intent_id)
+        ):
+            raise invalid()
+        return replace(
+            record,
+            pull_request=pull,
+            reviewed_push_intent_id=intent.id if updated else None,
+            candidate_evidence_digest=(
+                str(intent.request_payload["candidate_evidence_digest"]) if updated else None
+            ),
+            base_update_intent_id=(
+                UUID(str(intent.request_payload["base_update_intent_id"]))
+                if intent.request_payload.get("base_update_intent_id") else None
+            ),
+            base_adoption_intent_id=(
+                UUID(str(intent.request_payload["base_adoption_intent_id"]))
+                if intent.request_payload.get("base_adoption_intent_id") else None
+            ),
+        )
+    except KeyError, ValueError, TypeError:
+        raise invalid() from None

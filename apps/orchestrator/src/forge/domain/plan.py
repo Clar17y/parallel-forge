@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+import re
+from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from forge.domain.paths import normalize_policy_paths
 
 _MAX_SUMMARY_LENGTH = 10_000
 _MAX_ITEM_LENGTH = 5_000
@@ -151,4 +155,36 @@ class PlanOutput(BaseModel):
         )
 
 
-__all__ = ["PlanOutput"]
+class ScopedPlanOutput(PlanOutput):
+    """Subscription proposal whose writable paths are part of human-approved evidence."""
+
+    owned_paths: tuple[str, ...] = Field(
+        max_length=64,
+        description="Canonical repository-relative writable files or directories proposed for human approval. Empty means no writable paths.",
+    )
+
+    @field_validator("owned_paths")
+    @classmethod
+    def validate_owned_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return normalize_policy_paths(value)
+
+    @field_validator("required_checks")
+    @classmethod
+    def validate_subscription_checks(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        # Approved names must also be representable in LogicalTaskContract.
+        if any(re.fullmatch(r"[a-zA-Z0-9_-]+", name) is None for name in value):
+            raise ValueError("scoped plan checks must be subscription command identifiers")
+        return value
+
+
+def decode_plan_output(value: object) -> PlanOutput:
+    """Read retained legacy or scoped plans without changing legacy serialization."""
+    if isinstance(value, (str, bytes, bytearray)):
+        value = json.loads(value)
+    schema = (
+        ScopedPlanOutput if isinstance(value, Mapping) and "owned_paths" in value else PlanOutput
+    )
+    return schema.model_validate(value)
+
+
+__all__ = ["PlanOutput", "ScopedPlanOutput", "decode_plan_output"]

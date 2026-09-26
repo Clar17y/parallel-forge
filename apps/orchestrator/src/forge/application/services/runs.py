@@ -19,12 +19,16 @@ from forge.application.ports.commands import CommandRepository
 from forge.application.ports.mutations import ApiMutationRecord, MutationRepository
 from forge.application.ports.projects import ProjectRepository, RepositoryInspector
 from forge.application.ports.runs import RunRepository
+from forge.application.ports.subscription import SubscriptionRepository
 from forge.application.ports.tasks import TaskRepository
 from forge.application.ports.unit_of_work import EventRepository
 from forge.application.services.auth import AuthenticatedActor
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
+from forge.domain.operation import canonical_digest
 from forge.domain.run import RunSnapshot, RunState
+from forge.domain.subscription import encode_subscription_record
+from forge.domain.subscription_envelope import freeze_profile
 from forge.domain.teardown import TEARDOWN_STATES, has_removable_resources, teardown_confirmation
 from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.runs import (
@@ -56,6 +60,7 @@ class RunUnitOfWork(Protocol):
     commands: CommandRepository
     mutations: MutationRepository
     audit: AuditRepository
+    subscription: SubscriptionRepository
 
     async def __aenter__(self) -> Self: ...
 
@@ -229,6 +234,25 @@ class RunService:
                 base_sha=inspection.base_sha,
             )
             await work.runs.create(run)
+            profile = await work.subscription.project_profile(project.id)
+            routing: dict[str, object] = {}
+            if profile is not None:
+                try:
+                    envelope = freeze_profile(
+                        profile,
+                        run_id=run.id,
+                        safety_policy_version=project.current_policy_version,
+                    )
+                except TypeError, ValueError:
+                    raise RunCreationError("selected subscription profile is invalid") from None
+                await work.subscription.freeze_envelope(envelope)
+                routing = {
+                    "subscription_profile_id": str(envelope.profile_id),
+                    "subscription_profile_version": envelope.profile_version,
+                    "subscription_envelope_digest": canonical_digest(
+                        encode_subscription_record(envelope)
+                    ),
+                }
             event_writer = _event_writer(work.events)
             await event_writer.append(
                 RunEvent(
@@ -244,6 +268,7 @@ class RunService:
                         "policy_version": run.policy_version,
                         "base_ref": run.base_ref,
                         "base_sha": run.base_sha,
+                        **routing,
                     },
                 )
             )

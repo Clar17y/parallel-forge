@@ -213,6 +213,25 @@ class ToolCall(Base):
 
     __tablename__ = "tool_calls"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ("run_id", "subscription_task_id"),
+            ("subscription_tasks.run_id", "subscription_tasks.id"),
+            ondelete="CASCADE",
+            name="fk_tool_call_subscription_task",
+        ),
+        ForeignKeyConstraint(
+            ("subscription_attempt_id",),
+            ("subscription_attempts.id",),
+            ondelete="CASCADE",
+            name="fk_tool_call_subscription_attempt",
+        ),
+        CheckConstraint(
+            "(agent_execution_id IS NOT NULL AND subscription_task_id IS NULL AND "
+            "subscription_attempt_id IS NULL AND subscription_purpose IS NULL) OR "
+            "(agent_execution_id IS NULL AND subscription_task_id IS NOT NULL AND "
+            "subscription_attempt_id IS NOT NULL AND subscription_purpose IS NOT NULL)",
+            name="tool_call_authority_lineage_xor",
+        ),
         CheckConstraint(
             "status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','DENIED','CANCELLED')",
             name="status",
@@ -230,8 +249,11 @@ class ToolCall(Base):
         Uuid, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
     )
     agent_execution_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey("agent_executions.id", ondelete="CASCADE"), nullable=False
+        Uuid, ForeignKey("agent_executions.id", ondelete="CASCADE"), nullable=True
     )
+    subscription_task_id: Mapped[UUID | None] = mapped_column(Uuid)
+    subscription_attempt_id: Mapped[UUID | None] = mapped_column(Uuid)
+    subscription_purpose: Mapped[str | None] = mapped_column(String(64))
     tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
     arguments_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     normalized_arguments: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
@@ -497,7 +519,7 @@ class EvidenceSet(Base):
             ],
             ondelete="RESTRICT",
         ),
-        CheckConstraint("kind IN ('validation','review')", name="kind"),
+        CheckConstraint("kind IN ('validation','review','acceptance')", name="kind"),
         CheckConstraint("policy_version >= 1", name="policy"),
         CheckConstraint("head_sha ~ '^[0-9a-f]{40}$'", name="head"),
         CheckConstraint(
@@ -505,9 +527,28 @@ class EvidenceSet(Base):
             name="not_self_parent",
         ),
         CheckConstraint(
-            "(kind = 'validation' AND producer_execution_id IS NULL AND producer_step_id IS NULL AND producer_role IS NULL AND validation_evidence_set_id IS NULL AND validation_parent_policy_version IS NULL AND validation_parent_kind IS NULL AND validation_parent_head_sha IS NULL AND ((prior_review_evidence_set_id IS NULL AND prior_review_parent_policy_version IS NULL AND prior_review_parent_kind IS NULL) OR (prior_review_evidence_set_id IS NOT NULL AND prior_review_parent_policy_version IS NOT NULL AND prior_review_parent_kind = 'review')) AND review_finding_ids IS NULL) OR (kind = 'review' AND producer_execution_id IS NOT NULL AND producer_step_id IS NOT NULL AND producer_role = 'reviewer' AND validation_evidence_set_id IS NOT NULL AND validation_parent_policy_version IS NOT NULL AND validation_parent_kind = 'validation' AND validation_parent_head_sha IS NOT NULL AND prior_review_evidence_set_id IS NULL AND prior_review_parent_policy_version IS NULL AND prior_review_parent_kind IS NULL AND review_finding_ids IS NOT NULL)",
+            "((kind = 'validation' AND producer_execution_id IS NULL AND producer_step_id IS NULL AND producer_role IS NULL AND validation_evidence_set_id IS NULL AND validation_parent_policy_version IS NULL AND validation_parent_kind IS NULL AND validation_parent_head_sha IS NULL AND ((prior_review_evidence_set_id IS NULL AND prior_review_parent_policy_version IS NULL AND prior_review_parent_kind IS NULL) OR (prior_review_evidence_set_id IS NOT NULL AND prior_review_parent_policy_version IS NOT NULL AND prior_review_parent_kind = 'review')) AND review_finding_ids IS NULL) OR (kind = 'review' AND producer_execution_id IS NOT NULL AND producer_step_id IS NOT NULL AND producer_role = 'reviewer' AND validation_evidence_set_id IS NOT NULL AND validation_parent_policy_version IS NOT NULL AND validation_parent_kind = 'validation' AND validation_parent_head_sha IS NOT NULL AND prior_review_evidence_set_id IS NULL AND prior_review_parent_policy_version IS NULL AND prior_review_parent_kind IS NULL AND review_finding_ids IS NOT NULL)) OR (kind = 'acceptance' AND producer_execution_id IS NULL AND producer_step_id IS NULL AND producer_role IS NULL AND validation_evidence_set_id IS NOT NULL AND validation_parent_policy_version IS NOT NULL AND validation_parent_kind IS NOT NULL AND validation_parent_kind = 'validation' AND validation_parent_head_sha IS NOT NULL AND prior_review_evidence_set_id IS NULL AND prior_review_parent_policy_version IS NULL AND prior_review_parent_kind IS NULL)",
             name="shape",
         ),
+        CheckConstraint(
+            "((producer_task_id IS NULL) = (producer_attempt_id IS NULL)) AND ((kind = 'acceptance') = (producer_attempt_id IS NOT NULL)) AND (kind <> 'acceptance' OR candidate_tree_digest IS NOT NULL)",
+            name="subscription_producer",
+        ),
+        CheckConstraint(
+            "candidate_tree_digest IS NULL OR (kind IN ('validation','acceptance') AND candidate_tree_digest ~ '^[0-9a-f]{64}$')",
+            name="candidate_tree",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "producer_task_id", "producer_attempt_id"],
+            [
+                "subscription_attempts.run_id",
+                "subscription_attempts.task_row_id",
+                "subscription_attempts.id",
+            ],
+            name="fk_evidence_sets_subscription_producer",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_evidence_sets_subscription_producer", "producer_attempt_id"),
         Index("ix_evidence_sets_scope", "run_id", "step_id", "kind", "head_sha"),
         Index("ix_evidence_sets_producer", "producer_execution_id"),
         Index("ix_evidence_sets_validation_parent", "validation_evidence_set_id"),
@@ -521,6 +562,9 @@ class EvidenceSet(Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
     head_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    candidate_tree_digest: Mapped[str | None] = mapped_column(String(64))
+    producer_task_id: Mapped[UUID | None] = mapped_column(Uuid)
+    producer_attempt_id: Mapped[UUID | None] = mapped_column(Uuid)
     producer_execution_id: Mapped[UUID | None] = mapped_column(Uuid)
     producer_step_id: Mapped[UUID | None] = mapped_column(Uuid)
     producer_role: Mapped[str | None] = mapped_column(String(24))

@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
+from uuid import UUID
 
 from forge.domain.artifact import validate_artifact_digest
 from forge.domain.policy import ProjectPolicy
@@ -170,6 +171,12 @@ class RepositoryWriter(Protocol):
     def write_file(self, path: str, content: str) -> FileWrite: ...
 
     def inspect_file(self, path: str, expected_digest: str) -> FileWrite | None: ...
+
+    def delete_file(self, path: str, expected_digest: str, mutation_id: UUID) -> FileWrite: ...
+
+    def rename_file(
+        self, source: str, destination: str, expected_digest: str, mutation_id: UUID
+    ) -> FileWrite: ...
 
 
 class ProcessRunner(Protocol):

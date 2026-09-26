@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
+from uuid import UUID
 
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
@@ -16,6 +17,7 @@ from forge.application.services.preparation_resume import (
     preparation_history,
 )
 from forge.application.services.resume_source import resume_command_ids
+from forge.domain.approval import SubscriptionPlanApprovalEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState, WorktreeIdentity, database_secret_id
@@ -55,6 +57,33 @@ class DeliveryPreparationService:
         ):
             raise CommandRecoveryRequired("preparation command authority is invalid")
         if approved.run.state is RunState.IMPLEMENTING:
+            if isinstance(approved.evidence, SubscriptionPlanApprovalEvidence):
+                primary = await work.subscription_plan_gate.resume_prepared(
+                    approved.evidence,
+                    worktree_id=WorktreeIdentity.for_run(
+                        approved.run.project_id,
+                        approved.run.id,
+                        approved.run.branch_name or "",
+                        approved.policy.database.enabled,
+                    ).worktree_name,
+                    approval_id=approved.approval_id,
+                )
+                events = [
+                    event
+                    for event in await work.events.list_after(command.run_id, 0)
+                    if event.event_type == "run.worktree_prepared"
+                ]
+                if (
+                    len(events) != 1
+                    or events[0].run_version != approved.run.version
+                    or events[0].actor_class != "worker"
+                    or events[0].payload
+                    != _subscription_prepared_payload(command, approved, primary)
+                ):
+                    raise CommandRecoveryRequired(
+                        "subscription preparation replay requires recovery"
+                    )
+                return
             queued = await work.commands.get_by_idempotency_key(f"{command.run_id}:implement:1")
             events = [
                 event
@@ -151,6 +180,22 @@ class DeliveryPreparationService:
         ):
             raise CommandRecoveryRequired("prepared worktree does not match run")
         _resource_digest(refreshed)
+        if isinstance(refreshed.evidence, SubscriptionPlanApprovalEvidence):
+            primary = await work.subscription_plan_gate.resume_prepared(
+                refreshed.evidence,
+                worktree_id=worktree.identity.worktree_name,
+                approval_id=refreshed.approval_id,
+            )
+            await work.runs.transition(
+                command.run_id,
+                refreshed.run.version,
+                RunState.IMPLEMENTING,
+                "run.worktree_prepared",
+                _subscription_prepared_payload(command, refreshed, primary),
+                actor_class="worker",
+            )
+            await work.commit()
+            return
         queued = await work.commands.enqueue(
             run_id=command.run_id,
             command_type="implement",
@@ -261,3 +306,19 @@ def _verify_database(run: RunSnapshot, identity: WorktreeIdentity) -> None:
         or run.secret_id != (database_secret_id(identity) if enabled else None)
     ):
         raise CommandRecoveryRequired("prepared database identity differs")
+
+
+def _subscription_prepared_payload(
+    command: CommandEnvelope,
+    approved: ApprovedPlan,
+    primary_task_id: UUID,
+) -> dict[str, object]:
+    if not isinstance(approved.evidence, SubscriptionPlanApprovalEvidence):
+        raise CommandRecoveryRequired("subscription preparation evidence is absent")
+    return {
+        "source_command_id": str(command.id),
+        "approval_id": str(approved.approval_id),
+        "primary_task_id": str(primary_task_id),
+        "plan_attempt_id": str(approved.evidence.producer.attempt_id),
+        "resource_digest": _resource_digest(approved),
+    }

@@ -14,6 +14,9 @@ from forge.application.services.resume_source import (
     resume_command_ids,
 )
 from forge.application.services.reviewed_push_replay import verify_reviewed_push_replay
+from forge.application.services.subscription_publication_evidence import (
+    is_reviewed_publication_event,
+)
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.merge_queue import QUEUE_OBSERVATION_FIELDS
@@ -48,10 +51,7 @@ async def _reviewed_push_authority(
     events = [
         event
         for event in await work.events.list_for_version(paused.id, origin.expected_run_version)
-        if event.event_type == "run.review_decided"
-        and event.actor_class == "worker"
-        and event.actor_id is None
-        and event.payload_schema_version == 1
+        if is_reviewed_publication_event(event, approved.approval_actor_id)
         and event.payload.get("target") == RunState.MONITORING_PR.value
         and event.payload.get("queued_command_id") == str(origin.id)
         and event.payload.get("queued_key") == origin.idempotency_key
@@ -182,6 +182,14 @@ def _approval_id(command: CommandEnvelope) -> UUID:
         expected = set(QUEUE_OBSERVATION_FIELDS)
         if type(payload.get("poll")) is not int or int(str(payload["poll"])) < 1:
             raise CommandRecoveryRequired("queue resume poll differs")
+    base_fields = {"base_update_intent_id", "base_adoption_intent_id"}
+    if command.command_type == "push_reviewed_pr" and base_fields.intersection(payload):
+        expected |= base_fields
+        try:
+            if any(str(UUID(str(payload.get(key)))) != payload.get(key) for key in base_fields):
+                raise ValueError
+        except ValueError:
+            raise CommandRecoveryRequired("reviewed base push receipt identities differ") from None
     if (
         command.command_type not in _PHASES
         or command.payload_schema_version != 1
@@ -314,8 +322,12 @@ async def resumed_release_origin(
 
 
 async def resume_release(
-    work: UnitOfWork, resume: CommandEnvelope, paused: RunSnapshot, pause: CommandEnvelope,
-    *, store: ArtifactStore | None = None,
+    work: UnitOfWork,
+    resume: CommandEnvelope,
+    paused: RunSnapshot,
+    pause: CommandEnvelope,
+    *,
+    store: ArtifactStore | None = None,
 ) -> tuple[CommandEnvelope, CommandEnvelope]:
     """Cancel one quiescent release command and queue its receipt-bound continuation."""
     sources = await work.commands.list_outstanding_normal(
@@ -346,7 +358,11 @@ async def resume_release(
     else:
         approval_id = _approval_id(source)
     approval = await work.auth.get_approval(approval_id=approval_id, for_update=True)
-    gate = "pr" if source.command_type in {"publish_pr", "push_reviewed_pr", "update_base"} else "merge"
+    gate = (
+        "pr"
+        if source.command_type in {"publish_pr", "push_reviewed_pr", "update_base"}
+        else "merge"
+    )
     if (
         not isinstance(approval, Approval)
         or approval.run_id != paused.id

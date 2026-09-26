@@ -9,6 +9,11 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.executions import ExecutionStatus
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.resume_source import resume_origin
+from forge.application.services.validation import (
+    validation_acceptance_attempt,
+    validation_command_binding,
+)
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
@@ -85,6 +90,37 @@ async def cancel_retained_validation(
     }
     if source.payload.get("prior_review_evidence_set_id") is not None:
         expected["prior_review_evidence_set_id"] = source.payload["prior_review_evidence_set_id"]
+    acceptance_id = validation_acceptance_attempt(source)
+    if acceptance_id is not None:
+        try:
+            origin = await resume_origin(work, source, historical=True)
+            validation_command_binding(source, origin)
+            binding = await work.subscription_decisions.acceptance_validation_binding(acceptance_id)
+            original = origin or source
+            retained = await work.subscription_decisions.retained_acceptance_source(acceptance_id)
+            if (
+                binding is None
+                or retained.policy != policy
+                or retained.review.candidate != binding.candidate
+                or head != binding.candidate.head_sha
+                or any(
+                    getattr(binding.command, field) != getattr(original, field)
+                    for field in (
+                        "id",
+                        "run_id",
+                        "command_type",
+                        "payload",
+                        "payload_schema_version",
+                        "idempotency_key",
+                        "actor_id",
+                        "expected_run_version",
+                    )
+                )
+            ):
+                raise ValueError
+            expected["candidate"] = binding.candidate.payload()
+        except Exception:  # noqa: BLE001 - changed source never authorizes resume
+            raise CommandRecoveryRequired("retained validation acceptance differs") from None
     if (
         event.run_version != source.expected_run_version
         or event.actor_class != "worker"
