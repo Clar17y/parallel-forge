@@ -39,6 +39,13 @@ class SupervisorCancelled(SupervisorError):
 IMMUTABLE_IMAGE_DIGEST_PATTERN = re.compile(r"\Asha256:[0-9a-f]{64}\Z", re.ASCII)
 
 
+def _without_ranking_key(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Copy the environment for a child that does not compose the worker ranker."""
+    env = dict(base_env if base_env is not None else os.environ)
+    env.pop("TYPESAFE_API_KEY", None)
+    return env
+
+
 @dataclass(frozen=True)
 class WebConfig:
     """Resolved and validated configuration for the Next.js web process."""
@@ -49,9 +56,9 @@ class WebConfig:
 
     def to_web_env(self, base_env: dict[str, str] | None = None) -> dict[str, str]:
         """Build isolated web child environment excluding root/provider secrets."""
-        env = dict(base_env if base_env is not None else os.environ)
+        env = _without_ranking_key(base_env)
         for key in tuple(env):
-            if key in {"DATABASE_URL", "TYPESAFE_API_KEY"} or (
+            if key == "DATABASE_URL" or (
                 key.startswith("FORGE_") and not key.startswith("FORGE_E2E_")
             ):
                 del env[key]
@@ -535,7 +542,7 @@ class DevSupervisor:
         res = self.runner.run(
             cmd,
             cwd=cwd,
-            env=env,
+            env=_without_ranking_key(env),
             timeout=timeout,
             stop_event=self.stop_event,  # type: ignore[call-arg]
         )
@@ -779,7 +786,9 @@ class DevSupervisor:
         spawned: list[ManagedProcess] = []
         try:
             self._check_cancelled()
-            spawned.append(self.runner.spawn("api", api_cmd, cwd=self.repo_root))
+            spawned.append(
+                self.runner.spawn("api", api_cmd, cwd=self.repo_root, env=_without_ranking_key())
+            )
             self._check_cancelled()
             spawned.append(
                 self.runner.spawn("worker", worker_cmd, cwd=self.repo_root, env=worker_env)

@@ -44,9 +44,17 @@
       "skipped": 0,
       "seconds": 29.43,
       "junit": ".llm-output/release-handoff/review-repair-rollback-final-junit.xml"
+    },
+    {
+      "name": "credential_boundary_supervisor_suite",
+      "passed": 55,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 1.571,
+      "junit": ".llm-output/release-handoff/credential-boundary-suite-junit.xml"
     }
   ],
-  "distinct_passing_cases": 174,
+  "distinct_passing_cases": 178,
   "static_checks": {
     "scoped_ruff": "passed",
     "scoped_format": "passed",
@@ -56,7 +64,9 @@
     "whitespace": "passed",
     "review_repair_ruff": "passed for all six changed Python files",
     "review_repair_format": "passed for the new rollback tests, migration 0009 and scripts/dev.py; existing formatting in other files was preserved",
-    "review_repair_mypy": "3 pre-existing errors in scripts/dev.py (Popen._handle at lines 403 and 490; unused type ignore at line 540). An exact HEAD baseline shadow-file check reports the same three errors. Both migration modules are clean; no suppression or unrelated typing repair was added."
+    "review_repair_mypy": "3 pre-existing errors in scripts/dev.py (Popen._handle at lines 403 and 490; unused type ignore at line 540). An exact HEAD baseline shadow-file check reports the same three errors. Both migration modules are clean; no suppression or unrelated typing repair was added.",
+    "credential_boundary_ruff": "passed for scripts/dev.py and its integration tests; source formatting and whitespace checks passed",
+    "credential_boundary_mypy": "The same three baseline diagnostics remain, now at scripts/dev.py lines 410, 497 and 547; exact diagnostic messages match the original baseline. No new typing error."
   },
   "upgrade_evidence": {
     "historical_source": "781567f7365e76dfc37cf8e7cf98765cb00800e4",
@@ -89,10 +99,11 @@
     "Scoped lint required parentheses around a long manifest string. The formatting repair preserves the tested ASTs; matching test evidence is reused.",
     "PR #57 reproduced retained scheduler-state and client-launch loss during partial downgrade. Migrations 0009 and 0010 now reject those downgrades before any schema mutation, including terminal records and capacity-only configuration. Disposable scheduler test cleanup explicitly clears its own scheduler rows.",
     "PR #57 reproduced TYPESAFE_API_KEY inheritance by the development web child. The filter now excludes it while preserving the worker and parent environments and existing web configuration.",
-    "The three focused regressions first failed for the expected reasons, then passed after implementation. The affected suite passed 149 cases; four additional effect-state seeds initially omitted the required whole_worktree_exclusive column. After correcting only the new test fixture and formatting it, all 19 rollback cases passed. The 134 other passing cases are reused, giving 153 distinct affected cases plus seven rerun stopped-upgrade cases."
+    "The three focused regressions first failed for the expected reasons, then passed after implementation. The affected suite passed 149 cases; four additional effect-state seeds initially omitted the required whole_worktree_exclusive column. After correcting only the new test fixture and formatting it, all 19 rollback cases passed. The 134 other passing cases are reused, giving 153 distinct affected cases plus seven rerun stopped-upgrade cases.",
+    "Re-review of ed2e413 found the same worker-only ranking credential inherited by the API. The owning supervisor was reassessed across all child launches: only worker composition constructs SearchRankingConfiguration, while API/web and setup commands do not use the key. One shared copy-and-remove helper now covers WebConfig, API startup and run_cmd, preserving worker/parent and explicit source environments. Regression coverage includes present/absent keys, cleanup/restart, explicit/inherited command environments and the full startup sequence; existing cancellation/partial-startup cleanup cases remain in the 55-case passing supervisor suite. The focused red run observed three expected leaks and one passing absent-key control before the fix."
   ],
-  "reused_evidence": "A1-A9 and #17 retain their individual result records and PR outcomes. The four stopped-upgrade scenarios reran for the changed release-version compatibility helper; unchanged plan/feedback and other scenario evidence is not rerun or recounted. The review repair reran the stopped-upgrade suite because rollback migrations changed. The original 14 version/API/dependency-guard cases remain applicable; affected source inputs for those checks are unchanged. Distinct passing cases are deduplicated across all listed runs.",
-  "review": "Primary self-review plus the automatic GitHub Codex review of PR #57 at 232c1c4755900dfbc3a52238afcaa62a85dc6bf5. Both reported findings were substantiated and repaired locally, with adjacent launch-receipt rollback covered in the same repair. Publication and any subsequent hosted review of the repaired candidate remain pending.",
+  "reused_evidence": "A1-A9 and #17 retain their individual result records and PR outcomes. The four stopped-upgrade scenarios reran for the changed release-version compatibility helper; unchanged plan/feedback and other scenario evidence is not rerun or recounted. The review repair reran the stopped-upgrade suite because rollback migrations changed. The original 14 version/API/dependency-guard cases remain applicable; affected source inputs for those checks are unchanged. Distinct passing cases are deduplicated across all listed runs. The credential-boundary repair reruns all 55 supervisor cases and adds four distinct cases, bringing the deduplicated total to 178. Migration, scheduler, release-version/API and stopped-upgrade source inputs are unchanged, so their matching checks are carried forward.",
+  "review": "Primary self-review plus automatic GitHub Codex reviews of PR #57 at 232c1c4 and ed2e413. Initial scheduler/web findings are fixed in the published ed2e413 and their threads are resolved. The related API credential finding was substantiated, consolidated with all supervisor-launched non-worker paths, and repaired locally; this final credential-boundary repair is awaiting publication.",
   "main_rules_preflight": {
     "ruleset_id": 23602278,
     "required_approving_reviews": 1,
@@ -112,5 +123,5 @@
   ],
   "evidence_directory": ".llm-output/release-handoff/",
   "live_provider_calls": 0,
-  "review_repair_updated_at": "2026-09-25T20:32:15.619299+00:00"
+  "review_repair_updated_at": "2026-09-26T13:20:57.513861+00:00"
 }

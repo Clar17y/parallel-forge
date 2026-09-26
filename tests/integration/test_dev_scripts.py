@@ -920,12 +920,72 @@ def test_web_process_excludes_ranking_key_but_worker_retains_it(
     web = next(proc for proc in runner.spawned if proc.name == "web")
     worker = next(proc for proc in runner.spawned if proc.name == "worker")
     assert web.env is not None and worker.env is not None
-    assert "TYPESAFE_API_KEY" not in set(web.env)
+    web_keys = set(web.env)
+    assert "TYPESAFE_API_KEY" not in web_keys
     assert worker.env["TYPESAFE_API_KEY"] == "test-ranking-credential"
     assert os.environ["TYPESAFE_API_KEY"] == "test-ranking-credential"
     assert web.env["FORGE_E2E_TEST"] == "1"
     assert web.env["NEXT_TELEMETRY_DISABLED"] == "1"
     assert web.env["PORT"] == "3000"
+
+
+@pytest.mark.parametrize("key_present", [True, False])
+def test_api_process_excludes_ranking_key_and_preserves_server_settings_on_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key_present: bool
+) -> None:
+    database_url = "postgresql+asyncpg://forge:forge@127.0.0.1:5435/forge"
+    monkeypatch.setenv("FORGE_DATABASE_URL", database_url)
+    monkeypatch.setenv("FORGE_GITHUB_TOKEN_REFERENCE", "secret://forge/test-github")
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+
+    for credential in ("first-test-ranking-key", "replacement-test-ranking-key"):
+        if key_present:
+            monkeypatch.setenv("TYPESAFE_API_KEY", credential)
+        else:
+            monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+        parent_env = os.environ.copy()
+        processes = supervisor.start_processes(runner_image="sha256:" + "a" * 64)
+        api = next(proc for proc in processes if proc.name == "api")
+        worker = next(proc for proc in processes if proc.name == "worker")
+        api_env = parent_env if api.env is None else api.env
+        api_keys = set(api_env)
+        assert "TYPESAFE_API_KEY" not in api_keys
+        assert api_env["FORGE_DATABASE_URL"] == database_url
+        assert api_env["FORGE_GITHUB_TOKEN_REFERENCE"] == "secret://forge/test-github"
+        assert worker.env is not None
+        assert worker.env.get("TYPESAFE_API_KEY") == (credential if key_present else None)
+        parent_unchanged = dict(os.environ) == parent_env
+        assert parent_unchanged
+        supervisor.cleanup(processes, timeout=0)
+        assert all(proc.terminated and proc.killed for proc in processes)
+
+
+@pytest.mark.parametrize("explicit_env", [True, False])
+def test_supervisor_commands_exclude_ranking_key_without_mutating_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_env: bool
+) -> None:
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ambient-test-ranking-key")
+    source = {"TYPESAFE_API_KEY": "explicit-test-ranking-key", "PRESERVED_SETTING": "value"}
+    original_source = source.copy()
+    parent_env = os.environ.copy()
+    runner = FakeCommandRunner()
+    supervisor = DevSupervisor(repo_root=tmp_path, runner=runner)
+
+    supervisor.run_cmd(["git", "--version"], env=source if explicit_env else None)
+
+    child_env = runner.calls[-1][1]["env"]
+    if child_env is None:
+        child_env = parent_env
+    child_keys = set(child_env)
+    assert "TYPESAFE_API_KEY" not in child_keys
+    expected_env = dict(source if explicit_env else parent_env)
+    expected_env.pop("TYPESAFE_API_KEY", None)
+    child_matches_expected = child_env == expected_env
+    assert child_matches_expected
+    assert source == original_source
+    parent_unchanged = dict(os.environ) == parent_env
+    assert parent_unchanged
 
 
 @pytest.mark.parametrize(
@@ -976,7 +1036,10 @@ def test_scripts_dev_parent_bootstrap_has_no_third_party_imports() -> None:
     )
 
 
-def test_lifecycle_exact_sequence_web_config_resolved_after_sync() -> None:
+def test_lifecycle_exact_sequence_web_config_resolved_after_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-ranking-credential")
     digest = "sha256:" + "d" * 64
     token = "token-lifecycle-test"
     url = f"http://127.0.0.1:3000/#bootstrap={token}"
@@ -1009,6 +1072,17 @@ def test_lifecycle_exact_sequence_web_config_resolved_after_sync() -> None:
     assert uv_sync_idx < web_config_idx, "Web config must be resolved after uv sync"
     assert web_config_idx < alembic_idx, "Web config must be resolved before migrations and child processes"
     assert alembic_idx < rotate_idx, "Migrations must run before operator credentials rotation"
+
+    for _, options in runner.calls:
+        child_env = options["env"]
+        if child_env is None:
+            child_env = os.environ.copy()
+        if options.get("name") == "worker":
+            assert child_env["TYPESAFE_API_KEY"] == "test-ranking-credential"
+        else:
+            child_keys = set(child_env)
+            assert "TYPESAFE_API_KEY" not in child_keys
+    assert os.environ["TYPESAFE_API_KEY"] == "test-ranking-credential"
 
 
 @pytest.mark.parametrize(
