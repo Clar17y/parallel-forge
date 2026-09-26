@@ -1,13 +1,15 @@
-export type PrEvidence = {
-  candidate_commit: string; diff_digest: string; validation_digest: string; review_digest: string;
+import { publicationDecisionFields, PublicationDecisionEvidence, type PublicationDecision } from './publication-decision-evidence';
+
+export type PrEvidence = PublicationDecision & {
+  candidate_commit: string; diff_digest: string; validation_digest: string;
   repository: string; base_ref: string; base_sha: string; title: string; body_digest: string;
   runner_mode: 'docker' | 'trusted_host'; runner_evidence_digest: string; remote_remediation_limit: number;
 };
 
 export function parsePrEvidence(value: Record<string, unknown>): PrEvidence {
-  const digests = ['diff_digest', 'validation_digest', 'review_digest', 'body_digest', 'runner_evidence_digest'];
+  const digests = ['diff_digest', 'validation_digest', 'body_digest', 'runner_evidence_digest'];
   const commits = ['candidate_commit', 'base_sha'];
-  const fields = [...digests, ...commits, 'repository', 'base_ref', 'title', 'runner_mode', 'remote_remediation_limit'];
+  const fields = [...publicationDecisionFields(value), ...digests, ...commits, 'repository', 'base_ref', 'title', 'runner_mode', 'remote_remediation_limit'];
   if (Object.keys(value).some(key => !fields.includes(key))
     || digests.some(key => typeof value[key] !== 'string' || !/^[a-f0-9]{64}$/.test(value[key]))
     || commits.some(key => typeof value[key] !== 'string' || !/^[a-f0-9]{40}$/.test(value[key]))
@@ -27,7 +29,7 @@ export function PrPublicationEvidence({ evidence, body }: { evidence: PrEvidence
       <dt>Base commit</dt><dd><code>{evidence.base_sha}</code></dd>
       <dt>Diff digest</dt><dd><code>{evidence.diff_digest}</code></dd>
       <dt>Validation digest</dt><dd><code>{evidence.validation_digest}</code></dd>
-      <dt>Review digest</dt><dd><code>{evidence.review_digest}</code></dd>
+      <PublicationDecisionEvidence evidence={evidence} />
       <dt>Runner</dt><dd>{evidence.runner_mode === 'trusted_host' ? 'Trusted host · unsandboxed' : 'Docker'}</dd>
       <dt>Runner evidence digest</dt><dd><code>{evidence.runner_evidence_digest}</code></dd>
       <dt>PR body digest</dt><dd><code>{evidence.body_digest}</code></dd>

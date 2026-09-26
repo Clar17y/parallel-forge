@@ -391,6 +391,7 @@ async def require_branch_admission(
         or quiescence.running_steps
         or quiescence.running_executions
         or quiescence.running_tools
+        or quiescence.unsettled_subscription_work
         or quiescence.unresolved_operations != int(own_unresolved_operation)
     ):
         raise TeardownCommandRejected("branch removal is blocked by unsettled work")

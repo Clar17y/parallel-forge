@@ -103,7 +103,9 @@ def test_planner_receives_only_planner_tools_and_no_release_symbols() -> None:
 
     # Assert Planner does not receive write or mutation tools
     forbidden_names = {
-        ToolName.REPOSITORY_WRITE_FILE.value,
+            ToolName.REPOSITORY_WRITE_FILE.value,
+            ToolName.REPOSITORY_DELETE_FILE.value,
+            ToolName.REPOSITORY_RENAME_FILE.value,
         ToolName.GIT_COMMIT.value,
         ToolName.BUILD_RUN_NAMED_CHECK.value,
         ToolName.GIT_STATUS.value,
@@ -134,8 +136,10 @@ def test_developer_receives_developer_tools_without_review_or_release_symbols() 
         ToolName.REPOSITORY_READ_FILE.value,
         ToolName.REPOSITORY_SEARCH.value,
         ToolName.REPOSITORY_READ_INSTRUCTIONS.value,
-        ToolName.REPOSITORY_WRITE_FILE.value,
-        ToolName.GIT_STATUS.value,
+            ToolName.REPOSITORY_WRITE_FILE.value,
+            ToolName.REPOSITORY_DELETE_FILE.value,
+            ToolName.REPOSITORY_RENAME_FILE.value,
+            ToolName.GIT_STATUS.value,
         ToolName.GIT_DIFF.value,
         ToolName.GIT_COMMIT.value,
         ToolName.BUILD_RUN_NAMED_CHECK.value,

@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/Clar17y/parallel-forge/issues/24",
+  "date": "2026-09-25",
+  "outcome": "functional_acceptance_complete_locally",
+  "source_commit": "77f4c993ffa00e5158bf7774ef7e97015f4a681f",
+  "runtime_changes": [],
+  "test_changes": [
+    "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py",
+    "apps/orchestrator/tests/persistence/test_subscription_claude_quota_composition.py",
+    "apps/orchestrator/tests/persistence/test_subscription_codex_quota_composition.py"
+  ],
+  "test_git_blob_ids": {
+    "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py": "c48b549938627f90f16adfac5ba934e906754817",
+    "apps/orchestrator/tests/persistence/test_subscription_claude_quota_composition.py": "876d336a07e9d9c69f93d38bb9a735db058b4468",
+    "apps/orchestrator/tests/persistence/test_subscription_codex_quota_composition.py": "f30a799ede4835b3ad7f8ae32a494d9de6fa3835"
+  },
+  "evidence_class": "scripted quota/fallback inputs with real PostgreSQL, managed Git, Docker/host checks and supervised fake Codex/Claude peers",
+  "python": "3.14.5",
+  "validation": {
+    "command_prefix": [
+      ".venv/Scripts/python.exe",
+      "-m",
+      "pytest"
+    ],
+    "combined_files": [
+      "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py",
+      "apps/orchestrator/tests/persistence/test_subscription_quota.py",
+      "apps/orchestrator/tests/persistence/test_subscription_quota_probe_races.py",
+      "apps/orchestrator/tests/persistence/test_subscription_codex_quota_composition.py",
+      "apps/orchestrator/tests/persistence/test_subscription_claude_quota_composition.py",
+      "apps/orchestrator/tests/domain/test_subscription_fallback_binding.py"
+    ],
+    "combined_arguments": [
+      "-q",
+      "--junitxml=.llm-output/issue24/a6-junit.xml"
+    ],
+    "combined_result": {
+      "passed": 29,
+      "failed": 2,
+      "skipped": 0,
+      "duration_seconds": 180.18
+    },
+    "affected_rerun_file": "apps/orchestrator/tests/persistence/test_subscription_codex_quota_composition.py",
+    "affected_rerun_arguments": [
+      "-q",
+      "--junitxml=.llm-output/issue24/codex-repair-junit.xml"
+    ],
+    "affected_rerun_result": {
+      "passed": 2,
+      "failed": 0,
+      "duration_seconds": 9.07
+    },
+    "classification_file": "apps/orchestrator/tests/agents/test_provider_quota.py",
+    "classification_arguments": [
+      "-q",
+      "--junitxml=.llm-output/issue24/classification-junit.xml"
+    ],
+    "classification_result": {
+      "passed": 38,
+      "failed": 0,
+      "duration_seconds": 0.47
+    },
+    "unique_passing_cases": 69,
+    "unresolved_failures": 0,
+    "reused_results": "The four new v2 cases replace v1 evidence. The 25 other successful combined cases, two repaired Codex cases and 38 classification cases remain valid: 69 distinct current cases.",
+    "other_checks": "Scoped Ruff check, Ruff format and git diff --check passed for the three changed test files.",
+    "operator_route_rerun": {
+      "file": "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py",
+      "arguments": [
+        "-k",
+        "operator-luna6-v2",
+        "-q",
+        "--junitxml=.llm-output/issue24/operator-v2-junit.xml"
+      ],
+      "passed": 4,
+      "failed": 0,
+      "deselected": 4,
+      "duration_seconds": 80.38
+    }
+  },
+  "repairs": [
+    {
+      "observed_failure": "Focused collection could not import test_claude_supervised from another test directory.",
+      "resolution": "Keep the same scripted-peer platform fixture local to the Claude quota case; its two cases passed in the combined run.",
+      "evidence": "a6-collection.log and a6-collection-junit.xml"
+    },
+    {
+      "observed_failure": "Both Codex cases reported unknown for the fixture pool because inherited personal installation settings remapped the worker quota policy.",
+      "resolution": "Explicitly disable dotenv and ambient installation manifests in this injected-adapter fixture and assert its quota policy stays unchanged.",
+      "evidence": "a6.log/a6-junit.xml followed by codex-repair.log/codex-repair-junit.xml"
+    },
+    {
+      "observed_failure": "PR #52 review identified that the new operator route used codex, whereas the production CodexRuntimeAdapter registers codex_app_server.",
+      "resolution": "Use codex_app_server only for the new operator route and version those inputs as operator-luna6-2; preserve historical routes and superseded v1 evidence.",
+      "evidence": "All four operator-v2 cases passed; adjacent adapter route fields were checked against CodexRuntimeAdapter."
+    }
+  ],
+  "versioned_inputs": {
+    "historical": "A6-deferred / A6-approved-fallback retain gpt-5.6-luna medium",
+    "current": "A6-deferred-operator-luna6-2 / A6-approved-fallback-operator-luna6-2 use gpt-6-luna medium through codex_app_server when approved",
+    "unchanged_fixture": "v0.2-acceptance-2 counter-service and its grader",
+    "superseded": "The v1 operator scenarios used the historical codex client alias. Their local evidence is retained for audit but excluded from current acceptance."
+  },
+  "outcomes": [
+    "Blocked pools survive cross-run scheduling and worker composition recreation; known reset and unknown cooldown remain distinct.",
+    "Concurrent pollers admit one recovery probe; stale responses cannot erase newer exhaustion or shorten its block.",
+    "A skipped attempt spends no attempt or repair unit and occupies no capacity; missing stopped-launch proof prevents a replacement probe.",
+    "Only the exact frozen fallback is allowed. Retained +0 partial work is read and repaired to +1, adding the negative boundary assertion.",
+    "The same child, paths, budget, requested route and Astra primary survive fallback; two child attempts, one check, zero repair debits and zero outstanding reservations.",
+    "A recreated worker applies the retained handoff once; the primary accepts that source. Without an approved fallback the partial write remains deferred.",
+    "Authentication, unsupported route, throttling, outage and confirmed exhaustion have distinct classifications; unknown reset/allowance is not reported as available."
+  ],
+  "evidence": {
+    "manifest_count": 8,
+    "artifact_files_verified": 52,
+    "artifact_bytes_and_parent_closure": "passed",
+    "acceptance_root": ".llm-output/issue24/acceptance",
+    "docker_image_ids": [
+      "sha256:986c4ae4eeebba8599c5dbab1d02293ea7884e8384551fcc7d4d7e31bc830ca9"
+    ],
+    "runs": [
+      {
+        "scenario": "A6-approved-fallback",
+        "run_id": "32142adb-b99e-49f2-885b-98f5cd8f9599",
+        "state": "IMPLEMENTING",
+        "runner_mode": "docker",
+        "manifest_digest": "18cefe2518d56988546235569a6f751d95df1ae6b788d3407d9e1a4e9f339485",
+        "artifact_files_verified": 10,
+        "scripted_attempts": 5,
+        "controlled_receipts": 8
+      },
+      {
+        "scenario": "A6-deferred-operator-luna6-2",
+        "run_id": "4c936beb-bc79-4c37-bc0a-641d0df269fe",
+        "state": "IMPLEMENTING",
+        "runner_mode": "docker",
+        "manifest_digest": "90869a562c4f4101021cc99eefd47f53d3403b22f5fa9a4bd1e5bd367ce8730d",
+        "artifact_files_verified": 3,
+        "scripted_attempts": 3,
+        "controlled_receipts": 2
+      },
+      {
+        "scenario": "A6-approved-fallback-operator-luna6-2",
+        "run_id": "6d85a9a9-3fef-4a67-a6ac-135534f2e900",
+        "state": "IMPLEMENTING",
+        "runner_mode": "docker",
+        "manifest_digest": "86deacdd65909a01d0f312147a5c8c6e06425c8382e296b17aa6a55fcee6130b",
+        "artifact_files_verified": 10,
+        "scripted_attempts": 5,
+        "controlled_receipts": 8
+      },
+      {
+        "scenario": "A6-approved-fallback-operator-luna6-2",
+        "run_id": "7ae4b159-331b-48ae-a4e9-29047072187c",
+        "state": "IMPLEMENTING",
+        "runner_mode": "trusted_host",
+        "manifest_digest": "a52f40bc142ff6a34ae133c77ee14fb03122f7338dc030bfee25dfc3dd2916ba",
+        "artifact_files_verified": 10,
+        "scripted_attempts": 5,
+        "controlled_receipts": 8
+      },
+      {
+        "scenario": "A6-deferred",
+        "run_id": "8883f250-2ccd-4575-835f-6b395b832c6b",
+        "state": "IMPLEMENTING",
+        "runner_mode": "trusted_host",
+        "manifest_digest": "119ab7a481e255310ccc05859b5cf78ca60fc2266fff3cc358295647e446c90d",
+        "artifact_files_verified": 3,
+        "scripted_attempts": 3,
+        "controlled_receipts": 2
+      },
+      {
+        "scenario": "A6-approved-fallback",
+        "run_id": "d58261c4-2bca-4254-8947-e84d842025e0",
+        "state": "IMPLEMENTING",
+        "runner_mode": "trusted_host",
+        "manifest_digest": "92d94614210532ec3dd3f6e570bb52a5d10b1b203dcb7b2cfb35453b59e8bd0e",
+        "artifact_files_verified": 10,
+        "scripted_attempts": 5,
+        "controlled_receipts": 8
+      },
+      {
+        "scenario": "A6-deferred",
+        "run_id": "d684af08-cc88-476e-9172-56c677864756",
+        "state": "IMPLEMENTING",
+        "runner_mode": "docker",
+        "manifest_digest": "d63d54146a2ce8bb5d19f999d89cddd91512d451bb0ba389d5ba77f5138ff548",
+        "artifact_files_verified": 3,
+        "scripted_attempts": 3,
+        "controlled_receipts": 2
+      },
+      {
+        "scenario": "A6-deferred-operator-luna6-2",
+        "run_id": "e322ad88-1ea8-4245-b3e8-9bde7fb7af1b",
+        "state": "IMPLEMENTING",
+        "runner_mode": "trusted_host",
+        "manifest_digest": "f93829f2662cc9e128d84859e9569cac87c017608e5758a95ea789b6f582ad43",
+        "artifact_files_verified": 3,
+        "scripted_attempts": 3,
+        "controlled_receipts": 2
+      }
+    ]
+  },
+  "self_review": "Selected primary checked failure causes, fixture isolation, unchanged historical defaults, explicit new scenario IDs, frozen route/authority/budget assertions and matching retained evidence.",
+  "live_provider_calls": 0,
+  "limitations": [
+    "Quota responses and counter launch proof are scripted; the Codex/Claude adapter cases supervise fake local peer processes.",
+    "No real subscription was exhausted and no paid API or billing setting was changed. Scripted counters do not measure live usage or remaining allowance.",
+    "Counter scenarios stop in IMPLEMENTING at child acceptance or quota deferral; they do not claim final candidate validation or human publication/merge approval.",
+    "No production runtime repair or full CI was needed."
+  ]
+}

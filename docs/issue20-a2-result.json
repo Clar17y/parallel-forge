@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/Clar17y/parallel-forge/issues/20",
+  "date": "2026-09-25",
+  "outcome": "functional_acceptance_complete_locally",
+  "delivery": "documentation_pending_push_and_pr_authorization",
+  "source_commit": "7e6e41c339f3bbe37b01bcf963fa8a3796e1ec3e",
+  "branch": "codex/issue-20-a2",
+  "runtime_changes": [],
+  "test_changes": [],
+  "evidence_class": "deterministic_composed_lifecycle_with_reused_live_A1",
+  "environment": {
+    "platform": "Windows",
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "database": "PostgreSQL 17.11; one disposable forge_test database per case",
+    "runner_mode": "trusted_host",
+    "providers": "scripted adapters; historical fixture routes unchanged"
+  },
+  "validation": {
+    "command": [
+      ".venv/Scripts/python.exe",
+      "-m",
+      "pytest",
+      "apps/orchestrator/tests/persistence/test_subscription_catalog_acceptance.py",
+      "-q",
+      "--junitxml=.llm-output/issue20/catalog-junit.xml"
+    ],
+    "environment_override": {
+      "FORGE_ACCEPTANCE_OUTPUT_ROOT": "<managed-worktree>/.llm-output/issue20/acceptance"
+    },
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 5,
+    "warning_kind": "dependency deprecations",
+    "pytest_duration_seconds": 115.34,
+    "exit_code": 0,
+    "log": ".llm-output/issue20/catalog.log",
+    "junit": ".llm-output/issue20/catalog-junit.xml"
+  },
+  "criteria": {
+    "disjoint_writers_complete": "passed",
+    "conflicting_task_queues_with_spare_capacity_without_attempt_debit": "passed",
+    "foreign_writes_rejected_before_effect": "passed",
+    "writes_rejected_during_checkpoint_and_slow_unit_barriers": "passed",
+    "one_checkpoint_contains_exactly_both_owned_changes": "passed",
+    "checks_and_review_bind_same_candidate_after_worker_recreation": "passed",
+    "external_drift_rejects_stale_candidate_and_preserves_partial_work": "passed",
+    "drift_queues_bounded_repair_without_execution_lease": "passed",
+    "human_publication_gate_retained": "passed"
+  },
+  "scenarios": [
+    {
+      "name": "A2-integrated",
+      "run_id": "e60d3640-46c9-47d0-8b9b-42c8a4a96093",
+      "candidate_commit": "c03f547b3e8d11dad2182ef9359ea6279de81452",
+      "candidate_tree_digest": "cf0ee2e0d9f7c073ebf525619f20d9f73b47c09caeeefc64380d103d11452b3d",
+      "changed_paths": ["alpha/value.txt", "beta/value.txt"],
+      "checkpoint_count": 1,
+      "state": "AWAITING_PR_APPROVAL",
+      "pending_gate": "pr",
+      "pending_evidence_digest": "2639b08e51cabe6ec8c7ffd3bdd3ad28d05c1a5ddd21f9d6a02ac369f72580fa",
+      "named_checks": ["unit", "slow-unit"],
+      "review": "scripted read-only review of the same commit and tree",
+      "scripted_attempts": 12,
+      "controlled_receipts": 13,
+      "repairs_consumed": 0,
+      "future_attempt_reservations": 0,
+      "retained_artifacts_verified": 27,
+      "manifest": ".llm-output/issue20/acceptance/e60d3640-46c9-47d0-8b9b-42c8a4a96093/manifest.json",
+      "manifest_digest": "b0354708dbfae7b0cef161802571eda71716818e604e03a2a6fed67f2c8835ae",
+      "manifest_file_sha256": "f9f821f45b660c333c95d7a9e03ba0af38b3514b34358dfe99ff7816ab4c0dd9"
+    },
+    {
+      "name": "A2-drift",
+      "run_id": "038be050-d504-441b-b925-370843153387",
+      "candidate_commit": "efbacec0fbae1331f92842b61e608dd4407647af",
+      "candidate_tree_digest": "cf0ee2e0d9f7c073ebf525619f20d9f73b47c09caeeefc64380d103d11452b3d",
+      "observed_drift_tree_digest": "a044edf65f2fcf0e998f1eb35d74d96ca029c13c9d5aea193fd4190afa55c269",
+      "changed_paths": ["alpha/value.txt", "beta/value.txt"],
+      "checkpoint_count": 1,
+      "state": "IMPLEMENTING",
+      "pending_gate": null,
+      "acceptance_disposition": "acceptance_repair_queued",
+      "rejection_reason": "candidate_identity_differs",
+      "candidate_epoch_before": 1,
+      "candidate_epoch_after": 2,
+      "preserved_external_edit": {"path": "beta/value.txt", "content": "human edit after review\n"},
+      "scripted_attempts": 12,
+      "controlled_receipts": 13,
+      "repairs_consumed": 1,
+      "future_attempt_reservations": 1,
+      "active_execution_lease": false,
+      "repair_executed": false,
+      "retained_artifacts_verified": 17,
+      "manifest": ".llm-output/issue20/acceptance/038be050-d504-441b-b925-370843153387/manifest.json",
+      "manifest_digest": "90b634b4da85172dd3466da2ba172d38b8803fe0336919a77f2afd3370fa73e0",
+      "manifest_file_sha256": "902238331d75a5568bf407841399f66ee3451e28a842e32ebe7c9b7e7e072d51"
+    }
+  ],
+  "evidence_inspection": {
+    "manifest_digests": "passed",
+    "artifact_bytes_and_parent_closures": "44 files passed",
+    "actual_git_checkpoint_counts_paths_and_contents": "passed",
+    "review_commit_and_tree_bindings": "passed",
+    "stable_check_bindings_and_pending_approval_artifact": "passed",
+    "drift_bytes_and_epoch_invalidation": "passed"
+  },
+  "reused_evidence": [
+    {
+      "source": "docs/issue19-a1-result.json",
+      "run_id": "ded42e67-5a43-4d0c-a623-7cbd6c06eac4",
+      "delivery": "PR #47, merged at source_commit",
+      "scope": "normal API, separate worker, PostgreSQL, production runtime factory and live operator-trusted primary/worker coding flow",
+      "new_live_run": false
+    },
+    {
+      "source": "docs/v0.2-progress.md",
+      "scope": "historical writer-snapshot, Linux mutation-lock and process coverage; retained as scoped evidence, not a new whole-suite pass",
+      "fresh_A2_evidence": "the two catalog lifecycle cases above"
+    }
+  ],
+  "self_review": "Primary checked all revised issue criteria against existing assertions and retained evidence; no implementation or test repair was required.",
+  "live_provider_calls": 0,
+  "usage_note": "Scripted attempt, token and cost telemetry is synthetic and does not measure subscription usage. A1 retains its original usage record.",
+  "limitations": [
+    "Scripted providers exercise production services and real Git/checks; these A2 cases do not launch real provider processes or separate public API/worker processes.",
+    "Fresh A2 validation used the trusted-host runner on Windows; no new Linux or Docker-runner campaign was performed.",
+    "The drift case proves entry into reconciliation, not execution of the queued repair.",
+    "Full manifests and artifacts are retained locally under .llm-output/issue20, which is ignored by Git.",
+    "No full CI, fixture publication, push, PR, merge or A3 work was performed."
+  ]
+}

@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from forge.application.services.recovery import RecoveryError, RecoveryService
@@ -20,6 +21,26 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 REQUEST_DIGEST = "a" * 64
+
+
+@pytest.mark.integration
+async def test_broker_bound_operation_identity_is_preserved_on_exact_replay(
+    operation_repository, persisted_run
+) -> None:
+    operation_id = uuid4()
+    request = {
+        "run_id": persisted_run.id,
+        "operation_type": "repository.write_file",
+        "idempotency_key": "broker-bound-operation",
+        "request_digest": REQUEST_DIGEST,
+        "request_payload": {"path": "apps/file.py"},
+    }
+    first = await operation_repository.begin(**request, operation_id=operation_id)
+    replay = await operation_repository.begin(**request, operation_id=operation_id)
+    assert first.id == replay.id == operation_id
+    with pytest.raises(ValueError, match="identity conflicts"):
+        await operation_repository.begin(**request, operation_id=uuid4())
+    assert (await operation_repository.get(operation_id)).id == operation_id
 
 
 async def _stored_operation_pair(session_factory, *, run_id, idempotency_key):

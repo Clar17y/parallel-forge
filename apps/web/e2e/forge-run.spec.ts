@@ -16,7 +16,7 @@ test.describe("real Forge run approvals", () => {
     await page.getByLabel("Argument 1").fill("check_readme.py");
     await page.getByRole("button", { name: "Register project" }).click();
     await expect(page).toHaveURL(/\/projects\/[a-f0-9-]{36}$/);
-    await page.getByRole("link", { name: "New run" }).click();
+    await page.getByRole("banner").getByRole("link", { name: "New run", exact: true }).click();
     await page.getByLabel("Task title").fill("Create browser acceptance task");
     await page.getByLabel("Task description").fill("Exercise the real browser lifecycle");
     await page.getByRole("button", { name: "Create run" }).click();
@@ -35,8 +35,9 @@ test.describe("real Forge run approvals", () => {
       await expedite(runId);
     }
 
-    await expect(page.locator("header").filter({ hasText: "COMPLETED" })).toBeVisible({ timeout: 120_000 });
+    await expect(page.locator('[aria-label="Current run status"]')).toHaveAttribute("data-run-state", "COMPLETED", { timeout: 120_000 });
     await openRun(page, runId);
+    await page.locator("summary").filter({ hasText: "Repository & evidence identifiers" }).click();
     await expect(page.locator("dt").filter({ hasText: /^Branch$/ })).toBeVisible();
   });
 });

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Mapping
 from typing import Final, cast
 from uuid import UUID
@@ -21,6 +22,7 @@ from forge.domain.operation import (
     OperationStatus,
     canonical_digest,
 )
+from forge.domain.paths import normalize_policy_paths
 
 PREPARE_GIT_COMMIT_KIND: Final = "git.commit.prepare.v1"
 PUBLISH_GIT_COMMIT_KIND: Final = "git.commit.publish.v1"
@@ -39,9 +41,18 @@ class PrepareGitCommitAdapter:
 
     async def invoke(self, intent: OperationIntent) -> OperationOutcome:
         values = _prepare_request(intent, self._worktree)
-        prepared = await asyncio.to_thread(
-            self._git.prepare_commit, self._worktree, _text(values, "message")
-        )
+        paths = _primary_paths(values)
+        if paths is None:
+            prepared = await asyncio.to_thread(
+                self._git.prepare_commit, self._worktree, _text(values, "message")
+            )
+        else:
+            prepared = await asyncio.to_thread(
+                self._git.prepare_commit,
+                self._worktree,
+                _text(values, "message"),
+                allowed_paths=paths,
+            )
         if not isinstance(prepared, PreparedGitCommit) or (
             prepared.worktree_identity != self._worktree.identity
         ):
@@ -94,7 +105,7 @@ class PublishGitCommitAdapter:
         return values, _prepared_from_intent(preparation, values, self._worktree)
 
 
-_AUTHORITY_KEYS: Final = {
+_LEGACY_AUTHORITY_KEYS: Final = {
     "agent_execution_id",
     "policy_version",
     "request_digest",
@@ -105,33 +116,50 @@ _AUTHORITY_KEYS: Final = {
 }
 
 
+def _authority_keys(values: Mapping[str, object]) -> set[str]:
+    """Select one immutable lineage codec; subscription commits never impersonate steps."""
+    if values.get("authority_schema_version") in (2, 3):
+        keys = {
+            "authority_schema_version",
+            "policy_version",
+            "request_digest",
+            "run_id",
+            "subscription_task_id",
+            "subscription_attempt_id",
+            "subscription_purpose",
+            "tool_call_id",
+            "worktree_id",
+        }
+        return keys | ({"owned_paths_json"} if values["authority_schema_version"] == 3 else set())
+    return set(_LEGACY_AUTHORITY_KEYS)
+
+
 def _prepare_request(intent: OperationIntent, worktree: ManagedWorktree) -> dict[str, object]:
+    keys = _authority_keys(intent.request_payload)
     return _request(
         intent,
         worktree,
         PREPARE_GIT_COMMIT_KIND,
-        {
-            "agent_execution_id",
+        keys
+        | {
             "base_sha",
             "message",
             "message_digest",
             "policy_version",
             "request_digest",
             "run_id",
-            "step_id",
-            "tool_call_id",
-            "worktree_id",
         },
     )
 
 
 def _publish_request(intent: OperationIntent, worktree: ManagedWorktree) -> dict[str, object]:
+    keys = _authority_keys(intent.request_payload)
     return _request(
         intent,
         worktree,
         PUBLISH_GIT_COMMIT_KIND,
-        {
-            "agent_execution_id",
+        keys
+        | {
             "base_sha",
             "message",
             "message_digest",
@@ -140,10 +168,7 @@ def _publish_request(intent: OperationIntent, worktree: ManagedWorktree) -> dict
             "previous_sha",
             "request_digest",
             "run_id",
-            "step_id",
-            "tool_call_id",
             "tree_sha",
-            "worktree_id",
         },
     )
 
@@ -163,7 +188,10 @@ def _request(
     payload = intent.request_payload
     if set(payload) != keys or canonical_digest(payload) != intent.request_digest:
         raise GitCommitOperationError("Git commit operation request is invalid")
-    if any(not isinstance(payload[key], str) for key in keys - {"policy_version"}):
+    if any(
+        not isinstance(payload[key], str)
+        for key in keys - {"policy_version", "authority_schema_version"}
+    ):
         raise GitCommitOperationError("Git commit operation request is invalid")
     values = {key: payload[key] for key in keys}
     if (
@@ -190,15 +218,44 @@ def _request(
             message=_text(values, "message"),
         )
         UUID(str(values.get("preparation_intent_id", intent.id)))
-        for key in ("agent_execution_id", "step_id", "tool_call_id"):
+        identity_keys: tuple[str, ...] = ("tool_call_id",)
+        if "authority_schema_version" in values:
+            identity_keys += ("subscription_task_id", "subscription_attempt_id")
+        for key in identity_keys:
             parsed = UUID(_text(values, key))
             if parsed.int == 0 or str(parsed) != _text(values, key):
                 raise ValueError
         if type(values["policy_version"]) is not int or values["policy_version"] <= 0:
             raise ValueError
+        if "authority_schema_version" in values and (
+            type(values["authority_schema_version"]) is not int
+            or (values["authority_schema_version"], values["subscription_purpose"])
+            not in {(2, "integration"), (3, "primary")}
+        ):
+            raise ValueError
+        _primary_paths(values)
     except TypeError, ValueError:
         raise GitCommitOperationError("Git commit operation request is invalid") from None
     return values
+
+
+def _primary_paths(values: Mapping[str, object]) -> tuple[str, ...] | None:
+    """Read the Forge-derived scope retained by the primary commit codec."""
+    if values.get("authority_schema_version") != 3:
+        return None
+    try:
+        encoded = values["owned_paths_json"]
+        if not isinstance(encoded, str):
+            raise TypeError
+        paths = json.loads(encoded)
+        if not isinstance(paths, list) or not paths:
+            raise ValueError
+        normalized = normalize_policy_paths(paths)
+        if json.dumps(list(normalized), separators=(",", ":")) != encoded:
+            raise ValueError
+        return normalized
+    except KeyError, TypeError, ValueError:
+        raise GitCommitOperationError("primary commit scope is invalid") from None
 
 
 def _prepared_from_intent(
@@ -219,7 +276,8 @@ def _prepared_from_intent(
         raise GitCommitOperationError("prepared commit receipt is invalid")
     request = _prepare_request(intent, worktree)
     receipt = intent.outcome
-    required = _AUTHORITY_KEYS | {
+    authority_keys = _authority_keys(intent.request_payload)
+    required = authority_keys | {
         "base_sha",
         "message_digest",
         "preparation_intent_id",
@@ -228,8 +286,15 @@ def _prepared_from_intent(
     }
     if (
         set(receipt) != required
-        or any(not isinstance(receipt[key], str) for key in required - {"policy_version"})
+        or any(
+            not isinstance(receipt[key], str)
+            for key in required - {"policy_version", "authority_schema_version"}
+        )
         or type(receipt["policy_version"]) is not int
+        or (
+            "authority_schema_version" in receipt
+            and type(receipt["authority_schema_version"]) is not int
+        )
     ):
         raise GitCommitOperationError("prepared commit receipt is invalid")
     values = {key: receipt[key] for key in required}
@@ -239,7 +304,7 @@ def _prepared_from_intent(
         or values["base_sha"] != worktree.base_sha
         or values["message_digest"] != request["message_digest"]
         or values["request_digest"] != request["request_digest"]
-        or any(values[key] != request[key] for key in _AUTHORITY_KEYS)
+        or any(values[key] != request[key] for key in authority_keys)
         or any(values[key] != publication[key] for key in required - {"preparation_intent_id"})
     ):
         raise GitCommitOperationError("prepared commit receipt is invalid")
@@ -260,7 +325,7 @@ def _prepare_receipt(
     if _message_digest(prepared.message) != values["message_digest"]:
         raise GitCommitOperationError("controlled Git preparation result is invalid")
     return {
-        **{key: values[key] for key in _AUTHORITY_KEYS},
+        **{key: values[key] for key in _authority_keys(values)},
         "base_sha": values["base_sha"],
         "message_digest": values["message_digest"],
         "preparation_intent_id": str(intent.id),
@@ -286,7 +351,7 @@ def _publish_outcome(
         raise GitCommitOperationError("controlled Git publication result is invalid")
     return OperationOutcome(
         payload={
-            **{key: values[key] for key in _AUTHORITY_KEYS},
+            **{key: values[key] for key in _authority_keys(values)},
             "base_sha": values["base_sha"],
             "message_digest": values["message_digest"],
             "new_sha": published.new_sha,

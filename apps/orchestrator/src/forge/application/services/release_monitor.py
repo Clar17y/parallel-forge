@@ -20,7 +20,16 @@ from forge.application.services.monitor_replay import verify_monitor_replay
 from forge.application.services.monitor_resume import monitor_inputs, monitor_origin
 from forge.application.services.pr_evidence import PrEvidenceValidationError, PrEvidenceValidator
 from forge.application.services.validation import _fence_command
-from forge.domain.approval import ApprovalGate, MergeApprovalEvidence, canonical_digest
+from forge.domain.approval import (
+    ApprovalGate,
+    MergeApprovalEvidence,
+    MergeCandidateEvidence,
+    SubscriptionMergeApprovalEvidence,
+    SubscriptionPrApprovalEvidence,
+    canonical_digest,
+    decision_evidence_digest,
+    decision_evidence_fields,
+)
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.github import CheckSnapshot, ReviewSnapshot
@@ -266,7 +275,7 @@ class ReleaseMonitor:
                 else verified.approved.policy.allowed_merge_methods[0]
             )
             assert method is not None
-            merge = MergeApprovalEvidence(
+            candidate = MergeCandidateEvidence(
                 repository=local.repository,
                 pull_request_number=record.pull_request.number,
                 head_sha=local.candidate_commit,
@@ -275,12 +284,17 @@ class ReleaseMonitor:
                 required_checks=required_check_results(checks, protection),
                 unresolved_blocking_findings=0,
                 validation_digest=local.validation_digest,
-                review_digest=local.review_digest,
                 runner_mode=local.runner_mode,
                 runner_evidence_digest=local.runner_evidence_digest,
                 protection_digest=payload_digest(asdict(protection)),
                 merge_method=method,
                 policy_version=verified.approved.policy.version,
+            )
+            values = candidate.model_dump(mode="python") | decision_evidence_fields(local)
+            merge = (
+                SubscriptionMergeApprovalEvidence.model_validate(values)
+                if isinstance(local, SubscriptionPrApprovalEvidence)
+                else MergeApprovalEvidence.model_validate(values)
             )
             merge_digest = await self._artifact(
                 work,
@@ -290,7 +304,7 @@ class ReleaseMonitor:
                 merge.model_dump(mode="json"),
                 parents=(
                     local.validation_digest,
-                    local.review_digest,
+                    decision_evidence_digest(local),
                     local.runner_evidence_digest,
                 ),
             )

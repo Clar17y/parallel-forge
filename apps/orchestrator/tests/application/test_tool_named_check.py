@@ -53,6 +53,7 @@ async def _named_case(session_factory, tmp_path, *, exit_code=0, timed_out=False
         calls = 0
 
         def __init__(self):
+            self.expected_call_id = call_id
             self.entered = asyncio.Event()
             self.release = asyncio.Event()
             self.release.set()
@@ -69,7 +70,7 @@ async def _named_case(session_factory, tmp_path, *, exit_code=0, timed_out=False
         async def run_terminal(self, request):
             self.calls += 1
             async with PostgresUnitOfWork(session_factory) as work:
-                reserved = await work.tool_calls.get(call_id)
+                reserved = await work.tool_calls.get(self.expected_call_id)
                 assert reserved.status is ToolCallStatus.RUNNING
                 admitted = await work.operations.get(reserved.operation_intent_id)
                 assert admitted.status is OperationStatus.PENDING

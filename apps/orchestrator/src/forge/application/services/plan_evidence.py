@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from uuid import UUID
 
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.executions import ExecutionStatus
 from forge.application.ports.projects import RepositoryInspector
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.domain.approval import ApprovalGate, PlanApprovalEvidence, canonical_digest
-from forge.domain.plan import PlanOutput
+from forge.domain.approval import (
+    ApprovalGate,
+    PlanApprovalEvidence,
+    SubscriptionPlanApprovalEvidence,
+    SubscriptionPlanProducer,
+    canonical_digest,
+    decode_plan_approval_evidence,
+)
+from forge.domain.plan import PlanOutput, ScopedPlanOutput, decode_plan_output
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.tasks import compute_task_digest
@@ -79,9 +87,50 @@ class PlanEvidenceValidator:
             if task.task_digest != task_digest:
                 raise PlanEvidenceValidationError
             evidence_bytes = await self._load_artifact(work, run, run.pending_evidence_digest)
-            evidence = PlanApprovalEvidence.model_validate_json(evidence_bytes)
+            evidence = decode_plan_approval_evidence(evidence_bytes)
             if canonical_digest(evidence) != run.pending_evidence_digest:
                 raise PlanEvidenceValidationError
+            if isinstance(evidence, SubscriptionPlanApprovalEvidence):
+                # Re-read and validate the frozen settlement snapshot.  A
+                # gate row is only an index; it is never authority by itself.
+                gate = await work.subscription_plan_gate.verify(evidence)
+                if (
+                    gate is None
+                    or gate.run_id != run.id
+                    or gate.task_id != evidence.producer.task_id
+                    or gate.plan_digest != evidence.plan_digest
+                    or gate.evidence_digest != run.pending_evidence_digest
+                    or gate.result_digest != evidence.result_digest
+                    or gate.envelope_digest != evidence.producer.envelope_digest
+                    or gate.budget_digest != evidence.producer.budget_digest
+                    or gate.route_digest != evidence.producer.route_digest
+                ):
+                    raise PlanEvidenceValidationError
+                evidence_descriptor = await work.artifacts.get_by_digest(
+                    run.pending_evidence_digest, run_id=run.id
+                )
+                plan_descriptor = await work.artifacts.get_by_digest(
+                    evidence.plan_digest, run_id=run.id
+                )
+                if (
+                    evidence_descriptor.producer_type != "subscription_plan_approval_evidence"
+                    or evidence_descriptor.producer_id != evidence.producer.attempt_id
+                    or plan_descriptor.producer_type != "subscription_plan"
+                    or plan_descriptor.producer_id != evidence.producer.attempt_id
+                    or evidence_descriptor.parent_digests != (plan_descriptor.digest,)
+                ):
+                    raise PlanEvidenceValidationError
+                plan_bytes = await self._load_artifact(work, run, evidence.plan_digest)
+                plan = decode_plan_output(plan_bytes)
+                source = await self.current_source(work, run.id)
+                if (source.policy_version, source.base_ref, source.base_sha) != (
+                    run.policy_version,
+                    run.base_ref,
+                    run.base_sha,
+                ):
+                    raise PlanEvidenceValidationError
+                await validate_subscription_plan_fields(work, run, evidence, plan)
+                return evidence
             execution = await work.executions.get_outcome(run.id, "plan", evidence.plan_attempt)
             if (
                 execution is None
@@ -179,3 +228,89 @@ def _digest(data: bytes) -> str:
 
 
 __all__ = ["CurrentPlanSource", "PlanEvidenceValidationError", "PlanEvidenceValidator"]
+
+
+class InvalidSubscriptionPlan(PlanEvidenceValidationError):
+    """A valid current source proves a semantic error in the proposed plan."""
+
+    def __init__(self, evidence: SubscriptionPlanApprovalEvidence) -> None:
+        super().__init__("plan requires an unregistered check")
+        self.evidence = evidence
+
+
+async def build_subscription_plan_evidence(
+    work: UnitOfWork,
+    run: RunSnapshot,
+    producer: SubscriptionPlanProducer,
+    result_digest: str,
+    plan: PlanOutput,
+) -> SubscriptionPlanApprovalEvidence:
+    """Recompute inherited human-gate fields; producer proof is separately required."""
+    if run.policy_version is None or run.base_ref is None or run.base_sha is None:
+        raise PlanEvidenceValidationError
+    task = await work.tasks.get(run.task_id, for_update=True)
+    project = await work.projects.get(run.project_id, for_update=True)
+    record = await work.projects.get_policy(run.project_id, run.policy_version, for_update=True)
+    policy = ProjectPolicy.model_validate(record.document)
+    policy_bytes = json.dumps(
+        record.document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    task_digest = compute_task_digest(
+        title=task.title,
+        body=task.body,
+        source_url=task.source_url,
+        source_updated_at=task.source_updated_at,
+        external_source=task.external_source,
+        external_id=task.external_id,
+    )
+    if (
+        task.project_id != run.project_id
+        or task.task_digest != task_digest
+        or policy.id != run.project_id
+        or project.current_policy_version != policy.version
+        or record.version != policy.version
+        or record.document_schema_version != 1
+        or hashlib.sha256(policy_bytes).hexdigest() != record.policy_digest
+        or policy.repository_path != project.canonical_path
+        or policy.github_repository != project.github_repository
+        or policy.default_branch != project.default_branch
+        or run.base_ref != f"refs/heads/{policy.default_branch}"
+    ):
+        raise PlanEvidenceValidationError
+    evidence = SubscriptionPlanApprovalEvidence(
+        task_version=1,
+        plan_attempt=producer.plan_attempt,
+        task_digest=task_digest,
+        plan_digest=hashlib.sha256(plan.model_dump_json(by_alias=False).encode()).hexdigest(),
+        repository=project.github_repository,
+        base_ref=run.base_ref,
+        base_sha=run.base_sha,
+        policy_version=policy.version,
+        dependency_changes=tuple(sorted(plan.dependency_changes)),
+        required_checks={name: "planned" for name in sorted(plan.required_checks)},
+        runner_mode=policy.runner_mode,
+        local_remediation_limit=policy.local_remediation_limit,
+        token_budget=policy.planner_model.max_input_tokens + policy.planner_model.max_output_tokens,
+        cost_budget_minor=policy.planner_model.max_cost_minor,
+        duration_budget_seconds=policy.planner_model.max_duration_seconds,
+        producer=producer,
+        result_digest=result_digest,
+    )
+    if isinstance(plan, ScopedPlanOutput) and not set(plan.required_checks) <= {
+        command.name for command in policy.commands
+    }:
+        raise InvalidSubscriptionPlan(evidence)
+    return evidence
+
+
+async def validate_subscription_plan_fields(
+    work: UnitOfWork,
+    run: RunSnapshot,
+    evidence: SubscriptionPlanApprovalEvidence,
+    plan: PlanOutput,
+) -> None:
+    expected = await build_subscription_plan_evidence(
+        work, run, evidence.producer, evidence.result_digest, plan
+    )
+    if canonical_digest(expected) != canonical_digest(evidence):
+        raise PlanEvidenceValidationError

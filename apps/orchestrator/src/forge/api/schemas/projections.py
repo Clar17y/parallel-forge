@@ -58,6 +58,8 @@ class CandidateSection(ProjectionModel):
     pending_evidence_digest: str | None
     validation_evidence_digest: str | None
     review_evidence_digest: str | None
+    acceptance_evidence_digest: str | None = None
+    candidate_tree_digest: str | None = None
 
 
 class PullRequestSection(ProjectionModel):

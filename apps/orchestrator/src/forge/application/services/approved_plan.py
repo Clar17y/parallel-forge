@@ -11,9 +11,15 @@ from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.executions import ExecutionStatus
 from forge.application.ports.tasks import TaskRecord
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.domain.approval import PlanApprovalEvidence, canonical_digest
+from forge.application.services.plan_evidence import validate_subscription_plan_fields
+from forge.domain.approval import (
+    PlanApprovalEvidence,
+    SubscriptionPlanApprovalEvidence,
+    canonical_digest,
+    decode_plan_approval_evidence,
+)
 from forge.domain.artifact import ArtifactDescriptor
-from forge.domain.plan import PlanOutput
+from forge.domain.plan import PlanOutput, decode_plan_output
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunSnapshot
 from forge.persistence.models import Approval
@@ -92,9 +98,43 @@ class ApprovedPlanLoader:
             evidence_descriptor, evidence_bytes = await self._load(
                 work, run_id, approval.evidence_digest
             )
-            evidence = PlanApprovalEvidence.model_validate_json(evidence_bytes)
+            evidence = decode_plan_approval_evidence(evidence_bytes)
             if canonical_digest(evidence) != approval.evidence_digest:
                 raise ApprovedPlanError
+            if isinstance(evidence, SubscriptionPlanApprovalEvidence):
+                # Revalidate the original settled result instead of trusting
+                # a mutable current subscription task or the index row alone.
+                gate = await work.subscription_plan_gate.verify(evidence, historical=True)
+                plan_descriptor, plan_bytes = await self._load(work, run_id, evidence.plan_digest)
+                if (
+                    gate is None
+                    or gate.run_id != run_id
+                    or gate.task_id != evidence.producer.task_id
+                    or gate.plan_digest != evidence.plan_digest
+                    or gate.evidence_digest != approval.evidence_digest
+                    or gate.result_digest != evidence.result_digest
+                    or gate.envelope_digest != evidence.producer.envelope_digest
+                    or gate.budget_digest != evidence.producer.budget_digest
+                    or gate.route_digest != evidence.producer.route_digest
+                    or evidence_descriptor.producer_type != "subscription_plan_approval_evidence"
+                    or evidence_descriptor.producer_id != evidence.producer.attempt_id
+                    or plan_descriptor.producer_type != "subscription_plan"
+                    or plan_descriptor.producer_id != evidence.producer.attempt_id
+                    or evidence_descriptor.parent_digests != (plan_descriptor.digest,)
+                ):
+                    raise ApprovedPlanError
+                plan = decode_plan_output(plan_bytes)
+                await validate_subscription_plan_fields(work, run, evidence, plan)
+                return ApprovedPlan(
+                    run,
+                    task,
+                    policy,
+                    plan,
+                    evidence,
+                    approval_id,
+                    approval.run_version,
+                    approval.authenticated_actor_id,
+                )
             execution = await work.executions.get_outcome(run_id, "plan", evidence.plan_attempt)
             if (
                 execution is None

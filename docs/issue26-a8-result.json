@@ -1,0 +1,437 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/Clar17y/parallel-forge/issues/26",
+  "date": "2026-09-25",
+  "outcome": "functional_acceptance_complete_locally",
+  "source_commit_initial": "77f4c993ffa00e5158bf7774ef7e97015f4a681f",
+  "source_commit_active_browser_and_cli": "3088947f51db69fa87fc95fb49f764d89b48d9bb",
+  "test_input_git_blobs": [
+    {
+      "path": "apps/orchestrator/tests/agents/test_local_cli_runtime_trust.py",
+      "git_blob": "ab3ee5b9a3760719b106a4324b1a37af34d04c8c"
+    },
+    {
+      "path": "apps/orchestrator/tests/api/test_subscription_runtime_status_api.py",
+      "git_blob": "bbfa53743a2b2e6f6332b19cd5764d0c8ab70a6e"
+    },
+    {
+      "path": "apps/orchestrator/tests/cli/test_subscription_runtime_cli.py",
+      "git_blob": "da781200190751bafd40b9f7d4f2c046f1101e84"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_subscription_active_client_controls.py",
+      "git_blob": "45864763fa6cf7633413ba1bed8f21bcf684f29b"
+    },
+    {
+      "path": "apps/orchestrator/tests/persistence/test_subscription_usage_assessment.py",
+      "git_blob": "896fe27d4d5de3c6b3f382f32294f46546ae594a"
+    },
+    {
+      "path": "apps/orchestrator/tests/worker/test_local_cli_trust.py",
+      "git_blob": "a026f9221737ff8179ac6f5565883956dc462ef9"
+    },
+    {
+      "path": "apps/web/src/components/subscription-profiles/runtime-status.test.tsx",
+      "git_blob": "f662a20da1f32aaa35a46746dac6d5e7321fa8d3"
+    },
+    {
+      "path": "tests/acceptance/test_subscription_active_browser_process.py",
+      "git_blob": "f0f010a31b5402e76d0411f01074061a536d4b65"
+    },
+    {
+      "path": "tests/acceptance/test_subscription_browser_process.py",
+      "git_blob": "97edccb990d9f6960f5b8e9992960dd4162e7e58"
+    },
+    {
+      "path": "tests/acceptance/test_subscription_operator_process.py",
+      "git_blob": "e4ed30a2db53cda7db1e54010a3f73da9a9d0c8f"
+    },
+    {
+      "path": "tests/acceptance/test_subscription_profile_process.py",
+      "git_blob": "7ec587b77964c028b1043e8321e30405d6ae01da"
+    },
+    {
+      "path": "apps/orchestrator/tests/agents/test_antigravity_configuration.py",
+      "git_blob": "66acc464ff49b2a8ccc39de2a0d461ac9def25ac"
+    },
+    {
+      "path": "apps/orchestrator/tests/agents/test_claude_configuration.py",
+      "git_blob": "55270a5abd01f4aa643b194db72404fa6cb680ce"
+    },
+    {
+      "path": "apps/orchestrator/tests/agents/test_codex_configuration.py",
+      "git_blob": "375b56940940b111c0414fde786bbb402723f510"
+    },
+    {
+      "path": "apps/orchestrator/tests/agents/test_gemini_gateway.py",
+      "git_blob": "f283f19ec0322b4590727ebc20ebf71227f2d73b"
+    },
+    {
+      "path": "apps/orchestrator/tests/domain/test_subscription.py",
+      "git_blob": "d79ea5e0ed7735ea2feccaf376b4296d5259d57f"
+    }
+  ],
+  "runtime_changes": [],
+  "test_changes": [],
+  "reused_repair": "PR53 binds the shared active-client fixture to the actual executable digest; the sole failed A8 case then passed without an additional change.",
+  "validation": {
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "python_distinct_passing_cases": 75,
+    "web_passing_cases": 9,
+    "accounting": "57 unchanged initial passes plus one repaired active-browser case plus seven CLI cases; nine separate web component checks. The initial active-browser failure is retained and superseded. Ten additional paid-route/credential-filtering checks pass; one platform-specific filesystem case is skipped with its exact reason retained.",
+    "python_invocation": "python -m pytest <listed cases/files> -q --junitxml=<retained path>",
+    "browser_environment": {
+      "FORGE_SUBSCRIPTION_BROWSER_TEST": "1",
+      "FORGE_ACCEPTANCE_OUTPUT_ROOT": ".llm-output/issue26/acceptance"
+    },
+    "runs": [
+      {
+        "junit": ".llm-output/issue26/a8-junit.xml",
+        "log": ".llm-output/issue26/a8.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "1",
+        "skipped": "0",
+        "tests": "58",
+        "time": "235.240",
+        "timestamp": "2026-09-25T17:21:58.867696+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "tests.acceptance.test_subscription_operator_process::test_keyless_operator_quota_survives_api_and_worker_restarts",
+          "tests.acceptance.test_subscription_profile_process::test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_restarts",
+          "tests.acceptance.test_subscription_browser_process::test_subscription_profiles_and_controls_across_browser_tabs",
+          "tests.acceptance.test_subscription_active_browser_process::test_active_specialist_feedback_and_controls_across_browser_tabs",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_unmeasured_primary_has_unknown_share_with_measured_worker_across_pages",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_applied_delegation_is_one_unfinished_interval_after_replay",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_wait_uses_first_causal_primary_admission_and_not_mutable_update_time[5]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_wait_uses_first_causal_primary_admission_and_not_mutable_update_time[-1]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_applied_wait_without_continuation_distinguishes_ended_run[PAUSED-False]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_applied_wait_without_continuation_distinguishes_ended_run[CANCELLED-True]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_accepted_flag_does_not_prove_applied_decision[source_digest]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_accepted_flag_does_not_prove_applied_decision[record]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_accepted_flag_does_not_prove_applied_decision[launch]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_accepted_flag_does_not_prove_applied_decision[application]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_accepted_flag_does_not_prove_applied_decision[rejected]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_task_acceptance_is_attributed_once_to_proved_worker_handoff",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_created_identity_without_admission_does_not_count_as_a_primary_turn",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_measured_share_preserves_zero_partial_and_missing_observations[None-None-None-None-None-0.0]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_measured_share_preserves_zero_partial_and_missing_observations[0-0-0-0-None-1.0]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_measured_share_preserves_zero_partial_and_missing_observations[0-10-0-10-0.0-1.0]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_measured_share_preserves_zero_partial_and_missing_observations[5-None-5-5-1.0-0.5]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_measured_share_preserves_zero_partial_and_missing_observations[5-15-5-20-0.25-1.0]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_no_attempts_has_unknown_coverage_and_no_wait_duration",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_repair_debits_come_from_ledger_and_quota_deferral_spends_none[False]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_repair_debits_come_from_ledger_and_quota_deferral_spends_none[True]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_task_acceptance_requires_cross_source_lineage_even_with_a_matching_receipt_digest[missing_handoff]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_task_acceptance_requires_cross_source_lineage_even_with_a_matching_receipt_digest[handoff_digest]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_task_acceptance_requires_cross_source_lineage_even_with_a_matching_receipt_digest[handoff_application]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_task_acceptance_requires_cross_source_lineage_even_with_a_matching_receipt_digest[candidate_claim]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_task_acceptance_requires_cross_source_lineage_even_with_a_matching_receipt_digest[handoff_time]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_scope_application_counts_survive_historical_child_contract_changes",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_candidate_applications_are_distinct_from_task_or_human_acceptance[prepared_selection-1]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_candidate_applications_are_distinct_from_task_or_human_acceptance[reopened-2]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_candidate_applications_are_distinct_from_task_or_human_acceptance[acceptance_intent-2]",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_approved_reassignment_keeps_preferred_history_and_redacts_fallback_reason",
+          "apps.orchestrator.tests.persistence.test_subscription_usage_assessment::test_assessment_has_complete_bounded_groups_and_constant_query_count",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_personal_clients_are_available_without_a_capability_verifier[codex_app_server-gpt-6-astra-low]",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_personal_clients_are_available_without_a_capability_verifier[claude_code-claude-opus-5-medium]",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_personal_clients_are_available_without_a_capability_verifier[gemini_cli-gemini-3.1-pro-preview-medium]",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_personal_clients_are_available_without_a_capability_verifier[antigravity_cli-gemini-3.8-flash-medium-medium]",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_personal_readiness_uses_quota_without_reading_evidence[unknown]",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_personal_readiness_uses_quota_without_reading_evidence[blocked]",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_personal_readiness_uses_quota_without_reading_evidence[eligible]",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_upgraded_binary_is_observed_without_demanding_new_evidence[operator]",
+          "apps.orchestrator.tests.worker.test_local_cli_trust::test_upgraded_binary_is_observed_without_demanding_new_evidence[verified]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_operator_trust_runs_supervised_tools_without_evidence[codex]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_operator_trust_runs_supervised_tools_without_evidence[claude]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_operator_trust_runs_supervised_tools_without_evidence[gemini]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_personal_codex_does_not_require_effective_isolation_metadata",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_personal_claude_does_not_gate_on_inherited_customizations[settings_drift]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_personal_claude_does_not_gate_on_inherited_customizations[init_drift]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_personal_claude_does_not_gate_on_inherited_customizations[late_init_drift]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_personal_codex_still_rejects_known_auth_or_callback_mismatch[account_mismatch]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_personal_codex_still_rejects_known_auth_or_callback_mismatch[account_identity_mismatch]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_personal_codex_still_rejects_known_auth_or_callback_mismatch[foreign]",
+          "apps.orchestrator.tests.agents.test_local_cli_runtime_trust::test_personal_codex_still_rejects_known_auth_or_callback_mismatch[stale_tool]",
+          "apps.orchestrator.tests.api.test_subscription_runtime_status_api::test_runtime_status_requires_authentication_and_bounds_page",
+          "apps.orchestrator.tests.api.test_subscription_runtime_status_api::test_runtime_status_unavailable_is_not_empty_inventory"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue26/active-browser-junit.xml",
+        "log": ".llm-output/issue26/active-browser.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "1",
+        "time": "64.307",
+        "timestamp": "2026-09-25T17:49:24.657159+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "tests.acceptance.test_subscription_active_browser_process::test_active_specialist_feedback_and_controls_across_browser_tabs"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue26/runtime-cli-junit.xml",
+        "log": ".llm-output/issue26/runtime-cli.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "7",
+        "time": "2.292",
+        "timestamp": "2026-09-25T17:52:37.047069+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_personal_cli_status_does_not_require_evidence_or_hide_tool_warning",
+          "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_runtime_cli_prints_unknown_inventory_and_forwards_bounds",
+          "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_runtime_cli_failure_does_not_echo_connection_values",
+          "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_runtime_cli_text_output_is_actionable_and_preserves_unknown_quota",
+          "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_runtime_cli_text_output_never_turns_stale_or_blocked_into_ready",
+          "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_runtime_cli_missing_evidence_points_to_offline_verification",
+          "apps.orchestrator.tests.cli.test_subscription_runtime_cli::test_runtime_cli_warns_that_antigravity_tools_are_not_guaranteed"
+        ]
+      },
+      {
+        "junit": ".llm-output/issue26/paid-route-guards-junit.xml",
+        "log": ".llm-output/issue26/paid-route-guards.log",
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "1",
+        "tests": "11",
+        "time": "1.256",
+        "timestamp": "2026-09-25T18:06:31.651304+01:00",
+        "hostname": "ZuKii-PC",
+        "cases": [
+          "apps.orchestrator.tests.domain.test_subscription::test_execution_envelope_rejects_api_key_in_allowance_only_mode",
+          "apps.orchestrator.tests.agents.test_codex_configuration::test_launch_selects_the_trusted_home_without_inheriting_ambient_credentials",
+          "apps.orchestrator.tests.agents.test_claude_configuration::test_claude_launch_uses_only_the_verified_client_home",
+          "apps.orchestrator.tests.agents.test_gemini_gateway::test_launch_materializes_configuration_before_start_and_cleans_after_stop",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_settings_and_home_bind_the_documented_client_locations",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_managed_home_is_a_closed_canonical_tree",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_home_rejects_drift_links_and_unowned_contents[extra]",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_home_rejects_drift_links_and_unowned_contents[changed]",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_home_rejects_drift_links_and_unowned_contents[link]",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_existing_or_relative_managed_home_is_refused",
+          "apps.orchestrator.tests.agents.test_antigravity_configuration::test_closed_argv_and_environment_cannot_use_ambient_paid_credentials"
+        ],
+        "skips": [
+          {
+            "case": "test_home_rejects_drift_links_and_unowned_contents[link]",
+            "reason": "symlinks unavailable"
+          }
+        ]
+      }
+    ],
+    "web_command": "npm run test:web -- --run src/components/subscription-profiles/runtime-status.test.tsx",
+    "web_log": ".llm-output/issue26/readiness-web.log",
+    "web_duration_seconds": 1.76,
+    "manifest_digests_and_terminal_process_records": "passed",
+    "diff_check": "passed",
+    "secret_scan": "An API-test filename followed by its Git blob SHA1 triggered generic-api-key. Verified the value with git hash-object, represented paths and blob IDs as explicit fields, and reran the unchanged pinned scanner without suppressions.",
+    "python_skipped_cases": 1
+  },
+  "manifests": [
+    {
+      "manifest": ".llm-output/issue26/acceptance/b284aeaf-ae48-4585-bc8e-c9880b284502/manifest.json",
+      "digest": "2f2fafc154543da2990830006b799941820b3bdbedb4b4cf143eeefe33e657d1",
+      "scenario": "active-specialist-feedback-controls",
+      "proof": "Chromium, public Next.js/API/worker, PostgreSQL and supervised fake provider processes",
+      "limits": "Fake provider capability only; no official-client or allowance conformance claim",
+      "provider_calls": false,
+      "browser_closed": true,
+      "pause_replay_count": 2,
+      "feedback_replay_count": 2,
+      "terminal_public_processes": [
+        {
+          "pid": 134944,
+          "return_code": 1
+        },
+        {
+          "pid": 133544,
+          "return_code": 1
+        },
+        {
+          "pid": 116228,
+          "return_code": 1
+        },
+        {
+          "pid": 89052,
+          "return_code": 1
+        },
+        {
+          "pid": 80044,
+          "return_code": 1
+        },
+        {
+          "pid": 116820,
+          "return_code": 1
+        },
+        {
+          "pid": 106408,
+          "return_code": 1
+        }
+      ],
+      "terminal_web_process": {
+        "pid": 133896,
+        "return_code": 1
+      },
+      "run_id": "50ef4be1-e6d8-46e7-aa79-15c127d55887",
+      "task_id": "13975297-132a-4113-a8a8-825407d1693c",
+      "final": {
+        "feedback_states": [
+          "delivered"
+        ],
+        "attempt_count": 2,
+        "repair_debits": 1,
+        "feedback_mutations": 1,
+        "control_mutations": 3,
+        "provider_attempts_consumed": 2,
+        "provider_attempts_outstanding": 0,
+        "quota_status": "blocked",
+        "unsettled_effects": 0,
+        "partial_digest": "7fa2aee570714003ea20857d1cc1d638a0b43af71fbbc69cd9fdbfb3f8abdacd",
+        "partial_write": true
+      },
+      "final_task_state": "terminal",
+      "final_task_cancel_requested": true
+    },
+    {
+      "manifest": ".llm-output/issue26/acceptance/e856a1bc-b164-416b-9d9b-647352711516/manifest.json",
+      "digest": "b5dd3c8b52941de8c322faecf8e42f7b19b5fde45d6282a1b99a8a214dcd9dd1",
+      "scenario": "A8-keyless-operator",
+      "proof": "Public API/worker/CLI processes with real PostgreSQL; no registered model adapters",
+      "limits": "No run execution, profile-freeze, browser rendering, live capability or billing-conformance proof",
+      "provider_calls": false,
+      "terminal_processes": [
+        {
+          "pid": 129764,
+          "return_code": 1
+        },
+        {
+          "pid": 133984,
+          "return_code": 1
+        },
+        {
+          "pid": 134148,
+          "return_code": 1
+        },
+        {
+          "pid": 132496,
+          "return_code": 1
+        }
+      ],
+      "environment_presence": {
+        "OPENAI_API_KEY": false,
+        "GEMINI_API_KEY": false,
+        "GOOGLE_API_KEY": false,
+        "ANTHROPIC_API_KEY": false,
+        "FORGE_PROVIDER_SECRET_REFERENCE": false,
+        "FORGE_GOOGLE_API_KEY_REFERENCE": false,
+        "FORGE_PRICING_CATALOG_PATH": false,
+        "FORGE_GITHUB_TOKEN_REFERENCE": false
+      },
+      "pricing_fixture_created": false
+    },
+    {
+      "manifest": ".llm-output/issue26/acceptance/f3fbaac7-8534-43b9-996d-7b10375a246c/manifest.json",
+      "digest": "0a81886111ebdbfff4284efe4315f5a2b25d46156db482d7979ee4b55d05a4d7",
+      "scenario": "A8-profile-freeze-resume",
+      "proof": "Public API/worker/CLI, actual PostgreSQL, empty default runtime registry",
+      "limits": "No rendered browser, provider execution, active-client drain or billing/isolation conformance",
+      "provider_calls": false,
+      "terminal_processes": [
+        {
+          "pid": 13876,
+          "return_code": 1
+        },
+        {
+          "pid": 134244,
+          "return_code": 1
+        },
+        {
+          "pid": 81904,
+          "return_code": 1
+        },
+        {
+          "pid": 134512,
+          "return_code": 1
+        }
+      ],
+      "worker_instances": [
+        "5a3eb805-399b-403a-be92-88141a8ec311",
+        "38f8c3b4-7e84-4a69-8f59-b9df2947d196"
+      ],
+      "original_run": "c97519dc-91b8-4c84-8d7f-60a241fa18b9",
+      "future_run": "c918dea4-6d14-4e83-92c1-a2978f71322a",
+      "envelope_digests_preserved": {
+        "c918dea4-6d14-4e83-92c1-a2978f71322a": "7b800532b361868046e5bb3837e143b0478ab498195678d660b99271f8ab25c4",
+        "c97519dc-91b8-4c84-8d7f-60a241fa18b9": "6d99801c0f9796ce60c4c1e441fcbd6219b28b31cd6e19b22b61cf61e47adb40"
+      }
+    },
+    {
+      "manifest": ".llm-output/issue26/acceptance/f9081d17-6b08-4853-85f5-5456a395a270/manifest.json",
+      "digest": "58a8e625322ce67f76a874ef1dbe1e95936b835ed7c9c664c78651954a867482",
+      "scenario": "A8-browser-profiles-controls",
+      "proof": "Chromium, public Next.js/API/worker, PostgreSQL and empty default runtime registry",
+      "limits": "Queued primary only; no active provider, individual specialist control or installed-client billing/isolation conformance",
+      "provider_calls": false,
+      "browser_closed": true,
+      "profile_replay_count": 2,
+      "resume_replay_count": 2,
+      "terminal_public_processes": [
+        {
+          "pid": 7024,
+          "return_code": 1
+        },
+        {
+          "pid": 134236,
+          "return_code": 1
+        },
+        {
+          "pid": 105560,
+          "return_code": 1
+        },
+        {
+          "pid": 93664,
+          "return_code": 1
+        }
+      ],
+      "terminal_web_process": {
+        "pid": 69348,
+        "return_code": 1
+      },
+      "original_run": "cc93c4b5-4fc1-46ec-a554-c5d6807f7ba2",
+      "future_run": "579fdae6-41ad-4472-8bb1-ed65dbc588c8",
+      "envelope_digests_preserved": {
+        "579fdae6-41ad-4472-8bb1-ed65dbc588c8": "eb2d545bf52b89c3b3e62f12e7f79c60f2ffbdcad4d368f0af88fe82b04fe676",
+        "cc93c4b5-4fc1-46ec-a554-c5d6807f7ba2": "12d5567945fd4c00262dbe042547134b4696d0dcbc89969c3148c0c24aa1f6db"
+      }
+    }
+  ],
+  "covered_behavior": [
+    "Keyless public API, separate worker and CLI startup; authenticated quota reports, known reset and unknown cooldown survive actual API/worker restart without duplicate observation.",
+    "Profile edits affect future envelopes; existing profiles, routes and human controls survive restart and stale-tab/replayed requests.",
+    "Chromium and Next.js exercise two tabs, lost-response replay, active specialist feedback and pause/resume/cancel. Partial work survives; cancelled task is terminal with zero outstanding attempts and unsettled effects.",
+    "Operator trust admits configured routes without capability evidence; worker, runtime model/CLI JSON and web tests retain Ready to attempt, operator_trusted, Antigravity approved_tools_unproved and advisory client_build_changed.",
+    "Usage assessment distinguishes measured zero, unknown and missing coverage; durable repairs, waits and approved fallback retain causal attribution. Subscription charges and remaining allowance remain unknown.",
+    "Allowance-only envelope rejects an API-key/paid-opt-in route; Codex, Claude, Gemini and Antigravity launch configuration excludes ambient paid credentials and retains configured controls. These are offline fixtures, not billing attestations."
+  ],
+  "reused_evidence": [
+    "docs/issue19-a1-result.json: configured real operator-trusted Astra and Antigravity invocation through normal separate API/worker, broker and stopped-process settlement",
+    "docs/issue25-a7-result.json: active fake-client executable binding, physical stop and effect reconciliation",
+    "docs/issue24-a6-result.json: approved fallback binding preserves auth/billing boundaries; the four domain fallback cases are part of its passing focused run"
+  ],
+  "live_provider_calls": 0,
+  "self_review": "Primary checked scenario limits, actual public-process termination, frozen envelope identity, replay counts, unknown-usage assertions and test provenance. No application change or further live invocation was required.",
+  "limitations": [
+    "The public keyless/profile/browser process fixtures intentionally register no model adapters; configured real-client startup and invocation are reused from A1.",
+    "The active browser fixture uses public UI/API and a separate public worker, while its specialist execution is driven by a test-host composed worker with a real supervised fake Gemini peer and MCP descendant.",
+    "Readiness and usage tests are deterministic; they do not establish balances, provider billing or native-tool isolation.",
+    "No paid route, account mutation, live balance query, full CI or fixture publication/merge was performed."
+  ],
+  "review_resolution": "PR54 requested negative admission/billing evidence. Added ten focused passing credential/route checks, reused A6 fallback-binding evidence, and clarified the historical design: the 24 September operator policy supersedes mandatory proof of provider-wide billing/native-tool isolation; actual route and credential checks remain required."
+}

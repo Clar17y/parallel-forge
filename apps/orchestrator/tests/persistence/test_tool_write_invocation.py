@@ -80,6 +80,7 @@ class _ControlledWriter:
     def __init__(self, worktree_path: Path) -> None:
         self.worktree_path = worktree_path
         self.call_count = 0
+        self.mutation_ids: list[UUID] = []
         self.write_started_event: threading.Event | None = None
         self.write_proceed_event: threading.Event | None = None
         self.raise_on_write: Exception | None = None
@@ -124,6 +125,30 @@ class _ControlledWriter:
             previous_digest=digest,
         )
 
+    def delete_file(self, path: str, expected_digest: str, mutation_id: UUID) -> FileWrite:
+        target = self.worktree_path / path
+        data = target.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        assert digest == expected_digest
+        self.call_count += 1
+        self.mutation_ids.append(mutation_id)
+        target.unlink()
+        return FileWrite(path=path, output_digest=digest, byte_count=len(data), previous_digest=digest)
+
+    def rename_file(
+        self, source: str, destination: str, expected_digest: str, mutation_id: UUID
+    ) -> FileWrite:
+        target = self.worktree_path / source
+        data = target.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        assert digest == expected_digest
+        self.call_count += 1
+        self.mutation_ids.append(mutation_id)
+        destination_path = self.worktree_path / destination
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        target.rename(destination_path)
+        return FileWrite(path=destination, output_digest=digest, byte_count=len(data), previous_digest=digest)
+
 
 class _ControlledArtifactStore:
     def __init__(self, root: Path) -> None:
@@ -154,8 +179,64 @@ class _ControlledArtifactStore:
     async def verify(self, digest: str) -> bool:
         return self.verify_returns and (digest in self.stored)
 
-    async def open_bytes(self, digest: str) -> bytes:
-        return self.stored[digest]
+    async def open_bytes(self, digest: str, *, max_bytes: int | None = None) -> bytes:
+        data = self.stored[digest]
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ValueError("artifact exceeds read limit")
+        return data
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "seed", "result_path"),
+    [
+        (ToolName.REPOSITORY_DELETE_FILE, {"path": "remove.txt"}, "remove.txt", "remove.txt"),
+        (ToolName.REPOSITORY_RENAME_FILE, {"source": "old.txt", "destination": "new.txt"}, "old.txt", "new.txt"),
+    ],
+)
+async def test_file_mutation_persists_exact_replay_and_fences_lost_receipt(
+    session_factory: async_sessionmaker[AsyncSession], tmp_path: Path,
+    tool_name: ToolName, arguments: dict[str, str], seed: str, result_path: str,
+) -> None:
+    values = await _seed_test_database(session_factory, tmp_path)
+    project_id, run_id, step_id, execution_id, base_sha, branch, repo, worktree, _ = values
+    source = Path(worktree) / seed
+    source.write_text("durable mutation\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    arguments = arguments | {"expected_digest": digest}
+    writer = _ControlledWriter(Path(worktree))
+    store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service, base_context, _ = _setup_service(
+        session_factory, project_id, run_id, branch, base_sha, repo, worktree, writer, store
+    )
+    context = replace(base_context, step_id=step_id, agent_execution_id=execution_id)
+    request = ToolRequest(name=tool_name, arguments=arguments)
+    result = await service.invoke(context, request)
+    assert result.status is ToolCallStatus.SUCCEEDED
+    assert result.metadata["output_digest"] == digest
+    assert writer.mutation_ids == [result.operation_intent_id]
+    assert (Path(worktree) / result_path).exists() is (tool_name is ToolName.REPOSITORY_RENAME_FILE)
+    replay = await service.invoke(context, request)
+    assert replay == result and writer.call_count == 1
+    with pytest.raises(ToolInvocationError):
+        await service.invoke(context, ToolRequest(name=tool_name, arguments=arguments | {"expected_digest": "0" * 64}))
+
+    # A completed effect with a lost artifact receipt remains fenced: retry may
+    # settle only the saved outcome, never invoke the writer again.
+    second_context = replace(context, invocation_id=uuid4())
+    second_seed = Path(worktree) / ("second.txt" if tool_name is ToolName.REPOSITORY_DELETE_FILE else "again.txt")
+    second_seed.write_text("another mutation\n", encoding="utf-8")
+    second_digest = hashlib.sha256(second_seed.read_bytes()).hexdigest()
+    second_arguments = (
+        {"path": "second.txt", "expected_digest": second_digest}
+        if tool_name is ToolName.REPOSITORY_DELETE_FILE
+        else {"source": "again.txt", "destination": "again-new.txt", "expected_digest": second_digest}
+    )
+    store.verify_returns = False
+    with pytest.raises(ToolInvocationError):
+        await service.invoke(second_context, ToolRequest(name=tool_name, arguments=second_arguments))
+    store.verify_returns = True
+    recovered = await service.invoke(second_context, ToolRequest(name=tool_name, arguments=second_arguments))
+    assert recovered.status is ToolCallStatus.SUCCEEDED and writer.call_count == 2
 
 
 class _Git:

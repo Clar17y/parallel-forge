@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
@@ -13,6 +14,7 @@ from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.evidence import EvidenceKind
 from forge.application.ports.github import GitHubPort
+from forge.application.ports.subscription_candidate import CandidateInspection
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import (
@@ -25,12 +27,26 @@ from forge.application.services.paused_approvals import approval_gate_origin
 from forge.application.services.release_resume import resumed_release_origin
 from forge.application.services.remote_remediation import reviewed_push_payload
 from forge.application.services.review_decision import ReviewDecisionService
-from forge.domain.approval import ApprovalGate, PrApprovalEvidence, canonical_digest
+from forge.application.services.subscription_publication_evidence import (
+    PUBLICATION_EVENT,
+    SubscriptionPublicationEvidence,
+    is_reviewed_publication_event,
+    publication_decision_payload,
+)
+from forge.domain.approval import (
+    ApprovalGate,
+    PrPublicationEvidence,
+    SubscriptionPlanApprovalEvidence,
+    SubscriptionPrApprovalEvidence,
+    canonical_digest,
+    decode_pr_approval_evidence,
+)
 from forge.domain.artifact import ArtifactDescriptor
-from forge.domain.command import CommandEnvelope
+from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.evidence import (
     EvidenceStatus,
     ReviewEvidenceManifest,
+    SubscriptionAcceptanceEvidenceManifest,
     ValidationEvidenceManifest,
     decode_evidence_manifest,
 )
@@ -58,14 +74,14 @@ class FrozenPrEvidence:
     """Historical inputs only; no current worktree or remote preflight authority."""
 
     approved: ApprovedPlan
-    evidence: PrApprovalEvidence
+    evidence: PrPublicationEvidence
     body: bytes
 
 
 @dataclass(frozen=True, slots=True)
 class ValidatedPrEvidence:
     approved: ApprovedPlan
-    evidence: PrApprovalEvidence
+    evidence: PrPublicationEvidence
     body: bytes
     worktree: ManagedWorktree
     candidate_head: str
@@ -143,7 +159,8 @@ class PrEvidenceValidator:
                 or receipt.payload.get("approval_digest") != approval.evidence_digest
                 or receipt.payload.get("target") != RunState.PUBLISHING_PR.value
                 or receipt.payload.get("invalidated") is not False
-                or queued != {
+                or queued
+                != {
                     "id": str(source.id),
                     "key": source.idempotency_key,
                     "command_type": source.command_type,
@@ -166,11 +183,10 @@ class PrEvidenceValidator:
             evidence, body, review_id, validation_id = await self._frozen(
                 work, historical, RunState.AWAITING_PR_APPROVAL
             )
-            rebuilt = await ReviewDecisionService(
-                self._store, git_factory=self._git_factory, approved_plans=self._approved
-            ).verify_frozen_publication(
+            rebuilt = await self._verify_frozen_candidate(
                 work,
                 historical,
+                evidence,
                 review_id=review_id,
                 validation_id=validation_id,
                 head_sha=evidence.candidate_commit,
@@ -197,14 +213,16 @@ class PrEvidenceValidator:
         original = await self.for_recovery(work, run_id, approval_id)
         approved = original.approved
         events = [
-            e for e in await work.events.list_after(run_id, 0)
-            if e.event_type == "run.review_decided"
+            e
+            for e in await work.events.list_after(run_id, 0)
+            if is_reviewed_publication_event(e, approved.approval_actor_id)
             and e.payload.get("pr_evidence_digest") == digest
             and e.payload.get("target") == RunState.MONITORING_PR.value
         ]
         if (
-            len(events) != 1 or events[0].run_version > approved.run.version
-            or events[0].actor_class != "worker" or events[0].actor_id is not None
+            len(events) != 1
+            or events[0].run_version > approved.run.version
+            or events[0].actor_class != "worker"
         ):
             raise PrEvidenceValidationError()
         event = events[0]
@@ -213,32 +231,47 @@ class PrEvidenceValidator:
         except ValueError, CommandNotFound:
             raise PrEvidenceValidationError() from None
         historical = replace(approved, run=replace(approved.run, version=event.run_version))
-        expected = await reviewed_push_payload(
-            work, historical, self._store, digest, allow_invalidated_approval=True
+        expected = (
+            event.payload.get("queued_payload")
+            if isinstance(approved.evidence, SubscriptionPlanApprovalEvidence)
+            else await reviewed_push_payload(
+                work, historical, self._store, digest, allow_invalidated_approval=True
+            )
         )
         if (
-            expected is None or expected.get("approval_id") != str(approval_id)
-            or command.run_id != run_id or command.command_type != "push_reviewed_pr"
+            not isinstance(expected, Mapping)
+            or expected.get("approval_id") != str(approval_id)
+            or command.run_id != run_id
+            or command.command_type != "push_reviewed_pr"
             or command.payload_schema_version != 1
             or command.expected_run_version != event.run_version
             or command.actor_id != approved.approval_actor_id
-            or command.payload != expected or event.payload.get("queued_payload") != expected
+            or command.payload != expected
+            or event.payload.get("queued_payload") != expected
             or command.idempotency_key != f"{run_id}:push-reviewed:{event.run_version}"
             or event.payload.get("queued_key") != command.idempotency_key
         ):
             raise PrEvidenceValidationError()
-        frozen = replace(historical, run=replace(
-            historical.run, state=RunState.AWAITING_PR_APPROVAL,
-            pending_gate=ApprovalGate.PR, pending_evidence_digest=digest,
-        ))
-        evidence, body, review_id, validation_id = await self._frozen(
-            work, frozen, RunState.MONITORING_PR
+        frozen = replace(
+            historical,
+            run=replace(
+                historical.run,
+                state=RunState.AWAITING_PR_APPROVAL,
+                pending_gate=ApprovalGate.PR,
+                pending_evidence_digest=digest,
+            ),
         )
-        rebuilt = await ReviewDecisionService(
-            self._store, git_factory=self._git_factory, approved_plans=self._approved
-        ).verify_frozen_publication(
-            work, frozen, review_id=review_id, validation_id=validation_id,
-            head_sha=evidence.candidate_commit, diff_digest=evidence.diff_digest,
+        evidence, body, review_id, validation_id = await self._frozen(
+            work, frozen, RunState.MONITORING_PR, allow_invalidated_approval=True
+        )
+        rebuilt = await self._verify_frozen_candidate(
+            work,
+            frozen,
+            evidence,
+            review_id=review_id,
+            validation_id=validation_id,
+            head_sha=evidence.candidate_commit,
+            diff_digest=evidence.diff_digest,
         )
         if rebuilt != digest:
             raise PrEvidenceValidationError()
@@ -271,16 +304,20 @@ class PrEvidenceValidator:
         approved = await self._approved.load(work, command.run_id)
         origin = await resumed_release_origin(work, command)
         digest = str(origin.payload.get("candidate_evidence_digest"))
-        expected = await reviewed_push_payload(work, approved, self._store, digest)
         events = [
             event
             for event in await work.events.list_for_version(
                 command.run_id, origin.expected_run_version
             )
-            if event.event_type == "run.review_decided"
+            if is_reviewed_publication_event(event, approved.approval_actor_id)
             and event.payload.get("queued_command_id") == str(origin.id)
             and event.payload.get("queued_payload") == origin.payload
         ]
+        expected = (
+            (events[0].payload.get("queued_payload") if len(events) == 1 else None)
+            if isinstance(approved.evidence, SubscriptionPlanApprovalEvidence)
+            else (await reviewed_push_payload(work, approved, self._store, digest))
+        )
         if (
             origin.command_type != "push_reviewed_pr"
             or origin.payload_schema_version != 1
@@ -295,6 +332,14 @@ class PrEvidenceValidator:
             raise PrEvidenceValidationError()
         record = await work.releases.get_for_run(command.run_id)
         if record is None:
+            raise PrEvidenceValidationError()
+        if isinstance(approved.evidence, SubscriptionPlanApprovalEvidence) and any(
+            origin.payload.get(key) != (str(value) if value is not None else None)
+            for key, value in (
+                ("base_update_intent_id", record.base_update_intent_id),
+                ("base_adoption_intent_id", record.base_adoption_intent_id),
+            )
+        ):
             raise PrEvidenceValidationError()
         return await self._reviewed_candidate(
             work, approved, digest, expected_remote_base=record.pull_request.base_sha
@@ -311,7 +356,7 @@ class PrEvidenceValidator:
         events = [
             event
             for event in await work.events.list_after(approved.run.id, 0)
-            if event.event_type == "run.review_decided"
+            if is_reviewed_publication_event(event, approved.approval_actor_id)
             and event.payload.get("pr_evidence_digest") == digest
             and event.payload.get("target") == RunState.MONITORING_PR.value
         ]
@@ -550,11 +595,12 @@ class PrEvidenceValidator:
             worktree, head, diff_digest = self._candidate(approved)
             if head != evidence.candidate_commit or diff_digest != evidence.diff_digest:
                 raise PrEvidenceValidationError("content_drift")
-            rebuilt = await ReviewDecisionService(
-                self._store, git_factory=self._git_factory, approved_plans=self._approved
-            ).verify_frozen_publication(
+            if isinstance(evidence, SubscriptionPrApprovalEvidence):
+                await self._subscription_candidate(work, approved, evidence, worktree)
+            rebuilt = await self._verify_frozen_candidate(
                 work,
                 approved,
+                evidence,
                 review_id=review_id,
                 validation_id=validation_id,
                 head_sha=head,
@@ -578,8 +624,13 @@ class PrEvidenceValidator:
             raise PrEvidenceValidationError() from None
 
     async def _frozen(
-        self, work: UnitOfWork, approved: ApprovedPlan, freeze_target: RunState
-    ) -> tuple[PrApprovalEvidence, bytes, UUID, UUID]:
+        self,
+        work: UnitOfWork,
+        approved: ApprovedPlan,
+        freeze_target: RunState,
+        *,
+        allow_invalidated_approval: bool = False,
+    ) -> tuple[PrPublicationEvidence, bytes, UUID, UUID]:
         """Shared immutable evidence checks, independent of live preflight."""
         run = approved.run
         if (
@@ -590,10 +641,8 @@ class PrEvidenceValidator:
             or run.base_sha is None
         ):
             raise PrEvidenceValidationError()
-        evidence_descriptor, wire = await self._artifact(
-            work, run.id, run.pending_evidence_digest
-        )
-        evidence = PrApprovalEvidence.model_validate_json(wire)
+        evidence_descriptor, wire = await self._artifact(work, run.id, run.pending_evidence_digest)
+        evidence = decode_pr_approval_evidence(wire)
         if (
             canonical_digest(evidence) != run.pending_evidence_digest
             or evidence_descriptor.producer_type != "pr_approval_evidence"
@@ -607,6 +656,14 @@ class PrEvidenceValidator:
             or evidence.remote_remediation_limit != approved.policy.remote_remediation_limit
         ):
             raise PrEvidenceValidationError()
+        if isinstance(evidence, SubscriptionPrApprovalEvidence):
+            return await self._frozen_subscription(
+                work,
+                approved,
+                evidence,
+                freeze_target,
+                allow_invalidated_approval=allow_invalidated_approval,
+            )
         review_id, validation_id = await self._freeze_ids(
             work, approved, evidence_descriptor, freeze_target
         )
@@ -646,6 +703,144 @@ class PrEvidenceValidator:
         if validation.head_sha != evidence.candidate_commit:
             raise PrEvidenceValidationError()
         return evidence, body, review_id, validation_id
+
+    async def _verify_frozen_candidate(
+        self,
+        work: UnitOfWork,
+        approved: ApprovedPlan,
+        evidence: PrPublicationEvidence,
+        *,
+        review_id: UUID,
+        validation_id: UUID,
+        head_sha: str,
+        diff_digest: str,
+    ) -> str:
+        if isinstance(evidence, SubscriptionPrApprovalEvidence):
+            # _frozen_subscription has rebuilt every immutable artifact and source.
+            if evidence.candidate_commit != head_sha or evidence.diff_digest != diff_digest:
+                raise PrEvidenceValidationError("content_drift")
+            return canonical_digest(evidence)
+        return await ReviewDecisionService(
+            self._store, git_factory=self._git_factory, approved_plans=self._approved
+        ).verify_frozen_publication(
+            work,
+            approved,
+            review_id=review_id,
+            validation_id=validation_id,
+            head_sha=head_sha,
+            diff_digest=diff_digest,
+        )
+
+    async def _frozen_subscription(
+        self,
+        work: UnitOfWork,
+        approved: ApprovedPlan,
+        evidence: SubscriptionPrApprovalEvidence,
+        target: RunState,
+        *,
+        allow_invalidated_approval: bool = False,
+    ) -> tuple[SubscriptionPrApprovalEvidence, bytes, UUID, UUID]:
+        if target is RunState.MONITORING_PR:
+            return await self._subscription_remote_frozen(
+                work, approved, evidence, allow_invalidated_approval=allow_invalidated_approval
+            )
+        if target is not RunState.AWAITING_PR_APPROVAL:
+            raise PrEvidenceValidationError()
+        frozen = await SubscriptionPublicationEvidence(self._store).at_pr_gate(work, approved)
+        if evidence != frozen.evidence:
+            raise PrEvidenceValidationError()
+        return (
+            frozen.evidence,
+            frozen.body,
+            frozen.acceptance.evidence_set_id,
+            frozen.validation.evidence_set_id,
+        )
+
+    async def _subscription_remote_frozen(
+        self,
+        work: UnitOfWork,
+        approved: ApprovedPlan,
+        evidence: SubscriptionPrApprovalEvidence,
+        *,
+        allow_invalidated_approval: bool,
+    ) -> tuple[SubscriptionPrApprovalEvidence, bytes, UUID, UUID]:
+        from forge.application.services.subscription_remote_remediation import (
+            SubscriptionRemoteRemediationController,
+        )
+
+        events = [
+            event
+            for event in await work.events.list_for_version(approved.run.id, approved.run.version)
+            if event.event_type == PUBLICATION_EVENT
+            and is_reviewed_publication_event(event, approved.approval_actor_id)
+            and event.payload.get("pr_evidence_digest") == canonical_digest(evidence)
+        ]
+        if len(events) != 1:
+            raise PrEvidenceValidationError()
+        event = events[0]
+        command = await work.commands.get(UUID(str(event.payload.get("source_command_id"))))
+        push = await work.commands.get(UUID(str(event.payload.get("queued_command_id"))))
+        count = push.payload.get("remote_attempt")
+        if type(count) is not int or not 1 <= count <= approved.run.remote_remediation_count:
+            raise PrEvidenceValidationError()
+        historical = replace(approved, run=replace(approved.run, remote_remediation_count=count))
+        frozen = await SubscriptionPublicationEvidence(self._store).freeze(
+            work, historical, command, diff_digest=evidence.diff_digest, read_only=True
+        )
+        expected = await SubscriptionRemoteRemediationController(
+            self._store, self, self._git_factory
+        ).push_payload(
+            work, historical, frozen, allow_invalidated_approval=allow_invalidated_approval
+        )
+        if (
+            command.status is not CommandStatus.COMPLETED
+            or command.expected_run_version + 1 != event.run_version
+            or frozen.evidence != evidence
+            or frozen.digest != approved.run.pending_evidence_digest
+            or push.run_id != approved.run.id
+            or push.command_type != "push_reviewed_pr"
+            or push.payload_schema_version != 1
+            or push.expected_run_version != event.run_version
+            or push.idempotency_key != f"{approved.run.id}:push-reviewed:{event.run_version}"
+            or push.actor_id != approved.approval_actor_id
+            or push.payload != expected
+            or operation_digest(event.payload)
+            != operation_digest(
+                publication_decision_payload(command, historical, frozen, push=push)
+            )
+        ):
+            raise PrEvidenceValidationError()
+        return (
+            frozen.evidence,
+            frozen.body,
+            frozen.acceptance.evidence_set_id,
+            frozen.validation.evidence_set_id,
+        )
+
+    async def _subscription_candidate(
+        self,
+        work: UnitOfWork,
+        approved: ApprovedPlan,
+        evidence: SubscriptionPrApprovalEvidence,
+        worktree: ManagedWorktree,
+    ) -> None:
+        _, wire = await self._artifact(work, approved.run.id, evidence.acceptance_digest)
+        manifest = decode_evidence_manifest(wire)
+        if not isinstance(manifest, SubscriptionAcceptanceEvidenceManifest):
+            raise PrEvidenceValidationError()
+        expected = CandidateInspection(
+            head_sha=manifest.head_sha,
+            base_sha=manifest.base_sha,
+            tree_digest=manifest.candidate_tree_digest,
+            manifest_digest=manifest.candidate_manifest_digest,
+        )
+        snapshot = await asyncio.to_thread(
+            self._git_factory(approved.policy).working_tree_snapshot,
+            worktree,
+            secret_paths=approved.policy.effective_secret_paths,
+        )
+        if CandidateInspection.from_snapshot(snapshot) != expected:
+            raise PrEvidenceValidationError("content_drift")
 
     async def _freeze_ids(
         self,

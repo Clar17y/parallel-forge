@@ -83,6 +83,40 @@ async def test_revoked_session_stops_even_mid_page():
 
 
 @pytest.mark.asyncio
+async def test_caught_up_stream_flushes_authenticated_heartbeat_on_first_poll(monkeypatch):
+    monkeypatch.setattr("forge.api.sse.monotonic", lambda: 0.0)
+    reads = checks = 0
+
+    async def page(cursor):
+        nonlocal reads
+        reads += 1
+        assert cursor == 42
+        assert reads == 1, "a caught-up stream must connect before another poll"
+        return []
+
+    async def check():
+        nonlocal checks
+        checks += 1
+
+    async def connected():
+        return False
+
+    stream = event_stream(
+        cursor=42,
+        read_page=page,
+        check_session=check,
+        disconnected=connected,
+        shutdown=asyncio.Event(),
+        poll_seconds=0,
+    )
+    try:
+        assert await anext(stream) == b": heartbeat\n\n"
+        assert reads == 1 and checks == 2
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stop_kind", ["shutdown", "disconnect", "cancel"])
 async def test_heartbeat_is_comment_only_and_stream_stops_without_more_reads(stop_kind):
     shutdown = asyncio.Event()

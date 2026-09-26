@@ -11,9 +11,14 @@ from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.approvals import ApprovalCommandValidationError
 from forge.application.services.approved_plan import ApprovedPlanLoader
 from forge.application.services.pr_evidence import PrEvidenceValidationError, PrEvidenceValidator
+from forge.application.services.subscription_candidate_revision import (
+    SubscriptionCandidateRevisionController,
+)
 from forge.application.services.validation import _fence_command
+from forge.domain.approval import SubscriptionPlanApprovalEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
+from forge.domain.operation import canonical_digest
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.models import Approval
 
@@ -25,12 +30,14 @@ class ApprovePrHandler:
         approved_plans: ApprovedPlanLoader,
         *,
         clock: Clock | None = None,
+        subscription_revisions: SubscriptionCandidateRevisionController | None = None,
     ) -> None:
         self._evidence, self._approved, self._clock = (
             evidence,
             approved_plans,
             clock or SystemClock(),
         )
+        self._subscription_revisions = subscription_revisions
 
     async def __call__(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         approval_id = _approval_id(command)
@@ -67,6 +74,18 @@ class ApprovePrHandler:
             )
             if error.category == "content_drift":
                 approved = await self._approved.load(work, run.id)
+                if isinstance(approved.evidence, SubscriptionPlanApprovalEvidence):
+                    if self._subscription_revisions is None:
+                        raise ApprovalCommandValidationError(
+                            "subscription revision is not configured"
+                        ) from None
+                    await self._subscription_revisions.reopen(command, work, approved)
+                    changed = await work.runs.get(run.id)
+                    await self._settled(
+                        command, work, changed, approval, None, subscription_revision=True
+                    )
+                    await work.commit()
+                    return
                 remediating = await work.runs.transition(
                     run.id,
                     run.version,
@@ -146,6 +165,8 @@ class ApprovePrHandler:
         run: RunSnapshot,
         approval: Approval,
         queued: CommandEnvelope | None,
+        *,
+        subscription_revision: bool = False,
     ) -> None:
         await _fence_command(command, work)
         payload: dict[str, object] = {
@@ -165,6 +186,8 @@ class ApprovePrHandler:
                 "version": queued.expected_run_version,
             },
         }
+        if subscription_revision:
+            payload["subscription_revision"] = True
         await work.events.append(
             RunEvent(
                 run_id=run.id,
@@ -195,6 +218,34 @@ class ApprovePrHandler:
             raise ApprovalCommandValidationError("approval replay differs")
         event = events[0]
         payload = event.payload
+        if payload.get("subscription_revision") is True:
+            if self._subscription_revisions is None:
+                raise ApprovalCommandValidationError("subscription revision is not configured")
+            approved = await self._approved.load(work, run.id)
+            revision = await self._subscription_revisions.replay(command, work, approved)
+            if (
+                revision is None
+                or approval.invalidated_at is None
+                or event.run_version != revision.version
+                or event.run_version > run.version
+                or event.actor_class != "worker"
+                or event.actor_id != command.actor_id
+                or event.payload_schema_version != 1
+                or canonical_digest(payload)
+                != canonical_digest(
+                    {
+                        "source_command_id": str(command.id),
+                        "approval_id": str(approval.id),
+                        "approval_digest": approval.evidence_digest,
+                        "target": revision.state.value,
+                        "invalidated": True,
+                        "queued": None,
+                        "subscription_revision": True,
+                    }
+                )
+            ):
+                raise ApprovalCommandValidationError("subscription approval replay differs")
+            return True
         expected_version = command.expected_run_version + (
             2 if run.state is RunState.VALIDATING else 1
         )

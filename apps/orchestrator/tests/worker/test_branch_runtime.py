@@ -239,7 +239,16 @@ async def test_owned_removed_worktree_binds_receipt_and_checkpoint(tmp_path, cor
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "corruption",
-    [None, "head", "actor", "confirmation", "command", "quiescence", "advanced_version"],
+    [
+        None,
+        "head",
+        "actor",
+        "confirmation",
+        "command",
+        "quiescence",
+        "subscription",
+        "advanced_version",
+    ],
 )
 async def test_branch_source_requires_exact_operator_admission(tmp_path, corruption):
     from forge.application.handlers.teardown import TeardownCommandRejected, _binding
@@ -311,7 +320,14 @@ async def test_branch_source_requires_exact_operator_admission(tmp_path, corrupt
     work.commands = SimpleNamespace(get=AsyncMock(return_value=command))
     work.runs = SimpleNamespace(
         prove_quiescent=AsyncMock(
-            return_value=RunQuiescence(int(corruption == "quiescence"), 0, 0, 0, 1)
+            return_value=RunQuiescence(
+                int(corruption == "quiescence"),
+                0,
+                0,
+                0,
+                1,
+                unsettled_subscription_work=int(corruption == "subscription"),
+            )
         )
     )
     if corruption in (None, "advanced_version"):

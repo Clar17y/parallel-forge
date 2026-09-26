@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from uuid import UUID
+
 from forge.application.ports.repository import MAX_REPOSITORY_WRITE_BYTES, FileWrite
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.domain.artifact import validate_artifact_digest
 from forge.domain.policy import ProjectPolicy
-from forge.tools.git import ControlledGit
+from forge.tools.git import ControlledGit, ControlledGitBusy, WorktreeCapability
+
+_LOCK_WAIT_SECONDS = 5.0
+_LOCK_RETRY_SECONDS = 0.05
 
 
 class RepositoryWriteError(RuntimeError):
@@ -45,6 +53,34 @@ class WorktreeRepositoryWriter:
 
         return controlled_git is self._git and worktree == self._worktree and policy == self._policy
 
+    @contextmanager
+    def _open_capability(self, *, read_only: bool = False) -> Iterator[WorktreeCapability]:
+        """Retry only lock admission, releasing all handles between attempts.
+
+        Disjoint task effects may briefly need the same filesystem lock. Each
+        retry reacquires and revalidates the complete capability. Once admitted,
+        neither the operation body nor its release validation is ever retried.
+        """
+        deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+        with ExitStack() as stack:
+            while True:
+                try:
+                    capability = stack.enter_context(
+                        self._git.open_worktree_capability(
+                            self._worktree,
+                            self._policy,
+                            read_only=read_only,
+                            allow_committed_changes=True,
+                        )
+                    )
+                    break
+                except ControlledGitBusy:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    time.sleep(min(_LOCK_RETRY_SECONDS, remaining))
+            yield capability
+
     def write_file(self, path: str, content: str) -> FileWrite:
         if not isinstance(path, str) or not isinstance(content, str) or "\x00" in content:
             raise RepositoryWriteError()
@@ -58,9 +94,7 @@ class WorktreeRepositoryWriter:
         failed = False
         result: tuple[str | None, str, int, str] | None = None
         try:
-            with self._git.open_worktree_capability(
-                self._worktree, self._policy, allow_committed_changes=True
-            ) as capability:
+            with self._open_capability() as capability:
                 result = capability.write_repository_file(
                     path,
                     encoded,
@@ -90,12 +124,7 @@ class WorktreeRepositoryWriter:
         failed = False
         result: tuple[str, int, str] | None = None
         try:
-            with self._git.open_worktree_capability(
-                self._worktree,
-                self._policy,
-                read_only=True,
-                allow_committed_changes=True,
-            ) as capability:
+            with self._open_capability(read_only=True) as capability:
                 result = capability.inspect_repository_file(
                     path,
                     maximum=MAX_REPOSITORY_WRITE_BYTES,
@@ -112,6 +141,55 @@ class WorktreeRepositoryWriter:
             previous_digest=digest,
             output_digest=digest,
             byte_count=byte_count,
+            created=False,
+        )
+
+    def delete_file(self, path: str, expected_digest: str, mutation_id: UUID) -> FileWrite:
+        try:
+            validate_artifact_digest(expected_digest)
+            if not isinstance(mutation_id, UUID) or mutation_id.int == 0:
+                raise ValueError("mutation identity is invalid")
+            with self._open_capability() as capability:
+                digest, byte_count, normalized = capability.delete_repository_file(
+                    path,
+                    expected_digest=expected_digest,
+                    maximum=MAX_REPOSITORY_WRITE_BYTES,
+                    mutation_id=mutation_id,
+                )
+        except Exception as error:
+            raise RepositoryWriteError() from error
+        return FileWrite(
+            path=normalized,
+            output_digest=digest,
+            byte_count=byte_count,
+            previous_digest=digest,
+            created=False,
+        )
+
+    def rename_file(
+        self, source: str, destination: str, expected_digest: str, mutation_id: UUID
+    ) -> FileWrite:
+        try:
+            validate_artifact_digest(expected_digest)
+            if not isinstance(mutation_id, UUID) or mutation_id.int == 0:
+                raise ValueError("mutation identity is invalid")
+            with self._open_capability() as capability:
+                digest, byte_count, _source, normalized_destination = (
+                    capability.rename_repository_file(
+                        source,
+                        destination,
+                        expected_digest=expected_digest,
+                        maximum=MAX_REPOSITORY_WRITE_BYTES,
+                        mutation_id=mutation_id,
+                    )
+                )
+        except Exception as error:
+            raise RepositoryWriteError() from error
+        return FileWrite(
+            path=normalized_destination,
+            output_digest=digest,
+            byte_count=byte_count,
+            previous_digest=digest,
             created=False,
         )
 

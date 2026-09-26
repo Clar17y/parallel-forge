@@ -10,7 +10,7 @@ from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.merge_evidence import MergeEvidenceValidator
 from forge.application.services.recovery import RecoveryError
-from forge.domain.approval import MergeApprovalEvidence
+from forge.domain.approval import MergePublicationEvidence
 from forge.domain.operation import OperationIntent, OperationOutcome
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.release.merge import MergeController, MergeOperation
@@ -23,7 +23,9 @@ def merge_recovery_adapters(
     controller: MergeController,
     queue: GitHubMergeQueuePort | None = None,
 ) -> dict[str, OperationAdapter]:
-    adapters: dict[str, OperationAdapter] = {"merge_pr": _MergeRecovery(factory, evidence, controller)}
+    adapters: dict[str, OperationAdapter] = {
+        "merge_pr": _MergeRecovery(factory, evidence, controller)
+    }
     if queue is not None:
         adapters["enqueue_pr"] = _MergeRecovery(factory, evidence, controller, queue)
     return adapters
@@ -59,11 +61,13 @@ class _MergeRecovery:
             ):
                 raise RecoveryError("startup enqueue approval mode differs")
 
-        async def no_new_authority() -> MergeApprovalEvidence:
+        async def no_new_authority() -> MergePublicationEvidence:
             raise RecoveryError("startup recovery cannot authorize a merge")
 
         operation: OperationAdapter = (
-            EnqueueOperation(self._controller, self._queue, record, approval_id, approved, no_new_authority)
+            EnqueueOperation(
+                self._controller, self._queue, record, approval_id, approved, no_new_authority
+            )
             if self._queue is not None
             else MergeOperation(self._controller, record, approval_id, approved, no_new_authority)
         )

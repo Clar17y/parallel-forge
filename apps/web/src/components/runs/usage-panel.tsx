@@ -1,12 +1,13 @@
 'use client';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
+import { SubscriptionUsageSummary } from '@/components/subscription-usage/usage-summary';
 import type { components } from '@/lib/api/schema';
 
 export function UsagePanel({ runId }: { runId: string }) {
   const [offset, setOffset] = useState(0);
   const usage = useApi<components['schemas']['ListPage_RunUsageItem_']>(`/runs/${encodeURIComponent(runId)}/usage?offset=${offset}&limit=25`);
-  return <section aria-label="Run usage"><h2>Usage</h2>
+  return <><SubscriptionUsageSummary runId={runId} /><section aria-label="Run usage"><h2>API usage</h2>
     <p>Recorded token counts and estimated costs for this run, newest first. Calls without a recorded estimate remain unknown.</p>
     <button disabled={usage.loading} onClick={usage.refresh}>Refresh usage</button>
     {usage.loading && <p role="status">Loading usage…</p>}
@@ -24,5 +25,5 @@ export function UsagePanel({ runId }: { runId: string }) {
       </article>)}</>}
     <nav aria-label="Usage pages"><button disabled={offset === 0 || usage.loading} onClick={() => setOffset(Math.max(0, offset - 25))}>Newer usage</button>
       <button disabled={!usage.value?.truncated || usage.loading} onClick={() => setOffset(offset + 25)}>Older usage</button></nav>
-  </section>;
+  </section></>;
 }

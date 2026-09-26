@@ -28,6 +28,8 @@ _SDK_CORRELATION_ID = re.compile(r"\A[^\x00-\x1f\x7f]+\Z")
 _EFFECT_TOOLS = frozenset(
     {
         ToolName.REPOSITORY_WRITE_FILE,
+        ToolName.REPOSITORY_DELETE_FILE,
+        ToolName.REPOSITORY_RENAME_FILE,
         ToolName.GIT_COMMIT,
         ToolName.BUILD_RUN_NAMED_CHECK,
     }
@@ -111,6 +113,24 @@ def build_adk_tools(
             tool_context,
         )
 
+    async def repository_delete_file(
+        path: str, expected_digest: str, tool_context: ToolContext
+    ) -> dict[str, object]:
+        return await invoke(
+            ToolName.REPOSITORY_DELETE_FILE,
+            {"path": path, "expected_digest": expected_digest},
+            tool_context,
+        )
+
+    async def repository_rename_file(
+        source: str, destination: str, expected_digest: str, tool_context: ToolContext
+    ) -> dict[str, object]:
+        return await invoke(
+            ToolName.REPOSITORY_RENAME_FILE,
+            {"source": source, "destination": destination, "expected_digest": expected_digest},
+            tool_context,
+        )
+
     async def git_status(tool_context: ToolContext) -> dict[str, object]:
         """Return bounded Git status for the retained managed worktree."""
 
@@ -159,6 +179,8 @@ def build_adk_tools(
         ToolName.REPOSITORY_SEARCH: repository_search,
         ToolName.REPOSITORY_READ_INSTRUCTIONS: repository_read_instructions,
         ToolName.REPOSITORY_WRITE_FILE: repository_write_file,
+        ToolName.REPOSITORY_DELETE_FILE: repository_delete_file,
+        ToolName.REPOSITORY_RENAME_FILE: repository_rename_file,
         ToolName.GIT_STATUS: git_status,
         ToolName.GIT_DIFF: git_diff,
         ToolName.GIT_COMMIT: git_commit,

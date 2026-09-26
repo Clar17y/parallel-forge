@@ -11,6 +11,7 @@ from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.evidence import (
     EvidenceManifest,
     ReviewEvidenceManifest,
+    SubscriptionAcceptanceEvidenceManifest,
     ValidationEvidenceManifest,
     ValidationEvidenceMember,
 )
@@ -19,6 +20,7 @@ from forge.domain.evidence import (
 class EvidenceKind(StrEnum):
     VALIDATION = "validation"
     REVIEW = "review"
+    ACCEPTANCE = "acceptance"
 
 
 class EvidenceInputPurpose(StrEnum):
@@ -68,6 +70,9 @@ class EvidenceSetDescriptor:
     validation_evidence_set_id: UUID | None
     prior_review_evidence_set_id: UUID | None
     review_finding_ids: tuple[str, ...] | None
+    candidate_tree_digest: str | None = None
+    producer_task_id: UUID | None = None
+    producer_attempt_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +99,11 @@ class ReviewEvidenceDraft:
     manifest: ReviewEvidenceManifest
 
 
+@dataclass(frozen=True, slots=True)
+class SubscriptionAcceptanceEvidenceDraft:
+    manifest: SubscriptionAcceptanceEvidenceManifest
+
+
 class EvidenceRepository(Protocol):
     async def input_for_execution(
         self, purpose: EvidenceInputPurpose, scope: EvidenceReadScope
@@ -101,7 +111,7 @@ class EvidenceRepository(Protocol):
     async def get_by_id(self, evidence_set_id: UUID, *, run_id: UUID) -> EvidenceSetDescriptor: ...
     async def record_set(
         self,
-        draft: ValidationEvidenceDraft | ReviewEvidenceDraft,
+        draft: ValidationEvidenceDraft | ReviewEvidenceDraft | SubscriptionAcceptanceEvidenceDraft,
         artifact: CanonicalEvidenceArtifact,
     ) -> EvidenceSetDescriptor: ...
     async def bind_input(
@@ -126,6 +136,7 @@ __all__ = [
     "EvidenceRepository",
     "EvidenceSetDescriptor",
     "ReviewEvidenceDraft",
+    "SubscriptionAcceptanceEvidenceDraft",
     "ValidationEvidenceDraft",
     "ValidationProjectionMember",
 ]

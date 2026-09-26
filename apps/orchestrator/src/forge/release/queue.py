@@ -6,7 +6,7 @@ from uuid import UUID
 
 from forge.application.ports.github_write import GitHubMergeQueuePort
 from forge.application.ports.release import ReleaseRecord
-from forge.domain.approval import MergeApprovalEvidence
+from forge.domain.approval import MergePublicationEvidence
 from forge.domain.merge_queue import MergeQueueReceipt
 from forge.domain.operation import OperationIntent, OperationOutcome, OperationStatus
 from forge.domain.release import GitHubPullRequest
@@ -18,16 +18,21 @@ from forge.release.merge import MergeController, MergeOperation, StaleMergeEvide
 
 class EnqueueOperation:
     def __init__(
-        self, controller: MergeController, queue: GitHubMergeQueuePort,
-        record: ReleaseRecord, approval_id: UUID, approved: MergeApprovalEvidence,
-        current_evidence: Callable[[], Awaitable[MergeApprovalEvidence]],
+        self,
+        controller: MergeController,
+        queue: GitHubMergeQueuePort,
+        record: ReleaseRecord,
+        approval_id: UUID,
+        approved: MergePublicationEvidence,
+        current_evidence: Callable[[], Awaitable[MergePublicationEvidence]],
     ) -> None:
         self._controller, self._queue, self._record = controller, queue, record
         self._approved, self._current = approved, current_evidence
         # Identical evidence binding, separately namespaced effect and receipt.
         merge = MergeOperation(controller, record, approval_id, approved, current_evidence)
         self.request = replace(
-            merge.request, kind="enqueue_pr",
+            merge.request,
+            kind="enqueue_pr",
             idempotency_key=f"{record.run_id}:enqueue_pr:{merge.request.request_digest}",
         )
 
@@ -42,9 +47,12 @@ class EnqueueOperation:
         approved = self._approved
         try:
             receipt = await self._queue.enqueue(
-                approved.repository, approved.pull_request_number,
-                self._record.pull_request.node_id, approved.head_sha,
-                approved.merge_method, str(intent.id),
+                approved.repository,
+                approved.pull_request_number,
+                self._record.pull_request.node_id,
+                approved.head_sha,
+                approved.merge_method,
+                str(intent.id),
             )
         except GitHubWriteError as error:
             if error.category not in {"stale", "rejected"}:
@@ -56,8 +64,10 @@ class EnqueueOperation:
         _validate_intent(intent, self.request)
         approved = self._approved
         receipt = await self._queue.observe(
-            approved.repository, approved.pull_request_number,
-            self._record.pull_request.node_id, approved.head_sha,
+            approved.repository,
+            approved.pull_request_number,
+            self._record.pull_request.node_id,
+            approved.head_sha,
         )
         if receipt is None:
             # Absence alone proves nothing. A fully bound merged PR can resolve
@@ -82,7 +92,8 @@ class EnqueueOperation:
         canonical = self._controller.outcome(self._record, self._approved, pull)
         if (
             outcome.status is not OperationStatus.SUCCEEDED
-            or canonical.payload != value or canonical.remote_resource_id != outcome.remote_resource_id
+            or canonical.payload != value
+            or canonical.remote_resource_id != outcome.remote_resource_id
         ):
             raise ReleaseReconciliationRequired()
         return pull

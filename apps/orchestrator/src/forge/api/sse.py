@@ -57,7 +57,9 @@ async def event_stream(
     heartbeat_seconds: float = 15.0,
 ) -> AsyncIterator[bytes]:
     """Keep polling read-only state; a stream never refreshes session expiry."""
-    next_heartbeat = monotonic() + heartbeat_seconds
+    # Flush the first authenticated poll even when the cursor is caught up.
+    # Otherwise streaming proxies can withhold the connection for a full interval.
+    next_heartbeat = monotonic()
     while not shutdown.is_set():
         if await disconnected():
             return

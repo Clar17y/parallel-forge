@@ -10,6 +10,12 @@ import typer
 
 from forge.application.services.auth import AuthService, AuthUnitOfWork
 from forge.cli.evaluations import eval_app
+from forge.cli.search_ranking import ranking_app
+from forge.cli.subscription_capabilities import capability_app
+from forge.cli.subscription_profiles import profile_app
+from forge.cli.subscription_quota import quota_app
+from forge.cli.subscription_runtime import runtime_app
+from forge.cli.subscription_tasks import task_app
 from forge.cli.worktrees import worktree_app
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.unit_of_work import PostgresUnitOfWork
@@ -20,7 +26,12 @@ operator_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(operator_app, name="operator")
 app.add_typer(worktree_app, name="worktree")
 app.add_typer(eval_app, name="eval")
-
+app.add_typer(profile_app, name="profile")
+app.add_typer(quota_app, name="subscription-quota")
+app.add_typer(runtime_app, name="subscription-runtime")
+app.add_typer(task_app, name="subscription-tasks")
+app.add_typer(capability_app, name="subscription-capabilities")
+app.add_typer(ranking_app, name="search-ranking")
 
 
 @app.callback()

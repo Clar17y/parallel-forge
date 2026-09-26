@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import TypedDict, cast
 from uuid import UUID, uuid4
 
 from forge.application.adapters.git_commit import (
@@ -21,6 +22,7 @@ from forge.application.adapters.git_commit import (
     PUBLISH_GIT_COMMIT_KIND,
     PrepareGitCommitAdapter,
     PublishGitCommitAdapter,
+    _primary_paths,
 )
 from forge.application.adapters.named_check import (
     NAMED_CHECK_KIND,
@@ -41,16 +43,32 @@ from forge.application.ports.repository import (
     SearchMatch,
 )
 from forge.application.ports.runner import WorktreeRunnerFactoryPort
+from forge.application.ports.search_ranking import (
+    MAX_OBJECTIVE_BYTES,
+    MAX_RANKED_MATCHES,
+    SearchRankerPort,
+    SearchRanking,
+    SearchRankingMode,
+    SearchRankingRequest,
+)
+from forge.application.ports.tool_schemas import arguments_match_schema as _arguments_match_schema
 from forge.application.ports.tools import (
     ToolAuthorizationDenied,
     ToolAuthorizerPort,
     ToolCallRecord,
 )
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.application.ports.worktrees import ControlledGitPort, GitOutput, ManagedWorktree
+from forge.application.ports.worktrees import (
+    ControlledGitPort,
+    GitOutput,
+    ManagedWorktree,
+    SnapshotFailureReason,
+    SnapshotReadError,
+)
 from forge.application.services.evidence_reader import EvidenceReader
 from forge.application.services.recovery import OperationExecutor
 from forge.domain.actor import AgentRole
+from forge.domain.artifact import validate_artifact_digest
 from forge.domain.event import RunEvent, thaw_payload
 from forge.domain.evidence import evidence_manifest_digest
 from forge.domain.operation import (
@@ -64,7 +82,10 @@ from forge.domain.payload import validate_durable_payload
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
+from forge.domain.subscription import LogicalTaskContract, SpecialistPurpose
+from forge.domain.subscription_execution import SUBSCRIPTION_WORK_STATES
 from forge.domain.tool import (
+    SubscriptionToolAuthorizationContext,
     ToolAuthorization,
     ToolAuthorizationContext,
     ToolCallStatus,
@@ -92,6 +113,8 @@ _CAPABILITIES = {
     AgentRole.DEVELOPER: _REPOSITORY_READS
     | {
         ToolName.REPOSITORY_WRITE_FILE,
+        ToolName.REPOSITORY_DELETE_FILE,
+        ToolName.REPOSITORY_RENAME_FILE,
         ToolName.GIT_STATUS,
         ToolName.GIT_DIFF,
         ToolName.GIT_COMMIT,
@@ -104,20 +127,6 @@ _CAPABILITIES = {
         ToolName.VALIDATION_RESULTS_READ,
         ToolName.REVIEW_ARTIFACTS_READ,
     },
-}
-
-_TOOL_ARGUMENT_SCHEMAS = {
-    ToolName.REPOSITORY_LIST_FILES: (frozenset(), frozenset({"path"})),
-    ToolName.REPOSITORY_READ_FILE: (frozenset({"path"}), frozenset()),
-    ToolName.REPOSITORY_SEARCH: (frozenset({"literal"}), frozenset({"path"})),
-    ToolName.REPOSITORY_READ_INSTRUCTIONS: (frozenset(), frozenset({"target_path"})),
-    ToolName.REPOSITORY_WRITE_FILE: (frozenset({"content", "path"}), frozenset()),
-    ToolName.GIT_STATUS: (frozenset(), frozenset()),
-    ToolName.GIT_DIFF: (frozenset(), frozenset({"scope"})),
-    ToolName.GIT_COMMIT: (frozenset({"message"}), frozenset()),
-    ToolName.BUILD_RUN_NAMED_CHECK: (frozenset({"command_name"}), frozenset()),
-    ToolName.VALIDATION_RESULTS_READ: (frozenset(), frozenset()),
-    ToolName.REVIEW_ARTIFACTS_READ: (frozenset(), frozenset()),
 }
 
 
@@ -173,20 +182,41 @@ class ToolAuthorizer:
         return ToolAuthorization(context=context, request=request)
 
 
-def _arguments_match_schema(
-    tool_name: ToolName,
-    arguments: Mapping[str, object],
-) -> bool:
-    fields = frozenset(arguments)
-    required, optional = _TOOL_ARGUMENT_SCHEMAS[tool_name]
-    if tool_name is ToolName.GIT_DIFF and arguments.get("scope", "working_tree") not in (
-        "working_tree",
-        "candidate",
-    ):
-        return False
-    return required <= fields <= required | optional and all(
-        type(value) is str for value in arguments.values()
-    )
+type _ToolContext = ToolAuthorizationContext | SubscriptionToolAuthorizationContext
+
+
+class _OperationIdentity(TypedDict, total=False):
+    operation_id: UUID | None
+
+
+class _ToolLineage(TypedDict):
+    agent_execution_id: UUID | None
+    step_id: UUID | None
+    role: AgentRole | None
+    subscription_task_id: UUID | None
+    subscription_attempt_id: UUID | None
+    subscription_purpose: str | None
+
+
+def _tool_lineage(context: _ToolContext) -> _ToolLineage:
+    if type(context) is SubscriptionToolAuthorizationContext:
+        return {
+            "agent_execution_id": None,
+            "step_id": None,
+            "role": None,
+            "subscription_task_id": context.task_id,
+            "subscription_attempt_id": context.attempt_id,
+            "subscription_purpose": context.purpose.value,
+        }
+    legacy_context = cast(ToolAuthorizationContext, context)
+    return {
+        "agent_execution_id": _required_uuid(legacy_context.agent_execution_id),
+        "step_id": legacy_context.step_id,
+        "role": legacy_context.role,
+        "subscription_task_id": None,
+        "subscription_attempt_id": None,
+        "subscription_purpose": None,
+    }
 
 
 class ToolInvocationError(RuntimeError):
@@ -214,6 +244,14 @@ _UNAVAILABLE_TOOLS = frozenset(
 _WRITE_EXECUTION_LEASE_SECONDS = 30.0
 _DUPLICATE_OBSERVER_INITIAL_DELAY_SECONDS = 0.05
 _DUPLICATE_OBSERVER_MAX_DELAY_SECONDS = 1.0
+_DEFAULT_SEARCH_RANKING_TOP_K = 15
+# Ranking runs inside one agent tool call, so it is bounded well below the
+# provider turn budget and always fails open when it exceeds this.
+_SEARCH_RANKING_TIMEOUT_SECONDS = 20.0
+# The lowest normalized score meaning "at least in the same area of the
+# codebase". Below this, no match is worth keeping over any other, so the
+# ranking is recorded but never applied.
+_MIN_APPLIED_RELEVANCE = 1.0 / 3.0
 _WRITE_RESULT_ARTIFACT_MAX_BYTES = 64 * 1024
 _TERMINAL_TOOL_STATUSES = frozenset(
     {
@@ -271,7 +309,8 @@ class _PreparedWrite:
     path: str
     content: str | None
     content_digest: str
-    byte_count: int
+    byte_count: int | None
+    destination: str | None = None
 
 
 class ControlledToolService:
@@ -298,6 +337,10 @@ class ControlledToolService:
         worktree: ManagedWorktree | None = None,
         runner_factory: WorktreeRunnerFactoryPort | None = None,
         command_environment: Mapping[str, str] | None = None,
+        search_ranker: SearchRankerPort | None = None,
+        search_ranking_mode: SearchRankingMode = SearchRankingMode.OFF,
+        search_ranking_top_k: int = _DEFAULT_SEARCH_RANKING_TOP_K,
+        search_objective: str | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._authorizer = authorizer or ToolAuthorizer()
@@ -317,24 +360,36 @@ class ControlledToolService:
         self._runner_factory = runner_factory
         self._command_environment = MappingProxyType(dict(command_environment or {}))
         self._named_completions: dict[UUID, asyncio.Task[ToolResult]] = {}
+        self._search_ranker = search_ranker
+        self._search_ranking_mode = SearchRankingMode(search_ranking_mode)
+        if type(search_ranking_top_k) is not int or search_ranking_top_k < 1:
+            raise ValueError("search ranking top_k must be a positive count")
+        self._search_ranking_top_k = search_ranking_top_k
+        self._search_objective = _bounded_objective(search_objective)
         if not callable(self._unit_of_work_factory):
             raise TypeError("controlled tool service requires a unit of work factory")
 
     async def invoke(
         self,
-        context: ToolAuthorizationContext,
+        context: ToolAuthorizationContext | SubscriptionToolAuthorizationContext,
         request: ToolRequest,
     ) -> ToolResult:
         """Invoke one typed tool and commit its evidence and terminal event."""
 
+        if type(context) is SubscriptionToolAuthorizationContext:
+            return await self._invoke_subscription(context, request)
         if type(context) is not ToolAuthorizationContext or type(request) is not ToolRequest:
             raise ToolInvocationError()
-        if request.name is ToolName.REPOSITORY_WRITE_FILE:
+        if request.name in {
+            ToolName.REPOSITORY_WRITE_FILE,
+            ToolName.REPOSITORY_DELETE_FILE,
+            ToolName.REPOSITORY_RENAME_FILE,
+        }:
             return await self._invoke_repository_write(context, request)
-        if request.name is ToolName.GIT_COMMIT:
-            return await self._invoke_git_commit(context, request)
         if request.name is ToolName.BUILD_RUN_NAMED_CHECK and context.role is AgentRole.DEVELOPER:
             return await self._invoke_named_check(context, request)
+        if request.name is ToolName.GIT_COMMIT:
+            return await self._invoke_git_commit(context, request)
         tool_call_id = uuid4()
         started_at = datetime.now(UTC)
         started = time.monotonic()
@@ -453,9 +508,420 @@ class ControlledToolService:
         except Exception:  # noqa: BLE001 - all untrusted boundary failures are stable
             raise ToolInvocationError() from None
 
+    async def _invoke_subscription(
+        self,
+        context: SubscriptionToolAuthorizationContext,
+        request: ToolRequest,
+    ) -> ToolResult:
+        """Route subscription tools through the existing controlled adapters.
+
+        Subscription authority has no ``AgentExecution`` or ``Step``.  It is
+        admitted by the scheduler/broker and recorded with its task/attempt
+        lineage, rather than manufacturing a legacy execution identity.
+        """
+        if request.name is ToolName.GIT_DIFF and request.arguments.get("scope") == "snapshot":
+            try:
+                return await self._invoke_subscription_snapshot(context, request)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - stable controlled-tool boundary
+                raise ToolInvocationError() from None
+        if request.name in {
+            ToolName.REPOSITORY_WRITE_FILE,
+            ToolName.REPOSITORY_DELETE_FILE,
+            ToolName.REPOSITORY_RENAME_FILE,
+        }:
+            return await self._invoke_repository_write(context, request)
+        if request.name is ToolName.BUILD_RUN_NAMED_CHECK:
+            return await self._invoke_named_check(context, request)
+        if request.name is ToolName.GIT_COMMIT:
+            return await self._invoke_git_commit(context, request)
+        started_at, started = datetime.now(UTC), time.monotonic()
+        if request.name not in _READ_TOOLS or request.name not in context.permitted_tools:
+            return await self._record_subscription_denial(context, request, started_at, started)
+        if not _arguments_match_schema(request.name, request.arguments):
+            return await self._record_subscription_denial(context, request, started_at, started)
+        call_id = _write_tool_call_id(context.invocation_id) if context.invocation_id else uuid4()
+        try:
+            async with self._open_uow() as work:
+                run = await self._resolve_run(work, context)
+                policy = await self._resolve_policy(work, run) if run is not None else None
+                authorization, validation_error = self._validate(context, request, run, policy)
+                contract = (
+                    await work.subscription.authorize_tool(context, request)
+                    if validation_error is None
+                    else None
+                )
+                if (
+                    run is None
+                    or authorization is None
+                    or validation_error is not None
+                    or contract is None
+                ):
+                    return await self._record_subscription_denial(
+                        context, request, started_at, started, work=work, run=run
+                    )
+                existing = await work.tool_calls.find(call_id)
+                normalized = self._normalized_arguments(request)
+                # Broker bindings use canonical payload digests.  Subscription
+                # receipts must therefore retain that same digest (including
+                # Unicode escaping), while legacy writes retain their format.
+                digest = canonical_digest(request.arguments)
+                if existing is not None:
+                    if not _subscription_record_matches(
+                        existing, context, request, normalized, digest
+                    ):
+                        raise ToolInvocationError()
+                    if existing.status in _TERMINAL_TOOL_STATUSES:
+                        await work.rollback()
+                        return _result_from_record(existing)
+                if (
+                    existing is None
+                    and (
+                        await work.tool_calls.count_for_subscription_task(
+                            context.run_id, context.task_id
+                        )
+                    )
+                    >= contract.budget.max_tool_calls
+                ):
+                    return await self._record_write_denial(
+                        work,
+                        context,
+                        request,
+                        run,
+                        (ToolErrorCode.BUDGET_EXCEEDED, "tool-call budget is exhausted"),
+                        started_at=started_at,
+                        started=started,
+                    )
+                result = await self._dispatch(authorization)
+                completed_at = datetime.now(UTC)
+                result = replace(
+                    result,
+                    tool_call_id=call_id,
+                    correlation_id=call_id,
+                    duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+                )
+                record = ToolCallRecord(
+                    id=call_id,
+                    run_id=context.run_id,
+                    agent_execution_id=None,
+                    subscription_task_id=context.task_id,
+                    subscription_attempt_id=context.attempt_id,
+                    subscription_purpose=context.purpose.value,
+                    tool_name=request.name,
+                    normalized_arguments=normalized,
+                    authorized=result.status is not ToolCallStatus.DENIED,
+                    status=result.status,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    result_metadata=_record_metadata(
+                        result,
+                        authorized=result.status is not ToolCallStatus.DENIED,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        redactor=self._redactor,
+                    ),
+                    policy_version=context.policy_version,
+                    duration_ms=result.duration_ms,
+                    correlation_id=call_id,
+                    arguments_schema_version=1,
+                    result_metadata_schema_version=1,
+                    request_digest=digest,
+                    resource_id=context.worktree_id,
+                    invocation_schema_version=1,
+                )
+                await work.tool_calls.record(record)
+                await work.events.append(
+                    _tool_event(result, context, run, call_id, authorized=record.authorized)
+                )
+                await work.commit()
+                return result
+        except ToolInvocationError:
+            raise
+        except Exception:  # noqa: BLE001 - adapter/persistence details are never exposed
+            raise ToolInvocationError() from None
+
+    async def _invoke_subscription_snapshot(
+        self, context: SubscriptionToolAuthorizationContext, request: ToolRequest
+    ) -> ToolResult:
+        """Reserve briefly, read outside the UoW, then revalidate and persist proof."""
+        started_at, started = datetime.now(UTC), time.monotonic()
+        if context.invocation_id is None:
+            raise ToolInvocationError()
+        call_id = _write_tool_call_id(context.invocation_id)
+        normalized = self._normalized_arguments(request)
+        request_digest = canonical_digest(request.arguments)
+        async with self._open_uow() as work:
+            run = await self._resolve_run(work, context)
+            policy = await self._resolve_policy(work, run) if run is not None else None
+            authorization, error = self._validate(context, request, run, policy)
+            contract = (
+                await work.subscription.authorize_tool(context, request) if error is None else None
+            )
+            if (
+                run is None
+                or policy is None
+                or authorization is None
+                or error is not None
+                or contract is None
+            ):
+                return await self._record_subscription_denial(
+                    context, request, started_at, started, work=work, run=run
+                )
+            existing = await work.tool_calls.find(call_id)
+            if existing is not None:
+                if not _subscription_record_matches(
+                    existing, context, request, normalized, request_digest
+                ):
+                    raise ToolInvocationError()
+                if existing.status in _TERMINAL_TOOL_STATUSES:
+                    await work.rollback()
+                    return _result_from_record(existing)
+            elif (
+                await work.tool_calls.count_for_subscription_task(context.run_id, context.task_id)
+                >= contract.budget.max_tool_calls
+            ):
+                return await self._record_write_denial(
+                    work,
+                    context,
+                    request,
+                    run,
+                    (ToolErrorCode.BUDGET_EXCEEDED, "tool-call budget is exhausted"),
+                    started_at=started_at,
+                    started=started,
+                )
+            reserved = await work.tool_calls.reserve(
+                ToolCallRecord(
+                    id=call_id,
+                    run_id=context.run_id,
+                    **_tool_lineage(context),
+                    tool_name=request.name,
+                    normalized_arguments=normalized,
+                    authorized=True,
+                    status=ToolCallStatus.RUNNING,
+                    started_at=existing.started_at if existing else started_at,
+                    policy_version=context.policy_version,
+                    correlation_id=call_id,
+                    arguments_schema_version=1,
+                    request_digest=request_digest,
+                    resource_id=context.worktree_id,
+                    invocation_schema_version=1,
+                )
+            )
+            await work.commit()
+        cancelled = asyncio.Event()
+        completion = asyncio.create_task(
+            self._complete_subscription_snapshot(
+                context, request, policy, reserved, started, cancelled
+            )
+        )
+        return await _await_committed_write(completion, on_cancel=cancelled.set)
+
+    async def _complete_subscription_snapshot(
+        self,
+        context: SubscriptionToolAuthorizationContext,
+        request: ToolRequest,
+        policy: ProjectPolicy,
+        reserved: ToolCallRecord,
+        started: float,
+        cancelled: asyncio.Event,
+    ) -> ToolResult:
+        descriptor = None
+        try:
+            if self._git is None or self._worktree is None or self._artifact_store is None:
+                raise ToolInvocationError()
+            snapshot = await asyncio.to_thread(
+                self._git.working_tree_snapshot,
+                self._worktree,
+                secret_paths=tuple(policy.effective_secret_paths),
+            )
+            manifest = {
+                **snapshot.manifest(),
+                "run_id": str(context.run_id),
+                "task_id": str(context.task_id),
+                "attempt_id": str(context.attempt_id),
+                "tool_call_id": str(reserved.id),
+                "worktree_id": context.worktree_id,
+                "policy_version": context.policy_version,
+            }
+            validate_durable_payload(manifest)
+            data = json.dumps(
+                manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")
+            if len(data) > 4 * 1024 * 1024:
+                raise SnapshotReadError(SnapshotFailureReason.SIZE_LIMIT)
+            descriptor = await self._artifact_store.put_bytes(
+                data,
+                media_type="application/json",
+                max_bytes=4 * 1024 * 1024,
+                bounding_policy="head_tail",
+            )
+            if (
+                descriptor.truncated
+                or descriptor.byte_count != len(data)
+                or descriptor.digest != hashlib.sha256(data).hexdigest()
+                or await self._artifact_store.verify(descriptor.digest) is not True
+            ):
+                raise ToolInvocationError()
+            result = self._result(
+                request.name,
+                ToolCallStatus.SUCCEEDED,
+                metadata={
+                    "snapshot_schema_version": 1,
+                    "head_sha": snapshot.head_sha,
+                    "base_sha": snapshot.base_sha,
+                    "candidate_tree_digest": snapshot.candidate_tree_digest,
+                    "manifest_digest": descriptor.digest,
+                    "file_count": len(snapshot.files),
+                    "changed_path_count": len(snapshot.changed_paths),
+                    "changed_paths_preview": snapshot.changed_paths[:128],
+                },
+                artifact_digests=(descriptor.digest,),
+            )
+        except Exception as exc:  # noqa: BLE001 - raw errors are not provider text
+            descriptor = None
+            result = self._result(
+                request.name,
+                ToolCallStatus.FAILED,
+                ToolError(code=ToolErrorCode.ADAPTER_ERROR, message="working tree snapshot failed"),
+                metadata={"snapshot_failure_reason": exc.reason.value}
+                if isinstance(exc, SnapshotReadError)
+                else {},
+            )
+        async with self._open_uow() as work:
+            run = await self._resolve_run(work, context)
+            current_policy = await self._resolve_policy(work, run) if run is not None else None
+            _, error = self._validate(context, request, run, current_policy)
+            authorized = (
+                error is None
+                and await work.subscription.authorize_tool(context, request) is not None
+            )
+            current = await work.tool_calls.get(reserved.id)
+            if current.status in _TERMINAL_TOOL_STATUSES:
+                await work.rollback()
+                return _result_from_record(current)
+            if cancelled.is_set() or not authorized:
+                descriptor = None
+                result = self._result(
+                    request.name,
+                    ToolCallStatus.CANCELLED,
+                    ToolError(
+                        code=ToolErrorCode.CANCELLED, message="snapshot acceptance was revoked"
+                    ),
+                )
+            result = replace(
+                result,
+                tool_call_id=reserved.id,
+                correlation_id=reserved.id,
+                duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+            )
+            completed_at = datetime.now(UTC)
+            record = replace(
+                reserved,
+                status=result.status,
+                completed_at=completed_at,
+                duration_ms=result.duration_ms,
+                artifact_digests=result.artifact_digests,
+                result_metadata_schema_version=1,
+                result_metadata=_record_metadata(
+                    result,
+                    authorized=True,
+                    started_at=reserved.started_at,
+                    completed_at=completed_at,
+                    redactor=self._redactor,
+                ),
+            )
+            if descriptor is not None:
+                await work.artifacts.record(
+                    descriptor,
+                    run_id=context.run_id,
+                    producer_type="subscription_working_tree_snapshot",
+                    producer_id=reserved.id,
+                )
+            await work.tool_calls.finalize(record)
+            if run is not None:
+                await work.events.append(
+                    _tool_event(result, context, run, reserved.id, authorized=True)
+                )
+            await work.commit()
+            return result
+
+    async def _record_subscription_denial(
+        self,
+        context: SubscriptionToolAuthorizationContext,
+        request: ToolRequest,
+        started_at: datetime,
+        started: float,
+        *,
+        work: UnitOfWork | None = None,
+        run: RunSnapshot | None = None,
+    ) -> ToolResult:
+        """Persist a safe denial when the UoW can prove subscription lineage."""
+        result = self._result(
+            request.name,
+            ToolCallStatus.DENIED,
+            ToolError(code=ToolErrorCode.AUTHORIZATION_DENIED, message="tool authorization denied"),
+        )
+        if work is None:
+            return result
+        call_id = _write_tool_call_id(context.invocation_id) if context.invocation_id else uuid4()
+        normalized = self._normalized_arguments(request)
+        request_digest = canonical_digest(request.arguments)
+        existing = await work.tool_calls.find(call_id)
+        if existing is not None:
+            if not _subscription_record_matches(
+                existing, context, request, normalized, request_digest
+            ):
+                raise ToolInvocationError()
+            if existing.status not in _TERMINAL_TOOL_STATUSES:
+                raise ToolInvocationError()
+            await work.rollback()
+            return _result_from_record(existing)
+        completed_at = datetime.now(UTC)
+        record = ToolCallRecord(
+            id=call_id,
+            run_id=context.run_id,
+            agent_execution_id=None,
+            subscription_task_id=context.task_id,
+            subscription_attempt_id=context.attempt_id,
+            subscription_purpose=context.purpose.value,
+            tool_name=request.name,
+            normalized_arguments=normalized,
+            authorized=False,
+            status=ToolCallStatus.DENIED,
+            started_at=started_at,
+            completed_at=completed_at,
+            result_metadata=_record_metadata(
+                result,
+                authorized=False,
+                started_at=started_at,
+                completed_at=completed_at,
+                redactor=self._redactor,
+            ),
+            policy_version=context.policy_version,
+            duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+            correlation_id=call_id,
+            arguments_schema_version=1,
+            result_metadata_schema_version=1,
+            request_digest=request_digest,
+            resource_id=context.worktree_id,
+            invocation_schema_version=1,
+        )
+        await work.tool_calls.record(record)
+        result = replace(
+            result,
+            tool_call_id=call_id,
+            correlation_id=call_id,
+            duration_ms=record.duration_ms or 0,
+        )
+        if run is not None:
+            await work.events.append(_tool_event(result, context, run, call_id, authorized=False))
+        await work.commit()
+        return result
+
     async def _invoke_repository_write(
         self,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         request: ToolRequest,
     ) -> ToolResult:
         started_at = datetime.now(UTC)
@@ -476,9 +942,13 @@ class ControlledToolService:
                     resolved_run,
                     resolved_policy,
                 )
-                if validation_error is None and not await self._execution_context_is_current(
-                    context, work
-                ):
+                subscription_contract: LogicalTaskContract | None = None
+                if isinstance(context, SubscriptionToolAuthorizationContext):
+                    subscription_contract = await work.subscription.authorize_tool(context, request)
+                    current_authority = subscription_contract is not None
+                else:
+                    current_authority = await self._execution_context_is_current(context, work)
+                if validation_error is None and not current_authority:
                     validation_error = (
                         ToolErrorCode.RESOURCE_MISMATCH,
                         "tool execution identity is not current",
@@ -502,7 +972,11 @@ class ControlledToolService:
                             "repository write requires an invocation identifier",
                         )
                     else:
-                        request_digest = _write_request_digest(request)
+                        request_digest = (
+                            canonical_digest(request.arguments)
+                            if isinstance(context, SubscriptionToolAuthorizationContext)
+                            else _write_request_digest(request)
+                        )
                         tool_call_id = _write_tool_call_id(context.invocation_id)
                         existing = await work.tool_calls.find(tool_call_id)
                         if existing is not None and not _write_record_matches_request(
@@ -510,7 +984,7 @@ class ControlledToolService:
                         ):
                             raise ToolInvocationError()
                         payload = _write_operation_payload(
-                            context, resolved_run, prepared, request_digest
+                            context, resolved_run, request.name, prepared, request_digest
                         )
                     if existing is not None and existing.status in _TERMINAL_TOOL_STATUSES:
                         if request_digest is None:
@@ -525,9 +999,21 @@ class ControlledToolService:
                         )
                         await work.rollback()
                         return replay
-                    if existing is None and not await self._budget_available(
-                        context, resolved_policy, work
-                    ):
+                    if isinstance(context, SubscriptionToolAuthorizationContext):
+                        budget_available = (
+                            subscription_contract is not None
+                            and (
+                                await work.tool_calls.count_for_subscription_task(
+                                    context.run_id, context.task_id
+                                )
+                            )
+                            < subscription_contract.budget.max_tool_calls
+                        )
+                    else:
+                        budget_available = await self._budget_available(
+                            context, resolved_policy, work
+                        )
+                    if existing is None and not budget_available:
                         validation_error = (
                             ToolErrorCode.BUDGET_EXCEEDED,
                             "tool-call budget is exhausted",
@@ -559,26 +1045,30 @@ class ControlledToolService:
                 ):
                     raise ToolInvocationError()
 
+                operation_identity: _OperationIdentity = (
+                    {"operation_id": context.operation_intent_id}
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else {}
+                )
                 intent = await work.operations.begin(
                     run_id=context.run_id,
-                    operation_type=ToolName.REPOSITORY_WRITE_FILE.value,
+                    operation_type=request.name.value,
                     idempotency_key=f"tool:{tool_call_id}",
                     request_digest=canonical_digest(payload),
                     request_payload=payload,
                     execution_owner=f"forge-operation-{uuid4().hex}",
                     execution_lease_seconds=_WRITE_EXECUTION_LEASE_SECONDS,
+                    **operation_identity,
                 )
                 reservation = ToolCallRecord(
                     id=tool_call_id,
                     run_id=context.run_id,
-                    agent_execution_id=_required_uuid(context.agent_execution_id),
+                    **_tool_lineage(context),
                     tool_name=request.name,
                     normalized_arguments=normalized_arguments,
                     authorized=True,
                     status=ToolCallStatus.RUNNING,
                     started_at=existing.started_at if existing is not None else started_at,
-                    step_id=context.step_id,
-                    role=context.role,
                     policy_version=context.policy_version,
                     correlation_id=tool_call_id,
                     operation_intent_id=intent.id,
@@ -634,7 +1124,7 @@ class ControlledToolService:
         self,
         *,
         work: UnitOfWork,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         request: ToolRequest,
         normalized_arguments: dict[str, object],
         tool_call_id: UUID,
@@ -672,7 +1162,7 @@ class ControlledToolService:
     async def _complete_repository_write(
         self,
         *,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         request: ToolRequest,
         normalized_arguments: dict[str, object],
         tool_call_id: UUID,
@@ -687,15 +1177,22 @@ class ControlledToolService:
     ) -> ToolResult:
         """Finish a committed write even when its waiting caller is cancelled."""
 
-        adapter = _RepositoryWriteOperationAdapter(writer=writer, prepared=prepared)
+        adapter = _RepositoryWriteOperationAdapter(
+            writer=writer, tool_name=request.name, prepared=prepared
+        )
         outcome = await executor.execute_admitted(intent, adapter)
         if outcome.status is OperationStatus.SUCCEEDED:
             result_metadata = _safe_metadata(
                 thaw_payload(outcome.payload),
                 redactor=self._redactor,
             )
-            artifact_bytes = _write_result_artifact_bytes(
-                intent.id, tool_call_id, request_digest, context.worktree_id, result_metadata
+            artifact_bytes = _repository_mutation_result_artifact_bytes(
+                request.name,
+                intent.id,
+                tool_call_id,
+                request_digest,
+                context.worktree_id,
+                result_metadata,
             )
             descriptor = await artifact_store.put_bytes(
                 artifact_bytes,
@@ -733,14 +1230,14 @@ class ControlledToolService:
                     tool_call_id=tool_call_id,
                     operation_intent_id=intent.id,
                     correlation_id=tool_call_id,
-                    agent_execution_id=context.agent_execution_id,
-                    step_id=context.step_id,
+                    agent_execution_id=_tool_lineage(context)["agent_execution_id"],
+                    step_id=_tool_lineage(context)["step_id"],
                     duration_ms=duration_ms,
                 )
                 final_record = ToolCallRecord(
                     id=tool_call_id,
                     run_id=context.run_id,
-                    agent_execution_id=_required_uuid(context.agent_execution_id),
+                    **_tool_lineage(context),
                     tool_name=request.name,
                     normalized_arguments=normalized_arguments,
                     authorized=True,
@@ -755,8 +1252,6 @@ class ControlledToolService:
                         completed_at=completed_at,
                         redactor=self._redactor,
                     ),
-                    step_id=context.step_id,
-                    role=context.role,
                     policy_version=context.policy_version,
                     duration_ms=duration_ms,
                     artifact_digests=(descriptor.digest,),
@@ -778,7 +1273,7 @@ class ControlledToolService:
                         "producer_id": str(tool_call_id),
                         "request_digest": request_digest,
                         "resource_id": context.worktree_id,
-                        "result_schema_version": 1,
+                        "result_schema_version": _repository_mutation_schema_version(request.name),
                         "tool_name": request.name.value,
                         "invocation_schema_version": 1,
                     },
@@ -800,7 +1295,7 @@ class ControlledToolService:
     async def _record_write_denial(
         self,
         work: UnitOfWork,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         request: ToolRequest,
         run: RunSnapshot,
         validation_error: tuple[ToolErrorCode, str],
@@ -808,7 +1303,12 @@ class ControlledToolService:
         started_at: datetime,
         started: float,
     ) -> ToolResult:
-        tool_call_id = uuid4()
+        subscription = isinstance(context, SubscriptionToolAuthorizationContext)
+        tool_call_id = (
+            _write_tool_call_id(context.invocation_id)
+            if subscription and context.invocation_id is not None
+            else uuid4()
+        )
         completed_at = datetime.now(UTC)
         result = ToolResult(
             tool_name=request.name,
@@ -816,14 +1316,14 @@ class ControlledToolService:
             error=ToolError(code=validation_error[0], message=validation_error[1]),
             tool_call_id=tool_call_id,
             correlation_id=tool_call_id,
-            agent_execution_id=context.agent_execution_id,
-            step_id=context.step_id,
+            agent_execution_id=_tool_lineage(context)["agent_execution_id"],
+            step_id=_tool_lineage(context)["step_id"],
             duration_ms=max(0, int((time.monotonic() - started) * 1000)),
         )
         record = ToolCallRecord(
             id=tool_call_id,
             run_id=context.run_id,
-            agent_execution_id=_required_uuid(context.agent_execution_id),
+            **_tool_lineage(context),
             tool_name=request.name,
             normalized_arguments=self._normalized_arguments(request),
             authorized=False,
@@ -837,23 +1337,24 @@ class ControlledToolService:
                 completed_at=completed_at,
                 redactor=self._redactor,
             ),
-            step_id=context.step_id,
-            role=context.role,
             policy_version=context.policy_version,
             duration_ms=result.duration_ms,
             correlation_id=tool_call_id,
             arguments_schema_version=1,
             result_metadata_schema_version=1,
+            request_digest=canonical_digest(request.arguments) if subscription else None,
+            resource_id=context.worktree_id if subscription else None,
+            invocation_schema_version=1 if subscription else None,
         )
         await work.tool_calls.record(record)
         await work.events.append(_tool_event(result, context, run, tool_call_id, authorized=False))
         await work.commit()
         return result
 
-    async def _invoke_named_check(
-        self, context: ToolAuthorizationContext, request: ToolRequest
-    ) -> ToolResult:
-        call_id = _write_tool_call_id(_required_uuid(context.invocation_id))
+    async def _invoke_named_check(self, context: _ToolContext, request: ToolRequest) -> ToolResult:
+        if context.invocation_id is None:
+            raise ToolInvocationError()
+        call_id = _write_tool_call_id(context.invocation_id)
         request_digest = canonical_digest(request.arguments)
         normalized = dict(request.arguments)
         started = time.monotonic()
@@ -872,7 +1373,7 @@ class ControlledToolService:
                     ):
                         raise ToolInvocationError()
                     if existing.status in _TERMINAL_TOOL_STATUSES:
-                        return await self._named_replay(work, existing, context, policy)
+                        return await self._named_replay(work, existing, context, policy, request)
                     await work.rollback()
                     completion = self._named_completions.get(call_id)
                     if completion is not None:
@@ -895,19 +1396,36 @@ class ControlledToolService:
                         async with self._open_uow() as observer:
                             current = await observer.tool_calls.get(call_id)
                             if current.status in _TERMINAL_TOOL_STATUSES:
-                                return await self._named_replay(observer, current, context, policy)
+                                return await self._named_replay(
+                                    observer, current, context, policy, request
+                                )
                         await asyncio.sleep(observer_delay)
                         observer_delay = min(
                             observer_delay * 2, _DUPLICATE_OBSERVER_MAX_DELAY_SECONDS
                         )
                     raise ToolInvocationError()
                 authorization, error = self._validate(context, request, run, policy)
-                if error is None and not await self._execution_context_is_current(context, work):
+                subscription_contract: LogicalTaskContract | None = None
+                if isinstance(context, SubscriptionToolAuthorizationContext):
+                    subscription_contract = await work.subscription.authorize_tool(context, request)
+                    current_authority = subscription_contract is not None
+                else:
+                    current_authority = await self._execution_context_is_current(context, work)
+                if error is None and not current_authority:
                     error = (
                         ToolErrorCode.RESOURCE_MISMATCH,
                         "tool execution identity is not current",
                     )
-                if error is None and not await self._budget_available(context, policy, work):
+                budget_available = (
+                    subscription_contract is not None
+                    and await work.tool_calls.count_for_subscription_task(
+                        context.run_id, context.task_id
+                    )
+                    < subscription_contract.budget.max_tool_calls
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else await self._budget_available(context, policy, work)
+                )
+                if error is None and not budget_available:
                     error = (ToolErrorCode.BUDGET_EXCEEDED, "tool-call budget is exhausted")
                 if error is not None:
                     return await self._record_write_denial(
@@ -925,8 +1443,7 @@ class ControlledToolService:
                     item for item in policy.commands if item.name == normalized["command_name"]
                 )
                 environment = self._named_environment(command.environment_keys)
-                payload = {
-                    "agent_execution_id": str(_required_uuid(context.agent_execution_id)),
+                payload: dict[str, object] = {
                     "command_digest": command_spec_digest(command),
                     "command_name": command.name,
                     "environment_keys_digest": hashlib.sha256(
@@ -938,10 +1455,26 @@ class ControlledToolService:
                     "project_id": str(run.project_id),
                     "protocol_version": 1,
                     "run_id": str(context.run_id),
-                    "step_id": str(_required_uuid(context.step_id)),
                     "tool_call_id": str(call_id),
                     "worktree_id": context.worktree_id,
                 }
+                if isinstance(context, SubscriptionToolAuthorizationContext):
+                    payload.update(
+                        authority_schema_version=2,
+                        subscription_task_id=str(context.task_id),
+                        subscription_attempt_id=str(context.attempt_id),
+                        subscription_purpose=context.purpose.value,
+                    )
+                else:
+                    payload.update(
+                        agent_execution_id=str(_required_uuid(context.agent_execution_id)),
+                        step_id=str(_required_uuid(context.step_id)),
+                    )
+                operation_identity: _OperationIdentity = (
+                    {"operation_id": _required_uuid(context.operation_intent_id)}
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else {}
+                )
                 intent = await work.operations.begin(
                     run_id=context.run_id,
                     operation_type=NAMED_CHECK_KIND,
@@ -950,6 +1483,7 @@ class ControlledToolService:
                     request_payload=payload,
                     execution_owner=f"forge-named-{uuid4().hex}",
                     execution_lease_seconds=_WRITE_EXECUTION_LEASE_SECONDS,
+                    **operation_identity,
                 )
                 if not intent.is_new:
                     raise ToolInvocationError()
@@ -957,14 +1491,12 @@ class ControlledToolService:
                     ToolCallRecord(
                         id=call_id,
                         run_id=context.run_id,
-                        agent_execution_id=_required_uuid(context.agent_execution_id),
+                        **_tool_lineage(context),
                         tool_name=request.name,
                         normalized_arguments=normalized,
                         authorized=True,
                         status=ToolCallStatus.RUNNING,
                         started_at=datetime.now(UTC),
-                        step_id=context.step_id,
-                        role=context.role,
                         policy_version=context.policy_version,
                         correlation_id=call_id,
                         operation_intent_id=intent.id,
@@ -1031,7 +1563,7 @@ class ControlledToolService:
     async def _settle_named_check(
         self,
         admission: UnitOfWork,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         policy: ProjectPolicy,
         environment: Mapping[str, str],
         intent: OperationIntent,
@@ -1064,11 +1596,22 @@ class ControlledToolService:
                     started,
                     run,
                 )
-            if (
-                current.status is not ToolCallStatus.RUNNING
-                or run.state not in _ACTIVE_RUN_STATES[context.role]
-                or not await self._execution_context_is_current(context, preflight)
-            ):
+            current_authority = (
+                await preflight.subscription.authorize_tool(
+                    context,
+                    ToolRequest(
+                        name=ToolName.BUILD_RUN_NAMED_CHECK, arguments=reserved.normalized_arguments
+                    ),
+                )
+                if isinstance(context, SubscriptionToolAuthorizationContext)
+                else await self._execution_context_is_current(context, preflight)
+            )
+            active = (
+                run.state in SUBSCRIPTION_WORK_STATES
+                if isinstance(context, SubscriptionToolAuthorizationContext)
+                else run.state in _ACTIVE_RUN_STATES[context.role]
+            )
+            if current.status is not ToolCallStatus.RUNNING or not active or not current_authority:
                 raise ToolInvocationError()
             await preflight.commit()
         async with self._open_uow() as execution:
@@ -1097,7 +1640,7 @@ class ControlledToolService:
     async def _complete_named_check(
         self,
         work: UnitOfWork,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         intent: OperationIntent,
         reserved: ToolCallRecord,
         outcome: OperationOutcome,
@@ -1138,9 +1681,14 @@ class ControlledToolService:
         self,
         work: UnitOfWork,
         record: ToolCallRecord,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         policy: ProjectPolicy,
+        request: ToolRequest,
     ) -> ToolResult:
+        if isinstance(context, SubscriptionToolAuthorizationContext) and (
+            await work.subscription.authorize_tool(context, request) is None
+        ):
+            raise ToolInvocationError()
         intent = await work.operations.get(_required_uuid(record.operation_intent_id))
         command = next(
             (
@@ -1167,9 +1715,7 @@ class ControlledToolService:
         await work.rollback()
         return result
 
-    async def _invoke_git_commit(
-        self, context: ToolAuthorizationContext, request: ToolRequest
-    ) -> ToolResult:
+    async def _invoke_git_commit(self, context: _ToolContext, request: ToolRequest) -> ToolResult:
         """Run the two independently admitted phases of a controlled commit.
 
         The first transaction deliberately contains no Git call.  Its child is
@@ -1211,11 +1757,17 @@ class ControlledToolService:
                 run = await self._resolve_run(work, context)
                 policy = await self._resolve_policy(work, run) if run is not None else None
                 authorization, error = self._validate(context, request, run, policy)
-                if error is None and not await self._execution_context_is_current(context, work):
-                    error = (
-                        ToolErrorCode.RESOURCE_MISMATCH,
-                        "tool execution identity is not current",
+                if error is None:
+                    current = (
+                        await work.subscription.authorize_tool(context, request) is not None
+                        if isinstance(context, SubscriptionToolAuthorizationContext)
+                        else await self._execution_context_is_current(context, work)
                     )
+                    if not current:
+                        error = (
+                            ToolErrorCode.RESOURCE_MISMATCH,
+                            "tool execution identity is not current",
+                        )
                 existing = await work.tool_calls.find(call_id)
                 if existing is not None:
                     if not _git_record_matches(existing, context, request_digest, normalized):
@@ -1273,10 +1825,26 @@ class ControlledToolService:
                                 deadline = max(deadline, time.monotonic() + remaining)
                             await replay_work.rollback()
                     raise ToolInvocationError()
-                if error is None and (
-                    policy is None or not await self._budget_available(context, policy, work)
-                ):
+                if error is None and policy is None:
                     error = (ToolErrorCode.BUDGET_EXCEEDED, "tool-call budget is exhausted")
+                commit_paths: tuple[str, ...] | None = None
+                if error is None and isinstance(context, SubscriptionToolAuthorizationContext):
+                    contract = await work.subscription.authorize_tool(context, request)
+                    if (
+                        contract is None
+                        or await work.tool_calls.count_for_subscription_task(
+                            context.run_id, context.task_id
+                        )
+                        >= contract.budget.max_tool_calls
+                    ):
+                        error = (ToolErrorCode.BUDGET_EXCEEDED, "tool-call budget is exhausted")
+                    elif context.purpose is SpecialistPurpose.PRIMARY:
+                        commit_paths = contract.owned_paths
+                elif error is None:
+                    assert isinstance(context, ToolAuthorizationContext)
+                    assert policy is not None
+                    if not await self._budget_available(context, policy, work):
+                        error = (ToolErrorCode.BUDGET_EXCEEDED, "tool-call budget is exhausted")
                 if error is not None:
                     if run is None:
                         raise ToolInvocationError()
@@ -1293,9 +1861,12 @@ class ControlledToolService:
                     raise ToolInvocationError()
                 # This is the sole pre-effect HEAD observation, retained in the request.
                 previous_sha = self._git.head_sha(self._worktree)
-                payload = _git_prepare_payload(context, self._worktree, message, request_digest)
+                payload = _git_prepare_payload(
+                    context, self._worktree, message, request_digest, owned_paths=commit_paths
+                )
                 intent = await work.operations.begin(
                     run_id=context.run_id,
+                    operation_id=call_id,
                     operation_type=PREPARE_GIT_COMMIT_KIND,
                     idempotency_key=f"git.commit:{call_id}:prepare",
                     request_digest=canonical_digest(payload),
@@ -1310,14 +1881,41 @@ class ControlledToolService:
                     ToolCallRecord(
                         id=call_id,
                         run_id=context.run_id,
-                        agent_execution_id=_required_uuid(context.agent_execution_id),
+                        agent_execution_id=(
+                            None
+                            if isinstance(context, SubscriptionToolAuthorizationContext)
+                            else _required_uuid(context.agent_execution_id)
+                        ),
+                        subscription_task_id=(
+                            context.task_id
+                            if isinstance(context, SubscriptionToolAuthorizationContext)
+                            else None
+                        ),
+                        subscription_attempt_id=(
+                            context.attempt_id
+                            if isinstance(context, SubscriptionToolAuthorizationContext)
+                            else None
+                        ),
+                        subscription_purpose=(
+                            context.purpose.value
+                            if isinstance(context, SubscriptionToolAuthorizationContext)
+                            else None
+                        ),
                         tool_name=ToolName.GIT_COMMIT,
                         normalized_arguments=normalized,
                         authorized=True,
                         status=ToolCallStatus.RUNNING,
                         started_at=datetime.now(UTC),
-                        step_id=context.step_id,
-                        role=context.role,
+                        step_id=(
+                            None
+                            if isinstance(context, SubscriptionToolAuthorizationContext)
+                            else context.step_id
+                        ),
+                        role=(
+                            None
+                            if isinstance(context, SubscriptionToolAuthorizationContext)
+                            else context.role
+                        ),
                         policy_version=context.policy_version,
                         correlation_id=call_id,
                         operation_intent_id=intent.id,
@@ -1355,7 +1953,7 @@ class ControlledToolService:
     async def _settle_git_commit(
         self,
         work: UnitOfWork,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         request: ToolRequest,
         call_id: UUID,
         normalized: dict[str, object],
@@ -1389,10 +1987,22 @@ class ControlledToolService:
                     outcome,
                     settlement_work=phase_work,
                 )
+            if isinstance(context, SubscriptionToolAuthorizationContext):
+                current_contract = await phase_work.subscription.authorize_tool(context, request)
+                current_authority = current_contract is not None and (
+                    context.purpose is not SpecialistPurpose.PRIMARY
+                    or current_contract.owned_paths == _primary_paths(preparation.request_payload)
+                )
+            else:
+                current_authority = await self._execution_context_is_current(context, phase_work)
             if (
                 current.status is not ToolCallStatus.RUNNING
-                or run.state not in _ACTIVE_RUN_STATES[context.role]
-                or not await self._execution_context_is_current(context, phase_work)
+                or (
+                    run.state not in SUBSCRIPTION_WORK_STATES
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else run.state not in _ACTIVE_RUN_STATES[context.role]
+                )
+                or not current_authority
             ):
                 raise ToolInvocationError()
             receipt = thaw_payload(outcome.payload)
@@ -1435,7 +2045,7 @@ class ControlledToolService:
 
     async def _finalize_git_commit(
         self,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         request: ToolRequest,
         call_id: UUID,
         normalized: dict[str, object],
@@ -1495,15 +2105,42 @@ class ControlledToolService:
                 tool_call_id=call_id,
                 operation_intent_id=preparation.id,
                 correlation_id=call_id,
-                agent_execution_id=context.agent_execution_id,
-                step_id=context.step_id,
+                agent_execution_id=(
+                    None
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else context.agent_execution_id
+                ),
+                step_id=(
+                    None
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else context.step_id
+                ),
                 duration_ms=0,
             )
             completed = datetime.now(UTC)
             record = ToolCallRecord(
                 id=call_id,
                 run_id=context.run_id,
-                agent_execution_id=_required_uuid(context.agent_execution_id),
+                agent_execution_id=(
+                    None
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else _required_uuid(context.agent_execution_id)
+                ),
+                subscription_task_id=(
+                    context.task_id
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else None
+                ),
+                subscription_attempt_id=(
+                    context.attempt_id
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else None
+                ),
+                subscription_purpose=(
+                    context.purpose.value
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else None
+                ),
                 tool_name=ToolName.GIT_COMMIT,
                 normalized_arguments=normalized,
                 authorized=True,
@@ -1518,8 +2155,16 @@ class ControlledToolService:
                     completed_at=completed,
                     redactor=self._redactor,
                 ),
-                step_id=context.step_id,
-                role=context.role,
+                step_id=(
+                    None
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else context.step_id
+                ),
+                role=(
+                    None
+                    if isinstance(context, SubscriptionToolAuthorizationContext)
+                    else context.role
+                ),
                 policy_version=context.policy_version,
                 duration_ms=0,
                 artifact_digests=(descriptor.digest,),
@@ -1555,7 +2200,7 @@ class ControlledToolService:
     async def _resolve_run(
         self,
         work: UnitOfWork,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
     ) -> RunSnapshot | None:
         try:
             candidate = await work.runs.get_for_update(context.run_id)
@@ -1610,27 +2255,52 @@ class ControlledToolService:
 
     def _validate(
         self,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         request: ToolRequest,
         run: RunSnapshot | None,
         policy: ProjectPolicy | None,
     ) -> tuple[ToolAuthorization | None, tuple[ToolErrorCode, str] | None]:
-        if context.agent_execution_id is None or context.step_id is None:
-            return None, (ToolErrorCode.INVALID_REQUEST, "tool execution identity is required")
-        try:
-            authorization = self._authorizer.authorize(context, request)
-        except ToolAuthorizationDenied, TypeError, ValueError:
-            return None, (ToolErrorCode.AUTHORIZATION_DENIED, "tool authorization denied")
+        if isinstance(context, SubscriptionToolAuthorizationContext):
+            if request.name not in context.permitted_tools or not _arguments_match_schema(
+                request.name, request.arguments
+            ):
+                return None, (ToolErrorCode.AUTHORIZATION_DENIED, "tool authorization denied")
+            authorization = ToolAuthorization(context=context, request=request)
+        else:
+            if context.agent_execution_id is None or context.step_id is None:
+                return None, (ToolErrorCode.INVALID_REQUEST, "tool execution identity is required")
+            try:
+                authorization = self._authorizer.authorize(context, request)
+            except ToolAuthorizationDenied, TypeError, ValueError:
+                return None, (ToolErrorCode.AUTHORIZATION_DENIED, "tool authorization denied")
         if run is None or run.id != context.run_id:
             return None, (ToolErrorCode.RESOURCE_MISMATCH, "tool run identity is not current")
         if run.policy_version is None or run.policy_version != context.policy_version:
             return None, (ToolErrorCode.POLICY_MISMATCH, "tool policy version is not current")
         if policy is None or policy.version != context.policy_version:
             return None, (ToolErrorCode.POLICY_MISMATCH, "tool policy version is not current")
-        if run.state not in _ACTIVE_RUN_STATES[context.role]:
+        subscription_planning_read = (
+            isinstance(context, SubscriptionToolAuthorizationContext)
+            and context.purpose in {SpecialistPurpose.PRIMARY, SpecialistPurpose.PLANNING}
+            and request.name in _REPOSITORY_READS
+            and run.state is RunState.PLANNING
+        )
+        if isinstance(context, SubscriptionToolAuthorizationContext):
+            active = run.pending_gate is None and (
+                run.state in SUBSCRIPTION_WORK_STATES or subscription_planning_read
+            )
+        else:
+            active = run.state in _ACTIVE_RUN_STATES[context.role]
+        if not active:
             return None, (ToolErrorCode.RUN_NOT_ACTIVE, "run is not active for this tool role")
         planner_repository_read = (
-            context.role is AgentRole.PLANNER
+            (
+                subscription_planning_read
+                or (
+                    isinstance(context, ToolAuthorizationContext)
+                    and context.role is AgentRole.PLANNER
+                )
+            )
             and request.name in _REPOSITORY_READS
             and run.worktree_path is None
             and run.state is RunState.PLANNING
@@ -1652,7 +2322,11 @@ class ControlledToolService:
                     ToolErrorCode.RESOURCE_MISMATCH,
                     "managed worktree path is not current",
                 )
-        if request.name is ToolName.REPOSITORY_WRITE_FILE:
+        if request.name in {
+            ToolName.REPOSITORY_WRITE_FILE,
+            ToolName.REPOSITORY_DELETE_FILE,
+            ToolName.REPOSITORY_RENAME_FILE,
+        }:
             writer = self._repository_writer
             artifact_store = self._artifact_store
             executor = self._operation_executor
@@ -1661,7 +2335,18 @@ class ControlledToolService:
                 or artifact_store is None
                 or not isinstance(executor, OperationExecutor)
                 or not callable(getattr(writer, "write_file", None))
-                or not callable(getattr(writer, "inspect_file", None))
+                or (
+                    request.name is ToolName.REPOSITORY_WRITE_FILE
+                    and not callable(getattr(writer, "inspect_file", None))
+                )
+                or (
+                    request.name is ToolName.REPOSITORY_DELETE_FILE
+                    and not callable(getattr(writer, "delete_file", None))
+                )
+                or (
+                    request.name is ToolName.REPOSITORY_RENAME_FILE
+                    and not callable(getattr(writer, "rename_file", None))
+                )
                 or not callable(getattr(writer, "is_bound_to", None))
                 or not callable(getattr(artifact_store, "put_bytes", None))
                 or not callable(getattr(artifact_store, "verify", None))
@@ -1686,8 +2371,6 @@ class ControlledToolService:
                     ToolErrorCode.RESOURCE_MISMATCH,
                     "repository writer binding is not current",
                 )
-            if not self._path_argument_is_valid(request, allow_root=False):
-                return None, (ToolErrorCode.INVALID_REQUEST, "tool path is not applicable")
             if self._write_request_values(request) is None:
                 return None, (ToolErrorCode.INVALID_REQUEST, "tool content is not applicable")
             return authorization, None
@@ -1771,6 +2454,16 @@ class ControlledToolService:
             method_name = request.name.value.rsplit(".", 1)[-1]
             if request.name is ToolName.GIT_DIFF and request.arguments.get("scope") == "candidate":
                 method_name = "candidate_diff"
+            if request.name is ToolName.GIT_DIFF and request.arguments.get("scope") == "snapshot":
+                if (
+                    not isinstance(context, SubscriptionToolAuthorizationContext)
+                    or self._artifact_store is None
+                ):
+                    return None, (
+                        ToolErrorCode.TOOL_UNAVAILABLE,
+                        "subscription snapshot is unavailable",
+                    )
+                method_name = "working_tree_snapshot"
             if not callable(getattr(self._git, method_name, None)):
                 return None, (
                     ToolErrorCode.TOOL_UNAVAILABLE,
@@ -1785,7 +2478,7 @@ class ControlledToolService:
 
     def _resource_binding_matches(
         self,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         run: RunSnapshot,
         policy: ProjectPolicy,
     ) -> bool:
@@ -1825,7 +2518,7 @@ class ControlledToolService:
 
     def _repository_resource_binding_matches(
         self,
-        context: ToolAuthorizationContext,
+        context: _ToolContext,
         run: RunSnapshot,
         policy: ProjectPolicy,
     ) -> bool:
@@ -1942,32 +2635,61 @@ class ControlledToolService:
         return _safe_metadata(values, redactor=self._redactor)
 
     def _write_request_values(self, request: ToolRequest) -> _PreparedWrite | None:
-        if request.name is not ToolName.REPOSITORY_WRITE_FILE:
-            return None
-        path = request.arguments.get("path")
-        content = request.arguments.get("content")
         reader = self._repository_reader
-        if not isinstance(path, str) or not isinstance(content, str) or reader is None:
-            return None
-        if "\x00" in content:
+        if reader is None:
             return None
         try:
-            encoded = content.encode("utf-8", errors="strict")
-            normalized = reader.root.normalize(path, allow_root=False)
+            if request.name is ToolName.REPOSITORY_WRITE_FILE:
+                path, content = request.arguments.get("path"), request.arguments.get("content")
+                if not isinstance(path, str) or not isinstance(content, str) or "\x00" in content:
+                    return None
+                encoded = content.encode("utf-8", errors="strict")
+                normalized = reader.root.normalize(path, allow_root=False)
+                if not normalized or normalized == "." or len(encoded) > MAX_REPOSITORY_WRITE_BYTES:
+                    return None
+                return _PreparedWrite(
+                    normalized, content, hashlib.sha256(encoded).hexdigest(), len(encoded)
+                )
+            expected = request.arguments.get("expected_digest")
+            if not isinstance(expected, str):
+                return None
+            validate_artifact_digest(expected)
+            if request.name is ToolName.REPOSITORY_DELETE_FILE:
+                path = request.arguments.get("path")
+                if not isinstance(path, str):
+                    return None
+                normalized = reader.root.normalize(path, allow_root=False)
+                return _PreparedWrite(normalized, None, expected, None)
+            if request.name is ToolName.REPOSITORY_RENAME_FILE:
+                source, destination = (
+                    request.arguments.get("source"),
+                    request.arguments.get("destination"),
+                )
+                if not isinstance(source, str) or not isinstance(destination, str):
+                    return None
+                return _PreparedWrite(
+                    reader.root.normalize(source, allow_root=False),
+                    None,
+                    expected,
+                    None,
+                    reader.root.normalize(destination, allow_root=False),
+                )
+            return None
         except AttributeError, OSError, RuntimeError, TypeError, UnicodeError, ValueError:
             return None
-        if not normalized or normalized == "." or len(encoded) > MAX_REPOSITORY_WRITE_BYTES:
-            return None
-        return _PreparedWrite(
-            path=normalized,
-            content=content,
-            content_digest=hashlib.sha256(encoded).hexdigest(),
-            byte_count=len(encoded),
-        )
 
     def _normalized_write_arguments(self, request: ToolRequest) -> dict[str, object]:
         prepared = self._write_request_values(request)
         if prepared is not None:
+            if request.name is ToolName.REPOSITORY_DELETE_FILE:
+                return {"path": prepared.path, "expected_digest": prepared.content_digest}
+            if request.name is ToolName.REPOSITORY_RENAME_FILE:
+                return {
+                    "source": prepared.path,
+                    "destination": prepared.destination,
+                    "expected_digest": prepared.content_digest,
+                }
+            assert prepared.byte_count is not None
             return {
                 "path": prepared.path,
                 "content_digest": prepared.content_digest,
@@ -2035,12 +2757,13 @@ class ControlledToolService:
                 reader = self._repository_reader
                 if reader is None:
                     raise ToolInvocationError()
-                matches = reader.search(
-                    _argument_text(authorization, "literal"),
-                    _argument_text(authorization, "path", "."),
-                )
+                literal = _argument_text(authorization, "literal")
+                path = _argument_text(authorization, "path", ".")
+                matches = reader.search(literal, path)
                 return self._result(
-                    name, ToolCallStatus.SUCCEEDED, metadata={"matches": _matches(matches)}
+                    name,
+                    ToolCallStatus.SUCCEEDED,
+                    metadata=await self._search_metadata(authorization, literal, path, matches),
                 )
             if name is ToolName.REPOSITORY_READ_INSTRUCTIONS:
                 reader = self._repository_reader
@@ -2090,8 +2813,8 @@ class ControlledToolService:
                 scope = EvidenceReadScope(
                     authorization.context.run_id,
                     authorization.context.policy_version,
-                    _required_uuid(authorization.context.agent_execution_id),
-                    _required_uuid(authorization.context.step_id),
+                    _required_uuid(authorization.agent_execution_id),
+                    _required_uuid(authorization.step_id),
                     self._git.head_sha(self._worktree),
                 )
                 manifest = await self._evidence_reader.read(purpose, scope)
@@ -2128,6 +2851,95 @@ class ControlledToolService:
 
     def _open_uow(self) -> UnitOfWork:
         return self._unit_of_work_factory()
+
+    async def _search_metadata(
+        self,
+        authorization: ToolAuthorization,
+        literal: str,
+        path: str,
+        matches: Sequence[SearchMatch],
+    ) -> dict[str, object]:
+        """Return search results, reordered only when ranking is applied.
+
+        Ranking is advisory.  Any ranker failure, an absent objective, or a
+        non-agent authority returns the reader's own complete result, so a
+        degraded ranker can never reduce what an agent is able to see.
+        """
+
+        total = len(matches)
+        mode = self._search_ranking_mode
+        telemetry: dict[str, object] = {
+            "mode": mode.value,
+            "applied": False,
+            "match_count": total,
+            "returned_count": total,
+        }
+        metadata: dict[str, object] = {"matches": _matches(matches), "ranking": telemetry}
+        ranker = self._search_ranker
+        objective = self._search_objective
+        role = _authorized_agent_role(authorization)
+        if (
+            mode is SearchRankingMode.OFF
+            or ranker is None
+            or objective is None
+            or role is None
+            or not 0 < total <= MAX_RANKED_MATCHES
+        ):
+            return metadata
+        try:
+            async with asyncio.timeout(_SEARCH_RANKING_TIMEOUT_SECONDS):
+                ranking = await ranker.rank(
+                    SearchRankingRequest(
+                        objective=objective,
+                        literal=literal,
+                        path=path,
+                        role=role,
+                        matches=tuple(matches),
+                    )
+                )
+            if type(ranking) is not SearchRanking:
+                raise TypeError("ranker returned an untyped ranking")
+            order = ranking.ordered(total)
+        except Exception:  # noqa: BLE001 - ranking is advisory and always fails open
+            telemetry["status"] = "unavailable"
+            return metadata
+        telemetry.update(
+            {
+                "status": "ranked",
+                "model": ranking.model,
+                "request_id": ranking.request_id,
+                # Model token counts.  These keys avoid the word "token" because
+                # the durable result redaction policy treats any key containing
+                # it as secret-bearing and would replace the counts.
+                "input_units": ranking.input_tokens,
+                "output_units": ranking.output_tokens,
+                "duration_ms": ranking.duration_ms,
+            }
+        )
+        # Collapsing a tail is only worth its cost when something actually
+        # cleared the bar.  When a search finds nothing relevant to the task,
+        # withholding matches trades evidence away for no relevance at all, so
+        # the complete reader result stands.
+        if max((item.relevance for item in ranking.ranked), default=0.0) < _MIN_APPLIED_RELEVANCE:
+            telemetry["status"] = "below_floor"
+            if mode is SearchRankingMode.SHADOW:
+                telemetry["would_return_count"] = total
+                telemetry["would_return_paths"] = _distinct_paths(matches, order)
+            return metadata
+        kept, omitted = order[: self._search_ranking_top_k], order[self._search_ranking_top_k :]
+        if mode is SearchRankingMode.SHADOW:
+            telemetry["would_return_count"] = len(kept)
+            telemetry["would_return_paths"] = _distinct_paths(matches, kept)
+            return metadata
+        telemetry["applied"] = True
+        telemetry["returned_count"] = len(kept)
+        metadata["matches"] = _matches([matches[index] for index in kept])
+        if omitted:
+            metadata["omitted_matches"] = {
+                "count": len(omitted),
+                "paths": _distinct_paths(matches, omitted),
+            }
+        return metadata
 
     def _result(
         self,
@@ -2226,31 +3038,56 @@ def _valid_commit_message(value: object, redactor: Redactor) -> bool:
 
 
 def _git_prepare_payload(
-    context: ToolAuthorizationContext, worktree: ManagedWorktree, message: str, request_digest: str
+    context: _ToolContext,
+    worktree: ManagedWorktree,
+    message: str,
+    request_digest: str,
+    *,
+    owned_paths: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
-    return {
-        "agent_execution_id": str(_required_uuid(context.agent_execution_id)),
+    payload: dict[str, object] = {
         "base_sha": worktree.base_sha,
         "message": message,
         "message_digest": hashlib.sha256(message.encode()).hexdigest(),
         "policy_version": context.policy_version,
         "request_digest": request_digest,
         "run_id": str(context.run_id),
-        "step_id": str(_required_uuid(context.step_id)),
         "tool_call_id": str(_write_tool_call_id(_required_uuid(context.invocation_id))),
         "worktree_id": context.worktree_id,
     }
+    if isinstance(context, SubscriptionToolAuthorizationContext):
+        payload.update(
+            authority_schema_version=2,
+            subscription_task_id=str(context.task_id),
+            subscription_attempt_id=str(context.attempt_id),
+            subscription_purpose=context.purpose.value,
+        )
+        if context.purpose is SpecialistPurpose.PRIMARY:
+            if not owned_paths:
+                raise ToolInvocationError()
+            payload.update(
+                authority_schema_version=3,
+                owned_paths_json=json.dumps(list(owned_paths), separators=(",", ":")),
+            )
+    else:
+        payload.update(
+            agent_execution_id=str(_required_uuid(context.agent_execution_id)),
+            step_id=str(_required_uuid(context.step_id)),
+        )
+    return payload
 
 
 def _git_publish_payload(
-    context: ToolAuthorizationContext,
+    context: _ToolContext,
     worktree: ManagedWorktree,
     message: str,
     request_digest: str,
     preparation_id: UUID,
     receipt: Mapping[str, object],
 ) -> dict[str, object]:
-    payload = _git_prepare_payload(context, worktree, message, request_digest)
+    payload = _git_prepare_payload(
+        context, worktree, message, request_digest, owned_paths=_primary_paths(receipt)
+    )
     payload.update(
         preparation_intent_id=str(preparation_id),
         previous_sha=receipt["previous_sha"],
@@ -2261,7 +3098,7 @@ def _git_publish_payload(
 
 def _git_record_matches(
     record: ToolCallRecord,
-    context: ToolAuthorizationContext,
+    context: _ToolContext,
     request_digest: str,
     normalized: Mapping[str, object],
 ) -> bool:
@@ -2269,9 +3106,7 @@ def _git_record_matches(
         record.tool_name is ToolName.GIT_COMMIT
         and record.authorized
         and record.run_id == context.run_id
-        and record.agent_execution_id == context.agent_execution_id
-        and record.step_id == context.step_id
-        and record.role is context.role
+        and all(getattr(record, key) == value for key, value in _tool_lineage(context).items())
         and record.policy_version == context.policy_version
         and record.resource_id == context.worktree_id
         and record.request_digest == request_digest
@@ -2283,7 +3118,7 @@ def _git_record_matches(
 
 async def _git_terminal_result(
     record: ToolCallRecord,
-    context: ToolAuthorizationContext,
+    context: _ToolContext,
     request_digest: str,
     artifacts: ArtifactRepository,
     artifact_store: ArtifactStore | None,
@@ -2310,7 +3145,7 @@ async def _git_terminal_result(
     fields = (
         {"publication_disposition", "request_digest", "worktree_id"}
         if cancelled
-        else _GIT_RESULT_FIELDS
+        else _git_result_fields(context)
     )
     metadata = {
         key: thaw_payload(record.result_metadata[key])
@@ -2429,17 +3264,33 @@ def _git_result_artifact_bytes(
 def _git_result_metadata(
     outcome: Mapping[str, object],
     publication_id: UUID,
-    context: ToolAuthorizationContext,
+    context: _ToolContext,
     request_digest: str,
 ) -> dict[str, object]:
     values = {**thaw_payload(outcome), "publication_intent_id": str(publication_id)}
+    fields = _git_result_fields(context)
     if (
-        set(values) != _GIT_RESULT_FIELDS
+        set(values) != fields
         or values.get("run_id") != str(context.run_id)
         or values.get("request_digest") != request_digest
     ):
         raise ToolInvocationError()
     return _safe_metadata(values)
+
+
+def _git_result_fields(context: _ToolContext) -> frozenset[str]:
+    if isinstance(context, SubscriptionToolAuthorizationContext):
+        return frozenset(
+            (_GIT_RESULT_FIELDS - {"agent_execution_id", "step_id"})
+            | {
+                "authority_schema_version",
+                "subscription_task_id",
+                "subscription_attempt_id",
+                "subscription_purpose",
+            }
+            | ({"owned_paths_json"} if context.purpose is SpecialistPurpose.PRIMARY else set())
+        )
+    return _GIT_RESULT_FIELDS
 
 
 async def _await_committed_write(
@@ -2474,32 +3325,59 @@ async def _await_committed_write(
 @dataclass(frozen=True, slots=True)
 class _RepositoryWriteOperationAdapter:
     writer: RepositoryWriter
+    tool_name: ToolName
     prepared: _PreparedWrite
 
     @classmethod
     def for_recovery(
         cls, writer: RepositoryWriter, *, path: str, content_digest: str, byte_count: int
     ) -> _RepositoryWriteOperationAdapter:
-        return cls(writer, _PreparedWrite(path, None, content_digest, byte_count))
+        return cls(
+            writer,
+            ToolName.REPOSITORY_WRITE_FILE,
+            _PreparedWrite(path, None, content_digest, byte_count),
+        )
 
     async def invoke(self, intent: OperationIntent) -> OperationOutcome:
-        if self.prepared.content is None:
+        if self.tool_name is ToolName.REPOSITORY_WRITE_FILE and self.prepared.content is None:
             raise _RepositoryWriteOperationError()
         self._validate_intent(intent)
-        result = await asyncio.to_thread(
-            self.writer.write_file,
-            self.prepared.path,
-            self.prepared.content,
-        )
+        if self.tool_name is ToolName.REPOSITORY_WRITE_FILE:
+            content = self.prepared.content
+            if content is None:
+                raise _RepositoryWriteOperationError()
+            result = await asyncio.to_thread(self.writer.write_file, self.prepared.path, content)
+        elif self.tool_name is ToolName.REPOSITORY_DELETE_FILE:
+            result = await asyncio.to_thread(
+                self.writer.delete_file, self.prepared.path, self.prepared.content_digest, intent.id
+            )
+        else:
+            destination = self.prepared.destination
+            if destination is None:
+                raise _RepositoryWriteOperationError()
+            result = await asyncio.to_thread(
+                self.writer.rename_file,
+                self.prepared.path,
+                destination,
+                self.prepared.content_digest,
+                intent.id,
+            )
         self._validate_result(result)
-        return OperationOutcome(payload=_file_write(result, reconciled=False))
+        return OperationOutcome(
+            payload=_repository_mutation_result(
+                self.tool_name, self.prepared, result, reconciled=False
+            )
+        )
 
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
         self._validate_intent(intent)
+        if self.tool_name is not ToolName.REPOSITORY_WRITE_FILE:
+            return OperationOutcome(
+                status=OperationStatus.NEEDS_RECONCILIATION,
+                error="repository mutation outcome requires reconciliation",
+            )
         result = await asyncio.to_thread(
-            self.writer.inspect_file,
-            self.prepared.path,
-            self.prepared.content_digest,
+            self.writer.inspect_file, self.prepared.path, self.prepared.content_digest
         )
         if result is None:
             return OperationOutcome(
@@ -2512,41 +3390,78 @@ class _RepositoryWriteOperationAdapter:
     def _validate_intent(self, intent: OperationIntent) -> None:
         payload = intent.request_payload
         if (
-            intent.kind != ToolName.REPOSITORY_WRITE_FILE.value
+            intent.kind != self.tool_name.value
             or payload.get("path") != self.prepared.path
-            or payload.get("content_digest") != self.prepared.content_digest
-            or payload.get("content_byte_count") != self.prepared.byte_count
+            or (
+                payload.get("content_digest") != self.prepared.content_digest
+                if self.tool_name is ToolName.REPOSITORY_WRITE_FILE
+                else payload.get("expected_digest") != self.prepared.content_digest
+            )
+            or (
+                self.tool_name is ToolName.REPOSITORY_WRITE_FILE
+                and payload.get("content_byte_count") != self.prepared.byte_count
+            )
+            or (
+                self.tool_name is ToolName.REPOSITORY_RENAME_FILE
+                and payload.get("destination") != self.prepared.destination
+            )
         ):
             raise _RepositoryWriteOperationError()
 
     def _validate_result(self, result: FileWrite) -> None:
         if (
             not isinstance(result, FileWrite)
-            or result.path != self.prepared.path
+            or result.path
+            != (
+                self.prepared.destination
+                if self.tool_name is ToolName.REPOSITORY_RENAME_FILE
+                else self.prepared.path
+            )
             or result.output_digest != self.prepared.content_digest
-            or result.byte_count != self.prepared.byte_count
+            or (
+                self.prepared.byte_count is not None
+                and result.byte_count != self.prepared.byte_count
+            )
         ):
             raise _RepositoryWriteOperationError()
 
 
 def _write_operation_payload(
-    context: ToolAuthorizationContext,
+    context: _ToolContext,
     run: RunSnapshot,
+    tool_name: ToolName,
     prepared: _PreparedWrite,
     request_digest: str,
 ) -> dict[str, object]:
-    return {
-        "agent_execution_id": str(_required_uuid(context.agent_execution_id)),
-        "content_byte_count": prepared.byte_count,
+    payload: dict[str, object] = {
         "content_digest": prepared.content_digest,
         "path": prepared.path,
         "policy_version": context.policy_version,
         "project_id": str(run.project_id),
         "run_id": str(context.run_id),
         "request_digest": request_digest,
-        "step_id": str(_required_uuid(context.step_id)),
         "worktree_id": context.worktree_id,
     }
+    if isinstance(context, SubscriptionToolAuthorizationContext):
+        payload.update(
+            authority_schema_version=2,
+            subscription_task_id=str(context.task_id),
+            subscription_attempt_id=str(context.attempt_id),
+            subscription_purpose=context.purpose.value,
+        )
+    else:
+        payload.update(
+            agent_execution_id=str(_required_uuid(context.agent_execution_id)),
+            step_id=str(_required_uuid(context.step_id)),
+        )
+    if tool_name is ToolName.REPOSITORY_WRITE_FILE:
+        payload["content_byte_count"] = prepared.byte_count
+    else:
+        payload["expected_digest"] = prepared.content_digest
+        payload.pop("content_digest")
+        if tool_name is ToolName.REPOSITORY_RENAME_FILE:
+            payload["destination"] = prepared.destination
+    return payload
 
 
 def _write_tool_call_id(invocation_id: UUID) -> UUID:
@@ -2563,7 +3478,7 @@ def _write_request_digest(request: ToolRequest) -> str:
 
 def _write_record_matches_request(
     record: ToolCallRecord,
-    context: ToolAuthorizationContext,
+    context: _ToolContext,
     tool_name: ToolName,
     normalized_arguments: Mapping[str, object],
     request_digest: str,
@@ -2573,9 +3488,7 @@ def _write_record_matches_request(
     return (
         record.tool_name is tool_name
         and record.run_id == context.run_id
-        and record.agent_execution_id == context.agent_execution_id
-        and record.step_id == context.step_id
-        and record.role is context.role
+        and all(getattr(record, key) == value for key, value in _tool_lineage(context).items())
         and record.policy_version == context.policy_version
         and record.resource_id == context.worktree_id
         and record.invocation_schema_version == 1
@@ -2584,6 +3497,78 @@ def _write_record_matches_request(
         == canonical_payload(normalized_arguments)
         and record.correlation_id == record.id
         and record.operation_intent_id is not None
+    )
+
+
+def _subscription_record_matches(
+    record: ToolCallRecord,
+    context: SubscriptionToolAuthorizationContext,
+    request: ToolRequest,
+    normalized_arguments: Mapping[str, object],
+    request_digest: str,
+) -> bool:
+    """Replay keys are scoped to one durable subscription attempt."""
+
+    return (
+        record.tool_name is request.name
+        and record.run_id == context.run_id
+        and record.agent_execution_id is None
+        and record.subscription_task_id == context.task_id
+        and record.subscription_attempt_id == context.attempt_id
+        and record.subscription_purpose == context.purpose.value
+        and record.policy_version == context.policy_version
+        and record.resource_id == context.worktree_id
+        and record.request_digest == request_digest
+        and canonical_payload(record.normalized_arguments)
+        == canonical_payload(normalized_arguments)
+    )
+
+
+def _result_from_record(record: ToolCallRecord) -> ToolResult:
+    metadata = dict(record.result_metadata or {})
+    metadata.pop("result_status", None)
+    metadata.pop("authorized", None)
+    metadata.pop("started_at", None)
+    metadata.pop("completed_at", None)
+    error_value = metadata.pop("error", None)
+    if record.tool_name is ToolName.GIT_DIFF and record.normalized_arguments == {
+        "scope": "snapshot"
+    }:
+        metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key
+            in {
+                "snapshot_schema_version",
+                "head_sha",
+                "base_sha",
+                "candidate_tree_digest",
+                "manifest_digest",
+                "file_count",
+                "changed_path_count",
+                "changed_paths_preview",
+                "recovery_disposition",
+                "snapshot_failure_reason",
+            }
+        }
+    error = None
+    if isinstance(error_value, Mapping):
+        try:
+            error = ToolError(
+                code=ToolErrorCode(str(error_value["code"])), message=str(error_value["message"])
+            )
+        except KeyError, TypeError, ValueError:
+            raise ToolInvocationError() from None
+    return ToolResult(
+        tool_name=record.tool_name,
+        status=record.status,
+        metadata=metadata,
+        artifact_digests=record.artifact_digests,
+        error=error,
+        tool_call_id=record.id,
+        operation_intent_id=record.operation_intent_id,
+        correlation_id=record.correlation_id,
+        duration_ms=record.duration_ms or 0,
     )
 
 
@@ -2598,6 +3583,155 @@ def _file_write(value: FileWrite, *, reconciled: bool) -> dict[str, object]:
         result["created"] = value.created
         result["previous_digest"] = value.previous_digest
     return result
+
+
+def _repository_mutation_result(
+    tool_name: ToolName, prepared: _PreparedWrite, value: FileWrite, *, reconciled: bool
+) -> dict[str, object]:
+    if tool_name is ToolName.REPOSITORY_WRITE_FILE:
+        return _file_write(value, reconciled=reconciled)
+    result: dict[str, object] = {
+        "byte_count": value.byte_count,
+        "expected_digest": prepared.content_digest,
+        "mutation": "delete" if tool_name is ToolName.REPOSITORY_DELETE_FILE else "rename",
+        "output_digest": value.output_digest,
+        "reconciled": reconciled,
+    }
+    if tool_name is ToolName.REPOSITORY_DELETE_FILE:
+        result["path"] = prepared.path
+    else:
+        result["source"] = prepared.path
+        result["destination"] = prepared.destination
+    return result
+
+
+def _repository_mutation_schema_version(tool_name: ToolName) -> int:
+    return 1 if tool_name is ToolName.REPOSITORY_WRITE_FILE else 2
+
+
+def _repository_mutation_result_artifact_bytes(
+    tool_name: ToolName,
+    operation_intent_id: UUID,
+    tool_call_id: UUID,
+    request_digest: str,
+    resource_id: str,
+    result_metadata: Mapping[str, object],
+) -> bytes:
+    if tool_name is ToolName.REPOSITORY_WRITE_FILE:
+        return _write_result_artifact_bytes(
+            operation_intent_id, tool_call_id, request_digest, resource_id, result_metadata
+        )
+    value = _json_bytes(
+        {
+            "operation_intent_id": str(operation_intent_id),
+            "producer_id": str(tool_call_id),
+            "request_digest": request_digest,
+            "resource_id": resource_id,
+            "result": dict(result_metadata),
+            "schema_version": 2,
+            "status": ToolCallStatus.SUCCEEDED.value,
+            "tool_name": tool_name.value,
+        }
+    )
+    if len(value) > _WRITE_RESULT_ARTIFACT_MAX_BYTES:
+        raise ToolInvocationError()
+    return value
+
+
+async def _mutation_replay_result(
+    record: ToolCallRecord,
+    context: _ToolContext,
+    normalized_arguments: Mapping[str, object],
+    request_digest: str,
+    artifacts: ArtifactRepository,
+    artifact_store: ArtifactStore | None,
+) -> ToolResult:
+    if (
+        record.status is not ToolCallStatus.SUCCEEDED
+        or not record.authorized
+        or record.run_id != context.run_id
+        or record.result_metadata is None
+        or len(record.artifact_digests) != 1
+        or not _write_record_matches_request(
+            record, context, record.tool_name, normalized_arguments, request_digest
+        )
+        or artifact_store is None
+        or record.operation_intent_id is None
+    ):
+        raise ToolInvocationError()
+    metadata = {
+        key: thaw_payload(value)
+        for key, value in record.result_metadata.items()
+        if key
+        in {
+            "byte_count",
+            "expected_digest",
+            "mutation",
+            "output_digest",
+            "reconciled",
+            "path",
+            "source",
+            "destination",
+        }
+    }
+    expected_mutation = (
+        "delete" if record.tool_name is ToolName.REPOSITORY_DELETE_FILE else "rename"
+    )
+    if metadata.get("mutation") != expected_mutation or metadata.get(
+        "expected_digest"
+    ) != normalized_arguments.get("expected_digest"):
+        raise ToolInvocationError()
+    if expected_mutation == "delete":
+        valid = metadata.get("path") == normalized_arguments.get("path")
+    else:
+        valid = metadata.get("source") == normalized_arguments.get("source") and metadata.get(
+            "destination"
+        ) == normalized_arguments.get("destination")
+    if (
+        not valid
+        or type(metadata.get("byte_count")) is not int
+        or type(metadata.get("reconciled")) is not bool
+    ):
+        raise ToolInvocationError()
+    digest = record.artifact_digests[0]
+    try:
+        descriptor = await artifacts.get_by_digest(digest, run_id=context.run_id)
+        blob = await artifact_store.open_bytes(digest)
+        artifact = json.loads(blob.decode("utf-8"))
+    except AttributeError, OSError, TypeError, ValueError, UnicodeError, json.JSONDecodeError:
+        raise ToolInvocationError() from None
+    if (
+        await artifact_store.verify(digest) is not True
+        or hashlib.sha256(blob).hexdigest() != digest
+        or descriptor.producer_id != record.id
+        or descriptor.metadata.get("request_digest") != request_digest
+        or descriptor.metadata.get("tool_name") != record.tool_name.value
+        or descriptor.metadata.get("result_schema_version") != 2
+        or artifact
+        != json.loads(
+            _repository_mutation_result_artifact_bytes(
+                record.tool_name,
+                record.operation_intent_id,
+                record.id,
+                request_digest,
+                context.worktree_id,
+                metadata,
+            ).decode()
+        )
+    ):
+        raise ToolInvocationError()
+    return ToolResult(
+        tool_name=record.tool_name,
+        status=record.status,
+        metadata=_safe_metadata(metadata),
+        artifact_digests=record.artifact_digests,
+        tool_call_id=record.id,
+        operation_intent_id=record.operation_intent_id,
+        correlation_id=record.correlation_id,
+        agent_execution_id=record.agent_execution_id,
+        step_id=record.step_id,
+        duration_ms=record.duration_ms or 0,
+    )
 
 
 def _write_result_artifact_bytes(
@@ -2626,13 +3760,17 @@ def _write_result_artifact_bytes(
 
 async def _write_replay_result(
     record: ToolCallRecord,
-    context: ToolAuthorizationContext,
+    context: _ToolContext,
     normalized_arguments: Mapping[str, object],
     request_digest: str,
     *,
     artifacts: ArtifactRepository,
     artifact_store: ArtifactStore | None,
 ) -> ToolResult:
+    if record.tool_name in {ToolName.REPOSITORY_DELETE_FILE, ToolName.REPOSITORY_RENAME_FILE}:
+        return await _mutation_replay_result(
+            record, context, normalized_arguments, request_digest, artifacts, artifact_store
+        )
     if (
         record.status is not ToolCallStatus.SUCCEEDED
         or record.tool_name is not ToolName.REPOSITORY_WRITE_FILE
@@ -2890,6 +4028,55 @@ def _file_read(value: FileRead) -> dict[str, object]:
     }
 
 
+_SPECIALIST_PURPOSE_ROLE_MAP: Mapping[SpecialistPurpose, AgentRole] = MappingProxyType(
+    {
+        SpecialistPurpose.PRIMARY: AgentRole.DEVELOPER,
+        SpecialistPurpose.ROUTINE_IMPLEMENTATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.COMPLEX_IMPLEMENTATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.INTEGRATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.EXPLORATION: AgentRole.DEVELOPER,
+        SpecialistPurpose.PLANNING: AgentRole.PLANNER,
+        SpecialistPurpose.INDEPENDENT_REVIEW: AgentRole.REVIEWER,
+        SpecialistPurpose.SECURITY: AgentRole.REVIEWER,
+        SpecialistPurpose.VERIFICATION: AgentRole.REVIEWER,
+    }
+)
+
+
+def _authorized_agent_role(authorization: ToolAuthorization) -> AgentRole | None:
+    """Return the agent role, adapting subscription specialist authority."""
+
+    context = authorization.context
+    if isinstance(context, SubscriptionToolAuthorizationContext):
+        return _SPECIALIST_PURPOSE_ROLE_MAP.get(context.purpose)
+    if type(context) is not ToolAuthorizationContext:
+        return None
+    return authorization.role
+
+
+def _bounded_objective(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str:
+        raise TypeError("search objective must be text")
+    text = value.strip()
+    if not text:
+        return None
+    encoded = text.encode("utf-8")[:MAX_OBJECTIVE_BYTES]
+    return encoded.decode("utf-8", errors="ignore")
+
+
+def _distinct_paths(matches: Sequence[SearchMatch], order: Sequence[int]) -> list[str]:
+    """Return each distinct path in the given positions, order preserved."""
+
+    paths: list[str] = []
+    for index in order:
+        path = matches[index].path
+        if path not in paths:
+            paths.append(path)
+    return paths[:MAX_RANKED_MATCHES]
+
+
 def _matches(values: Sequence[SearchMatch]) -> list[dict[str, object]]:
     return [
         {
@@ -2967,12 +4154,13 @@ def _record_metadata(
 
 def _tool_event(
     result: ToolResult,
-    context: ToolAuthorizationContext,
+    context: _ToolContext,
     run: RunSnapshot,
     tool_call_id: UUID,
     *,
     authorized: bool,
 ) -> RunEvent:
+    lineage = _tool_lineage(context)
     payload: dict[str, object] = {
         "tool_call_id": str(tool_call_id),
         "tool_name": result.tool_name.value,
@@ -2980,9 +4168,11 @@ def _tool_event(
         "authorized": authorized,
         "policy_version": context.policy_version,
         "resource_id": context.worktree_id,
-        "step_id": str(context.step_id) if context.step_id is not None else None,
+        "step_id": str(lineage["step_id"]) if lineage["step_id"] is not None else None,
         "agent_execution_id": (
-            str(context.agent_execution_id) if context.agent_execution_id is not None else None
+            str(lineage["agent_execution_id"])
+            if lineage["agent_execution_id"] is not None
+            else None
         ),
         "correlation_id": str(result.correlation_id) if result.correlation_id else None,
         "operation_intent_id": (
@@ -2992,6 +4182,13 @@ def _tool_event(
         "result_digest": hashlib.sha256(_json_bytes(result.metadata)).hexdigest(),
         "artifact_digests": list(result.artifact_digests),
     }
+    if isinstance(context, SubscriptionToolAuthorizationContext):
+        payload.update(
+            authority_schema_version=2,
+            subscription_task_id=str(context.task_id),
+            subscription_attempt_id=str(context.attempt_id),
+            subscription_purpose=context.purpose.value,
+        )
     if result.error is not None:
         payload["error_code"] = result.error.code.value
     return RunEvent(
@@ -2999,7 +4196,9 @@ def _tool_event(
         run_version=run.version,
         event_type="tool_call.completed",
         actor_class="agent",
-        actor_id=context.agent_execution_id,
+        actor_id=context.attempt_id
+        if isinstance(context, SubscriptionToolAuthorizationContext)
+        else context.agent_execution_id,
         payload=payload,
     )
 

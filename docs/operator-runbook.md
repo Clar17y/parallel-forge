@@ -1,9 +1,9 @@
 # Forge operator runbook
 
-This describes the implemented v0.1 controls. Process/browser acceptance and
-independent reviews have passed; final integrated backend and Docker CI passed on
-`4d42e0d`; consult [the evidence ledger](v0.1-progress.md) for current checkpoints
-and open gates.
+This describes the shared operator controls retained from v0.1 and the v0.2
+subscription setup. See the [v0.2 release handoff](v0.2-release.md) for current
+acceptance, platform limits and delivery status. The
+[v0.1 evidence ledger](v0.1-progress.md) retains its historical full-CI results.
 
 ## Instance and startup
 
@@ -26,13 +26,18 @@ uv run --frozen forge-worker
 npm run dev:web
 ```
 
-The worker requires a provider secret reference, pricing catalog and versioned
-prompts. Wait for its recovered-and-polling message; a working API alone does not
-prove commands are being executed.
+For subscription work, configure the shared installation manifest and select an
+immutable project profile using the [local CLI guide](v0.2-profile-cli.md).
+`FORGE_SUBSCRIPTION_CLIENT_TRUST=operator` is the default; configured local clients
+use their existing logins without mandatory capability publication. The API and
+worker start without provider API keys; an unconfigured route remains actionable
+and cannot execute. The legacy ADK/API-key route separately requires its provider
+secret reference, pricing catalog and versioned prompts. Wait for the worker's
+recovered-and-polling message; a working API alone does not prove execution.
 
 The development supervisor is available as `npm run dev`, `scripts/dev.ps1`
 on Windows, or `bash scripts/dev.sh` on Linux. It requires a healthy PostgreSQL
-compose service and the provider configuration above, installs both frozen locks,
+compose service, installs both frozen locks,
 applies migrations, builds the immutable runner image, rotates operator credentials
 and prints a fresh bootstrap URL, then supervises the three processes together.
 Ctrl+C or SIGTERM stops its owned process trees; an unexpected child exit fails
@@ -54,7 +59,14 @@ session and removes the fragment. A stale link requires rotation.
 
 ## Credentials and project policy
 
-Provider credentials use `secret://forge/<secret-id>` references in
+Subscription clients use the operator's existing official-client login and the
+closed installation manifest; see [installation setup](v0.2-upgrade.md#operator-subscription-installations).
+Keep `operator_trusted` / **Ready to attempt** distinct from optional verified
+admission. Antigravity's `approved_tools_unproved` warning means native tools may
+remain available. Actual callback, route, credential-filtering, ownership, budget,
+quota, process-settlement and human approval controls still apply.
+
+Legacy API-key provider credentials use `secret://forge/<secret-id>` references in
 `LocalSecretStore`. `FORGE_PROVIDER_SECRET_REFERENCE` selects one;
 `FORGE_GOOGLE_API_KEY_REFERENCE` must not conflict with it.
 `FORGE_PRICING_CATALOG_PATH` selects the versioned pricing catalog. Raw keys must
@@ -93,8 +105,8 @@ request; a button click does not prove a remote effect succeeded.
 1. **Plan approval:** inspect frozen scope, checks, risks and policy. Approve the
    displayed plan or request revision. Approval allows preparation and scoped work.
 2. **PR publication approval:** inspect the exact local commit, diff, validation
-   and independent review. The Release Controller may then push and create or
-   reconcile the managed PR.
+   and the selected review or policy-permitted no-review rationale. The Release
+   Controller may then push and create or reconcile the managed PR.
 3. **Merge approval:** inspect the exact remote head, observed base, checks,
    reviews and protection. Changed evidence requires fresh approval. Agents cannot
    approve or merge their own work.

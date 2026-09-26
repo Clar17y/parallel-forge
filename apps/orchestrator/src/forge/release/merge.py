@@ -9,7 +9,7 @@ from uuid import UUID
 from forge.application.ports.github import GitHubPort
 from forge.application.ports.github_write import GitHubWritePort
 from forge.application.ports.release import ReleaseRecord
-from forge.domain.approval import MergeApprovalEvidence
+from forge.domain.approval import MergePublicationEvidence
 from forge.domain.approval import canonical_digest as evidence_digest
 from forge.domain.operation import (
     OperationIntent,
@@ -37,8 +37,8 @@ class MergeController:
     async def preflight(
         self,
         record: ReleaseRecord,
-        approved: MergeApprovalEvidence,
-        current: MergeApprovalEvidence,
+        approved: MergePublicationEvidence,
+        current: MergePublicationEvidence,
     ) -> GitHubPullRequest:
         if (
             evidence_digest(current) != evidence_digest(approved)
@@ -78,7 +78,7 @@ class MergeController:
             raise StaleMergeEvidence()
         return pull
 
-    async def merge(self, approved: MergeApprovalEvidence) -> GitHubPullRequest:
+    async def merge(self, approved: MergePublicationEvidence) -> GitHubPullRequest:
         if await self.queue_required(approved):
             raise StaleMergeEvidence()
         # GitHub enforces this SHA atomically. Never retry a stale/uncertain PUT.
@@ -89,27 +89,29 @@ class MergeController:
             approved.merge_method,
         )
 
-    async def queue_required(self, approved: MergeApprovalEvidence) -> bool:
+    async def queue_required(self, approved: MergePublicationEvidence) -> bool:
         protection = await self._github.get_merge_protection(
             approved.repository, approved.base_ref.removeprefix("refs/heads/")
         )
         if (
             not protection.safe_for_managed_merge
             or canonical_digest(asdict(protection)) != approved.protection_digest
-            or (protection.merge_queue_enabled
-                and protection.merge_queue_method != approved.merge_method)
+            or (
+                protection.merge_queue_enabled
+                and protection.merge_queue_method != approved.merge_method
+            )
         ):
             raise StaleMergeEvidence()
         return protection.merge_queue_enabled
 
     async def reconcile(
-        self, record: ReleaseRecord, approved: MergeApprovalEvidence
+        self, record: ReleaseRecord, approved: MergePublicationEvidence
     ) -> OperationOutcome:
         pull = await self.observe_pull(record, approved)
         return self.outcome(record, approved, pull)
 
     async def observe_pull(
-        self, record: ReleaseRecord, approved: MergeApprovalEvidence
+        self, record: ReleaseRecord, approved: MergePublicationEvidence
     ) -> GitHubPullRequest:
         pull = await self._writes.get_pull_request(
             approved.repository, approved.pull_request_number
@@ -118,7 +120,7 @@ class MergeController:
         return pull
 
     def outcome(
-        self, record: ReleaseRecord, approved: MergeApprovalEvidence, pull: GitHubPullRequest
+        self, record: ReleaseRecord, approved: MergePublicationEvidence, pull: GitHubPullRequest
     ) -> OperationOutcome:
         self._identity(record, approved, pull)
         if not pull.merged or pull.state != "closed" or pull.merge_sha is None:
@@ -129,7 +131,7 @@ class MergeController:
 
     @staticmethod
     def _identity(
-        record: ReleaseRecord, approved: MergeApprovalEvidence, pull: GitHubPullRequest
+        record: ReleaseRecord, approved: MergePublicationEvidence, pull: GitHubPullRequest
     ) -> None:
         expected = record.pull_request
         if (
@@ -155,8 +157,8 @@ class MergeOperation:
         controller: MergeController,
         record: ReleaseRecord,
         approval_id: UUID,
-        approved: MergeApprovalEvidence,
-        current_evidence: Callable[[], Awaitable[MergeApprovalEvidence]],
+        approved: MergePublicationEvidence,
+        current_evidence: Callable[[], Awaitable[MergePublicationEvidence]],
     ) -> None:
         self._controller, self._record = controller, record
         self._approved, self._current = approved, current_evidence

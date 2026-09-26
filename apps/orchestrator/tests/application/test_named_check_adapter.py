@@ -542,3 +542,60 @@ async def test_escaped_cancellation_after_launch_ownership_is_never_no_effect():
     with pytest.raises(asyncio.CancelledError):
         await cancellation.run(Runner(), request)
     assert cancellation.ownership.accepted is True
+
+
+@pytest.mark.parametrize("value", [None, "b" * 64])
+@pytest.mark.parametrize("version", [2, 3])
+def test_candidate_receipt_codec_preserves_explicit_observation(value, version):
+    from forge.application.adapters.named_check import _decode_receipt, _encode_value
+
+    payload = {
+        "receipt_version": version,
+        "caller_cancelled": False,
+        "intent_id": str(uuid4()),
+        "tool_call_id": str(uuid4()),
+        "request_digest": "a" * 64,
+        "request_payload": {"authority_schema_version": 2},
+        "command_result_digest": "c" * 64,
+        "stdout_digest": "d" * 64,
+        "stderr_digest": "e" * 64,
+        "candidate_tree_digest_before": value,
+        "candidate_tree_digest_after": value,
+    }
+    assert _decode_receipt(_encode_value(payload)) == payload
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "malformed", "boolean", "version", "legacy", "authority"]
+)
+def test_candidate_receipt_codec_rejects_ambiguous_proof(change):
+    from forge.application.adapters.named_check import _decode_receipt, _encode_value
+    from forge.application.adapters.named_check_receipts import NamedCheckReceiptError
+
+    payload = {
+        "receipt_version": 2,
+        "caller_cancelled": False,
+        "intent_id": str(uuid4()),
+        "tool_call_id": str(uuid4()),
+        "request_digest": "a" * 64,
+        "request_payload": {"authority_schema_version": 2},
+        "command_result_digest": "c" * 64,
+        "stdout_digest": "d" * 64,
+        "stderr_digest": "e" * 64,
+        "candidate_tree_digest_before": "f" * 64,
+        "candidate_tree_digest_after": "f" * 64,
+    }
+    if change == "missing":
+        del payload["candidate_tree_digest_after"]
+    elif change == "malformed":
+        payload["candidate_tree_digest_before"] = "unproved"
+    elif change == "boolean":
+        payload["candidate_tree_digest_before"] = True
+    elif change == "version":
+        payload["receipt_version"] = 1
+    elif change == "legacy":
+        payload["request_payload"] = {}
+    else:
+        payload["request_payload"] = {"authority_schema_version": 2.0}
+    with pytest.raises(NamedCheckReceiptError):
+        _decode_receipt(_encode_value(payload))

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from forge.agents.adk_gateway import BoundAdkTools, GoogleAdkGateway
+from forge.agents.adk_gateway import BoundAdkTools
 from forge.agents.adk_runtime import (
     AdkFinishReason,
     AdkInvocation,
@@ -21,6 +21,7 @@ from forge.application.ports.agents import AgentGateway
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
+    AgentRequest,
     DeveloperOutput,
 )
 from forge.domain.evaluation import score_development
@@ -201,7 +202,7 @@ def test_candidate_code_cannot_emit_a_report_or_skip_the_fixture_owned_assertion
 
 
 def test_evaluation_runtime_resolves_live_google_adk_gateway_mockable() -> None:
-    """Prove that live gateway resolution constructs a valid GoogleAdkGateway with zero live credits consumed."""
+    """Legacy evaluation defers its Google route until a request supplies the model."""
     cred_resolver = MockCredentialResolver()
     prompt_loader = PromptLoader(PROMPTS_ROOT)
     runtime = MockAdkRuntime()
@@ -216,8 +217,42 @@ def test_evaluation_runtime_resolves_live_google_adk_gateway_mockable() -> None:
         tool_provider=EmptyControlledToolProvider(),
     )
 
-    assert isinstance(gateway, GoogleAdkGateway)
+    from forge.agents.runtime_factory import LegacyGoogleRequestGateway
+
+    assert isinstance(gateway, LegacyGoogleRequestGateway)
     assert isinstance(gateway, AgentGateway)
+
+
+@pytest.mark.asyncio
+async def test_legacy_evaluation_pins_each_actual_request_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from forge.agents.runtime_factory import GoogleAdkRuntimeAdapter
+
+    models: list[str] = []
+
+    class RecordingGateway:
+        async def execute(self, request):
+            return request
+
+    def resolve(adapter, binding, tool_provider):
+        models.append(binding.effective.model)
+        assert adapter.route == binding.effective
+        return RecordingGateway()
+
+    monkeypatch.setattr(GoogleAdkRuntimeAdapter, "gateway_for", resolve)
+    gateway = resolve_live_evaluation_gateway(
+        credential_resolver=MockCredentialResolver(),
+        provider_reference="secret://provider/test-key",
+        prompt_loader=PromptLoader(PROMPTS_ROOT),
+        runtime=MockAdkRuntime(),
+        pricing_catalog=_make_dummy_pricing_catalog(),
+        tool_provider=EmptyControlledToolProvider(),
+    )
+    for model in ("gemini-2.5-flash", "another-approved-model"):
+        request = AgentRequest.model_construct(provider="google", model=model)
+        assert await gateway.execute(request) is request
+    assert models == ["gemini-2.5-flash", "another-approved-model"]
 
 
 def test_live_runtime_refuses_synthetic_tool_bindings() -> None:

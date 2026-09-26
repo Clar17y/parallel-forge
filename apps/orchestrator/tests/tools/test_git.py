@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
@@ -2193,21 +2194,37 @@ def test_remove_leaves_unrelated_well_formed_registration_quarantine_evidence(
 
 def test_remove_refuses_linked_registration_quarantine_evidence(tmp_path: Path) -> None:
     repository, _identity, handle = _managed_repository(tmp_path)
+    registration = _registration_for(handle.path)
+    with CanonicalRoot(repository)._prepare_worktree_quarantine(
+        handle.path.name, registration.name
+    ):
+        pass
     outside = tmp_path / "outside-proof"
     outside.mkdir()
     (outside / "gitdir").write_text(f"{tmp_path / 'foreign' / '.git'}\n", encoding="utf-8")
     evidence = repository / ".git" / ".forge-worktree-quarantine" / "linked-proof"
     try:
         evidence.symlink_to(outside, target_is_directory=True)
-    except OSError, NotImplementedError:
+    except NotImplementedError:
         pytest.skip("symlinks are not available on this host")
+    except OSError as error:
+        if getattr(error, "winerror", None) != 1314 and error.errno not in {
+            errno.ENOSYS,
+            errno.EOPNOTSUPP,
+        }:
+            raise
+        pytest.skip("symlink creation is unsupported or requires Windows privilege")
     controlled = _controlled(repository, tmp_path / "state")
 
     with pytest.raises(ControlledGitError):
         controlled.remove_worktree(handle)
 
     assert handle.path.is_dir()
+    assert registration.is_dir()
     assert evidence.is_symlink()
+    assert (outside / "gitdir").read_text(encoding="utf-8") == (
+        f"{tmp_path / 'foreign' / '.git'}\n"
+    )
 
 
 @pytest.mark.parametrize(

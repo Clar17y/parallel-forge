@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -21,7 +22,7 @@ from forge.application.adapters.controller_check import (
 )
 from forge.application.adapters.named_check import NamedCheckCancellation
 from forge.application.ports.runner import CommandResult, CommandTerminalResult
-from forge.application.ports.worktrees import ManagedWorktree
+from forge.application.ports.worktrees import GitWorkingTreeSnapshot, ManagedWorktree
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.operation import OperationIntent, OperationStatus, canonical_digest
@@ -39,9 +40,15 @@ class _Unused:
 class _Git:
     def __init__(self, head: str) -> None:
         self.head = head
+        self.snapshot = GitWorkingTreeSnapshot(
+            head_sha=head, base_sha=head, files=(), changed_paths=()
+        )
 
     def head_sha(self, worktree: ManagedWorktree) -> str:
         return self.head
+
+    def working_tree_snapshot(self, worktree, *, secret_paths):
+        return replace(self.snapshot, head_sha=self.head)
 
 
 class _Runner:
@@ -131,6 +138,27 @@ def test_controller_check_request_builder_happy_path() -> None:
     assert "agent_execution_id" not in payload
     assert "tool_call_id" not in payload
     assert "secret-value" not in json.dumps(dict(payload))
+
+
+def test_content_bound_controller_request_has_distinct_versioned_authority() -> None:
+    worktree, policy, run_id, step_id, result_id, head_sha = _make_fixture_context()
+    values = {
+        "run_id": run_id,
+        "step_id": step_id,
+        "result_id": result_id,
+        "worktree": worktree,
+        "policy": policy,
+        "command_name": "unit",
+        "head_sha": head_sha,
+    }
+    legacy = controller_check_request(**values)
+    current = controller_check_request(**values, candidate_tree_digest="c" * 64)
+    assert current.request_schema_version == legacy.request_schema_version == 1
+    assert current.request_payload["protocol_version"] == 2
+    assert current.request_payload["candidate_tree_digest"] == "c" * 64
+    assert current.request_digest != legacy.request_digest
+    assert current.idempotency_key == legacy.idempotency_key
+    assert "candidate_tree_digest" not in legacy.request_payload
 
 
 def test_controller_check_request_rejects_optional_command() -> None:
@@ -316,6 +344,7 @@ async def _setup_real_adapter(
     timed_out: bool = False,
     cancelled: bool = False,
     environment: Mapping[str, str] = MappingProxyType({}),
+    candidate_bound: bool = False,
 ) -> tuple[
     ControllerCheckOperationAdapter, OperationIntent, _Factory, ManagedWorktree, ProjectPolicy
 ]:
@@ -388,6 +417,8 @@ async def _setup_real_adapter(
     )
     terminal = CommandTerminalResult(result=result, caller_cancelled=cancelled)
     factory = _Factory(_Runner(terminal))
+    git = _Git(head_sha)
+    candidate_tree_digest = git.snapshot.candidate_tree_digest if candidate_bound else None
 
     req = controller_check_request(
         run_id=run_id,
@@ -398,6 +429,7 @@ async def _setup_real_adapter(
         command_name="unit",
         head_sha=head_sha,
         environment=environment,
+        candidate_tree_digest=candidate_tree_digest,
     )
     intent = OperationIntent(
         run_id=run_id,
@@ -415,9 +447,10 @@ async def _setup_real_adapter(
         policy=policy,
         command_name="unit",
         head_sha=head_sha,
+        candidate_tree_digest=candidate_tree_digest,
         artifacts=ArtifactRepository(session_factory),
         artifact_store=store,
-        controlled_git=cast(Any, _Git(head_sha)),
+        controlled_git=cast(Any, git),
         runner_factory=cast(Any, factory),
         environment=environment,
     )
@@ -581,11 +614,12 @@ async def test_foreign_result_mismatch_rejected(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("candidate_bound", [False, True])
 async def test_cancellation_before_launch_creates_proof_and_reconciles(
-    tmp_path: Path, persisted_run: Any, session_factory: Any
+    tmp_path: Path, persisted_run: Any, session_factory: Any, candidate_bound: bool
 ) -> None:
     adapter, intent, factory, _, _ = await _setup_real_adapter(
-        tmp_path, persisted_run, session_factory
+        tmp_path, persisted_run, session_factory, candidate_bound=candidate_bound
     )
     cancellation = NamedCheckCancellation()
     adapter._cancellation = cancellation
@@ -596,6 +630,10 @@ async def test_cancellation_before_launch_creates_proof_and_reconciles(
     assert outcome.payload["disposition"] == "cancelled_before_launch"
     assert outcome.payload["result_id"] == str(adapter._result_id)
     assert factory.calls == 0
+    receipt = json.loads(await adapter._store.open_bytes(outcome.payload["receipt_digest"]))
+    assert receipt["receipt_version"] == (2 if candidate_bound else 1)
+    assert "candidate_tree_digest_before" not in receipt
+    assert "candidate_tree_digest_after" not in receipt
 
     # Reconcile on recovery adapter verifies the no-effect proof
     recovery = ControllerCheckOperationAdapter.for_recovery(
@@ -606,6 +644,7 @@ async def test_cancellation_before_launch_creates_proof_and_reconciles(
         policy=adapter._policy,
         command_name=adapter._command_name,
         head_sha=adapter._head_sha,
+        candidate_tree_digest=adapter._candidate_tree_digest,
         artifacts=adapter._artifacts,
         artifact_store=adapter._store,
     )
@@ -614,11 +653,12 @@ async def test_cancellation_before_launch_creates_proof_and_reconciles(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("candidate_bound", [False, True])
 async def test_cancellation_during_runner_prelaunch_yields_canonical_no_effect(
-    tmp_path: Path, persisted_run: Any, session_factory: Any
+    tmp_path: Path, persisted_run: Any, session_factory: Any, candidate_bound: bool
 ) -> None:
     adapter, intent, factory, _, _ = await _setup_real_adapter(
-        tmp_path, persisted_run, session_factory
+        tmp_path, persisted_run, session_factory, candidate_bound=candidate_bound
     )
     entered = asyncio.Event()
     release = asyncio.Event()

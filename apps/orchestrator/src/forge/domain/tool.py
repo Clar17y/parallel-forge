@@ -7,12 +7,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from forge.domain.actor import AgentRole
 from forge.domain.artifact import validate_artifact_digest
 from forge.domain.payload import redact_durable_text, validate_durable_payload
+
+if TYPE_CHECKING:
+    from forge.domain.subscription import SpecialistPurpose
 
 _ARGUMENT_KEY = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 _WORKTREE_ID = re.compile(r"\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\Z")
@@ -45,6 +48,8 @@ class ToolName(StrEnum):
     REPOSITORY_SEARCH = "repository.search"
     REPOSITORY_READ_INSTRUCTIONS = "repository.read_instructions"
     REPOSITORY_WRITE_FILE = "repository.write_file"
+    REPOSITORY_DELETE_FILE = "repository.delete_file"
+    REPOSITORY_RENAME_FILE = "repository.rename_file"
     GIT_STATUS = "git.status"
     GIT_DIFF = "git.diff"
     GIT_COMMIT = "git.commit"
@@ -183,20 +188,70 @@ class ToolAuthorizationContext:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class SubscriptionToolAuthorizationContext:
+    """Trusted v0.2 authority with no fabricated legacy execution identity.
+
+    This deliberately names the specialist purpose and subscription lineage;
+    callers cannot replace any of these values through tool arguments.
+    """
+
+    run_id: UUID
+    task_id: UUID
+    attempt_id: UUID
+    worktree_id: str
+    purpose: SpecialistPurpose
+    policy_version: int
+    permitted_tools: frozenset[ToolName]
+    invocation_id: UUID | None = None
+    operation_intent_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        # Delayed import avoids the ToolName <-> subscription domain cycle.
+        from forge.domain.subscription import SPECIALIST_ALLOWED_TOOLS, SpecialistPurpose
+
+        for value, name in (
+            (self.run_id, "run identifier"),
+            (self.task_id, "task identifier"),
+            (self.attempt_id, "attempt identifier"),
+        ):
+            if not isinstance(value, UUID) or value.int == 0:
+                raise ValueError(f"subscription tool authorization {name} must be a non-nil UUID")
+        if not isinstance(self.worktree_id, str) or (
+            len(self.worktree_id) > _MAX_WORKTREE_ID_LENGTH
+            or _WORKTREE_ID.fullmatch(self.worktree_id) is None
+        ):
+            raise ValueError("subscription tool authorization worktree identifier is invalid")
+        if not isinstance(self.purpose, SpecialistPurpose):
+            raise TypeError("subscription tool authorization purpose must be a SpecialistPurpose")
+        if type(self.policy_version) is not int or not 1 <= self.policy_version <= _MAX_POLICY_VERSION:
+            raise ValueError("subscription tool authorization policy version is outside the supported range")
+        permitted = frozenset(self.permitted_tools)
+        allowed = SPECIALIST_ALLOWED_TOOLS[self.purpose]
+        if any(not isinstance(tool, ToolName) or tool not in allowed for tool in permitted):
+            raise ValueError("subscription tool permissions exceed specialist capability")
+        object.__setattr__(self, "permitted_tools", permitted)
+        for optional_id, name in ((self.invocation_id, "invocation identifier"), (self.operation_intent_id, "operation identifier")):
+            if optional_id is not None and (not isinstance(optional_id, UUID) or optional_id.int == 0):
+                raise ValueError(f"subscription tool authorization {name} must be a non-nil UUID")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ToolAuthorization:
     """A successful decision bound to Forge-owned context and one typed request."""
 
-    context: ToolAuthorizationContext
+    context: ToolAuthorizationContext | SubscriptionToolAuthorizationContext
     request: ToolRequest
 
     def __post_init__(self) -> None:
-        if type(self.context) is not ToolAuthorizationContext:
+        if type(self.context) not in (ToolAuthorizationContext, SubscriptionToolAuthorizationContext):
             raise TypeError("tool authorization requires a trusted context")
         if type(self.request) is not ToolRequest:
             raise TypeError("tool authorization requires a typed request")
 
     @property
     def role(self) -> AgentRole:
+        if type(self.context) is not ToolAuthorizationContext:
+            raise TypeError("subscription authority has a specialist purpose, not an agent role")
         return self.context.role
 
     @property
@@ -213,11 +268,11 @@ class ToolAuthorization:
 
     @property
     def agent_execution_id(self) -> UUID | None:
-        return self.context.agent_execution_id
+        return self.context.agent_execution_id if type(self.context) is ToolAuthorizationContext else None
 
     @property
     def step_id(self) -> UUID | None:
-        return self.context.step_id
+        return self.context.step_id if type(self.context) is ToolAuthorizationContext else None
 
     @property
     def tool_name(self) -> ToolName:
@@ -342,6 +397,7 @@ def _freeze(value: Any) -> Any:
 
 
 __all__ = [
+    "SubscriptionToolAuthorizationContext",
     "ToolAuthorization",
     "ToolAuthorizationContext",
     "ToolCallStatus",

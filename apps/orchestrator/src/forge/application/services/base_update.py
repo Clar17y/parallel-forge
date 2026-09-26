@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from forge.application.ports.artifacts import ArtifactStore
@@ -22,6 +23,7 @@ from forge.application.services.recovery import OperationExecutor
 from forge.application.services.release_resume import resumed_release_origin
 from forge.application.services.resume_source import RESUME_FIELDS
 from forge.application.services.validation import _fence_command
+from forge.domain.approval import SubscriptionPlanApprovalEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.operation import OperationIntent, OperationRequest, OperationStatus
 from forge.domain.policy import ProjectPolicy
@@ -35,6 +37,9 @@ from forge.release.controller import ReleaseReconciliationRequired, _validate_in
 from forge.release.git_adoption import ManagedAdoptionError
 from forge.release.github_client import GitHubClientError
 from forge.release.github_write import GitHubWriteError
+
+if TYPE_CHECKING:
+    from forge.application.services.subscription_base_update import SubscriptionBaseUpdateController
 
 
 class _DurationExpired(RuntimeError):
@@ -52,11 +57,13 @@ class BaseUpdateService:
         executor: OperationExecutor,
         *,
         clock: Clock | None = None,
+        subscription: SubscriptionBaseUpdateController | None = None,
     ) -> None:
         self._store, self._evidence, self._reads, self._writes = store, evidence, reads, writes
         self._adoption, self._executor = adoption, executor
         self._approved = ApprovedPlanLoader(store)
         self._clock = clock or SystemClock()
+        self._subscription = subscription
 
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> None:
         if (
@@ -93,6 +100,7 @@ class BaseUpdateService:
             if event.payload.get("reason") in {
                 "base_update_evidence_invalid",
                 "base_update_duration_exhausted",
+                "base_update_subscription_budget_exhausted",
             }:
                 approval = await work.auth.get_approval(
                     approval_id=UUID(str(event.payload.get("approval_id"))), for_update=True
@@ -138,7 +146,14 @@ class BaseUpdateService:
                 raise CommandRecoveryRequired("base update intervention replay differs")
             await work.commit()
             return
-        if await verify_base_update_replay(command, work):
+        subscription = (
+            self._subscription
+            if isinstance(approved.evidence, SubscriptionPlanApprovalEvidence)
+            else None
+        )
+        if isinstance(approved.evidence, SubscriptionPlanApprovalEvidence) and subscription is None:
+            raise CommandRecoveryRequired("subscription base update is not configured")
+        if await verify_base_update_replay(command, work, subscription=subscription):
             await work.commit()
             return
         await self._current(command, work, run, check_deadline=False)
@@ -177,6 +192,18 @@ class BaseUpdateService:
             except PrEvidenceValidationError:
                 await self._intervene_evidence(command, work, run, approval, record.id)
                 return
+        if subscription is not None:
+            reserved = await subscription.prepare(command, work, approved, prior_operation=prior)
+            if reserved is None:
+                await self._intervene_evidence(
+                    command,
+                    work,
+                    run,
+                    approval,
+                    record.id,
+                    "base_update_subscription_budget_exhausted",
+                )
+                return
         try:
             updated = await self._effect(command, work, run, remote.request, remote)
         except _DurationExpired:
@@ -184,7 +211,12 @@ class BaseUpdateService:
                 command, work, run, approval, record.id, "base_update_duration_exhausted"
             )
             return
-        except ReleaseReconciliationRequired, GitHubWriteError, GitHubClientError, ManagedAdoptionError:
+        except (
+            ReleaseReconciliationRequired,
+            GitHubWriteError,
+            GitHubClientError,
+            ManagedAdoptionError,
+        ):
             await self._intervene_unresolved(command, work, run, approval, remote.request)
             return
         if not run.worktree_path or not run.branch_name or not run.base_sha:
@@ -206,12 +238,22 @@ class BaseUpdateService:
                 command, work, run, approval, record.id, "base_update_duration_exhausted"
             )
             return
-        except ReleaseReconciliationRequired, GitHubWriteError, GitHubClientError, ManagedAdoptionError:
+        except (
+            ReleaseReconciliationRequired,
+            GitHubWriteError,
+            GitHubClientError,
+            ManagedAdoptionError,
+        ):
             await self._intervene_unresolved(command, work, run, approval, local.request)
             return
         await self._current(command, work, run, check_deadline=False)
         pull = GitHubPullRequest(**dict(adopted.outcome or {}))  # type: ignore[arg-type]
         await work.releases.record_base_update(run.id, pull, updated.id, adopted.id)
+        if subscription is not None:
+            await subscription.finish(command, work, approved, updated, adopted)
+            await self._current(command, work, run, check_deadline=False)
+            await work.commit()
+            return
         attempt = await work.controller_steps.next_attempt(run.id, "validate")
         queued = await work.commands.enqueue(
             run_id=run.id,

@@ -20,8 +20,10 @@ from forge.application.services.evidence_reader import EvidenceReader
 from forge.domain.agent import ReviewDecision, ReviewOutput
 from forge.domain.artifact import ArtifactDescriptor, canonical_storage_pointer
 from forge.domain.evidence import (
+    EvidenceStatus,
     ReviewEvidenceManifest,
     ValidationEvidenceManifest,
+    ValidationEvidenceMember,
     encode_evidence_manifest,
 )
 
@@ -188,6 +190,83 @@ async def test_reader_returns_none_for_legitimately_absent_prior_review() -> Non
         )
         is None
     )
+
+
+@pytest.mark.parametrize("metadata_tree", ["c" * 64, "d" * 64, None])
+async def test_reader_checks_validation_v2_candidate_metadata(metadata_tree) -> None:
+    manifest = ValidationEvidenceManifest(
+        schema_version=2,
+        evidence_set_id=_SET_ID,
+        run_id=_RUN_ID,
+        step_id=_STEP_ID,
+        policy_version=1,
+        head_sha=_HEAD,
+        candidate_tree_digest="c" * 64,
+    )
+    data = encode_evidence_manifest(manifest)
+    descriptor = replace(_descriptor(hashlib.sha256(data).hexdigest(), len(data)), schema_version=2)
+    bound = replace(
+        _bound(descriptor), manifest_schema_version=2, candidate_tree_digest=metadata_tree
+    )
+    work = _Work(
+        _Evidence({EvidenceInputPurpose.VALIDATION_RESULTS: bound}), _Artifacts(descriptor)
+    )
+    reader = EvidenceReader(lambda: work, _Store(data))
+    if metadata_tree == manifest.candidate_tree_digest:
+        assert await reader.read(EvidenceInputPurpose.VALIDATION_RESULTS, _scope()) == manifest
+    else:
+        with pytest.raises(EvidenceCorruptLineage):
+            await reader.read(EvidenceInputPurpose.VALIDATION_RESULTS, _scope())
+
+
+@pytest.mark.parametrize("substituted_parent", (False, True))
+async def test_reader_requires_the_exact_content_receipt_parent(substituted_parent: bool) -> None:
+    member = ValidationEvidenceMember(
+        result_id=_STEP_ID,
+        check_name="unit",
+        command_name="unit",
+        command_version=1,
+        command_digest="1" * 64,
+        command_result_digest="2" * 64,
+        stdout_digest="3" * 64,
+        stderr_digest="4" * 64,
+        controller_receipt_digest="5" * 64,
+        status=EvidenceStatus.PASSED,
+        exit_code=0,
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    manifest = ValidationEvidenceManifest(
+        schema_version=2,
+        evidence_set_id=_SET_ID,
+        run_id=_RUN_ID,
+        step_id=_STEP_ID,
+        policy_version=1,
+        head_sha=_HEAD,
+        candidate_tree_digest="c" * 64,
+        members=(member,),
+    )
+    data = encode_evidence_manifest(manifest)
+    parents = (
+        member.command_result_digest,
+        member.stdout_digest,
+        member.stderr_digest,
+        "6" * 64 if substituted_parent else member.controller_receipt_digest,
+    )
+    descriptor = replace(
+        _descriptor(hashlib.sha256(data).hexdigest(), len(data), parents=parents),
+        schema_version=2,
+    )
+    bound = replace(_bound(descriptor), manifest_schema_version=2, candidate_tree_digest="c" * 64)
+    work = _Work(
+        _Evidence({EvidenceInputPurpose.VALIDATION_RESULTS: bound}), _Artifacts(descriptor)
+    )
+    reader = EvidenceReader(lambda: work, _Store(data))
+    if substituted_parent:
+        with pytest.raises(EvidenceCorruptLineage):
+            await reader.read(EvidenceInputPurpose.VALIDATION_RESULTS, _scope())
+    else:
+        assert await reader.read(EvidenceInputPurpose.VALIDATION_RESULTS, _scope()) == manifest
 
 
 @pytest.mark.parametrize("substituted_parent", (False, True))

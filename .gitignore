@@ -1,5 +1,10 @@
 .worktrees/
 
+# Local development-agent reports and scratch output
+/.superpowers/
+/.llm-output/
+/.pytest-basetemp/
+
 # Local configuration and secrets
 .env
 .env.*
@@ -15,6 +20,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
+coverage/
 coverage.xml
 htmlcov/
 
@@ -37,3 +44,7 @@ test-results/
 dist/
 build/
 *.egg-info/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db

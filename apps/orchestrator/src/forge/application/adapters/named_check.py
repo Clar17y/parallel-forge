@@ -33,7 +33,11 @@ from forge.application.ports.runner import (
     TerminalRunnerPort,
     WorktreeRunnerFactoryPort,
 )
-from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
+from forge.application.ports.worktrees import (
+    ControlledGitPort,
+    GitWorkingTreeSnapshot,
+    ManagedWorktree,
+)
 from forge.domain.artifact import ArtifactDescriptor
 from forge.domain.operation import (
     OperationIntent,
@@ -42,6 +46,8 @@ from forge.domain.operation import (
     canonical_digest,
 )
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode
+from forge.domain.subscription import SPECIALIST_ALLOWED_TOOLS, SpecialistPurpose
+from forge.domain.tool import ToolName
 from forge.domain.validation import command_spec_digest, effective_network_enabled
 
 NAMED_CHECK_KIND: Final = "named_check"
@@ -62,6 +68,7 @@ _RECEIPT_KEYS: Final = frozenset(
         "tool_call_id",
     }
 )
+_CANDIDATE_KEYS: Final = frozenset({"candidate_tree_digest_before", "candidate_tree_digest_after"})
 _CANCELLED_RECEIPT_KEYS: Final = frozenset(
     {
         "disposition",
@@ -183,6 +190,8 @@ class NamedCheckOperationAdapter(OperationAdapter):
             raise NamedCheckOperationError("recovery adapter cannot execute commands")
         if self._git.head_sha(self._worktree) != values["head_sha"]:
             raise NamedCheckOperationError("named check worktree head changed")
+        subscription = values.get("authority_schema_version") == 2
+        before = await asyncio.to_thread(self._candidate_digest, values) if subscription else None
         runner = self._factory.create(self._worktree, self._policy)
         request = RunCommandRequest(
             command_name=command.name,
@@ -199,7 +208,32 @@ class NamedCheckOperationAdapter(OperationAdapter):
             return await self.cancel_before_launch(intent)
         result = terminal.result
         self._result_matches(values, command, result)
-        return await self._persist(intent, call_id, result, terminal.caller_cancelled)
+        after = await asyncio.to_thread(self._candidate_digest, values) if subscription else None
+        return await self._persist(
+            intent,
+            call_id,
+            result,
+            terminal.caller_cancelled,
+            candidate=(before, after) if subscription else None,
+        )
+
+    def _candidate_digest(self, values: Mapping[str, object]) -> str | None:
+        # Missing or unstable snapshots must not erase a terminal command receipt
+        # or be invented as proof. They explicitly leave candidate binding unknown.
+        snapshot = getattr(self._git, "working_tree_snapshot", None)
+        if not callable(snapshot):
+            return None
+        try:
+            observed = snapshot(self._worktree, secret_paths=self._policy.effective_secret_paths)
+            if (
+                not isinstance(observed, GitWorkingTreeSnapshot)
+                or observed.head_sha != values["head_sha"]
+                or observed.base_sha != self._worktree.base_sha
+            ):
+                return None
+            return observed.candidate_tree_digest
+        except OSError, RuntimeError, TypeError, ValueError:
+            return None
 
     async def cancel_before_launch(self, intent: OperationIntent) -> OperationOutcome:
         """Persist canonical evidence that this admission had no command effect."""
@@ -290,6 +324,7 @@ class NamedCheckOperationAdapter(OperationAdapter):
             ):
                 raise NamedCheckReceiptError()
             self._result_matches(values, command, result)
+            outputs: dict[str, object] = {}
             for stream in _STREAMS:
                 digest = result.stdout_digest if stream == "stdout" else result.stderr_digest
                 output = await self._artifacts.get_by_digest(digest, run_id=intent.run_id)
@@ -299,12 +334,13 @@ class NamedCheckOperationAdapter(OperationAdapter):
                     raise NamedCheckReceiptError()
                 if output.digest != digest or output.parent_digests:
                     raise NamedCheckReceiptError()
-                verify_output_envelope(
+                envelope = verify_output_envelope(
                     await self._verified_bytes(output), stream=stream, result=result
                 )
+                outputs.update(_output_preview(stream, envelope))
         except NamedCheckReceiptError, OSError, TypeError, ValueError:
             return _needs_reconciliation()
-        return _outcome(intent, receipt, result)
+        return _outcome(intent, receipt, result, outputs=outputs)
 
     async def _verified_bytes(self, descriptor: ArtifactDescriptor) -> bytes:
         if descriptor.byte_count < 0 or descriptor.byte_count > 6 * 1024 * 1024 + 1024:
@@ -320,8 +356,7 @@ class NamedCheckOperationAdapter(OperationAdapter):
         return data
 
     def _request(self, intent: OperationIntent) -> tuple[dict[str, object], CommandSpec, UUID]:
-        keys = {
-            "agent_execution_id",
+        common_keys = {
             "command_digest",
             "command_name",
             "environment_keys_digest",
@@ -331,20 +366,43 @@ class NamedCheckOperationAdapter(OperationAdapter):
             "project_id",
             "protocol_version",
             "run_id",
-            "step_id",
             "tool_call_id",
             "worktree_id",
+        }
+        legacy_keys = common_keys | {"agent_execution_id", "step_id"}
+        subscription_keys = common_keys | {
+            "authority_schema_version",
+            "subscription_task_id",
+            "subscription_attempt_id",
+            "subscription_purpose",
         }
         if (
             intent.kind != NAMED_CHECK_KIND
             or intent.request_schema_version != 1
-            or set(intent.request_payload) != keys
+            or set(intent.request_payload)
+            not in {frozenset(legacy_keys), frozenset(subscription_keys)}
             or canonical_digest(intent.request_payload) != intent.request_digest
         ):
             raise NamedCheckOperationError("named check request is invalid")
         values = dict(intent.request_payload)
         try:
-            for key in ("agent_execution_id", "step_id", "tool_call_id", "project_id", "run_id"):
+            identity_keys: tuple[str, ...] = ("tool_call_id", "project_id", "run_id")
+            if "authority_schema_version" in values:
+                if (
+                    type(values["authority_schema_version"]) is not int
+                    or values["authority_schema_version"] != 2
+                ):
+                    raise ValueError
+                identity_keys += ("subscription_task_id", "subscription_attempt_id")
+                purpose_value = values["subscription_purpose"]
+                if not isinstance(purpose_value, str):
+                    raise ValueError
+                purpose = SpecialistPurpose(purpose_value)
+                if ToolName.BUILD_RUN_NAMED_CHECK not in SPECIALIST_ALLOWED_TOOLS[purpose]:
+                    raise ValueError
+            else:
+                identity_keys += ("agent_execution_id", "step_id")
+            for key in identity_keys:
                 value = values[key]
                 if not isinstance(value, str):
                     raise TypeError
@@ -404,14 +462,22 @@ class NamedCheckOperationAdapter(OperationAdapter):
             raise NamedCheckOperationError("named check result is not admitted")
 
     async def _persist(
-        self, intent: OperationIntent, call_id: UUID, result: CommandResult, cancelled: bool
+        self,
+        intent: OperationIntent,
+        call_id: UUID,
+        result: CommandResult,
+        cancelled: bool,
+        *,
+        candidate: tuple[str | None, str | None] | None = None,
     ) -> OperationOutcome:
+        outputs: dict[str, object] = {}
         for stream in _STREAMS:
             digest = result.stdout_digest if stream == "stdout" else result.stderr_digest
             if await self._store.verify(digest) is not True:
                 raise NamedCheckOperationError("named check output verification failed")
             data = await self._store.open_bytes(digest)
-            verify_output_envelope(data, stream=stream, result=result)
+            envelope = verify_output_envelope(data, stream=stream, result=result)
+            outputs.update(_output_preview(stream, envelope))
             descriptor = await self._store.put_bytes(data, media_type=_OUTPUT_MEDIA)
             await self._artifacts.record(
                 descriptor,
@@ -434,7 +500,7 @@ class NamedCheckOperationAdapter(OperationAdapter):
             producer_id=call_id,
             parent_digests=tuple(sorted({result.stdout_digest, result.stderr_digest})),
         )
-        receipt = _encode_receipt(intent, call_id, result, cancelled)
+        receipt = _encode_receipt(intent, call_id, result, cancelled, candidate=candidate)
         receipt_descriptor = await self._store.put_bytes(receipt, media_type=_RECEIPT_MEDIA)
         if (
             receipt_descriptor.byte_count != len(receipt)
@@ -451,7 +517,7 @@ class NamedCheckOperationAdapter(OperationAdapter):
                 sorted({result.evidence_digest, result.stdout_digest, result.stderr_digest})
             ),
         )
-        return _outcome(intent, _decode_receipt(receipt), result)
+        return _outcome(intent, _decode_receipt(receipt), result, outputs=outputs)
 
 
 def _environment_keys_digest(environment: Mapping[str, str]) -> str:
@@ -459,9 +525,14 @@ def _environment_keys_digest(environment: Mapping[str, str]) -> str:
 
 
 def _encode_receipt(
-    intent: OperationIntent, call_id: UUID, result: CommandResult, cancelled: bool
+    intent: OperationIntent,
+    call_id: UUID,
+    result: CommandResult,
+    cancelled: bool,
+    *,
+    candidate: tuple[str | None, str | None] | None = None,
 ) -> bytes:
-    payload = {
+    payload: dict[str, object] = {
         "caller_cancelled": cancelled,
         "command_result_digest": result.evidence_digest,
         "intent_id": str(intent.id),
@@ -472,6 +543,12 @@ def _encode_receipt(
         "stdout_digest": result.stdout_digest,
         "tool_call_id": str(call_id),
     }
+    if candidate is not None:
+        payload.update(
+            receipt_version=3,
+            candidate_tree_digest_before=candidate[0],
+            candidate_tree_digest_after=candidate[1],
+        )
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
@@ -497,14 +574,19 @@ def _decode_receipt(data: bytes) -> dict[str, object]:
         raise NamedCheckReceiptError() from None
     if (
         not isinstance(value, dict)
-        or frozenset(value) != _RECEIPT_KEYS
+        or frozenset(value)
+        != (
+            _RECEIPT_KEYS | _CANDIDATE_KEYS
+            if value.get("receipt_version") in (2, 3)
+            else _RECEIPT_KEYS
+        )
         or _encode_value(value) != data
     ):
         raise NamedCheckReceiptError()
     if (
         type(value["caller_cancelled"]) is not bool
         or type(value["receipt_version"]) is not int
-        or value["receipt_version"] != 1
+        or value["receipt_version"] not in (1, 2, 3)
     ):
         raise NamedCheckReceiptError()
     if not all(
@@ -514,6 +596,18 @@ def _decode_receipt(data: bytes) -> dict[str, object]:
         raise NamedCheckReceiptError()
     if not isinstance(value["request_payload"], dict):
         raise NamedCheckReceiptError()
+    if value["receipt_version"] in (2, 3):
+        if (
+            type(value["request_payload"].get("authority_schema_version")) is not int
+            or value["request_payload"].get("authority_schema_version") != 2
+        ):
+            raise NamedCheckReceiptError()
+        for key in _CANDIDATE_KEYS:
+            digest = value[key]
+            if digest is not None and (
+                not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise NamedCheckReceiptError()
     try:
         UUID(cast(str, value["intent_id"]))
         UUID(cast(str, value["tool_call_id"]))
@@ -569,20 +663,37 @@ def _encode_value(value: Mapping[str, object]) -> bytes:
 
 
 def _outcome(
-    intent: OperationIntent, receipt: Mapping[str, object], result: CommandResult
+    intent: OperationIntent,
+    receipt: Mapping[str, object],
+    result: CommandResult,
+    *,
+    outputs: Mapping[str, object],
 ) -> OperationOutcome:
-    return OperationOutcome(
-        payload={
-            "caller_cancelled": receipt["caller_cancelled"],
-            "command_result_digest": result.evidence_digest,
-            "exit_code": result.exit_code,
-            "receipt_digest": hashlib.sha256(_encode_value(receipt)).hexdigest(),
-            "stderr_digest": result.stderr_digest,
-            "stdout_digest": result.stdout_digest,
-            "timed_out": result.timed_out,
-            "tool_call_id": receipt["tool_call_id"],
-        }
-    )
+    payload = {
+        "caller_cancelled": receipt["caller_cancelled"],
+        "command_result_digest": result.evidence_digest,
+        "exit_code": result.exit_code,
+        "receipt_digest": hashlib.sha256(_encode_value(receipt)).hexdigest(),
+        "stderr_digest": result.stderr_digest,
+        "stdout_digest": result.stdout_digest,
+        "timed_out": result.timed_out,
+        "tool_call_id": receipt["tool_call_id"],
+    }
+    if receipt["receipt_version"] in (2, 3):
+        payload.update({key: receipt[key] for key in _CANDIDATE_KEYS})
+    if receipt["receipt_version"] == 3:
+        # Versioning keeps historical v1/v2 operation replay byte-for-byte stable.
+        payload.update(command_duration_ms=result.duration_ms, **outputs)
+    return OperationOutcome(payload=payload)
+
+
+def _output_preview(stream: str, envelope: Mapping[str, object]) -> dict[str, object]:
+    """Expose bounded, already-redacted command evidence to the owning worker."""
+    encoded = cast(str, envelope["text"]).encode("utf-8")
+    return {
+        f"{stream}_text": encoded[:4096].decode("utf-8", errors="ignore"),
+        f"{stream}_preview_truncated": envelope["truncated"] is True or len(encoded) > 4096,
+    }
 
 
 def _needs_reconciliation() -> OperationOutcome:

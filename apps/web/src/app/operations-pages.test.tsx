@@ -8,8 +8,17 @@ import { api } from '@/lib/api/client';
 
 vi.mock('@/lib/api/client', () => ({ api: vi.fn() }));
 afterEach(() => { cleanup(); vi.mocked(api).mockReset(); });
+
+function mockUsage(load: () => unknown | Promise<unknown>) {
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.startsWith('/subscription-usage?')) return { items: [], has_more: false, assessment: null } as T;
+    if (path.startsWith('/usage?')) return await load() as T;
+    throw new Error(`Unexpected API request: ${path}`);
+  });
+}
+
 test('usage shows dimensions, distinguishes unpriced calls and requests the next server page', async () => {
-  vi.mocked(api).mockResolvedValue({ items: [{ project_id: 'p1', run_id: 'r1', provider: 'fixture', model: 'model-a', currency: 'USD', input_tokens: 20, output_tokens: 4, duration_ms: 200, known_cost_minor: 7, unpriced_calls: 1, model_calls: 2 }], truncated: true });
+  mockUsage(() => ({ items: [{ project_id: 'p1', run_id: 'r1', provider: 'fixture', model: 'model-a', currency: 'USD', input_tokens: 20, output_tokens: 4, duration_ms: 200, known_cost_minor: 7, unpriced_calls: 1, model_calls: 2 }], truncated: true }));
   render(<UsagePage />);
   expect(await screen.findByText('fixture / model-a')).toBeInTheDocument();
   expect(screen.getByText('7 USD minor units')).toBeInTheDocument();
@@ -35,7 +44,7 @@ test.each([false, true])('evaluations preserve persisted status and prompt linea
 });
 
 test('failed usage load exposes retry and clears the error after successful refresh', async () => {
-  vi.mocked(api).mockRejectedValueOnce(new Error('unavailable')).mockResolvedValueOnce({ items: [], truncated: false });
+  mockUsage(vi.fn().mockRejectedValueOnce(new Error('unavailable')).mockResolvedValueOnce({ items: [], truncated: false }));
   render(<UsagePage />);
   expect(await screen.findByRole('alert')).toHaveTextContent('Usage unavailable');
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));

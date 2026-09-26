@@ -2,7 +2,6 @@ name: Python and runtime contracts
 run-name: Python and runtime contracts (${{ inputs.verification_scope || 'full' }})
 
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       verification_scope:
@@ -71,7 +70,9 @@ jobs:
 
   postgres-contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # v0.2 reached 95% of the backend suite at the old 60-minute cap;
+    # leave room for its remaining acceptance cases and the Docker step.
+    timeout-minutes: 90
     services:
       postgres:
         image: postgres:17
@@ -88,6 +89,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # Historical upgrade acceptance runs the exact retained v0.1 source.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '24.20.0'
@@ -110,4 +113,12 @@ jobs:
           -q -ra
       - name: Docker runner contract
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
-        run: uv run --frozen python -m pytest tests/integration/test_runner_container.py -q -ra
+        run: >-
+          uv run --frozen python -m pytest
+          tests/integration/test_runner_container.py
+          apps/orchestrator/tests/persistence/test_subscription_counter_docker.py
+          apps/orchestrator/tests/persistence/test_subscription_counter_quota.py
+          apps/orchestrator/tests/persistence/test_subscription_codex_counter_acceptance.py
+          apps/orchestrator/tests/persistence/test_subscription_active_client_controls.py
+          apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py
+          -q -ra -m docker

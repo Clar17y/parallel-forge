@@ -79,11 +79,19 @@ async def verify_reviewed_push_replay(
         if any(
             intent.request_payload.get(key) != command.payload.get(key)
             for key in (
-                "approval_id", "candidate_evidence_digest", "previous_head_sha",
-                "pull_request_id", "node_id",
+                "approval_id",
+                "candidate_evidence_digest",
+                "previous_head_sha",
+                "pull_request_id",
+                "node_id",
             )
         ):
             raise CommandRecoveryRequired("reviewed push replay command binding differs")
+        if any(
+            key in command.payload and intent.request_payload.get(key) != command.payload[key]
+            for key in ("base_update_intent_id", "base_adoption_intent_id")
+        ):
+            raise CommandRecoveryRequired("reviewed push replay base binding differs")
         await work.releases.record_reviewed_push(
             run.id, record.pull_request, record.reviewed_push_intent_id
         )

@@ -43,7 +43,9 @@ export const test = base.extend<BrowserFixtures>({
   readyFor: async ({}, use) => use(async (page, state, runId) => {
     await expect.poll(async () => (await control<{ state: string }>(`/runs/state?runId=${encodeURIComponent(runId)}&state=${encodeURIComponent(state)}`)).state, { timeout: 120_000 }).toBe(state);
     // The dashboard must learn this transition through its live subscription.
-    await expect(page.locator("header").filter({ hasText: state.replaceAll("_", " ") })).toBeVisible();
+    const status = page.locator('[aria-label="Current run status"]');
+    await expect(status).toBeVisible();
+    await expect(status).toHaveAttribute("data-run-state", state);
   }),
   evidenceFor: async ({}, use) => use(async (state, runId) => (await control<{ evidenceDigest: string }>(`/runs/state?runId=${encodeURIComponent(runId)}&state=${encodeURIComponent(state)}`)).evidenceDigest),
   restartWorker: async ({}, use) => use(() => control<{ oldPid: number; newPid: number }>("/worker/restart", { method: "POST", body: "{}" })),

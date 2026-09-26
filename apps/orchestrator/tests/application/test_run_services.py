@@ -242,6 +242,11 @@ class FakeAudit:
         return record
 
 
+class NoSubscriptionProfile:
+    async def project_profile(self, project_id: UUID) -> None:
+        return None
+
+
 @dataclass
 class FakeUow:
     projects: FakeProjects
@@ -252,6 +257,7 @@ class FakeUow:
     mutations: FakeMutations
     audit: FakeAudit
     committed: bool = False
+    subscription: NoSubscriptionProfile = field(default_factory=NoSubscriptionProfile)
 
     async def __aenter__(self) -> Self:
         return self
@@ -319,7 +325,9 @@ def _task(task_id: UUID, project_id: UUID) -> TaskRecord:
 
 
 def _uow(
-    *, state: RunState = RunState.CREATED, branch_name: str | None = None,
+    *,
+    state: RunState = RunState.CREATED,
+    branch_name: str | None = None,
     worktree_path: str | None = None,
 ) -> tuple[FakeUow, UUID, UUID]:
     project_id = uuid4()
@@ -432,8 +440,11 @@ async def test_run_commands_accept_only_the_closed_state_matrix(
     )
 
     work, _, _ = _uow(
-        state=state, branch_name="forge/main",
-        worktree_path=str(tmp_path / "managed") if command_type == "teardown_run_resources" else None,
+        state=state,
+        branch_name="forge/main",
+        worktree_path=str(tmp_path / "managed")
+        if command_type == "teardown_run_resources"
+        else None,
     )
     run_id = next(iter(work.runs.records))
     service = RunCommandService(lambda: work)

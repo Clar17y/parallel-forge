@@ -613,7 +613,9 @@ def test_inspection_does_not_create_missing_mutation_lock(tmp_path) -> None:
     )
     stager = EnvironmentStager(controlled)
     plan = stager.build_plan(worktree, policy, DatabaseBinding(state=ResourceState.DISABLED))
-    lock = repository / ".git" / "forge-worktree.lock"
+    registration = controlled._registration_metadata(identity)
+    assert registration is not None
+    lock = registration / "forge-worktree.lock"
     metadata = repository / ".git" / "worktrees"
     registration_entries = tuple(sorted(path.name for path in metadata.iterdir()))
     lock.unlink()

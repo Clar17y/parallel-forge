@@ -1,4 +1,4 @@
-"""Executable contract for Forge's initial PostgreSQL schema."""
+"""Executable contracts for Forge's current schema and retained migration history."""
 
 from __future__ import annotations
 
@@ -24,9 +24,10 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
-from sqlalchemy.sql.sqltypes import Uuid
+from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-EXPECTED_TABLES = {
+CURRENT_REVISION = "20260920_0024"
+V01_TABLES = {
     "recovery_barrier",
     "api_mutations",
     "projects",
@@ -55,6 +56,37 @@ EXPECTED_TABLES = {
     "evaluation_suites",
     "evaluation_cases",
     "evaluation_baselines",
+}
+EXPECTED_TABLES = V01_TABLES | {
+    "capability_evidence",
+    "capability_probe_diagnostics",
+    "project_subscription_profiles",
+    "subscription_profile_versions",
+    "subscription_envelopes",
+    "subscription_tasks",
+    "subscription_task_dependencies",
+    "subscription_attempts",
+    "subscription_operation_bindings",
+    "subscription_client_launches",
+    "subscription_budget_pools",
+    "subscription_budget_reservations",
+    "subscription_decision_records",
+    "subscription_scheduled_tasks",
+    "subscription_scheduler_runs",
+    "subscription_scheduler_capacity_policies",
+    "subscription_scheduled_effects",
+    "subscription_attempt_reservations",
+    "subscription_attempt_consumption",
+    "subscription_attempt_results",
+    "subscription_repair_debits",
+    "subscription_plan_gates",
+    "subscription_handoff_fences",
+    "subscription_quota_pools",
+    "subscription_quota_observations",
+    "subscription_quota_admissions",
+    "subscription_task_stops",
+    "subscription_task_feedback",
+    "subscription_worker_status",
 }
 
 
@@ -183,14 +215,14 @@ async def _rejects(database_url: str, statement: str, parameters: dict[str, obje
 
 
 @pytest.mark.integration
-def test_initial_migration_creates_the_complete_v01_schema(
+def test_current_migrations_create_the_complete_v02_schema(
     migrated_database_url: str,
 ) -> None:
     assert _table_names(migrated_database_url) == EXPECTED_TABLES
 
 
 @pytest.mark.integration
-def test_initial_migration_matches_the_declared_models(
+def test_current_migrations_match_the_declared_models(
     migrated_database_url: str,
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
@@ -213,13 +245,15 @@ def test_database_run_state_constraint_matches_domain_values(
 
 
 @pytest.mark.integration
-def test_initial_migration_downgrades_and_reapplies_cleanly(
+def test_current_migrations_downgrade_and_reapply_cleanly(
     test_database_url: str,
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
     config = alembic_config_factory(test_database_url)
     _execute(test_database_url, "CREATE TABLE external_sentinel (id integer PRIMARY KEY)")
 
+    command.upgrade(config, "20260909_0006")
+    assert _table_names(test_database_url) == V01_TABLES | {"external_sentinel"}
     command.upgrade(config, "head")
     assert _table_names(test_database_url) == EXPECTED_TABLES | {"external_sentinel"}
 
@@ -270,7 +304,7 @@ def test_task10_downgrade_refuses_cross_project_external_identity_duplicates(
         assert isinstance(value, str)
         return value
 
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260909_0006"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == CURRENT_REVISION
 
     def duplicate_count(connection: Any) -> int:
         value = connection.execute(
@@ -326,7 +360,7 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
         return value
 
     assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260821_0001"
-    assert _table_names(test_database_url) == EXPECTED_TABLES - {
+    assert _table_names(test_database_url) == V01_TABLES - {
         "recovery_barrier",
         "api_mutations",
         "operator_audit_events",
@@ -346,7 +380,7 @@ def test_task10_compatible_external_data_downgrades_and_reupgrades_cleanly(
 
     command.upgrade(config, "head")
     assert _table_names(test_database_url) == EXPECTED_TABLES
-    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == "20260909_0006"
+    assert asyncio.run(_inspect_database(test_database_url, current_revision)) == CURRENT_REVISION
 
     def reupgraded_task(connection: Any) -> tuple[str, str, bool, str, str]:
         row = connection.execute(
@@ -565,10 +599,10 @@ def test_schema_contains_required_identity_and_safety_constraints(
 
 
 @pytest.mark.integration
-def test_every_execution_and_evidence_table_is_linked_to_a_run(
+def test_legacy_execution_and_evidence_tables_are_directly_linked_to_a_run(
     migrated_database_url: str,
 ) -> None:
-    run_owned = EXPECTED_TABLES - {
+    run_owned = V01_TABLES - {
         "recovery_barrier",
         "projects",
         "project_policy_versions",
@@ -628,10 +662,10 @@ def test_migration_has_one_exact_reviewable_head(
     alembic_config_factory: Callable[[str], Config],
 ) -> None:
     config = alembic_config_factory("postgresql+asyncpg://unused:unused@127.0.0.1/unused")
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260909_0006"]
+    assert ScriptDirectory.from_config(config).get_heads() == [CURRENT_REVISION]
 
 
-def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
+def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES
 
     expected_json_versions = {
@@ -652,23 +686,76 @@ def test_models_define_exact_tables_uuid_keys_and_versioned_jsonb() -> None:
         ("evaluation_baselines", "floors"): "snapshot_schema_version",
         ("evaluation_baselines", "ceilings"): "snapshot_schema_version",
     }
+    # These additive records use Forge-owned codecs or typed projections rather
+    # than the legacy companion version columns. Keep their inventory explicit;
+    # repository/codec tests cover their payload versions and round trips.
+    subscription_json_columns = {
+        ("subscription_profile_versions", "payload"),
+        ("subscription_envelopes", "payload"),
+        ("subscription_tasks", "payload"),
+        ("subscription_attempts", "route_payload"),
+        ("subscription_attempts", "telemetry_payload"),
+        ("subscription_operation_bindings", "payload"),
+        ("subscription_operation_bindings", "receipt_payload"),
+        ("subscription_client_launches", "terminal_payload"),
+        ("subscription_budget_pools", "payload"),
+        ("subscription_budget_reservations", "budget_payload"),
+        ("subscription_decision_records", "payload"),
+        ("subscription_attempt_reservations", "budget_payload"),
+        ("subscription_attempt_consumption", "telemetry_payload"),
+        ("subscription_attempt_consumption", "observed"),
+        ("subscription_attempt_consumption", "charged"),
+        ("subscription_attempt_consumption", "unknown_fields"),
+        ("subscription_attempt_consumption", "exceeded_fields"),
+        ("subscription_attempt_consumption", "policy_violations"),
+        ("subscription_attempt_results", "result_payload"),
+        ("subscription_attempt_results", "application_payload"),
+        ("subscription_plan_gates", "snapshot"),
+        ("subscription_task_stops", "settlement_payload"),
+        ("subscription_worker_status", "routes"),
+    }
+    alternate_primary_keys = {
+        "project_policy_versions": {"project_id": Uuid, "version": Integer},
+        "agent_execution_evidence_inputs": {"consumer_execution_id": Uuid, "purpose": String},
+        "project_subscription_profiles": {"project_id": Uuid},
+        "subscription_envelopes": {"run_id": Uuid},
+        "subscription_task_dependencies": {
+            "run_id": Uuid,
+            "task_id": Uuid,
+            "dependency_task_id": Uuid,
+        },
+        "subscription_scheduler_runs": {"run_id": Uuid},
+        "subscription_scheduler_capacity_policies": {"version": Integer},
+        "subscription_attempt_reservations": {"attempt_id": Uuid},
+        "subscription_attempt_consumption": {"attempt_id": Uuid},
+        "subscription_attempt_results": {"attempt_id": Uuid},
+        "subscription_repair_debits": {"attempt_id": Uuid},
+        "subscription_plan_gates": {"attempt_id": Uuid},
+        "subscription_handoff_fences": {"worktree_id": String},
+        "subscription_quota_pools": {"provider": String, "account": String, "pool": String},
+        "subscription_quota_admissions": {"attempt_id": Uuid},
+        "subscription_worker_status": {"worker_instance_id": Uuid},
+        "capability_probe_diagnostics": {"identity_digest": String},
+    }
 
     observed_json: set[tuple[str, str]] = set()
     for table in Base.metadata.sorted_tables:
         assert not any(isinstance(column.type, SqlEnum) for column in table.columns)
-        if table.name == "project_policy_versions":
-            assert isinstance(table.c.project_id.type, Uuid)
-        elif table.name != "agent_execution_evidence_inputs":
-            assert isinstance(table.c.id.type, Uuid)
-            assert table.c.id.primary_key
+        primary_key = alternate_primary_keys.get(table.name, {"id": Uuid})
+        assert set(table.primary_key.columns.keys()) == set(primary_key)
+        for name, column_type in primary_key.items():
+            assert isinstance(table.c[name].type, column_type)
         for column in table.columns:
             if isinstance(column.type, JSONB):
                 if (table.name, column.name) == ("api_mutations", "response_payload"):
                     continue
                 observed_json.add((table.name, column.name))
-                assert expected_json_versions[(table.name, column.name)] in table.c
+                identity = table.name, column.name
+                if identity not in subscription_json_columns:
+                    version_column = table.c[expected_json_versions[identity]]
+                    assert isinstance(version_column.type, Integer)
 
-    assert observed_json == set(expected_json_versions)
+    assert observed_json == set(expected_json_versions) | subscription_json_columns
 
 
 def test_database_module_import_does_not_construct_an_engine(

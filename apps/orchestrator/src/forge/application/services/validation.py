@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import timedelta
@@ -30,6 +31,7 @@ from forge.application.ports.evidence import (
 )
 from forge.application.ports.executions import ExecutionStatus
 from forge.application.ports.runner import CommandTerminalResult, WorktreeRunnerFactoryPort
+from forge.application.ports.subscription_candidate import CandidateInspection
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlanLoader
@@ -44,6 +46,7 @@ from forge.application.services.resume_source import (
     resume_origin,
 )
 from forge.application.services.suspended_delivery import record_suspended_delivery
+from forge.domain.approval import SubscriptionPlanApprovalEvidence
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.evidence import (
@@ -54,7 +57,12 @@ from forge.domain.evidence import (
     decode_evidence_manifest,
     encode_evidence_manifest,
 )
-from forge.domain.operation import OperationIntent, OperationOutcome, OperationStatus
+from forge.domain.operation import (
+    OperationIntent,
+    OperationOutcome,
+    OperationStatus,
+    canonical_digest,
+)
 from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
@@ -112,10 +120,14 @@ def validation_command_binding(
         or type(attempt) is not int
         or attempt < 1
         or command.idempotency_key != f"{command.run_id}:validate:{attempt}"
-        or set(command.payload) - {"semantic_attempt", "prior_review_evidence_set_id"}
+        or set(command.payload)
+        - {"semantic_attempt", "prior_review_evidence_set_id", "acceptance_attempt_id"}
     ):
         raise CommandRecoveryRequired("validation command authority is invalid")
     prior_id = None
+    acceptance_id = validation_acceptance_attempt(command)
+    if acceptance_id is not None and "prior_review_evidence_set_id" in command.payload:
+        raise CommandRecoveryRequired("subscription validation cannot adopt a legacy review")
     if "prior_review_evidence_set_id" in command.payload:
         try:
             prior_id = UUID(prior) if isinstance(prior, str) else None
@@ -124,6 +136,19 @@ def validation_command_binding(
         if prior_id is None or not prior_id.int or str(prior_id) != prior:
             raise CommandRecoveryRequired("validation prior review identifier is invalid")
     return attempt, prior_id
+
+
+def validation_acceptance_attempt(command: CommandEnvelope) -> UUID | None:
+    if "acceptance_attempt_id" not in command.payload:
+        return None
+    value = command.payload["acceptance_attempt_id"]
+    try:
+        identity = UUID(value) if isinstance(value, str) else None
+        if identity is None or not identity.int or str(identity) != value:
+            raise ValueError
+        return identity
+    except ValueError:
+        raise CommandRecoveryRequired("validation acceptance identity is invalid") from None
 
 
 class ValidationService:
@@ -149,7 +174,13 @@ class ValidationService:
         self._environment_resolver = environment_resolver
         self._approved_plans = approved_plans or ApprovedPlanLoader(artifact_store)
 
-    async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> EvidenceSetDescriptor:
+    async def execute(
+        self,
+        command: CommandEnvelope,
+        work: UnitOfWork,
+        *,
+        candidate: CandidateInspection | None = None,
+    ) -> EvidenceSetDescriptor:
         """Admit one exact validation delivery before any check runner is used."""
 
         if (
@@ -167,6 +198,19 @@ class ValidationService:
         if command.actor_id != approved.approval_actor_id:
             raise CommandRecoveryRequired("validation command actor is not approved")
         run = approved.run
+        acceptance_id = validation_acceptance_attempt(command)
+        if (
+            isinstance(approved.evidence, SubscriptionPlanApprovalEvidence)
+            and acceptance_id is None
+        ):
+            raise CommandRecoveryRequired("subscription validation requires primary acceptance")
+        if acceptance_id is not None:
+            selected = await self._acceptance_candidate(work, command, origin, approved.approval_id)
+            if candidate is not None and candidate != selected:
+                raise CommandRecoveryRequired(
+                    "validation candidate differs from primary acceptance"
+                )
+            candidate = selected
         if prior_review_id is not None:
             prior_review = await work.evidence.get_by_id(prior_review_id, run_id=run.id)
             wire = await self._store.open_bytes(prior_review.manifest_digest)
@@ -197,6 +241,20 @@ class ValidationService:
         )
         git = self._git_factory(approved.policy)
         head_sha = git.head_sha(worktree)
+
+        async def current_candidate() -> bool:
+            if (
+                acceptance_id is not None
+                and await self._acceptance_candidate(work, command, origin, approved.approval_id)
+                != candidate
+            ):
+                return False
+            return await _candidate_matches(git, worktree, approved.policy, head_sha, candidate)
+
+        if candidate is not None:
+            candidate = CandidateInspection.from_payload(candidate.payload())
+            if not await current_candidate():
+                raise CommandRecoveryRequired("validation candidate differs before admission")
         if git.inspect_worktree(identity, run.base_sha) != worktree or not git.is_ancestor(
             worktree
         ):
@@ -217,6 +275,8 @@ class ValidationService:
             "evidence_set_id": str(evidence_id),
             "checks": tuple(command_spec_digest(spec) for spec in approved.policy.required_checks),
         }
+        if candidate is not None:
+            binding["candidate"] = candidate.payload()
         if prior_review_id is not None:
             binding["prior_review_evidence_set_id"] = str(prior_review_id)
         if step.is_new:
@@ -253,7 +313,7 @@ class ValidationService:
             if (
                 current.run != run
                 or current.approval_id != approved.approval_id
-                or git.head_sha(worktree) != head_sha
+                or not await current_candidate()
             ):
                 if await controlled_stop(work, command, run):
                     await self._finish_stopped_step(work, command, run, step_id)
@@ -290,12 +350,13 @@ class ValidationService:
                     policy=approved.policy,
                     command_name=spec.name,
                     head_sha=head_sha,
+                    candidate_tree_digest=None if candidate is None else candidate.tree_digest,
                     artifacts=work.artifacts,
                     artifact_store=self._store,
                 )
                 try:
                     recovered = await recovery.reconcile(prior)
-                except Exception:  # noqa: BLE001 - uncertain persisted proof requires operator recovery
+                except Exception:  # noqa: BLE001 - uncertain persisted proof requires recovery
                     raise CommandRecoveryRequired("validation receipt is unavailable") from None
                 if (
                     recovered.status is not OperationStatus.SUCCEEDED
@@ -308,7 +369,7 @@ class ValidationService:
                     raise CommandRecoveryRequired("validation receipt cannot establish the result")
                 await _fence_command(command, work)
                 latest = await self._approved_plans.load(work, run.id)
-                if latest.run != run or git.head_sha(worktree) != head_sha:
+                if latest.run != run or not await current_candidate():
                     if await controlled_stop(work, command, run):
                         if owner is not None:
                             await work.operations.complete(prior.id, recovered, owner_id=owner)
@@ -339,6 +400,7 @@ class ValidationService:
                 policy=approved.policy,
                 command_name=spec.name,
                 head_sha=head_sha,
+                candidate_tree_digest=None if candidate is None else candidate.tree_digest,
                 environment=values,
             )
             intent = await work.operations.begin(
@@ -372,6 +434,7 @@ class ValidationService:
                         policy=approved.policy,
                         command_name=spec.name,
                         head_sha=head_sha,
+                        candidate_tree_digest=None if candidate is None else candidate.tree_digest,
                         artifacts=execution.artifacts,
                         artifact_store=self._store,
                         controlled_git=git,
@@ -407,7 +470,7 @@ class ValidationService:
                 raise CommandRecoveryRequired("validation check has no terminal result")
             await _fence_command(command, work)
             current = await self._approved_plans.load(work, run.id)
-            if current.run != run or git.head_sha(worktree) != head_sha:
+            if current.run != run or not await current_candidate():
                 if await controlled_stop(work, command, run):
                     await work.operations.complete(
                         intent.id, outcome, owner_id=intent.execution_owner
@@ -431,7 +494,7 @@ class ValidationService:
                 raise CommandRecoveryRequired("validation check was cancelled")
         await _fence_command(command, work)
         current = await self._approved_plans.load(work, run.id)
-        if current.run != run or git.head_sha(worktree) != head_sha:
+        if current.run != run or not await current_candidate():
             if await controlled_stop(work, command, run):
                 await self._finish_stopped_step(work, command, run, step_id)
             raise CommandRecoveryRequired("validation authority changed before publication")
@@ -446,13 +509,14 @@ class ValidationService:
             head_sha=head_sha,
             results=results,
             prior_review_evidence_set_id=prior_review_id,
+            candidate=candidate,
         )
         await _fence_command(command, work)
         current = await self._approved_plans.load(work, run.id)
         if (
             current.run != run
             or current.approval_id != approved.approval_id
-            or git.head_sha(worktree) != head_sha
+            or not await current_candidate()
         ):
             raise CommandRecoveryRequired("validation authority changed during publication")
         await work.commit()
@@ -493,6 +557,7 @@ class ValidationService:
         head_sha: str,
         results: Sequence[tuple[UUID, CommandTerminalResult]],
         prior_review_evidence_set_id: UUID | None = None,
+        candidate: CandidateInspection | None = None,
     ) -> EvidenceSetDescriptor:
         """Project already reconciled receipts; caller owns authority and commit.
 
@@ -514,6 +579,15 @@ class ValidationService:
             or tuple(terminal.result.command_name for _, terminal in results)
             != tuple(command.name for command in commands)
             or len({result_id for result_id, _ in results}) != len(results)
+            or (
+                candidate is not None
+                and (
+                    candidate.head_sha != head_sha
+                    or candidate.base_sha != run.base_sha
+                    or not run.worktree_path
+                    or not run.branch_name
+                )
+            )
         ):
             raise ValidationError("validation publication is not current or complete")
 
@@ -522,6 +596,11 @@ class ValidationService:
         parents: set[str] = set()
         for command, (result_id, terminal) in zip(commands, results, strict=True):
             result = terminal.result
+            receipt_digest = None
+            if candidate is not None:
+                receipt_digest = await self._candidate_receipt(
+                    work, run, policy, step_id, result_id, command, candidate, terminal
+                )
             if (
                 result.kind is not command.kind
                 or result.command_digest != command_spec_digest(command)
@@ -558,7 +637,7 @@ class ValidationService:
                         raise ValidationError("validation output artifact is not bound")
             except ValidationError:
                 raise
-            except Exception:  # noqa: BLE001 - artifact failures must not expose storage details
+            except Exception:  # noqa: BLE001 - redact artifact storage failures
                 raise ValidationError("validation result artifact is unavailable") from None
 
             status = (
@@ -577,6 +656,7 @@ class ValidationService:
                 command_version=policy.version,
                 command_digest=result.command_digest,
                 command_result_digest=result.evidence_digest,
+                controller_receipt_digest=receipt_digest,
                 stdout_digest=result.stdout_digest,
                 stderr_digest=result.stderr_digest,
                 status=status,
@@ -589,6 +669,8 @@ class ValidationService:
                 raise ValidationError("validation result has no persisted identity")
             projections.append(ValidationProjectionMember(member, artifact.artifact_id))
             parents.update((result.evidence_digest, *expected_parents))
+            if receipt_digest is not None:
+                parents.add(receipt_digest)
 
         if prior_review_evidence_set_id is not None:
             prior = await work.evidence.get_by_id(prior_review_evidence_set_id, run_id=run_id)
@@ -596,6 +678,8 @@ class ValidationService:
                 raise ValidationError("validation prior review is invalid")
             parents.add(prior.manifest_digest)
         manifest = ValidationEvidenceManifest(
+            schema_version=1 if candidate is None else 2,
+            candidate_tree_digest=None if candidate is None else candidate.tree_digest,
             evidence_set_id=evidence_set_id,
             run_id=run_id,
             step_id=step_id,
@@ -622,7 +706,7 @@ class ValidationService:
         if stored.digest != hashlib.sha256(wire).hexdigest() or stored.byte_count != len(wire):
             raise ValidationError("validation manifest storage differs")
         artifact = await work.artifacts.record(
-            stored,
+            replace(stored, schema_version=manifest.schema_version),
             run_id=run_id,
             producer_type="evidence_set",
             producer_id=evidence_set_id,
@@ -643,3 +727,123 @@ class ValidationService:
             outcome="validation results recorded",
         )
         return evidence
+
+    async def _candidate_receipt(
+        self,
+        work: UnitOfWork,
+        run: RunSnapshot,
+        policy: ProjectPolicy,
+        step_id: UUID,
+        result_id: UUID,
+        command: CommandSpec,
+        candidate: CandidateInspection,
+        terminal: CommandTerminalResult,
+    ) -> str:
+        """Retain only the exact content-bound controller receipt for this result."""
+        assert run.worktree_path and run.branch_name and run.base_sha
+        worktree = ManagedWorktree(
+            identity=WorktreeIdentity.for_run(
+                run.project_id, run.id, run.branch_name, policy.database.enabled
+            ),
+            path=Path(run.worktree_path),
+            base_sha=run.base_sha,
+        )
+        intent = await work.operations.get_by_idempotency_key(
+            f"{run.id}:controller-check:{step_id}:{command.name}"
+        )
+        if (
+            intent is None
+            or intent.status is not OperationStatus.SUCCEEDED
+            or intent.outcome is None
+        ):
+            raise ValidationError("candidate validation has no completed controller receipt")
+        adapter = ControllerCheckOperationAdapter.for_recovery(
+            run_id=run.id,
+            step_id=step_id,
+            result_id=result_id,
+            worktree=worktree,
+            policy=policy,
+            command_name=command.name,
+            head_sha=candidate.head_sha,
+            candidate_tree_digest=candidate.tree_digest,
+            artifacts=work.artifacts,
+            artifact_store=self._store,
+        )
+        proof = await adapter.reconcile(intent)
+        if (
+            proof.status is not OperationStatus.SUCCEEDED
+            or canonical_digest(proof.payload) != canonical_digest(intent.outcome)
+            or proof.payload.get("command_result_digest") != terminal.result.evidence_digest
+            or proof.payload.get("caller_cancelled") is not terminal.caller_cancelled
+            or not isinstance(proof.payload.get("receipt_digest"), str)
+        ):
+            raise ValidationError("candidate validation controller receipt differs")
+        return str(proof.payload["receipt_digest"])
+
+    async def _acceptance_candidate(
+        self,
+        work: UnitOfWork,
+        command: CommandEnvelope,
+        origin: CommandEnvelope | None,
+        approval_id: UUID,
+    ) -> CandidateInspection:
+        attempt_id = validation_acceptance_attempt(command)
+        assert attempt_id is not None
+        try:
+            binding = await work.subscription_decisions.acceptance_validation_binding(attempt_id)
+            source = origin or command
+            if (
+                binding is None
+                or any(
+                    getattr(binding.command, field) != getattr(source, field)
+                    for field in (
+                        "id",
+                        "run_id",
+                        "command_type",
+                        "payload",
+                        "payload_schema_version",
+                        "idempotency_key",
+                        "actor_id",
+                        "expected_run_version",
+                    )
+                )
+                or binding.approval_id != approval_id
+            ):
+                raise ValueError
+            proposal, proof = await work.subscription_decisions.acceptance_validation_source(
+                attempt_id
+            )
+            wire = json.dumps(
+                proof.payload(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode()
+            if (
+                proposal.decision.run_id != command.run_id
+                or proposal.run_version != command.expected_run_version
+                or proposal.result_digest != binding.result_digest
+                or proposal.review.candidate != binding.candidate
+                or hashlib.sha256(wire).hexdigest() != binding.receipt_evidence_digest
+                or await self._store.open_bytes(binding.receipt_evidence_digest) != wire
+            ):
+                raise ValueError
+            return binding.candidate
+        except Exception:  # noqa: BLE001 - current acceptance must be fully re-proven
+            raise CommandRecoveryRequired("validation acceptance authority differs") from None
+
+
+async def _candidate_matches(
+    git: ControlledGitPort,
+    worktree: ManagedWorktree,
+    policy: ProjectPolicy,
+    head_sha: str,
+    candidate: CandidateInspection | None,
+) -> bool:
+    if candidate is None:
+        return git.head_sha(worktree) == head_sha
+    observed = await asyncio.to_thread(
+        git.working_tree_snapshot, worktree, secret_paths=policy.effective_secret_paths
+    )
+    return (
+        head_sha == candidate.head_sha
+        and candidate.base_sha == worktree.base_sha
+        and CandidateInspection.from_snapshot(observed) == candidate
+    )

@@ -4,6 +4,41 @@ from forge.settings import Settings
 from typer.testing import CliRunner
 
 
+def test_subscription_primary_budget_is_validated_from_environment(monkeypatch):
+    monkeypatch.setenv("FORGE_SUBSCRIPTION_PRIMARY_BUDGET", '{"max_provider_attempts":12}')
+    assert Settings().subscription_primary_budget.max_provider_attempts == 12
+    monkeypatch.setenv("FORGE_SUBSCRIPTION_PRIMARY_BUDGET", '{"max_provider_attempts":-1}')
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_subscription_worker_limits_are_configurable_from_environment(monkeypatch):
+    monkeypatch.setenv("FORGE_SUBSCRIPTION_WORKER_CONCURRENCY", "4")
+    monkeypatch.setenv(
+        "FORGE_SUBSCRIPTION_ATTEMPT_BUDGET",
+        '{"max_duration_seconds":45,"max_provider_attempts":1,"max_repairs":0}',
+    )
+    settings = Settings()
+    assert settings.subscription_worker_concurrency == 4
+    assert settings.subscription_attempt_budget.max_duration_seconds == 45
+    for value in ("0", "65", "1.5", "true"):
+        monkeypatch.setenv("FORGE_SUBSCRIPTION_WORKER_CONCURRENCY", value)
+        with pytest.raises(ValueError):
+            Settings()
+
+
+@pytest.mark.parametrize(
+    "changed", [{"max_provider_attempts": 2}, {"max_repairs": 1}, {"max_duration_seconds": 0}]
+)
+def test_subscription_attempt_budget_cannot_reserve_repair_or_multiple_calls(changed):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError):
+        Settings(
+            subscription_attempt_budget=replace(Settings().subscription_attempt_budget, **changed)
+        )
+
+
 def test_non_loopback_bind_requires_explicit_remote_mode() -> None:
     with pytest.raises(ValueError, match="remote exposure requires a later authentication design"):
         Settings(bind_host="0.0.0.0", allow_remote=False)

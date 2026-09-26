@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from forge.application.ports.runner import CommandResult, CommandTerminalResult
+from forge.application.ports.worktrees import GitWorkingTreeSnapshot
 from forge.application.services.approved_plan import ApprovedPlanLoader
 from forge.application.services.delivery_preparation import DeliveryPreparationService
 from forge.application.services.recovery import OperationExecutor
@@ -32,6 +33,9 @@ class _Git:
     def __init__(self, worktree):
         self.worktree = worktree
         self.head = "b" * 40
+        self.snapshot = GitWorkingTreeSnapshot(
+            head_sha=self.head, base_sha=worktree.base_sha, files=(), changed_paths=()
+        )
 
     def inspect_worktree(self, identity, base_sha):
         assert identity == self.worktree.identity and base_sha == self.worktree.base_sha
@@ -44,6 +48,10 @@ class _Git:
     def is_ancestor(self, worktree):
         assert worktree == self.worktree
         return True
+
+    def working_tree_snapshot(self, worktree, *, secret_paths):
+        assert worktree == self.worktree
+        return replace(self.snapshot, head_sha=self.head)
 
 
 class _CheckingRunner:

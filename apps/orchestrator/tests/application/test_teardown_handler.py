@@ -207,6 +207,7 @@ async def test_admitted_retry_rejects_rebound_resources(tmp_path, change):
         "running_executions",
         "running_tools",
         "unresolved_operations",
+        "unsettled_subscription_work",
     ],
 )
 @pytest.mark.parametrize("state", [RunState.CANCELLED, RunState.AWAITING_HUMAN_INTERVENTION])

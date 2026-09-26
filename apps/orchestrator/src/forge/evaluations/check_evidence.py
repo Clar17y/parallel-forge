@@ -68,7 +68,7 @@ async def read_check_evidence(
         request = receipt.get("request_payload")
         if (
             type(receipt.get("receipt_version")) is not int
-            or receipt.get("receipt_version") != 1
+            or receipt.get("receipt_version") not in (1, 2, 3)
             or not result.get("tool_call_id")
             or receipt.get("tool_call_id") != result.get("tool_call_id")
             or receipt.get("stdout_digest") != stdout_digest
@@ -77,6 +77,19 @@ async def read_check_evidence(
             or request.get("command_name") != command_name
         ):
             return None
+        if receipt["receipt_version"] in (2, 3):
+            before = receipt.get("candidate_tree_digest_before")
+            if (
+                type(request.get("authority_schema_version")) is not int
+                or request["authority_schema_version"] != 2
+                or not isinstance(before, str)
+                or len(before) != 64
+                or any(char not in "0123456789abcdef" for char in before)
+                or receipt.get("candidate_tree_digest_after") != before
+                or metadata.get("candidate_tree_digest_before") != before
+                or metadata.get("candidate_tree_digest_after") != before
+            ):
+                return None
         stdout = _decode(await store.open_bytes(stdout_digest, max_bytes=_MAX_BYTES))
         text = stdout.get("text")
         if (

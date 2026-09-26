@@ -7,7 +7,7 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -138,6 +138,9 @@ class PostgresToolCallRepository:
                     id=safe_record.id,
                     run_id=safe_record.run_id,
                     agent_execution_id=safe_record.agent_execution_id,
+                    subscription_task_id=safe_record.subscription_task_id,
+                    subscription_attempt_id=safe_record.subscription_attempt_id,
+                    subscription_purpose=safe_record.subscription_purpose,
                     tool_name=safe_record.tool_name.value,
                     arguments_schema_version=safe_record.arguments_schema_version,
                     normalized_arguments=dict(safe_record.normalized_arguments),
@@ -221,7 +224,14 @@ class PostgresToolCallRepository:
 
         query = select(ToolCall).where(
             ToolCall.status == ToolCallStatus.RUNNING.value.upper(),
-            ToolCall.result_metadata["operation_intent_id"].astext.is_not(None),
+            or_(
+                ToolCall.result_metadata["operation_intent_id"].astext.is_not(None),
+                and_(
+                    ToolCall.tool_name == ToolName.GIT_DIFF.value,
+                    ToolCall.subscription_task_id.is_not(None),
+                    ToolCall.normalized_arguments["scope"].astext == "snapshot",
+                ),
+            ),
         )
         if after_id is not None:
             query = query.where(ToolCall.id > after_id)
@@ -237,6 +247,20 @@ class PostgresToolCallRepository:
             select(func.count())
             .select_from(ToolCall)
             .where(ToolCall.agent_execution_id == agent_execution_id)
+        )
+        if not isinstance(count, int):
+            raise PersistenceDataError("tool call count is malformed")
+        return count
+
+    async def count_for_subscription_task(self, run_id: UUID, task_id: UUID) -> int:
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(ToolCall)
+            .where(
+                ToolCall.run_id == run_id,
+                ToolCall.subscription_task_id == task_id,
+                ToolCall.authorized.is_(True),
+            )
         )
         if not isinstance(count, int):
             raise PersistenceDataError("tool call count is malformed")
@@ -356,6 +380,9 @@ def _redact_record(record: ToolCallRecord, redactor: Redactor) -> ToolCallRecord
             request_digest=record.request_digest,
             resource_id=record.resource_id,
             invocation_schema_version=record.invocation_schema_version,
+            subscription_task_id=record.subscription_task_id,
+            subscription_attempt_id=record.subscription_attempt_id,
+            subscription_purpose=record.subscription_purpose,
         )
         for key, expected in lineage.items():
             if expected is not None and (key != "artifact_digests" or expected):
@@ -430,6 +457,9 @@ def _row_values(record: ToolCallRecord) -> dict[str, object]:
         "id": record.id,
         "run_id": record.run_id,
         "agent_execution_id": record.agent_execution_id,
+        "subscription_task_id": record.subscription_task_id,
+        "subscription_attempt_id": record.subscription_attempt_id,
+        "subscription_purpose": record.subscription_purpose,
         "tool_name": record.tool_name.value,
         "arguments_schema_version": record.arguments_schema_version,
         "normalized_arguments": dict(record.normalized_arguments),
@@ -448,7 +478,16 @@ def _immutable_record_json(record: ToolCallRecord) -> str:
     payload: dict[str, object] = {
         "id": str(record.id),
         "run_id": str(record.run_id),
-        "agent_execution_id": str(record.agent_execution_id),
+        "agent_execution_id": None
+        if record.agent_execution_id is None
+        else str(record.agent_execution_id),
+        "subscription_task_id": None
+        if record.subscription_task_id is None
+        else str(record.subscription_task_id),
+        "subscription_attempt_id": None
+        if record.subscription_attempt_id is None
+        else str(record.subscription_attempt_id),
+        "subscription_purpose": record.subscription_purpose,
         "tool_name": record.tool_name.value,
         "normalized_arguments": dict(record.normalized_arguments),
         "authorized": record.authorized,
@@ -526,6 +565,9 @@ def _record_from_row(row: ToolCall) -> ToolCallRecord:
             request_digest=request_digest,
             resource_id=resource_id,
             invocation_schema_version=invocation_schema_version,
+            subscription_task_id=row.subscription_task_id,
+            subscription_attempt_id=row.subscription_attempt_id,
+            subscription_purpose=row.subscription_purpose,
         )
     except PersistenceDataError:
         raise
@@ -599,6 +641,13 @@ def _record_json(record: ToolCallRecord) -> str:
         "id": str(record.id),
         "run_id": str(record.run_id),
         "agent_execution_id": str(record.agent_execution_id),
+        "subscription_task_id": None
+        if record.subscription_task_id is None
+        else str(record.subscription_task_id),
+        "subscription_attempt_id": None
+        if record.subscription_attempt_id is None
+        else str(record.subscription_attempt_id),
+        "subscription_purpose": record.subscription_purpose,
         "tool_name": record.tool_name.value,
         "normalized_arguments": dict(record.normalized_arguments),
         "authorized": record.authorized,

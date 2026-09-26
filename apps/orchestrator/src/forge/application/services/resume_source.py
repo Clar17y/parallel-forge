@@ -66,9 +66,11 @@ async def historical_resume_source(
     return await _resume_source(work, queued, historical=True)
 
 
-async def resume_history(work: UnitOfWork, queued: CommandEnvelope) -> tuple[CommandEnvelope, ...]:
+async def resume_history(
+    work: UnitOfWork, queued: CommandEnvelope, *, historical: bool = False
+) -> tuple[CommandEnvelope, ...]:
     """Return verified predecessors, newest first, with strictly decreasing versions."""
-    source = await resume_source(work, queued)
+    source = await _resume_source(work, queued, historical=historical)
     history = []
     while source is not None:
         history.append(source)
@@ -80,9 +82,11 @@ async def resume_history(work: UnitOfWork, queued: CommandEnvelope) -> tuple[Com
     return tuple(history)
 
 
-async def resume_origin(work: UnitOfWork, queued: CommandEnvelope) -> CommandEnvelope | None:
+async def resume_origin(
+    work: UnitOfWork, queued: CommandEnvelope, *, historical: bool = False
+) -> CommandEnvelope | None:
     """Resolve original stage authority through verified resume predecessors."""
-    history = await resume_history(work, queued)
+    history = await resume_history(work, queued, historical=historical)
     return history[-1] if history else None
 
 

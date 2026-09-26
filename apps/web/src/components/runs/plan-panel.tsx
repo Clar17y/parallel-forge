@@ -4,7 +4,7 @@ import type { components } from '@/lib/api/schema';
 
 const sections = [['assumptions', 'Assumptions'], ['affected_components', 'Affected components'], ['steps', 'Steps'],
   ['required_checks', 'Required checks'], ['risks', 'Risks'], ['security_considerations', 'Security considerations'], ['dependency_changes', 'Dependency changes']] as const;
-type Plan = { summary: string } & Record<typeof sections[number][0], string[]>;
+type Plan = { summary: string; owned_paths?: string[] } & Record<typeof sections[number][0], string[]>;
 function parsePlan(text: string): Plan | null {
   try {
     const value = JSON.parse(text);
@@ -12,6 +12,7 @@ function parsePlan(text: string): Plan | null {
     for (const [key] of sections) {
       if (!Array.isArray(value[key]) || value[key].length > 100 || !value[key].every((item: unknown) => typeof item === 'string' && item.length <= 5000)) return null;
     }
+    if ('owned_paths' in value && (!Array.isArray(value.owned_paths) || value.owned_paths.length > 64 || !value.owned_paths.every((item: unknown) => typeof item === 'string' && item.length > 0 && item.length <= 5000))) return null;
     return value as Plan;
   } catch { return null; }
 }
@@ -24,7 +25,9 @@ export function PlanPanel({ projection }: { projection: components['schemas']['R
     {!digest && <p>No plan has been published yet.</p>}
     {artifact.loading && <p role="status">Loading plan evidence…</p>}
     {(artifact.failed || (artifact.value && !plan)) && <p role="alert">Plan evidence unavailable. <button onClick={artifact.refresh}>Retry</button></p>}
-    {plan && <><p>{plan.summary}</p>{sections.map(([key, label]) => <section key={key}><h3>{label}</h3>
+    {plan && <><p>{plan.summary}</p>{plan.owned_paths !== undefined && <section><h3>Writable paths</h3>
+      {plan.owned_paths.length ? <ol>{plan.owned_paths.map((path, index) => <li key={index}>{path}</li>)}</ol> : <p>No writable paths.</p>}
+    </section>}{sections.map(([key, label]) => <section key={key}><h3>{label}</h3>
       {plan[key].length ? <ol>{plan[key].map((item, index) => <li key={index}>{item}</li>)}</ol> : <p>None recorded</p>}
     </section>)}</>}
     <dl><dt>Plan digest</dt><dd>{digest ?? 'Not yet available'}</dd>

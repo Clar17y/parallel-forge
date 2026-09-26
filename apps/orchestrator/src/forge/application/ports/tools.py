@@ -54,7 +54,7 @@ class ToolCallRecord:
 
     id: UUID
     run_id: UUID
-    agent_execution_id: UUID
+    agent_execution_id: UUID | None
     tool_name: ToolName
     normalized_arguments: Mapping[str, object]
     authorized: bool
@@ -74,15 +74,31 @@ class ToolCallRecord:
     request_digest: str | None = None
     resource_id: str | None = None
     invocation_schema_version: int | None = None
+    subscription_task_id: UUID | None = None
+    subscription_attempt_id: UUID | None = None
+    subscription_purpose: str | None = None
 
     def __post_init__(self) -> None:
         for value, name in (
             (self.id, "tool call identifier"),
             (self.run_id, "tool call run identifier"),
-            (self.agent_execution_id, "tool call agent execution identifier"),
         ):
             if not isinstance(value, UUID) or value.int == 0:
                 raise ValueError(f"{name} must be a non-nil UUID")
+        if self.agent_execution_id is not None and (
+            not isinstance(self.agent_execution_id, UUID) or self.agent_execution_id.int == 0
+        ):
+            raise ValueError("tool call agent execution identifier must be a non-nil UUID")
+        subscription = (
+            self.subscription_task_id,
+            self.subscription_attempt_id,
+            self.subscription_purpose,
+        )
+        if self.agent_execution_id is None:
+            if not all(subscription):
+                raise ValueError("subscription tool calls require task, attempt, and purpose")
+        elif any(value is not None for value in subscription):
+            raise ValueError("legacy and subscription tool lineages are mutually exclusive")
         if self.step_id is not None and (
             not isinstance(self.step_id, UUID) or self.step_id.int == 0
         ):
@@ -243,6 +259,8 @@ class ToolCallRepository(Protocol):
     ) -> bool: ...
 
     async def count_for_execution(self, agent_execution_id: UUID) -> int: ...
+
+    async def count_for_subscription_task(self, run_id: UUID, task_id: UUID) -> int: ...
 
 
 __all__ = [

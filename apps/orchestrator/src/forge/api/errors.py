@@ -12,6 +12,8 @@ from forge.application.services.runs import (
     RunServiceError,
 )
 from forge.application.services.tasks import TaskServiceError
+from forge.domain.subscription_feedback import TaskFeedbackConflict
+from forge.domain.subscription_task_controls import TaskControlConflict
 from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.mutations import (
     MutationConflict,
@@ -25,6 +27,10 @@ from forge.persistence.repositories.projects import (
     ProjectNotFound,
 )
 from forge.persistence.repositories.runs import ConcurrencyConflict, RunCreationError, RunNotFound
+from forge.persistence.repositories.subscription import (
+    SubscriptionConflict,
+    SubscriptionProfileNotFound,
+)
 from forge.persistence.repositories.tasks import (
     TaskIdentityConflict,
     TaskNotFound,
@@ -38,6 +44,7 @@ _NOT_FOUND = (
     TaskProjectNotFound,
     RunNotFound,
     MutationNotFound,
+    SubscriptionProfileNotFound,
 )
 _CONFLICT = (
     ProjectIdentityConflict,
@@ -47,7 +54,10 @@ _CONFLICT = (
     MutationIncomplete,
     ConcurrencyConflict,
     IdempotencyConflict,
+    SubscriptionConflict,
     RunCommandValidationError,
+    TaskControlConflict,
+    TaskFeedbackConflict,
 )
 _UNPROCESSABLE = (RepositoryInspectionError, RunCreationError)
 _UNAVAILABLE = (ProjectServiceError, TaskServiceError, RunServiceError, SQLAlchemyError)

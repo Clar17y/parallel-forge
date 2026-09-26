@@ -13,7 +13,14 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from forge.domain.policy import RunnerMode
 
@@ -66,11 +73,88 @@ class PlanApprovalEvidence(EvidenceModel):
         return dict(value)
 
 
-class PrApprovalEvidence(EvidenceModel):
+class SubscriptionPlanProducer(EvidenceModel):
+    """Versioned durable producer identity for a subscription plan proposal."""
+
+    schema_version: int = Field(default=1, ge=1, le=1, strict=True)
+    producer_kind: str = Field(default="subscription_plan", pattern="^subscription_plan$")
+    attempt_id: UUID
+    run_id: UUID
+    task_id: UUID
+    plan_attempt: int = Field(ge=1)
+    plan_digest: str
+    task_digest: str
+    envelope_digest: str
+    budget_digest: str
+    route_digest: str
+    telemetry: Mapping[str, int | None]
+
+    _validate_digests = field_validator(
+        "plan_digest", "task_digest", "envelope_digest", "budget_digest", "route_digest"
+    )(lambda value: _require_digest(value, "producer digest"))
+
+    @field_validator("telemetry", mode="before")
+    @classmethod
+    def telemetry_is_bounded(cls, value: object) -> Mapping[str, int | None]:
+        if not isinstance(value, Mapping):
+            raise TypeError("subscription producer telemetry is invalid")
+        if set(value) != {"input_tokens", "output_tokens", "duration_ms"} or any(
+            item is not None and (type(item) is not int or item < 0) for item in value.values()
+        ):
+            raise ValueError("subscription producer telemetry is invalid")
+        return MappingProxyType(dict(value))
+
+    @field_validator("attempt_id", "run_id", "task_id")
+    @classmethod
+    def identifiers_are_non_nil(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("subscription producer identifiers must not be nil")
+        return value
+
+    @field_serializer("telemetry")
+    def serialize_telemetry(self, value: Mapping[str, int | None]) -> dict[str, int | None]:
+        return dict(value)
+
+
+def decode_subscription_plan_producer(value: Mapping[str, object]) -> SubscriptionPlanProducer:
+    """Decode only the closed current producer envelope."""
+
+    return SubscriptionPlanProducer.model_validate(value)
+
+
+class SubscriptionPlanApprovalEvidence(PlanApprovalEvidence):
+    """Subscription producer and settled-result binding, preserving legacy fields."""
+
+    schema_version: int = Field(default=2, ge=2, le=2, strict=True)
+    producer: SubscriptionPlanProducer
+    result_digest: str
+
+    _validate_result_digest = field_validator("result_digest")(
+        lambda value: _require_digest(value, "settled result digest")
+    )
+
+    @model_validator(mode="after")
+    def producer_matches_plan(self) -> SubscriptionPlanApprovalEvidence:
+        if (
+            self.producer.plan_digest != self.plan_digest
+            or self.producer.plan_attempt != self.plan_attempt
+        ):
+            raise ValueError("subscription producer differs from the plan evidence")
+        return self
+
+
+def decode_plan_approval_evidence(data: str | bytes) -> PlanApprovalEvidence:
+    """Explicit version dispatch; old approval bytes retain their exact meaning."""
+    value = json.loads(data)
+    if isinstance(value, dict) and "schema_version" in value:
+        return SubscriptionPlanApprovalEvidence.model_validate(value)
+    return PlanApprovalEvidence.model_validate(value)
+
+
+class PrCandidateEvidence(EvidenceModel):
     candidate_commit: str
     diff_digest: str
     validation_digest: str
-    review_digest: str
     repository: str = Field(min_length=1)
     base_ref: str = Field(min_length=1)
     base_sha: str
@@ -85,11 +169,42 @@ class PrApprovalEvidence(EvidenceModel):
     )
     _validate_base_sha = field_validator("base_sha")(lambda value: _require_sha(value, "base_sha"))
     _validate_digests = field_validator(
-        "diff_digest", "validation_digest", "review_digest", "body_digest", "runner_evidence_digest"
+        "diff_digest", "validation_digest", "body_digest", "runner_evidence_digest"
     )(lambda value: _require_digest(value, "evidence digest"))
 
 
-class MergeApprovalEvidence(EvidenceModel):
+class PrApprovalEvidence(PrCandidateEvidence):
+    """Retained v0.1 publication evidence, bound to an actual legacy reviewer."""
+
+    review_digest: str
+    _validate_review = field_validator("review_digest")(
+        lambda value: _require_digest(value, "review digest")
+    )
+
+
+class SubscriptionPrApprovalEvidence(PrCandidateEvidence):
+    """Publication evidence bound to actual subscription acceptance and contents."""
+
+    schema_version: int = Field(default=2, ge=2, le=2, strict=True)
+    acceptance_digest: str
+    candidate_tree_digest: str
+    _validate_acceptance = field_validator("acceptance_digest", "candidate_tree_digest")(
+        lambda value: _require_digest(value, "acceptance digest")
+    )
+
+
+type PrPublicationEvidence = PrApprovalEvidence | SubscriptionPrApprovalEvidence
+
+
+def decode_pr_approval_evidence(data: str | bytes) -> PrPublicationEvidence:
+    """Select the explicit version without converting retained reviewer evidence."""
+    value = json.loads(data)
+    if isinstance(value, dict) and "schema_version" in value:
+        return SubscriptionPrApprovalEvidence.model_validate(value)
+    return PrApprovalEvidence.model_validate(value)
+
+
+class MergeCandidateEvidence(EvidenceModel):
     repository: str = Field(min_length=1)
     pull_request_number: int = Field(ge=1)
     head_sha: str
@@ -98,7 +213,6 @@ class MergeApprovalEvidence(EvidenceModel):
     required_checks: Mapping[str, str]
     unresolved_blocking_findings: int = Field(ge=0)
     validation_digest: str
-    review_digest: str
     runner_mode: RunnerMode
     runner_evidence_digest: str
     protection_digest: str
@@ -108,13 +222,56 @@ class MergeApprovalEvidence(EvidenceModel):
     _validate_head_sha = field_validator("head_sha")(lambda value: _require_sha(value, "head_sha"))
     _validate_base_sha = field_validator("base_sha")(lambda value: _require_sha(value, "base_sha"))
     _validate_digests = field_validator(
-        "validation_digest", "review_digest", "runner_evidence_digest", "protection_digest"
+        "validation_digest", "runner_evidence_digest", "protection_digest"
     )(lambda value: _require_digest(value, "evidence digest"))
     _validate_checks = field_validator("required_checks")(lambda value: _freeze_checks(value))
 
     @field_serializer("required_checks")
     def serialize_required_checks(self, value: Mapping[str, str]) -> dict[str, str]:
         return dict(value)
+
+
+class MergeApprovalEvidence(MergeCandidateEvidence):
+    review_digest: str
+    _validate_review = field_validator("review_digest")(
+        lambda value: _require_digest(value, "review digest")
+    )
+
+
+class SubscriptionMergeApprovalEvidence(MergeCandidateEvidence):
+    schema_version: int = Field(default=2, ge=2, le=2, strict=True)
+    acceptance_digest: str
+    candidate_tree_digest: str
+    _validate_acceptance = field_validator("acceptance_digest", "candidate_tree_digest")(
+        lambda value: _require_digest(value, "acceptance digest")
+    )
+
+
+type MergePublicationEvidence = MergeApprovalEvidence | SubscriptionMergeApprovalEvidence
+
+
+def decode_merge_approval_evidence(data: str | bytes) -> MergePublicationEvidence:
+    value = json.loads(data)
+    if isinstance(value, dict) and "schema_version" in value:
+        return SubscriptionMergeApprovalEvidence.model_validate(value)
+    return MergeApprovalEvidence.model_validate(value)
+
+
+def decision_evidence_fields(
+    evidence: PrPublicationEvidence | MergePublicationEvidence,
+) -> dict[str, str]:
+    if isinstance(evidence, (SubscriptionPrApprovalEvidence, SubscriptionMergeApprovalEvidence)):
+        return {
+            "acceptance_digest": evidence.acceptance_digest,
+            "candidate_tree_digest": evidence.candidate_tree_digest,
+        }
+    return {"review_digest": evidence.review_digest}
+
+
+def decision_evidence_digest(evidence: PrPublicationEvidence | MergePublicationEvidence) -> str:
+    if isinstance(evidence, (SubscriptionPrApprovalEvidence, SubscriptionMergeApprovalEvidence)):
+        return evidence.acceptance_digest
+    return evidence.review_digest
 
 
 class ApprovalRecord(BaseModel):
@@ -207,6 +364,8 @@ def _canonicalize(value: Any) -> Any:
         return [_canonicalize(item) for item in value]
     if isinstance(value, Enum):
         return _canonicalize(value.value)
+    if isinstance(value, UUID):
+        return str(value)
     return value
 
 
@@ -239,7 +398,19 @@ __all__ = [
     "ApprovalRecord",
     "EvidenceModel",
     "MergeApprovalEvidence",
+    "MergePublicationEvidence",
     "PlanApprovalEvidence",
     "PrApprovalEvidence",
+    "PrPublicationEvidence",
+    "SubscriptionMergeApprovalEvidence",
+    "SubscriptionPlanApprovalEvidence",
+    "SubscriptionPlanProducer",
+    "SubscriptionPrApprovalEvidence",
     "canonical_digest",
+    "decision_evidence_digest",
+    "decision_evidence_fields",
+    "decode_merge_approval_evidence",
+    "decode_plan_approval_evidence",
+    "decode_pr_approval_evidence",
+    "decode_subscription_plan_producer",
 ]

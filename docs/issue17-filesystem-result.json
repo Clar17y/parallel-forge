@@ -1,0 +1,65 @@
+{
+  "issue": 17,
+  "verified_at": "2026-09-25T19:31:22.445296+00:00",
+  "status": "complete_locally_with_documented_platform_limitation",
+  "source_commit": "53b187c89f49fd4977893115d43b509495db899f",
+  "scope": "The two remaining environment-dependent filesystem cases; application source, assertions and normal runner permissions are unchanged.",
+  "linux_bind_mount": {
+    "test": "apps/orchestrator/tests/tools/test_paths.py::test_quarantine_delete_rejects_a_real_bind_mount_when_privileged",
+    "command": "python -m pytest apps/orchestrator/tests/tools/test_paths.py::test_quarantine_delete_rejects_a_real_bind_mount_when_privileged -q -rs -p no:cacheprovider --basetemp=/tmp/issue17-tests --junitxml=/tmp/issue17-junit.xml",
+    "invocation": "The retained container helper calls pytest.main with these same pytest arguments.",
+    "passed": 1,
+    "skipped": 0,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 0.661,
+    "python": "3.14.2",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "image": "sha256:5d83be1d63eea4ab7197449980edb9a7e2a43fc8904a8d78fc5c73cf0bcf11ec",
+    "image_build_inputs_sha256": "98c5b160c1e4a4f4533110713501ad429c48eb4f7a54f113b2249abb79a853c6",
+    "source": "git archive of source_commit, copied into the disposable container",
+    "isolation": {
+      "uid_gid": "0:0",
+      "capabilities": "All dropped; only SYS_ADMIN added for the real bind mount",
+      "privileged": false,
+      "network": "none",
+      "host_mounts": [],
+      "docker_socket": false,
+      "init": true,
+      "no_new_privileges": true,
+      "seccomp": "Docker builtin profile retained"
+    },
+    "assertions": [
+      "The real bind mount was created inside an owned test fixture.",
+      "Quarantine deletion raised RepositoryAccessDenied and did not report the target deleted.",
+      "The source outside-marker retained its original outside newline bytes.",
+      "The test unmounted its bind mount successfully; the complete mount table matched its pre-test state.",
+      "The stopped owned container was removed and its absence was verified."
+    ]
+  },
+  "windows_linked_quarantine": {
+    "test": "apps/orchestrator/tests/tools/test_git.py::test_remove_refuses_linked_registration_quarantine_evidence",
+    "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/tools/test_git.py::test_remove_refuses_linked_registration_quarantine_evidence -q -rs -p no:cacheprovider --junitxml=.llm-output/issue17/windows-junit.xml",
+    "passed": 0,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 1.189,
+    "python": "3.14.5",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "symlink_probe": {"available": false, "errno": 22, "winerror": 1314},
+    "skip_reason": "symlink creation is unsupported or requires Windows privilege",
+    "fixture_check": "The test prepares the actual private quarantine before attempting the symlink. Fixture setup and unexpected filesystem errors are not skipped.",
+    "support_limit": "This Windows session cannot exercise linked-quarantine rejection because directory symlink creation requires an unavailable privilege. That assertion remains unverified on Windows until run in an environment that supports the operation.",
+    "host_security_settings_changed": false
+  },
+  "evidence": {
+    "directory": ".llm-output/issue17/",
+    "run_record": "run.json",
+    "junit": ["linux-junit.xml", "windows-junit.xml"],
+    "linux_environment": "linux-environment.json",
+    "reproduction_helper": "verify.py"
+  },
+  "review": "Primary source self-review of the exact tests, their narrowed skip paths, JUnit outcomes, container configuration, outside-byte assertion and cleanup evidence; no new application defect found within this scope.",
+  "release_limit": "The Windows limitation is allowed by issue #17's revised criteria and does not block operator-trusted local CLI admission. It is not a Windows symlink-security pass or a full-suite/CI result. Earlier Linux quarantine results and historical failures/skips remain unchanged."
+}

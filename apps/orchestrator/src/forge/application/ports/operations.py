@@ -37,6 +37,7 @@ class OperationRepository(Protocol):
         request_schema_version: int = 1,
         execution_owner: str | None = None,
         execution_lease_seconds: float | None = None,
+        operation_id: UUID | None = None,
     ) -> OperationIntent: ...
 
     async def get(self, intent_id: UUID) -> OperationIntent: ...

@@ -1,0 +1,478 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import sys
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
+
+import pytest
+from capability_support import fake_capability_evidence
+from forge.agents.capability_verification import capability_scope
+from forge.agents.codex_gateway import (
+    CodexCapabilityReport,
+    CodexGateway,
+    CodexInstallation,
+    codex_account_identity,
+)
+from forge.agents.subscription_protocol import ProviderToolCall, tool_input_schema
+from forge.application.ports.capability_evidence import CapabilityEvidenceUnavailable
+from forge.application.ports.subscription_gateway import (
+    SubscriptionFailure,
+    SubscriptionInterrupted,
+)
+from forge.domain.capability_evidence import CapabilityEvidenceScope
+from forge.domain.tool import ToolName
+from test_subscription_protocol import _request
+
+_TEST_ACCOUNT = codex_account_identity("codex@example.invalid")
+_TEST_EXECUTABLE = Path(sys.executable).resolve(strict=True)
+_TEST_EXECUTABLE_DIGEST = hashlib.sha256(_TEST_EXECUTABLE.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("email", ["", " leading@example.invalid", "trailing@example.invalid ", 1])
+def test_account_identity_accepts_only_one_bounded_exact_email(email) -> None:
+    with pytest.raises(ValueError, match="account email"):
+        codex_account_identity(email)
+
+
+def test_installation_account_is_always_an_opaque_digest() -> None:
+    with pytest.raises(ValueError, match="account"):
+        replace(_gateway("success")._installation, account="codex@example.invalid")
+
+
+def test_codex_admission_requires_chatgpt_auth_but_not_removed_billing_field() -> None:
+    gateway = _gateway("success")
+    scope = capability_scope(_request())
+    report = gateway._verifier.verify(gateway._installation, scope)
+    assert report.admits(gateway._installation, scope)
+    assert not replace(report, account_kind="api_key").admits(gateway._installation, scope)
+    assert not replace(report, supported=False).admits(gateway._installation, scope)
+
+
+@dataclass
+class _Verifier:
+    report: CodexCapabilityReport
+    bind_evidence: bool = True
+
+    def verify(
+        self, installation: CodexInstallation, scope: CapabilityEvidenceScope
+    ) -> CodexCapabilityReport:
+        if not self.bind_evidence:
+            return self.report
+        return replace(
+            self.report,
+            evidence=fake_capability_evidence(
+                scope=scope,
+                client_version="0.153.4",
+                executable_digest=installation.executable_digest,
+                client_home=installation.client_home,
+                account=installation.account,
+                verifier_id="fake-codex-conformance",
+            ),
+        )
+
+
+class _Broker:
+    def __init__(self) -> None:
+        self.calls: list[ProviderToolCall] = []
+        self.revoked = False
+        self.called = asyncio.Event()
+
+    async def __call__(self, call: ProviderToolCall) -> dict[str, object]:
+        assert not self.revoked
+        self.calls.append(call)
+        self.called.set()
+        return {"status": "succeeded", "path": call.arguments.get("path")}
+
+    async def revoke(self) -> None:
+        self.revoked = True
+
+
+def _report(**changes: object) -> CodexCapabilityReport:
+    values: dict[str, object] = {
+        "supported": True,
+        "installed_version": "0.153.4",
+        "account_kind": "chatgpt",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "native_tools_isolated": True,
+        "client_home": str(Path.cwd()),
+        "account": _TEST_ACCOUNT,
+        "executable_digest": _TEST_EXECUTABLE_DIGEST,
+    }
+    values.update(changes)
+    return CodexCapabilityReport(**values)  # type: ignore[arg-type]
+
+
+def _script(scenario: str) -> str:
+    # A supervised fake peer uses the installed 0.153.4 field shapes and checks
+    # critical outgoing fields. It does not establish live client conformance.
+    return f"""import json,sys,time,tomllib
+scenario={scenario!r}
+def recv(method):
+ m=json.loads(sys.stdin.readline())
+ if m.get("method") != method: raise SystemExit("expected "+method+" got "+repr(m))
+ return m
+def send(value): print(json.dumps(value),flush=True)
+m=recv("initialize"); send({{"jsonrpc":"2.0","id":m["id"],"result":{{"userAgent":"fake/0.153.4"}}}})
+recv("initialized")
+m=recv("account/read"); send({{"jsonrpc":"2.0","id":m["id"],"result":{{"account":{{"type":"apiKey"}} if scenario=="account_mismatch" else {{"type":"chatgpt","email":"other@example.invalid" if scenario=="account_identity_mismatch" else "codex@example.invalid","planType":"plus"}}}}}})
+if scenario=="account_mismatch": raise SystemExit(0)
+m=recv("model/list"); models=[] if scenario=="model_missing" else [{{"id":"gpt-5.6-luna","supportedReasoningEfforts":[{{"reasoningEffort":"medium"}}]}}]
+send({{"jsonrpc":"2.0","id":m["id"],"result":{{"data":models}}}})
+if scenario=="model_missing": raise SystemExit(0)
+m=recv("config/read")
+config=tomllib.loads(chr(10).join(sys.argv[2::2]))
+config["mcp_servers"]={{}}
+send({{"id":m["id"],"result":{{"config":config}}}})
+m=recv("thread/start")
+p=m["params"]
+assert p["model"]=="gpt-5.6-luna" and p["allowProviderModelFallback"] is False
+assert p["environments"]==[] and p["ephemeral"] is True
+if scenario=="no_tools":
+ assert p["dynamicTools"]==[]
+if scenario=="schema":
+ namespace=p["dynamicTools"][0]
+ assert namespace["type"]=="namespace" and namespace["name"]=="forge"
+ assert len(p["dynamicTools"])==1 and len(namespace["tools"])==1
+ assert namespace["tools"][0]["name"]=="forge_repository_read_file"
+ s=namespace["tools"][0]["inputSchema"]
+ assert s["type"]=="object" and s["additionalProperties"] is False
+ assert "path" in s["properties"] and "path" in s["required"]
+send({{"jsonrpc":"2.0","id":m["id"],"result":{{"thread":{{"id":"thread-actual"}},"model":"gpt-5.6-luna"}}}})
+m=recv("turn/start"); p=m["params"]
+assert p["threadId"]=="thread-actual" and p["model"]=="gpt-5.6-luna"
+assert p["effort"]=="medium" and p["environments"]==[]
+if scenario=="complete_context":
+ assert "additionalContext" not in p
+ context=json.loads(p["input"][1]["text"])["forge_task"]
+ assert context["kind"]=="untrusted"
+ value=context["value"]
+ assert value["context"]["task"]["text"]=="bounded context "*500+"REPAIR_AND_SELF_REVIEW"
+ assert value["task"]["route"]["effective"]["model"]=="gpt-5.6-luna"
+ assert "broker_token" not in p["input"][1]["text"]
+send({{"jsonrpc":"2.0","id":m["id"],"result":{{"turn":{{"id":"turn-actual"}}}}}})
+if scenario=="late_started":
+ send({{"method":"turn/started","params":{{"threadId":"thread-actual","turn":{{"id":"turn-actual","items":[],"status":"inProgress"}}}}}})
+final=json.dumps({{"decision":{{"kind":"handoff","status":"blocked","summary":"done","candidate_commit":None,"candidate_tree_digest":"","changed_paths":[],"check_results":[],"evidence_receipt_ids":[],"residual_concerns":[],"scope_request_paths":[]}}}})
+if scenario=="quota_notification":
+ error={{"message":"Usage limit reached. Resets in 2 minutes.","codexErrorInfo":"usageLimitExceeded"}}
+ send({{"method":"error","params":{{"threadId":"thread-actual","turnId":"turn-actual","error":error,"willRetry":False}}}})
+ send({{"method":"turn/completed","params":{{"threadId":"thread-actual","turn":{{"id":"turn-actual","items":[],"status":"failed","error":error}}}}}})
+elif scenario in ("usageLimitExceeded", "rateLimitExceeded", "sessionBudgetExceeded"):
+ send({{"method":"turn/completed","params":{{"threadId":"thread-actual","turn":{{"id":"turn-actual","items":[],"status":"failed","error":{{"codexErrorInfo":scenario,"resetAfterSeconds":120}}}}}}}})
+elif scenario=="foreign":
+ send({{"method":"item/completed","params":{{"threadId":"other","turnId":"turn-actual","item":{{"id":"i","type":"agentMessage","text":final}}}}}})
+elif scenario=="failed_after_item":
+ send({{"method":"thread/tokenUsage/updated","params":{{"threadId":"thread-actual","turnId":"turn-actual","tokenUsage":{{"total":{{"inputTokens":13,"outputTokens":5,"cachedInputTokens":2}}}}}}}})
+ send({{"method":"item/completed","params":{{"threadId":"thread-actual","turnId":"turn-actual","item":{{"id":"i","type":"agentMessage","text":final}}}}}})
+ send({{"method":"turn/completed","params":{{"threadId":"thread-actual","turn":{{"id":"turn-actual","items":[],"status":"failed","error":{{"message":"provider failed"}}}}}}}})
+elif scenario=="malformed_final":
+ send({{"method":"item/completed","params":{{"threadId":"thread-actual","turnId":"turn-actual","item":{{"id":"i","type":"agentMessage","text":"{{"}}}}}})
+elif scenario=="native_request":
+ send({{"jsonrpc":"2.0","id":90,"method":"item/fileChange/request","params":{{"threadId":"thread-actual","turnId":"turn-actual"}}}})
+elif scenario=="stale_tool":
+ send({{"jsonrpc":"2.0","id":80,"method":"item/tool/call","params":{{"callId":"stale","threadId":"thread-actual","turnId":"old-turn","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":"README.md"}}}}}})
+elif scenario in ("wrong_namespace", "missing_namespace", "raw_tool_name"):
+ params={{"callId":"call-actual","threadId":"thread-actual","turnId":"turn-actual","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":"README.md"}}}}
+ if scenario=="wrong_namespace": params["namespace"]="other"
+ if scenario=="missing_namespace": params.pop("namespace")
+ if scenario=="raw_tool_name": params["tool"]="repository.read_file"
+ send({{"jsonrpc":"2.0","id":80,"method":"item/tool/call","params":params}})
+elif scenario in ("tool", "schema", "cancel"):
+ send({{"jsonrpc":"2.0","id":80,"method":"item/tool/call","params":{{"callId":"call-actual","threadId":"thread-actual","turnId":"turn-actual","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":"README.md"}}}}}})
+ r=recv(None) if False else json.loads(sys.stdin.readline())
+ assert r["id"]==80 and r["result"]["success"] is True
+ if scenario=="cancel":
+  time.sleep(30)
+ else:
+  send({{"jsonrpc":"2.0","id":81,"method":"item/tool/call","params":{{"callId":"call-actual","threadId":"thread-actual","turnId":"turn-actual","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":"README.md"}}}}}})
+  r=json.loads(sys.stdin.readline()); assert r["id"]==81
+  send({{"method":"thread/tokenUsage/updated","params":{{"threadId":"thread-actual","turnId":"turn-actual","tokenUsage":{{"total":{{"inputTokens":13,"outputTokens":5,"cachedInputTokens":2}}}}}}}})
+  send({{"method":"thread/status/changed","params":{{"threadId":"thread-actual","status":{{"type":"active"}}}}}})
+  send({{"method":"item/started","params":{{"threadId":"thread-actual","turnId":"turn-actual","item":{{"id":"i","type":"agentMessage","text":""}}}}}})
+  send({{"method":"item/completed","params":{{"threadId":"thread-actual","turnId":"turn-actual","item":{{"id":"i","type":"agentMessage","text":final}}}}}})
+  send({{"method":"turn/completed","params":{{"threadId":"thread-actual","turn":{{"id":"turn-actual","items":[],"status":"completed"}}}}}})
+elif scenario=="duplicate_conflict":
+ for rid,path in ((80,"README.md"),(81,"other.txt")):
+  send({{"jsonrpc":"2.0","id":rid,"method":"item/tool/call","params":{{"callId":"same","threadId":"thread-actual","turnId":"turn-actual","namespace":"forge","tool":"forge_repository_read_file","arguments":{{"path":path}}}}}})
+  if rid==80: json.loads(sys.stdin.readline())
+else:
+ send({{"method":"item/completed","params":{{"threadId":"thread-actual","turnId":"turn-actual","item":{{"id":"i","type":"agentMessage","text":final}}}}}})
+ completed={{"method":"turn/completed","params":{{"threadId":"thread-actual","turn":{{"id":"turn-actual","items":[],"status":"completed"}}}}}}
+ if scenario=="completion_request": completed["id"]=99
+ send(completed)
+"""
+
+
+def _gateway(
+    scenario: str,
+    *,
+    broker: _Broker | None = None,
+    report: CodexCapabilityReport | None = None,
+    duration: float = 5,
+    quota_limit_id: str | None = None,
+    bind_evidence: bool = True,
+) -> CodexGateway:
+    return CodexGateway(
+        CodexInstallation(
+            executable=str(_TEST_EXECUTABLE),
+            cwd=".",
+            model="gpt-5.6-luna",
+            effort="medium",
+            client_home=str(Path.cwd()),
+            account=_TEST_ACCOUNT,
+            executable_digest=_TEST_EXECUTABLE_DIGEST,
+            quota_limit_id=quota_limit_id,
+            script=("-c", _script(scenario)),
+            duration_seconds=duration,
+        ),
+        _Verifier(report or _report(quota_limit_id=quota_limit_id), bind_evidence),
+        broker=broker,
+    )
+
+
+@pytest.mark.asyncio
+async def test_decision_only_turn_does_not_declare_an_empty_tool_namespace() -> None:
+    original = _request()
+    request = replace(
+        original,
+        authorization=replace(original.authorization, permitted_tools=frozenset()),
+    )
+    broker = _Broker()
+    result = await _gateway("no_tools", broker=broker).execute(request)
+    assert result.failure is None and result.decision is not None
+    assert broker.calls == [] and broker.revoked
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
+@pytest.mark.asyncio
+async def test_complete_task_context_is_sent_as_explicit_untrusted_turn_input() -> None:
+    request = replace(
+        _request(),
+        untrusted_context={"task": {"text": "bounded context " * 500 + "REPAIR_AND_SELF_REVIEW"}},
+    )
+    result = await _gateway("complete_context").execute(request)
+    assert result.failure is None and result.decision is not None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
+@pytest.mark.asyncio
+async def test_protocol_failure_retains_the_safe_validation_reason() -> None:
+    result = await _gateway("foreign").execute(_request())
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.failure_detail == "Codex protocol: foreign provider thread"
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
+@pytest.mark.asyncio
+async def test_success_waits_for_matching_completed_turn_and_ignores_notifications() -> None:
+    broker = _Broker()
+    result = await _gateway("tool", broker=broker).execute(
+        _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    )
+    assert result.failure is None and result.decision is not None
+    assert result.launch_proof is not None and result.launch_proof.permits_decision
+    assert result.attempt.attempt_id == result.decision.attempt_id
+    assert [(c.call_key, c.thread_id, c.turn_id) for c in broker.calls] == [
+        ("call-actual", "thread-actual", "turn-actual")
+    ]
+    assert broker.revoked is True
+    assert (
+        result.telemetry.input_tokens,
+        result.telemetry.output_tokens,
+        result.telemetry.cached_input_tokens,
+    ) == (13, 5, 2)
+
+
+@pytest.mark.asyncio
+async def test_item_output_does_not_override_failed_turn() -> None:
+    result = await _gateway("failed_after_item").execute(_request())
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.decision is None
+    assert (
+        result.telemetry.input_tokens,
+        result.telemetry.output_tokens,
+        result.telemetry.cached_input_tokens,
+    ) == (13, 5, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "failure"),
+    [
+        ("account_mismatch", SubscriptionFailure.AUTHENTICATION),
+        ("model_missing", SubscriptionFailure.UNAVAILABLE),
+    ],
+)
+async def test_runtime_account_and_model_catalog_must_match(
+    scenario: str, failure: SubscriptionFailure
+) -> None:
+    result = await _gateway(scenario).execute(_request())
+    assert result.failure is failure
+
+
+@pytest.mark.asyncio
+async def test_runtime_account_identity_must_match_before_model_discovery() -> None:
+    result = await _gateway("account_identity_mismatch").execute(_request())
+    assert result.failure is SubscriptionFailure.AUTHENTICATION
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "foreign",
+        "stale_tool",
+        "duplicate_conflict",
+        "malformed_final",
+        "native_request",
+        "wrong_namespace",
+        "missing_namespace",
+        "raw_tool_name",
+    ],
+)
+async def test_unadmitted_or_malformed_messages_fail_closed(scenario: str) -> None:
+    broker = _Broker()
+    result = await _gateway(scenario, broker=broker).execute(
+        _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    )
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert broker.revoked is True
+    assert len(broker.calls) <= 1
+
+
+@pytest.mark.asyncio
+async def test_dynamic_tool_uses_strict_canonical_argument_schema() -> None:
+    schema = tool_input_schema(ToolName.REPOSITORY_READ_FILE)
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["path"]
+    result = await _gateway("schema", broker=_Broker()).execute(
+        _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    )
+    assert result.failure is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"installed_version": "0.153.3"},
+        {"installed_version": "0.154.0"},
+        {"supported": False},
+        {"account_kind": "api_key"},
+        {"model": "other"},
+        {"effort": "low"},
+        {"native_tools_isolated": False},
+    ],
+)
+async def test_exact_capability_mismatch_never_launches(change: dict[str, Any]) -> None:
+    result = await _gateway("success", report=_report(**change)).execute(_request())
+    assert result.failure is SubscriptionFailure.UNAVAILABLE
+    assert result.decision is None
+
+
+@pytest.mark.asyncio
+async def test_capability_booleans_without_source_evidence_never_launch() -> None:
+    result = await _gateway("success", report=_report(evidence=None), bind_evidence=False).execute(
+        _request()
+    )
+    assert result.failure is SubscriptionFailure.UNAVAILABLE
+    assert result.decision is None
+
+
+@pytest.mark.asyncio
+async def test_async_evidence_verifier_is_awaited_before_launch() -> None:
+    gateway = _gateway("success")
+    fixture = gateway._verifier
+
+    class AsyncVerifier:
+        async def verify(self, installation, scope):
+            await asyncio.sleep(0)
+            return fixture.verify(installation, scope)
+
+    gateway._verifier = AsyncVerifier()
+    result = await gateway.execute(_request())
+    assert result.failure is None and result.launch_proof is not None
+
+
+@pytest.mark.asyncio
+async def test_unavailable_evidence_source_rejects_without_launch() -> None:
+    gateway = _gateway("success")
+
+    class MissingEvidence:
+        async def verify(self, _installation, _scope):
+            raise CapabilityEvidenceUnavailable("fixture evidence is stale")
+
+    gateway._verifier = MissingEvidence()
+    result = await gateway.execute(_request())
+    assert result.failure is SubscriptionFailure.UNAVAILABLE
+    assert result.launch_proof is None and result.decision is None
+
+
+@pytest.mark.asyncio
+async def test_pending_cancellation_revokes_broker() -> None:
+    broker = _Broker()
+    request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    task = asyncio.create_task(_gateway("cancel", broker=broker, duration=20).execute(request))
+    await asyncio.wait_for(broker.called.wait(), timeout=3)
+    task.cancel()
+    with pytest.raises(SubscriptionInterrupted) as raised:
+        await task
+    assert broker.revoked is True
+    assert raised.value.result.attempt == request.attempt
+    assert raised.value.result.failure is SubscriptionFailure.INTERRUPTED
+    assert raised.value.result.telemetry.input_tokens is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario,success", [("late_started", True), ("completion_request", False)]
+)
+async def test_turn_notifications_are_order_tolerant_but_never_requests(scenario, success) -> None:
+    result = await _gateway(scenario).execute(_request())
+    assert (result.failure is None) is success
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario,expected",
+    [
+        ("usageLimitExceeded", SubscriptionFailure.QUOTA),
+        ("rateLimitExceeded", SubscriptionFailure.THROTTLED),
+        ("sessionBudgetExceeded", SubscriptionFailure.BUDGET),
+    ],
+)
+async def test_supervised_terminal_limit_classification(scenario, expected):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 9, 12, 12, tzinfo=UTC)
+    gateway = _gateway(scenario)
+    gateway._now = lambda: now
+    result = await gateway.execute(_request())
+    assert result.failure is expected and result.decision is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    if expected is SubscriptionFailure.QUOTA:
+        assert result.quota_exhaustion is not None
+        assert result.quota_exhaustion.reset_at == now + timedelta(seconds=120)
+    else:
+        assert result.quota_exhaustion is None
+
+
+@pytest.mark.asyncio
+async def test_official_terminal_error_notification_reaches_quota_settlement():
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 9, 13, 12, tzinfo=UTC)
+    gateway = _gateway("quota_notification")
+    gateway._now = lambda: now
+    result = await gateway.execute(_request())
+    assert result.failure is SubscriptionFailure.QUOTA
+    assert result.decision is None
+    assert result.quota_exhaustion is not None
+    assert result.quota_exhaustion.observed_at == now
+    assert result.quota_exhaustion.reset_at == now + timedelta(minutes=2)
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
