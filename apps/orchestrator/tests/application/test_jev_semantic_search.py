@@ -3,11 +3,17 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from forge.application.ports.jev import JevResult
-from forge.application.services.semantic_search import collect_candidates, select_candidates
-from forge.application.services.tools import ControlledToolService
+from forge.application.services.semantic_search import (
+    candidates_current,
+    collect_candidates,
+    iter_line_chunks,
+    select_candidates,
+)
+from forge.application.services.tools import ControlledToolService, _bound_semantic_metadata
 from forge.domain.event import thaw_payload
 from forge.domain.policy import JevPolicy, ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
@@ -74,6 +80,18 @@ def test_unknown_scores_remain_visible(tmp_path: Path) -> None:
     assert selected[1]["score"] is None and selected[2]["score"] is None
 
 
+def test_invalid_confidence_stays_unknown_after_score_parsing_is_shared(tmp_path: Path) -> None:
+    (tmp_path / "source.py").write_text("useful = True\n", encoding="utf-8")
+    candidates, _ = collect_candidates(RepositoryReader(tmp_path), ".", max_candidates=8)
+
+    selected = select_candidates(
+        candidates, {"c0": {"score": 3, "confidence": 1.1}}, top_k=1
+    )
+
+    assert selected[0]["score"] is None
+    assert selected[0]["confidence"] is None
+
+
 def test_late_behavior_has_original_line_number_and_partial_coverage(tmp_path: Path) -> None:
     (tmp_path / "late.py").write_text(
         "\n".join(f"padding_{index} = {index}" for index in range(80))
@@ -93,6 +111,106 @@ def test_late_behavior_has_original_line_number_and_partial_coverage(tmp_path: P
     )
     _, capped = collect_candidates(reader, ".", max_candidates=1)
     assert capped is False
+
+
+def test_freshness_reads_each_distinct_source_once(tmp_path: Path) -> None:
+    (tmp_path / "many.py").write_text("\n".join(f"line_{i}" for i in range(80)), encoding="utf-8")
+    (tmp_path / "other.py").write_text("other\n", encoding="utf-8")
+
+    class CountingReader(RepositoryReader):
+        reads = 0
+
+        def read_file(self, path):  # type: ignore[no-untyped-def]
+            self.reads += 1
+            return super().read_file(path)
+
+    reader = CountingReader(tmp_path)
+    candidates, _ = collect_candidates(reader, ".", max_candidates=96)
+    reader.reads = 0
+
+    assert len(candidates) > 1
+    assert candidates_current(reader, candidates)
+    assert reader.reads == 2
+    assert not candidates_current(
+        reader, (candidates[0], replace(candidates[1], file_hash="0" * 64))
+    )
+
+
+@pytest.mark.parametrize("max_chars", [0, 1, 120, 200, 360, 600, 1000, 5000])
+def test_semantic_metadata_trimming_matches_drop_from_end(max_chars: int) -> None:
+    metadata = {
+        "candidates": [{"path": f"file-{i}.py", "excerpt": "x" * (i * 19), "score": None}
+                       for i in range(9)],
+        "search": {"mode": "on", "status": "ranked", "scored": True,
+                   "coverage_complete": True, "returned_count": 9},
+    }
+    expected = json.loads(json.dumps(metadata))
+    original = len(expected["candidates"])
+    while expected["candidates"]:
+        if len(expected["candidates"]) != original:
+            expected["search"].update({"output_truncated": True,
+                                       "unshown_count": original - len(expected["candidates"]),
+                                       "coverage_complete": False,
+                                       "returned_count": len(expected["candidates"])})
+        if len(json.dumps(expected, ensure_ascii=False)) <= max_chars:
+            break
+        expected["candidates"].pop()
+    if len(expected["candidates"]) != original:
+        expected["search"].update({"output_truncated": True,
+                                   "unshown_count": original - len(expected["candidates"]),
+                                   "coverage_complete": False,
+                                   "returned_count": len(expected["candidates"])})
+
+    assert _bound_semantic_metadata(metadata, max_chars) == expected
+
+
+def test_empty_semantic_result_keeps_its_original_flags_when_over_limit() -> None:
+    metadata = {"candidates": [], "search": {"status": "off", "coverage_complete": True}}
+    before = json.loads(json.dumps(metadata))
+
+    assert _bound_semantic_metadata(metadata, 1) == before
+
+
+def test_semantic_metadata_trimming_serializes_logarithmically(monkeypatch) -> None:
+    import forge.application.services.tools as tools_module
+
+    metadata = {"candidates": [{"excerpt": "x" * 30} for _ in range(96)],
+                "search": {"coverage_complete": True}}
+    original_dumps = json.dumps
+    calls = 0
+
+    def counted_dumps(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return original_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(tools_module.json, "dumps", counted_dumps)
+    _bound_semantic_metadata(metadata, 1)
+    assert calls <= 10
+
+
+def test_shared_line_chunks_preserve_blank_lines_long_lines_and_line_numbers() -> None:
+    chunks = list(iter_line_chunks("first\n\n" + "x" * 20 + "\nlast\n", 8))
+    assert chunks == [
+        (1, "first\n\n", False),
+        (3, "xxxxxxxx", True),
+        (4, "last\n", False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_semantic_dispatch_fallback_marks_repository_content_untrusted(tmp_path: Path) -> None:
+    (tmp_path / "visible.py").write_text("value = True\n", encoding="utf-8")
+    service = _controlled(tmp_path, _Jev(_work(tmp_path)))
+    authorization = SimpleNamespace(
+        tool_name=ToolName.REPOSITORY_SEARCH_SEMANTIC,
+        arguments={"path": "."},
+    )
+
+    result = await service._dispatch(authorization)
+
+    assert result.metadata["search"]["status"] == "unavailable"
+    assert result.metadata["search"]["untrusted_repository_content"] is True
 
 
 class _TrackedWork(_UnitOfWork):

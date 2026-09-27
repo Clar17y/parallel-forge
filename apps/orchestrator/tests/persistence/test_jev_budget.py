@@ -11,7 +11,7 @@ from forge.persistence.models import Project, ProjectPolicyVersion, Task
 from forge.persistence.models.jev import JevEvaluation
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.ranking.jev import TypeSafeJevProvider
-from sqlalchemy import delete
+from sqlalchemy import delete, event
 
 
 class FakeProvider:
@@ -422,6 +422,54 @@ async def test_cache_disabled_never_reuses_scores(session_factory):
     assert provider.calls == 2
     async with session_factory() as session, session.begin():
         await session.execute(delete(JevEvaluation).where(JevEvaluation.run_id == run.id))
+
+
+@pytest.mark.asyncio
+async def test_reservation_uses_matching_lookup_and_budget_aggregate_without_scores(session_factory):
+    policy = JevPolicy(mode="on", allow_remote=True, cache_ttl_seconds=0)
+    run = await create_jev_run(session_factory, policy)
+    provider = FakeProvider()
+    provider.release.set()
+    service = JevService(lambda: PostgresUnitOfWork(session_factory), provider)
+    questions = {
+        "m0": {"type": "score", "instructions": "x", "criteria": ["none", "some", "high"]}
+    }
+    statements: list[str] = []
+
+    def record(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("SELECT") and "jev_evaluations" in statement:
+            statements.append(statement.lower())
+
+    event.listen(session_factory.kw["bind"].sync_engine, "before_cursor_execute", record)
+    try:
+        for key, state in (("first", {}), ("second", {"different": True})):
+            request = JevRequest(
+                run_id=run.id, policy_version=1, operation_key=key,
+                kind="semantic_search", worktree_digest="a" * 64,
+                state=state, questions=questions,
+            )
+            assert (await service.evaluate(request, policy=policy)).status == "succeeded"
+        reserve_selects = list(statements)
+        assert any("count(" in sql and "sum(" in sql for sql in reserve_selects)
+        assert any(
+            "request_digest" in sql.split("where", 1)[-1]
+            and "created_at desc" in sql
+            and "operation_digest desc" in sql
+            for sql in reserve_selects
+        )
+        assert not any(
+            "jev_evaluations.scores" in sql
+            for sql in reserve_selects
+            if "request_digest" in sql.split("where", 1)[-1]
+        )
+        statements.clear()
+        async with PostgresUnitOfWork(session_factory) as work:
+            assert (await work.jev.summary(run.id, policy=policy))["calls"] == 2
+        assert statements and all("jev_evaluations.scores" not in sql for sql in statements)
+    finally:
+        event.remove(session_factory.kw["bind"].sync_engine, "before_cursor_execute", record)
+        async with session_factory() as session, session.begin():
+            await session.execute(delete(JevEvaluation).where(JevEvaluation.run_id == run.id))
 
 
 @pytest.mark.parametrize("reason", ["budget_exhausted", "candidate_limit", "invalid_questions", "request_limit"])

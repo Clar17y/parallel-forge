@@ -463,9 +463,8 @@ def compose_worker_handlers(
     )
 
     search_ranking = SearchRankingConfiguration.from_settings(settings, redactor=shared_redactor)
-    jev_service = JevService(
-        uow_factory, TypeSafeJevProvider.from_environment(), redactor=shared_redactor
-    )
+    jev_provider = TypeSafeJevProvider.from_environment()
+    jev_service = JevService(uow_factory, jev_provider, redactor=shared_redactor)
 
     if agent_gateway is None:
 
@@ -667,6 +666,8 @@ def compose_worker_handlers(
             ),
         }
     )
+    if jev_provider is not None:
+        handlers.resources.push_async_callback(jev_provider.aclose)
     release_commands = (
         "update_base",
         "approve_pr",

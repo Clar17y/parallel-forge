@@ -31,7 +31,7 @@ from forge.application.adapters.named_check import (
 )
 from forge.application.ports.artifacts import ArtifactRepository, ArtifactStore
 from forge.application.ports.evidence import EvidenceInputPurpose, EvidenceReadScope
-from forge.application.ports.jev import JevRequest, JevResult
+from forge.application.ports.jev import USABLE_JEV_STATUSES, JevRequest, JevResult
 from forge.application.ports.projects import ProjectRecord
 from forge.application.ports.repository import (
     MAX_REPOSITORY_WRITE_BYTES,
@@ -73,6 +73,7 @@ from forge.application.services.semantic_search import (
     SemanticCandidate,
     candidates_current,
     collect_candidates,
+    jev_score,
     select_candidates,
 )
 from forge.domain.actor import AgentRole
@@ -2805,12 +2806,9 @@ class ControlledToolService:
                     candidates, complete = collect_candidates(
                         reader, _argument_text(authorization, "path", "."), max_candidates=96
                     )
-                    prepared_metadata = {
-                        "candidates": [item.payload() for item in candidates],
-                        "search": {"mode": "off", "status": "unavailable", "scored": False,
-                                   "enumerated_count": len(candidates), "coverage_complete": complete,
-                                   "absence_unknown": True},
-                    }
+                    prepared_metadata = _semantic_baseline_metadata(
+                        candidates, complete, mode="off", status="unavailable"
+                    )
                     prepared_metadata = _bound_semantic_metadata(prepared_metadata, 12000)
                 return self._result(name, ToolCallStatus.SUCCEEDED, metadata=prepared_metadata)
             if name is ToolName.REPOSITORY_READ_INSTRUCTIONS:
@@ -3025,7 +3023,7 @@ class ControlledToolService:
         if mode == "shadow":
             return metadata
         ranking["status"] = result.status if result else "unavailable"
-        if result is None or result.status not in {"ranked", "succeeded", "cached"}:
+        if result is None or result.status not in USABLE_JEV_STATUSES:
             return metadata
         reader = self._repository_reader
         try:
@@ -3062,14 +3060,12 @@ class ControlledToolService:
         complete: bool,
     ) -> dict[str, object]:
         mode = jev.mode if jev else "off"
-        full = [item.payload() for item in candidates]
-        metadata: dict[str, object] = {"candidates": full, "search": {
-            "mode": "off" if mode == "shadow" else mode, "status": "off", "scored": False,
-            "enumerated_count": len(candidates), "coverage_complete": complete,
-            "untrusted_repository_content": True, "absence_unknown": True,
-        }}
+        metadata = _semantic_baseline_metadata(
+            candidates, complete, mode=mode, status="off",
+        )
         if jev is None or mode == "off" or not jev.semantic_search or not candidates:
             return _bound_semantic_metadata(metadata, jev.max_result_chars if jev else 12000)
+        full = cast(list[dict[str, object]], metadata["candidates"])
         state: dict[str, object] = {"query": query, "path": path,
                                     "candidates": full}
         questions: dict[str, object] = {
@@ -3081,7 +3077,7 @@ class ControlledToolService:
         if mode == "shadow":
             return _bound_semantic_metadata(metadata, jev.max_result_chars)
         search["status"] = result.status if result else "unavailable"
-        if result is None or result.status not in {"ranked", "succeeded", "cached"}:
+        if result is None or result.status not in USABLE_JEV_STATUSES:
             return _bound_semantic_metadata(metadata, jev.max_result_chars)
         reader = self._repository_reader
         if reader is None or not candidates_current(reader, candidates):
@@ -4346,12 +4342,11 @@ def select_candidates_for_matches(
     scored: list[tuple[float, int]] = []
     unknown: list[int] = []
     for index in range(len(matches)):
-        answer = answers.get(f"c{index}")
-        value = answer.get("score") if isinstance(answer, Mapping) else None
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 3:
+        value = jev_score(answers, index)
+        if value is None:
             unknown.append(index)
         elif value > 0:
-            scored.append((float(value), index))
+            scored.append((value, index))
     if not scored:
         return list(range(len(matches)))
     return [index for _, index in sorted(scored, key=lambda row: (-row[0], row[1]))[:top_k]] + unknown
@@ -4359,9 +4354,8 @@ def select_candidates_for_matches(
 
 def _has_positive_jev_score(answers: Mapping[str, Mapping[str, object]], count: int) -> bool:
     for index in range(count):
-        answer = answers.get(f"c{index}")
-        value = answer.get("score") if isinstance(answer, Mapping) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 3:
+        value = jev_score(answers, index)
+        if value is not None and value > 0:
             return True
     return False
 
@@ -4372,23 +4366,45 @@ def _bound_semantic_metadata(metadata: dict[str, object], max_chars: int) -> dic
     candidates = cast(list[dict[str, object]], metadata["candidates"])
     search = cast(dict[str, object], metadata["search"])
     original = len(candidates)
-    while candidates:
-        if len(candidates) != original:
-            search["output_truncated"] = True
-            search["unshown_count"] = original - len(candidates)
-            search["coverage_complete"] = False
-            if "returned_count" in search:
-                search["returned_count"] = len(candidates)
-        if len(json.dumps(metadata, ensure_ascii=False)) <= max_chars:
-            break
-        candidates.pop()
-    if len(candidates) != original:
-        search["output_truncated"] = True
-        search["unshown_count"] = original - len(candidates)
-        search["coverage_complete"] = False
-        if "returned_count" in search:
-            search["returned_count"] = len(candidates)
+    if original == 0 or len(json.dumps(metadata, ensure_ascii=False)) <= max_chars:
+        return metadata
+
+    def fits(keep: int) -> bool:
+        trial_search = dict(search)
+        trial_search.update({"output_truncated": True, "unshown_count": original - keep,
+                             "coverage_complete": False})
+        if "returned_count" in trial_search:
+            trial_search["returned_count"] = keep
+        trial = {**metadata, "candidates": candidates[:keep], "search": trial_search}
+        return len(json.dumps(trial, ensure_ascii=False)) <= max_chars
+
+    low, high = 0, original - 1
+    keep = 0
+    while low <= high:
+        middle = (low + high) // 2
+        if fits(middle):
+            keep = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    del candidates[keep:]
+    search.update({"output_truncated": True, "unshown_count": original - keep,
+                   "coverage_complete": False})
+    if "returned_count" in search:
+        search["returned_count"] = keep
     return metadata
+
+
+def _semantic_baseline_metadata(
+    candidates: tuple[SemanticCandidate, ...], complete: bool, *, mode: str, status: str,
+) -> dict[str, object]:
+    return {
+        "candidates": [item.payload() for item in candidates],
+        "search": {"mode": "off" if mode == "shadow" else mode, "status": status,
+                   "scored": False, "enumerated_count": len(candidates),
+                   "coverage_complete": complete, "untrusted_repository_content": True,
+                   "absence_unknown": True},
+    }
 
 
 def _instructions(values: Sequence[InstructionDocument]) -> list[dict[str, object]]:

@@ -491,6 +491,28 @@ async def test_release_without_configuration_fails_before_using_command_or_datab
     await handlers.aclose()
 
 
+@pytest.mark.asyncio
+async def test_composed_jev_provider_closes_with_worker_handlers(tmp_path, monkeypatch):
+    from forge.ranking.jev import TypeSafeJevProvider
+
+    class FakeJevProvider:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    provider = FakeJevProvider()
+    monkeypatch.setattr(TypeSafeJevProvider, "from_environment", lambda: provider)
+    handlers = compose_worker_handlers(
+        Settings(data_root=tmp_path, prompt_root=_make_prompt_root(tmp_path)),
+        object(),
+        agent_gateway=object(),
+    )
+    assert provider.closed is False
+    await handlers.aclose()
+    assert provider.closed is True
+
+
 # =========================================================================
 # BoundPlanningGateway tests
 # =========================================================================

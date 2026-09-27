@@ -8,8 +8,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer, load_only
 
 from forge.application.ports.jev import JevRequest, JevResult
 from forge.domain.policy import JevPolicy
@@ -171,16 +172,23 @@ class PostgresJevRepository:
                 duration_ms=existing.duration_ms,
                 diagnostic="operation_replay",
             )
-        rows = (
+        matches = (
             await self._session.scalars(
-                select(JevEvaluation).where(JevEvaluation.run_id == request.run_id)
+                select(JevEvaluation)
+                .where(
+                    JevEvaluation.run_id == request.run_id,
+                    JevEvaluation.request_digest == request_digest,
+                    JevEvaluation.reserved_input_units > 0,
+                    JevEvaluation.status.in_(("pending", "unknown", "ranked", "succeeded")),
+                )
+                .options(defer(JevEvaluation.scores))
+                .order_by(JevEvaluation.created_at.desc(), JevEvaluation.operation_digest.desc())
             )
         ).all()
         if any(
-            row.reserved_input_units > 0
-            and row.status in ("pending", "unknown")
+            row.status in ("pending", "unknown")
             and self._same_identity(row, request, request_digest, policy)
-            for row in rows
+            for row in matches
         ):
             return JevResult(
                 status="unknown", requested_model=model, diagnostic="matching_admission_uncertain"
@@ -189,9 +197,8 @@ class PostgresJevRepository:
             source = next(
                 (
                     row
-                    for row in reversed(rows)
-                    if row.reserved_input_units > 0
-                    and row.status in ("ranked", "succeeded")
+                    for row in matches
+                    if row.status in ("ranked", "succeeded")
                     and self._same_identity(row, request, request_digest, policy)
                     and row.created_at + timedelta(seconds=policy.cache_ttl_seconds)
                     > datetime.now(UTC)
@@ -199,6 +206,8 @@ class PostgresJevRepository:
                 None,
             )
             if source is not None:
+                await self._session.refresh(source, attribute_names=["scores"])
+                scores = source.scores
                 self._session.add(
                     JevEvaluation(
                         run_id=request.run_id,
@@ -219,22 +228,25 @@ class PostgresJevRepository:
                         output_units=0,
                         duration_ms=0,
                         cache_hits=1,
-                        scores=source.scores,
+                        scores=scores,
                         cache_source_digest=source.operation_digest,
                     )
                 )
                 await self._session.flush()
                 return JevResult(
                     status="cached",
-                    answers=source.scores or {},
+                    answers=scores or {},
                     requested_model=model,
                     actual_model=source.actual_model,
                     diagnostic="content_cache",
                 )
-        if (
-            sum(row.reserved_input_units > 0 for row in rows) >= max_requests
-            or sum(row.reserved_input_units for row in rows) + input_units > max_input_units
-        ):
+        calls, reserved = (
+            await self._session.execute(
+                select(func.count(), func.coalesce(func.sum(JevEvaluation.reserved_input_units), 0))
+                .where(JevEvaluation.run_id == request.run_id, JevEvaluation.reserved_input_units > 0)
+            )
+        ).one()
+        if calls >= max_requests or reserved + input_units > max_input_units:
             await self._record_refusal(
                 request, request_digest=request_digest, policy=policy,
                 status="budget_exhausted", diagnostic="budget_exhausted",
@@ -293,6 +305,20 @@ class PostgresJevRepository:
             await self._session.scalars(
                 select(JevEvaluation)
                 .where(JevEvaluation.run_id == run_id)
+                .options(
+                    load_only(
+                        JevEvaluation.kind,
+                        JevEvaluation.status,
+                        JevEvaluation.diagnostic,
+                        JevEvaluation.reserved_input_units,
+                        JevEvaluation.effective_mode,
+                        JevEvaluation.actual_model,
+                        JevEvaluation.cache_hits,
+                        JevEvaluation.actual_input_units,
+                        JevEvaluation.output_units,
+                        JevEvaluation.duration_ms,
+                    )
+                )
                 .order_by(JevEvaluation.created_at, JevEvaluation.operation_digest)
             )
         ).all()

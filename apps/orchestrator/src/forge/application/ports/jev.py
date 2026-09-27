@@ -10,6 +10,7 @@ JevKind = Literal["search_ranking", "semantic_search", "review_focus"]
 JevStatus = Literal[
     "off", "unavailable", "budget_exhausted", "ranked", "succeeded", "cached", "unknown"
 ]
+USABLE_JEV_STATUSES = frozenset({"ranked", "succeeded", "cached"})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -110,6 +111,7 @@ class JevRepository(Protocol):
 
 
 __all__ = [
+    "USABLE_JEV_STATUSES",
     "JevKind",
     "JevProvider",
     "JevProviderResponse",

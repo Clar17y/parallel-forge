@@ -32,7 +32,7 @@ from forge.application.ports.evidence import (
     ReviewEvidenceDraft,
 )
 from forge.application.ports.executions import ExecutionUnsettledError, ReviewerEvidenceBinding
-from forge.application.ports.jev import JevRequest
+from forge.application.ports.jev import USABLE_JEV_STATUSES, JevRequest
 from forge.application.ports.repository import (
     InstructionDocument,
     RepositoryError,
@@ -57,9 +57,9 @@ from forge.application.services.control_settlement import (
 )
 from forge.application.services.jev import JevService
 from forge.application.services.jev_review import (
-    REVIEW_FOCUS_GUIDANCE,
+    MAX_REVIEW_FOCUS_SOURCES,
     REVIEW_QUESTIONS,
-    review_focus_scores,
+    review_focus_payload,
     safe_diff_hunks,
 )
 from forge.application.services.resume_source import (
@@ -430,7 +430,7 @@ class ReviewService:
             reader = self._reader_factory(approved.policy, tree)
             hunks, complete = safe_diff_hunks(
                 reader, candidate.diff.text, changed_paths=candidate.changed_paths,
-                max_hunks=min(64, jev.max_candidates),
+                max_hunks=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates),
             )
             if not hunks:
                 return None, "no_eligible_hunks" if jev.mode == "on" else None
@@ -448,7 +448,7 @@ class ReviewService:
                 questions=REVIEW_QUESTIONS,
             )
             result = await self._jev_service.evaluate(request, policy=jev)
-            if result.status not in {"ranked", "succeeded", "cached"}:
+            if result.status not in USABLE_JEV_STATUSES:
                 return None, result.status if jev.mode == "on" else None
             current = git.candidate_diff(tree)
             if (current.head_sha != candidate.head_sha or
@@ -456,17 +456,17 @@ class ReviewService:
                 return None, "stale_candidate" if jev.mode == "on" else None
             current_hunks, _ = safe_diff_hunks(
                 reader, current.diff.text, changed_paths=current.changed_paths,
-                max_hunks=min(64, jev.max_candidates),
+                max_hunks=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates),
             )
             if current_hunks != hunks:
                 return None, "stale_source" if jev.mode == "on" else None
             if jev.mode == "shadow":
                 return None, None
             content = json.dumps(
-                {"status": result.status, "head_sha": candidate.head_sha,
-                 "diff_digest": diff_digest, "coverage_complete": complete,
-                 "scores": review_focus_scores(result.answers),
-                 "guidance": REVIEW_FOCUS_GUIDANCE, "advisory_only": True},
+                review_focus_payload(
+                    result.status, result.answers, coverage_complete=complete,
+                    identity={"head_sha": candidate.head_sha, "diff_digest": diff_digest},
+                ),
                 sort_keys=True, separators=(",", ":"),
             )
             return UntrustedContent.from_text(

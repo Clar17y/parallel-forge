@@ -7,7 +7,7 @@ scores these numbered excerpts; the original text is returned to the caller.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 from forge.application.ports.repository import (
@@ -17,6 +17,24 @@ from forge.application.ports.repository import (
 )
 
 _EXCERPT_CHARS = 400
+
+
+def iter_line_chunks(content: str, max_chars: int) -> Iterator[tuple[int, str, bool]]:
+    """Yield bounded, line-aligned excerpts and whether each exceeded its cap."""
+    if max_chars < 1:
+        raise ValueError("line chunk bound must be positive")
+    lines = content.splitlines(keepends=True)
+    start = 0
+    while start < len(lines):
+        end = start
+        size = 0
+        while end < len(lines) and (size + len(lines[end]) <= max_chars or end == start):
+            size += len(lines[end])
+            end += 1
+        chunk = "".join(lines[start:end])
+        excerpt = chunk[:max_chars]
+        yield start + 1, excerpt, size > len(excerpt)
+        start = end
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,30 +83,21 @@ def collect_candidates(
         file_hash = hashlib.sha256(read.content.encode("utf-8")).hexdigest()
         if read.truncated:
             complete = False
-        lines = read.content.splitlines(keepends=True)
-        start = 0
-        while start < len(lines):
+        for line_number, excerpt, oversized in iter_line_chunks(read.content, _EXCERPT_CHARS):
             if len(candidates) >= max_candidates:
                 complete = False
                 break
-            end = start
-            size = 0
-            while end < len(lines) and (size + len(lines[end]) <= _EXCERPT_CHARS or end == start):
-                size += len(lines[end])
-                end += 1
-            excerpt = "".join(lines[start:end])[:_EXCERPT_CHARS]
-            if len("".join(lines[start:end])) > _EXCERPT_CHARS:
+            if oversized:
                 complete = False
             if excerpt.strip():
                 candidates.append(SemanticCandidate(
                     path=read.path,
-                    line_number=start + 1,
+                    line_number=line_number,
                     excerpt=excerpt,
                     content_hash=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
                     file_hash=file_hash,
-                    truncated=read.truncated or len("".join(lines[start:end])) > len(excerpt),
+                    truncated=read.truncated or oversized,
                 ))
-            start = end
     return tuple(candidates), complete
 
 
@@ -96,10 +105,14 @@ def candidates_current(reader: RepositoryReader, candidates: tuple[SemanticCandi
     """Reject a model ordering if a source changed while it was evaluated."""
 
     try:
+        expected: dict[str, str] = {}
+        for item in candidates:
+            known = expected.setdefault(item.path, item.file_hash)
+            if known != item.file_hash:
+                return False
         return all(
-            hashlib.sha256(reader.read_file(item.path).content.encode("utf-8")).hexdigest()
-            == item.file_hash
-            for item in candidates
+            hashlib.sha256(reader.read_file(path).content.encode("utf-8")).hexdigest() == digest
+            for path, digest in expected.items()
         )
     except (RepositoryError, OSError, ValueError, UnicodeError):
         return False
@@ -117,9 +130,9 @@ def select_candidates(
     unknown: list[SemanticCandidate] = []
     for index, item in enumerate(candidates):
         answer = answers.get(f"c{index}")
-        score = answer.get("score") if isinstance(answer, Mapping) else None
+        score = jev_score(answers, index)
         confidence = answer.get("confidence") if isinstance(answer, Mapping) else None
-        if not isinstance(score, (int, float)) or isinstance(score, bool) or not 0 <= score <= 3 or not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
+        if score is None or not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
             unknown.append(item)
             continue
         scored.append((float(score), index, item, float(confidence)))
@@ -132,3 +145,12 @@ def select_candidates(
 
 
 __all__ = ["SemanticCandidate", "candidates_current", "collect_candidates", "select_candidates"]
+
+
+def jev_score(answers: Mapping[str, Mapping[str, object]], index: int) -> float | None:
+    """Return a valid advisory score while treating booleans and malformed values as unknown."""
+    answer = answers.get(f"c{index}")
+    value = answer.get("score") if isinstance(answer, Mapping) else None
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 3:
+        return None
+    return float(value)

@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from secrets import token_urlsafe
 
-from forge.application.ports.jev import JevRequest
+from forge.application.ports.jev import USABLE_JEV_STATUSES, JevRequest
 from forge.application.ports.repository import RepositoryReader
 from forge.application.ports.subscription_candidate import CandidateInspection
 from forge.application.ports.subscription_execution import SubscriptionAdmission
@@ -15,9 +15,9 @@ from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import GitWorkingTreeSnapshot, ManagedWorktree
 from forge.application.services.jev import JevService
 from forge.application.services.jev_review import (
-    REVIEW_FOCUS_GUIDANCE,
+    MAX_REVIEW_FOCUS_SOURCES,
     REVIEW_QUESTIONS,
-    review_focus_scores,
+    review_focus_payload,
     safe_snapshot_sources,
 )
 from forge.domain.agent import PolicySummary
@@ -285,7 +285,7 @@ class SubscriptionRequestBuilder:
                 return self._attach_focus_status(request, "stale_candidate", jev.mode)
             reader = self._reader(policy, tree)
             sources, complete = safe_snapshot_sources(
-                reader, snapshot, max_sources=min(64, jev.max_candidates)
+                reader, snapshot, max_sources=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates)
             )
             if not sources:
                 return self._attach_focus_status(request, "no_eligible_hunks", jev.mode)
@@ -305,16 +305,15 @@ class SubscriptionRequestBuilder:
             status = result.status
             latest = await asyncio.to_thread(self._snapshot, policy, tree)
             latest_sources, _ = safe_snapshot_sources(
-                reader, latest, max_sources=min(64, jev.max_candidates)
+                reader, latest, max_sources=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates)
             )
             if CandidateInspection.from_snapshot(latest).payload() != observation or latest_sources != sources:
                 status = "stale_candidate"
-            elif jev.mode == "on" and status in {"ranked", "succeeded", "cached"}:
-                focus = {"status": status, "observation": inspection.payload(),
-                         "candidate_epoch": epoch, "coverage_complete": complete,
-                         "scores": review_focus_scores(result.answers),
-                         "guidance": REVIEW_FOCUS_GUIDANCE,
-                         "advisory_only": True}
+            elif jev.mode == "on" and status in USABLE_JEV_STATUSES:
+                focus = review_focus_payload(
+                    status, result.answers, coverage_complete=complete,
+                    identity={"observation": inspection.payload(), "candidate_epoch": epoch},
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - advisory focus never blocks review admission

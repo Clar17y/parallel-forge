@@ -8,9 +8,11 @@ from collections.abc import Mapping, Sequence
 
 from forge.application.ports.repository import RepositoryError, RepositoryReader
 from forge.application.ports.worktrees import GitWorkingTreeSnapshot
+from forge.application.services.semantic_search import iter_line_chunks
 
 _HEADER = re.compile(r"diff --git a/([^\s]+) b/([^\s]+)")
 _MAX_HUNK_CHARS = 1200
+MAX_REVIEW_FOCUS_SOURCES = 64
 
 
 def safe_diff_hunks(
@@ -18,7 +20,7 @@ def safe_diff_hunks(
     diff: str,
     *,
     changed_paths: Sequence[str],
-    max_hunks: int = 64,
+    max_hunks: int = MAX_REVIEW_FOCUS_SOURCES,
 ) -> tuple[list[dict[str, object]], bool]:
     """Keep only diff blocks whose current file can be read by the bound reader.
 
@@ -87,25 +89,16 @@ def safe_snapshot_sources(
         if read.truncated or hashlib.sha256(read.content.encode("utf-8")).hexdigest() != item.content_digest:
             complete = False
             continue
-        lines = read.content.splitlines(keepends=True)
-        start = 0
-        while start < len(lines):
+        for line_number, excerpt, oversized in iter_line_chunks(read.content, _MAX_HUNK_CHARS):
             if len(sources) >= max_sources:
                 complete = False
                 break
-            end = start
-            size = 0
-            while end < len(lines) and (size + len(lines[end]) <= _MAX_HUNK_CHARS or end == start):
-                size += len(lines[end])
-                end += 1
-            excerpt = "".join(lines[start:end])[:_MAX_HUNK_CHARS]
-            if size > _MAX_HUNK_CHARS:
+            if oversized:
                 complete = False
             if excerpt.strip():
-                sources.append({"path": path, "line_number": start + 1,
+                sources.append({"path": path, "line_number": line_number,
                                 "excerpt": excerpt, "source_hash": item.content_digest,
-                                "truncated": size > _MAX_HUNK_CHARS})
-            start = end
+                                "truncated": oversized})
     return sources, complete
 
 
@@ -144,7 +137,26 @@ def review_focus_scores(answers: Mapping[str, object]) -> list[dict[str, object]
     ]
 
 
+def review_focus_payload(
+    status: str,
+    answers: Mapping[str, object],
+    *,
+    coverage_complete: bool,
+    identity: Mapping[str, object],
+) -> dict[str, object]:
+    """Build the shared advisory fields while keeping source identities caller-specific."""
+    return {
+        "status": status,
+        **identity,
+        "coverage_complete": coverage_complete,
+        "scores": review_focus_scores(answers),
+        "guidance": REVIEW_FOCUS_GUIDANCE,
+        "advisory_only": True,
+    }
+
+
 __all__ = [
-    "REVIEW_FOCUS_GUIDANCE", "REVIEW_QUESTIONS", "review_focus_scores",
+    "MAX_REVIEW_FOCUS_SOURCES", "REVIEW_FOCUS_GUIDANCE", "REVIEW_QUESTIONS",
+    "review_focus_payload", "review_focus_scores",
     "safe_diff_hunks", "safe_snapshot_sources",
 ]
