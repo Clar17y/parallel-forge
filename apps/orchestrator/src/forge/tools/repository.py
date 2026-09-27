@@ -19,6 +19,7 @@ from forge.application.ports.repository import (
     RepositoryEncodingError,
     RepositoryEntry,
     SearchMatch,
+    is_hidden_search_path,
 )
 from forge.domain.paths import RESERVED_REPOSITORY_COMPONENTS
 from forge.tools.paths import CanonicalRoot
@@ -259,7 +260,7 @@ class RepositoryReader:
         entries = tuple(
             entry
             for entry in self._search_entries(normalized)
-            if not _is_hidden_search_path(entry.path)
+            if not is_hidden_search_path(entry.path)
         )
         inspected_bytes = 0
         for entry in entries:
@@ -400,7 +401,7 @@ class RepositoryReader:
                     normalized_target != "."
                     and not self._root.matches(normalized, normalized_target)
                 )
-                or _is_hidden_search_path(normalized)
+                or is_hidden_search_path(normalized)
                 or self._is_excluded(normalized)
                 or self._has_virtual_environment_ancestor(normalized)
             ):
@@ -622,10 +623,6 @@ def _validate_search_literal(literal: str) -> None:
 
 def _entry_sort_key(path: str) -> tuple[str, str]:
     return (path.casefold() if os.name == "nt" else path, path)
-
-
-def _is_hidden_search_path(path: str) -> bool:
-    return any(part.startswith(".") and part != ".env.example" for part in path.split("/"))
 
 
 def _is_link_or_reparse(metadata: os.stat_result) -> bool:

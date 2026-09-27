@@ -42,6 +42,7 @@ _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         }
     ),
@@ -50,6 +51,7 @@ _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
             ToolName.REPOSITORY_WRITE_FILE,
             ToolName.REPOSITORY_DELETE_FILE,
@@ -65,6 +67,7 @@ _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
             ToolName.GIT_STATUS,
             ToolName.GIT_DIFF,
@@ -289,6 +292,8 @@ class PlannerInput(BaseModel):
     relevant_instructions: tuple[UntrustedContent, ...] = Field(
         default=(), max_length=_MAX_COLLECTION_SIZE
     )
+    review_focus: UntrustedContent | None = None
+    review_focus_status: str | None = Field(default=None, max_length=64)
     revision_feedback: UntrustedContent | None = None
     policy_summary: PolicySummary
 
@@ -304,6 +309,7 @@ class PlannerInput(BaseModel):
                 self.original_task,
                 self.repository_tree,
                 *self.relevant_instructions,
+                *((self.review_focus,) if self.review_focus is not None else ()),
                 *((self.revision_feedback,) if self.revision_feedback is not None else ()),
             )
         )

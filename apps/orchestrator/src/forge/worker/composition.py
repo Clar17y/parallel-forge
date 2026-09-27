@@ -62,6 +62,7 @@ from forge.application.services.candidate_revision import CandidateRevisionServi
 from forge.application.services.delivery import DeliveryService
 from forge.application.services.delivery_preparation import DeliveryPreparationService
 from forge.application.services.development import DevelopmentService
+from forge.application.services.jev import JevService
 from forge.application.services.merge import MergeService
 from forge.application.services.merge_evidence import MergeEvidenceValidator
 from forge.application.services.plan_evidence import (
@@ -118,6 +119,7 @@ from forge.persistence.repositories.subscription_runtime_status import (
 )
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.ranking.configuration import SearchRankingConfiguration
+from forge.ranking.jev import TypeSafeJevProvider
 from forge.release.credentials import LocalGitHubCredentialResolver
 from forge.release.git_adoption import ManagedBaseAdoption
 from forge.release.git_push import ManagedPush
@@ -263,8 +265,10 @@ class BoundPlanningGateway:
         ) = None,
         runtime_factory: AgentRuntimeFactory | None = None,
         search_ranking: SearchRankingConfiguration | None = None,
+        jev_service: JevService | None = None,
     ) -> None:
         self._search_ranking = search_ranking or SearchRankingConfiguration()
+        self._jev_service = jev_service
         self._unit_of_work_factory = unit_of_work_factory
         self._artifact_store = artifact_store
         self._prompt_loader = prompt_loader
@@ -387,6 +391,7 @@ class BoundPlanningGateway:
             search_ranking_mode=ranking.mode,
             search_ranking_top_k=ranking.top_k,
             search_objective=_search_objective(request),
+            jev_service=self._jev_service,
         )
         adk_tools = build_adk_tools(tool_service, tool_context)
         tool_names = tuple(ToolName(t.name) for t in adk_tools)
@@ -458,6 +463,9 @@ def compose_worker_handlers(
     )
 
     search_ranking = SearchRankingConfiguration.from_settings(settings, redactor=shared_redactor)
+    jev_service = JevService(
+        uow_factory, TypeSafeJevProvider.from_environment(), redactor=shared_redactor
+    )
 
     if agent_gateway is None:
 
@@ -507,6 +515,7 @@ def compose_worker_handlers(
             redactor=shared_redactor,
             runtime_factory=runtime_factory,
             search_ranking=search_ranking,
+            jev_service=jev_service,
         )
     else:
         runtime_factory = AgentRuntimeFactory(subscription_adapters=subscription_adapters)
@@ -551,6 +560,7 @@ def compose_worker_handlers(
                 search_ranking_mode=delivery_ranking.mode,
                 search_ranking_top_k=delivery_ranking.top_k,
                 search_objective=_search_objective(request),
+                jev_service=jev_service,
             )
 
         def delivery_provider(tools: _PerRequestToolProvider) -> AgentGateway:
@@ -623,6 +633,7 @@ def compose_worker_handlers(
         approved_plans,
         delivery_dependencies.git,
         delivery_dependencies.reader,
+        jev_service=jev_service,
     )
     review_decision = ReviewDecisionService(
         artifact_store, git_factory=delivery_dependencies.git, approved_plans=approved_plans
@@ -675,6 +686,7 @@ def compose_worker_handlers(
         delivery=delivery_dependencies,
         redactor=shared_redactor,
         search_ranking=search_ranking,
+        jev_service=jev_service,
     )
 
     async def subscription_snapshot(
@@ -722,6 +734,11 @@ def compose_worker_handlers(
         candidates=handlers.subscription_candidates,
         acceptance=subscription_acceptance,
         eligible_routes=runtime_factory.subscription_routes,
+        jev_service=jev_service,
+        review_snapshot=lambda policy, tree: delivery_dependencies.git(policy).working_tree_snapshot(
+            tree, secret_paths=tuple(policy.effective_secret_paths)
+        ),
+        review_reader=delivery_dependencies.reader,
     )
     handlers.subscription_status = SubscriptionRuntimeReporter(
         SubscriptionRuntimeStatusStore(session_factory),

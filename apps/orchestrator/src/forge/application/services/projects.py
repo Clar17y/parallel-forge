@@ -26,6 +26,7 @@ from forge.domain.policy import (
     AgentModelPolicy,
     CommandSpec,
     DatabaseProvisioningPolicy,
+    JevPolicy,
     ProjectPolicy,
     RunnerMode,
 )
@@ -68,6 +69,7 @@ class ProjectRegistrationRequest(BaseModel):
     developer_model: AgentModelPolicy = Field(default_factory=AgentModelPolicy)
     reviewer_model: AgentModelPolicy = Field(default_factory=AgentModelPolicy)
     database: DatabaseProvisioningPolicy = Field(default_factory=DatabaseProvisioningPolicy)
+    jev: JevPolicy | None = None
     commands: tuple[CommandSpec, ...] = ()
     allowed_environment_files: tuple[str, ...] = ()
     secret_paths: tuple[str, ...] = (".env", ".env.local")
@@ -105,6 +107,7 @@ class PolicyUpdateRequest(BaseModel):
     developer_model: AgentModelPolicy | None = None
     reviewer_model: AgentModelPolicy | None = None
     database: DatabaseProvisioningPolicy | None = None
+    jev: JevPolicy | None = None
     commands: tuple[CommandSpec, ...] | None = None
     allowed_environment_files: tuple[str, ...] | None = None
     secret_paths: tuple[str, ...] | None = None
@@ -190,7 +193,7 @@ class ProjectService:
             registration_policy = _registration_policy(
                 request, project_id=project_id, inspection=inspection
             )
-            policy_document = registration_policy.model_dump(mode="json")
+            policy_document = _policy_document(registration_policy)
             policy_digest = _digest(policy_document)
             project = await work.projects.create(
                 project_id=project_id,
@@ -265,7 +268,7 @@ class ProjectService:
                 raise PolicyVersionConflict("expected policy version is stale")
             next_version = project.current_policy_version + 1
             policy: ProjectPolicy = _updated_policy(project, current, request, version=next_version)
-            document = policy.model_dump(mode="json")
+            document = _policy_document(policy)
             digest = _digest(document)
             appended = await work.projects.append_policy(
                 project_id=project_id,
@@ -388,6 +391,15 @@ def _digest(value: object) -> str:
         _canonicalize(value), ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _policy_document(policy: ProjectPolicy) -> dict[str, Any]:
+    """Keep the legacy absence bit when Jev has never been enabled."""
+
+    document = policy.model_dump(mode="json")
+    if policy.jev is None:
+        document.pop("jev", None)
+    return document
 
 
 def _canonicalize(value: object) -> object:

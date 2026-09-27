@@ -8,6 +8,7 @@ from forge.application.ports.subscription_execution import SubscriptionAdmission
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ManagedWorktree
+from forge.application.services.jev import JevService
 from forge.application.services.tools import ControlledToolService
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
@@ -39,6 +40,7 @@ _READS = frozenset(
         ToolName.REPOSITORY_LIST_FILES,
         ToolName.REPOSITORY_READ_FILE,
         ToolName.REPOSITORY_SEARCH,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC,
         ToolName.REPOSITORY_READ_INSTRUCTIONS,
     }
 )
@@ -62,12 +64,14 @@ class SubscriptionToolServiceFactory:
         delivery: DeliveryRuntime,
         redactor: Redactor | None = None,
         search_ranking: SearchRankingConfiguration | None = None,
+        jev_service: JevService | None = None,
     ) -> None:
         self._factory, self._artifacts = work_factory, artifacts
         self._delivery, self._redactor = delivery, redactor
         self._search_ranking = (
             search_ranking if search_ranking is not None else SearchRankingConfiguration()
         )
+        self._jev_service = jev_service
 
     async def __call__(
         self,
@@ -131,6 +135,7 @@ class SubscriptionToolServiceFactory:
                 search_ranking_mode=ranking.mode,
                 search_ranking_top_k=ranking.top_k,
                 search_objective=objective,
+                jev_service=self._jev_service,
             )
         if not run.worktree_path or not run.branch_name or not run.base_sha:
             raise ValueError("subscription managed worktree is absent")
@@ -166,4 +171,5 @@ class SubscriptionToolServiceFactory:
             search_ranking_mode=ranking.mode,
             search_ranking_top_k=ranking.top_k,
             search_objective=objective,
+            jev_service=self._jev_service,
         )

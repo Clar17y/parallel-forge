@@ -97,6 +97,7 @@ def test_planner_receives_only_planner_tools_and_no_release_symbols() -> None:
         ToolName.REPOSITORY_LIST_FILES.value,
         ToolName.REPOSITORY_READ_FILE.value,
         ToolName.REPOSITORY_SEARCH.value,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC.value,
         ToolName.REPOSITORY_READ_INSTRUCTIONS.value,
     }
     assert tool_names == expected_names
@@ -135,6 +136,7 @@ def test_developer_receives_developer_tools_without_review_or_release_symbols() 
         ToolName.REPOSITORY_LIST_FILES.value,
         ToolName.REPOSITORY_READ_FILE.value,
         ToolName.REPOSITORY_SEARCH.value,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC.value,
         ToolName.REPOSITORY_READ_INSTRUCTIONS.value,
             ToolName.REPOSITORY_WRITE_FILE.value,
             ToolName.REPOSITORY_DELETE_FILE.value,
@@ -164,6 +166,7 @@ def test_reviewer_receives_reviewer_tools_without_write_or_release_symbols() -> 
         ToolName.REPOSITORY_LIST_FILES.value,
         ToolName.REPOSITORY_READ_FILE.value,
         ToolName.REPOSITORY_SEARCH.value,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC.value,
         ToolName.REPOSITORY_READ_INSTRUCTIONS.value,
         ToolName.GIT_STATUS.value,
         ToolName.GIT_DIFF.value,

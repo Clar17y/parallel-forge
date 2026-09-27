@@ -3,8 +3,11 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 
 from forge.application.ports.artifacts import ArtifactStore
+from forge.application.ports.repository import RepositoryReader
+from forge.application.ports.scheduling import SchedulingLeaseRevoked
 from forge.application.ports.subscription_execution import (
     SubscriptionAdmission,
     SubscriptionSettlement,
@@ -16,6 +19,8 @@ from forge.application.ports.subscription_gateway import (
     SubscriptionInvocationResult,
 )
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.ports.worktrees import GitWorkingTreeSnapshot, ManagedWorktree
+from forge.application.services.jev import JevService
 from forge.application.services.subscription_acceptance_dispatch import (
     SubscriptionAcceptanceDispatch,
 )
@@ -28,6 +33,7 @@ from forge.application.services.subscription_plan_gate import (
 )
 from forge.application.services.subscription_requests import SubscriptionRequestBuilder
 from forge.domain.plan import PlanOutput
+from forge.domain.policy import ProjectPolicy
 from forge.domain.subscription import (
     AcceptDecision,
     AttemptTelemetry,
@@ -81,6 +87,9 @@ class SubscriptionInvocationWorker:
         candidates: SubscriptionCandidateApplication | None = None,
         acceptance: SubscriptionAcceptanceDispatch | None = None,
         eligible_routes: frozenset[RouteSpec] | None = None,
+        jev_service: JevService | None = None,
+        review_snapshot: Callable[[ProjectPolicy, ManagedWorktree], GitWorkingTreeSnapshot] | None = None,
+        review_reader: Callable[[ProjectPolicy, ManagedWorktree], RepositoryReader] | None = None,
     ) -> None:
         if not owner.strip() or not callable(session_factory):
             raise ValueError("worker owner and session factory are required")
@@ -91,10 +100,13 @@ class SubscriptionInvocationWorker:
         ):
             raise ValueError("reserve exactly one provider attempt and no repair unit")
         self._owner, self._reservation = owner, reservation
+        self._work_factory = work_factory
         self._eligible_routes = eligible_routes
         self._sessions = session_factory
         self._executor = SubscriptionDecisionExecutor(work_factory)
-        self._requests = SubscriptionRequestBuilder(work_factory)
+        self._requests = SubscriptionRequestBuilder(
+            work_factory, jev_service=jev_service, snapshot=review_snapshot, reader=review_reader
+        )
         self._runner = SubscriptionAttemptRunner(work_factory)
         self._decisions = SubscriptionDecisionApplication(work_factory)
         self._plans = SubscriptionPlanGateService(artifacts, work_factory)
@@ -133,13 +145,15 @@ class SubscriptionInvocationWorker:
         if stop.is_set():
             return await self._not_invoked(admission, SubscriptionFailure.INTERRUPTED)
         try:
-            request = await self._requests.build(admission)
+            request = await self._build_with_renewal(admission, stop)
             if stop.is_set():
                 raise asyncio.CancelledError
             session = self._sessions(admission, request)
             if not isinstance(session, SubscriptionInvocationSession):
                 raise TypeError("invalid invocation session")
         except asyncio.CancelledError:
+            return await self._not_invoked(admission, SubscriptionFailure.INTERRUPTED)
+        except SchedulingLeaseRevoked:
             return await self._not_invoked(admission, SubscriptionFailure.INTERRUPTED)
         except Exception as error:  # noqa: BLE001 - setup failures retain a closed classification
             failure = (
@@ -183,6 +197,38 @@ class SubscriptionInvocationWorker:
             # Other typed decisions stay durably pending until their application
             # services can prove the required authority and evidence.
         return SubscriptionWorkOutcome(admission, attempt, application)
+
+    async def _build_with_renewal(
+        self,
+        admission: SubscriptionAdmission,
+        stop: asyncio.Event,
+        *,
+        heartbeat_seconds: float = 5,
+    ) -> SubscriptionInvocationRequest:
+        """Keep admission alive while optional source scoring prepares the request."""
+        build = asyncio.create_task(self._requests.build(admission))
+        stopping = asyncio.create_task(stop.wait())
+        try:
+            while not build.done():
+                await asyncio.wait(
+                    {build, stopping}, timeout=heartbeat_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if stopping.done():
+                    raise asyncio.CancelledError
+                if not build.done():
+                    async with self._work_factory() as work:
+                        await work.scheduler.renew(admission.lease, timedelta(seconds=30))
+                        await work.commit()
+            return await build
+        except BaseException:
+            if not build.done():
+                build.cancel()
+            await asyncio.gather(build, return_exceptions=True)
+            raise
+        finally:
+            stopping.cancel()
+            await asyncio.gather(stopping, return_exceptions=True)
 
     async def _not_invoked(
         self, admission: SubscriptionAdmission, failure: SubscriptionFailure

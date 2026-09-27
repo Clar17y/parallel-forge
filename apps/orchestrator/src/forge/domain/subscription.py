@@ -185,6 +185,7 @@ _READ_TOOLS: frozenset[ToolName] = frozenset(
         ToolName.REPOSITORY_LIST_FILES,
         ToolName.REPOSITORY_READ_FILE,
         ToolName.REPOSITORY_SEARCH,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC,
         ToolName.REPOSITORY_READ_INSTRUCTIONS,
         ToolName.GIT_STATUS,
         ToolName.GIT_DIFF,

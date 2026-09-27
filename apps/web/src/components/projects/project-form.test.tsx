@@ -32,6 +32,28 @@ test('submits named argv and defaults database off with separate path lists', as
   }));
 });
 
+test('keeps legacy Jev policy absent until an operator explicitly configures it', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProjectForm onSave={save} />);
+  const user = await identity();
+  expect(screen.getByLabelText('Configure Jev for this project')).not.toBeChecked();
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save.mock.calls[0][0]).not.toHaveProperty('jev');
+});
+
+test('Jev settings expose source consent and editable unpinned model alias', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProjectForm onSave={save} />);
+  const user = await identity();
+  await user.click(screen.getByLabelText('Configure Jev for this project'));
+  expect(screen.getByLabelText('Jev mode')).toHaveValue('off');
+  expect(screen.getByLabelText('Allow remote processing of bounded, redacted source excerpts')).not.toBeChecked();
+  await user.clear(screen.getByLabelText('Jev model alias'));
+  await user.type(screen.getByLabelText('Jev model alias'), 'custom-alias');
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save.mock.calls[0][0].jev).toMatchObject({ mode: 'off', model: 'custom-alias', allow_remote: false });
+});
+
 test('trusted host requires explicit warning acknowledgement and merge methods are constrained', async () => {
   render(<ProjectForm onSave={vi.fn()} />);
   const user = await identity();

@@ -2,12 +2,13 @@
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
 import { SubscriptionUsageSummary } from '@/components/subscription-usage/usage-summary';
+import { JevPanel } from './jev-panel';
 import type { components } from '@/lib/api/schema';
 
 export function UsagePanel({ runId }: { runId: string }) {
   const [offset, setOffset] = useState(0);
   const usage = useApi<components['schemas']['ListPage_RunUsageItem_']>(`/runs/${encodeURIComponent(runId)}/usage?offset=${offset}&limit=25`);
-  return <><SubscriptionUsageSummary runId={runId} /><section aria-label="Run usage"><h2>API usage</h2>
+  return <><SubscriptionUsageSummary runId={runId} /><JevPanel runId={runId} /><section aria-label="Run usage"><h2>API usage</h2>
     <p>Recorded token counts and estimated costs for this run, newest first. Calls without a recorded estimate remain unknown.</p>
     <button disabled={usage.loading} onClick={usage.refresh}>Refresh usage</button>
     {usage.loading && <p role="status">Loading usage…</p>}
