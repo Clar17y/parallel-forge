@@ -102,7 +102,7 @@ function RouteReadiness({ route }: { route: Route }) {
   const hasAntigravityToolWarning = route.warnings?.includes('approved_tools_unproved') || route.client === 'antigravity_cli' || route.client === 'gemini_cli';
   const cue = getProviderCue(route.provider);
   return <li className="profile-role-card card-provider" data-provider={cue.tone}>
-    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+    <div className="profile-role-card-header">
       <p style={{ margin: 0 }}>{route.provider} / {route.client} / {route.model} · {route.effort} · {route.auth_mode} · {route.billing_mode}</p>
       <ProviderBadge provider={route.provider} />
     </div>

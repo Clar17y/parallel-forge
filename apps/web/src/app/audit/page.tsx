@@ -6,6 +6,7 @@ import type { components } from '@/lib/api/schema';
 import { AuditEventCard } from '@/components/audit/audit-event-card';
 import { Button } from '@/components/ui/button';
 
+const pageSize = 25;
 const ids = [
   ['run_id', 'Run ID'],
   ['project_id', 'Project ID'],
@@ -17,9 +18,10 @@ export default function AuditPage() {
   const [offset, setOffset] = useState(0);
   const [filters, setFilters] = useState('');
   const formRef = useRef<HTMLFormElement>(null);
+  const page = Math.floor(offset / pageSize) + 1;
 
   const audit = useApi<components['schemas']['ListPage_AuditItem_']>(
-    `/audit?offset=${offset}&limit=25${filters ? `&${filters}` : ''}`
+    `/audit?offset=${offset}&limit=${pageSize}${filters ? `&${filters}` : ''}`
   );
 
   function handleFilterSubmit(event: FormEvent<HTMLFormElement>) {
@@ -91,7 +93,7 @@ export default function AuditPage() {
             <span className="meta">
               {audit.value.items.length === 0
                 ? 'No matching events'
-                : `Showing ${audit.value.items.length} events · page ${Math.floor(offset / 25) + 1}`}
+                : `Showing ${audit.value.items.length} events · page ${page}`}
             </span>
           )}
         </div>
@@ -117,14 +119,14 @@ export default function AuditPage() {
       <nav aria-label="Audit pages" className="pagination-bar">
         <Button
           disabled={offset === 0 || audit.loading}
-          onClick={() => setOffset(Math.max(0, offset - 25))}
+          onClick={() => setOffset(Math.max(0, offset - pageSize))}
         >
           Previous
         </Button>
-        <span className="meta">Page {Math.floor(offset / 25) + 1}</span>
+        <span className="meta">Page {page}</span>
         <Button
           disabled={!audit.value?.truncated || audit.loading}
-          onClick={() => setOffset(offset + 25)}
+          onClick={() => setOffset(offset + pageSize)}
         >
           Next
         </Button>

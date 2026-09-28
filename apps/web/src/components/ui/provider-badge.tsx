@@ -1,5 +1,3 @@
-import clsx from 'clsx';
-
 export type ProviderIdentity = 'anthropic' | 'google' | 'openai' | 'neutral';
 
 export interface ProviderCue {
@@ -35,23 +33,18 @@ export function getProviderCue(rawProvider?: string | null): ProviderCue {
 
 export function ProviderBadge({
   provider,
-  label,
-  className,
 }: {
   provider?: string | null;
-  label?: string;
-  className?: string;
 }) {
   const cue = getProviderCue(provider);
-  const displayLabel = label ?? cue.label;
   return (
     <span
-      className={clsx('provider-badge', className)}
+      className="provider-badge"
       data-provider={cue.tone}
     >
       <span className="provider-badge-indicator" aria-hidden="true" />
       <span className="visually-hidden">Provider: </span>
-      <span className="provider-badge-name">{displayLabel}</span>
+      <span>{cue.label}</span>
     </span>
   );
 }

@@ -22,6 +22,10 @@ export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refres
   const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
   const attempts = useRef(new Map<string, string>());
+  const orderedProfiles = useMemo(
+    () => [...profiles].sort((a, b) => a.profile_id.localeCompare(b.profile_id) || b.version - a.version),
+    [profiles]
+  );
   const projectionKey = useMemo(
     () => profiles.map(profile => `${profile.profile_id}:${profile.version}`).join(','),
     [profiles]
@@ -90,13 +94,8 @@ export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refres
           <p className="empty-state">No subscription profiles yet. Create the first version below.</p>
         )}
 
-        {[...profiles].sort((a, b) => a.profile_id.localeCompare(b.profile_id) || b.version - a.version).map(profile => {
-          const maxVersion = Math.max(
-            ...profiles
-              .filter(item => item.profile_id === profile.profile_id)
-              .map(item => item.version)
-          );
-          const latest = profile.version === maxVersion;
+        {orderedProfiles.map((profile, index) => {
+          const latest = index === 0 || orderedProfiles[index - 1].profile_id !== profile.profile_id;
 
           return (
             <article
