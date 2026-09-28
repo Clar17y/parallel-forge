@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
+import { Button } from '@/components/ui/button';
+import { ProviderBadge, getProviderCue } from '@/components/ui/provider-badge';
 
 type Page = components['schemas']['SubscriptionRuntimeStatusPage'];
 type Route = components['schemas']['SubscriptionRuntimeRouteView'];
@@ -98,8 +100,12 @@ function RouteReadiness({ route }: { route: Route }) {
   const evidence = route.evidence ?? [];
   const operatorTrusted = route.reason === 'operator_trusted';
   const hasAntigravityToolWarning = route.warnings?.includes('approved_tools_unproved') || route.client === 'antigravity_cli' || route.client === 'gemini_cli';
-  return <li className="space-y-2 rounded border p-3">
-    <p>{route.provider} / {route.client} / {route.model} · {route.effort} · {route.auth_mode} · {route.billing_mode}</p>
+  const cue = getProviderCue(route.provider);
+  return <li className="profile-role-card card-provider" data-provider={cue.tone}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+      <p style={{ margin: 0 }}>{route.provider} / {route.client} / {route.model} · {route.effort} · {route.auth_mode} · {route.billing_mode}</p>
+      <ProviderBadge provider={route.provider} />
+    </div>
     <h4>{reasonTitles[route.effective_reason]}</h4>
     <p>Configured: {route.configured ? 'yes' : 'no'} · Admitted: {route.admitted ? 'yes' : 'no'}</p>
     {hasAntigravityToolWarning ? <p role="alert"><strong>Warning:</strong> {antigravityToolBoundaryWarning}</p> : null}
@@ -125,7 +131,7 @@ export function SubscriptionRuntimeStatus() {
   return <section id="client-setup" aria-label="Worker registration" className="my-6 space-y-3 rounded border p-4">
     <h2>Subscription readiness</h2>
     <p>This read-only view uses retained worker, capability-evidence, and quota metadata. It never launches a provider client or reserves quota. Forge never collects or copies provider credentials, API keys, credits, or overage settings.</p>
-    <button type="button" disabled={reports.refreshing} onClick={reports.refresh}>Refresh subscription readiness</button>
+    <Button type="button" disabled={reports.refreshing} onClick={reports.refresh}>Refresh subscription readiness</Button>
     {reports.loading ? <p role="status">Loading worker registration…</p> : reports.failed ?
       <p role="alert">Worker registration unavailable. Refresh to retry; current registration is unknown.</p> : reports.value ? <>
         <p>Observed: <time dateTime={reports.value.observed_at}>{reports.value.observed_at}</time>. Reports become stale after {reports.value.fresh_for_seconds} seconds without renewal.</p>
@@ -141,9 +147,9 @@ export function SubscriptionRuntimeStatus() {
         {reports.value.has_more ? <p>This page is not the complete worker inventory. Inspect the next page before drawing conclusions about other workers.</p> : null}
       </> : null}
     <nav aria-label="Worker report pages" className="flex gap-4">
-      <button type="button" disabled={offset === 0 || reports.refreshing} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous worker reports</button>
+      <Button type="button" disabled={offset === 0 || reports.refreshing} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous worker reports</Button>
       <span>Page {Math.floor(offset / pageSize) + 1}</span>
-      <button type="button" disabled={!reports.value?.has_more || reports.refreshing || reports.failed} onClick={() => setOffset(offset + pageSize)}>Next worker reports</button>
+      <Button type="button" disabled={!reports.value?.has_more || reports.refreshing || reports.failed} onClick={() => setOffset(offset + pageSize)}>Next worker reports</Button>
     </nav>
   </section>;
 }

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ProfileList, keyFor } from './profile-list';
@@ -33,4 +33,44 @@ test('offers an explicit reload after a stale append response', async () => {
   expect(await screen.findByText(/changed in another tab/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: 'Reload profile history' }));
   expect(refresh).toHaveBeenCalled();
+});
+
+test('distinguishes latest and historical profile versions with readable badges', () => {
+  render(<ProfileList profiles={[profile(1), profile(2)]} refresh={vi.fn()} />);
+  expect(screen.getByText('Latest version')).toBeInTheDocument();
+  expect(screen.getByText('Historical version')).toBeInTheDocument();
+  expect(screen.getAllByText('OpenAI')).toHaveLength(2);
+});
+
+test('puts the current profile first and keeps historical role details expandable', async () => {
+  const versions = [profile(1), profile(2)];
+  render(<ProfileList profiles={versions} refresh={vi.fn()} />);
+  expect(screen.getAllByRole('article')[0]).toHaveTextContent('version 2');
+  const historical = screen.getByText('Show historical roles').closest('details');
+  expect(historical).not.toHaveAttribute('open');
+  await userEvent.click(screen.getByText('Show historical roles'));
+  expect(historical).toHaveAttribute('open');
+  expect(versions.map(item => item.version)).toEqual([1, 2]);
+});
+
+test.each(['success', 'failure'])('keeps the editor attached while a profile append is pending (%s)', async outcome => {
+  let resolve!: (value: unknown) => void;
+  let reject!: (error: Error) => void;
+  mockedClient.api.mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+  const refresh = vi.fn();
+  render(<ProfileList profiles={[profile(1)]} refresh={refresh} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Append from latest version 1' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Append version 2' }));
+  expect(screen.getByRole('button', { name: 'Cancel editing' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Append from latest version 1' })).toBeDisabled();
+  await act(async () => outcome === 'success' ? resolve(profile(2)) : reject(new Error('Save failed')));
+  if (outcome === 'success') {
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: 'Cancel editing' })).not.toBeInTheDocument();
+  } else {
+    expect(screen.getByRole('alert')).toHaveTextContent('Save failed');
+    expect(screen.getByRole('button', { name: 'Cancel editing' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel editing' }));
+    expect(screen.getByRole('form', { name: 'Create subscription profile' })).toBeInTheDocument();
+  }
 });

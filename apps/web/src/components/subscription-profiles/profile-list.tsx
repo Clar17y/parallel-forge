@@ -4,41 +4,242 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { components } from '@/lib/api/schema';
 import { ApiError, api } from '@/lib/api/client';
 import { ProfileEditor } from './profile-editor';
+import { profileLabel } from './labels';
+import { Button } from '@/components/ui/button';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { ProviderBadge, getProviderCue } from '@/components/ui/provider-badge';
 
 type Profile = components['schemas']['ProfileResponse'];
 type Create = components['schemas']['ProfileCreateRequest'];
 type Append = components['schemas']['ProfileAppendRequest'];
 
-function keyFor(body: unknown) { return `subscription-profile:${JSON.stringify(body)}`; }
+function keyFor(body: unknown) {
+  return `subscription-profile:${JSON.stringify(body)}`;
+}
 
 export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refresh: () => void }) {
   const [selected, setSelected] = useState<Profile>();
   const [stale, setStale] = useState(false);
+  const [saving, setSaving] = useState(false);
   const attempts = useRef(new Map<string, string>());
-  const projectionKey = useMemo(() => profiles.map(profile => `${profile.profile_id}:${profile.version}`).join(','), [profiles]);
+  const projectionKey = useMemo(
+    () => profiles.map(profile => `${profile.profile_id}:${profile.version}`).join(','),
+    [profiles]
+  );
   const previousProjection = useRef(projectionKey);
-  useEffect(() => { if (previousProjection.current !== projectionKey) { previousProjection.current = projectionKey; setStale(false); } }, [projectionKey]);
+
+  useEffect(() => {
+    if (previousProjection.current !== projectionKey) {
+      previousProjection.current = projectionKey;
+      setStale(false);
+    }
+  }, [projectionKey]);
+
   async function save(body: Create | Append) {
-    const path = 'expected_current_version' in body ? `/subscription-profiles/${selected?.profile_id}/versions` : '/subscription-profiles';
+    const path =
+      'expected_current_version' in body
+        ? `/subscription-profiles/${selected?.profile_id}/versions`
+        : '/subscription-profiles';
     const bodyKey = keyFor({ path, body });
     const idempotencyKey = attempts.current.get(bodyKey) ?? crypto.randomUUID();
     attempts.current.set(bodyKey, idempotencyKey);
+    setSaving(true);
     try {
-      const result = await api<Profile>(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(body) });
-      setSelected(undefined); refresh(); return result;
+      const result = await api<Profile>(path, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify(body),
+      });
+      setSelected(undefined);
+      refresh();
+      return result;
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) setStale(true);
       throw cause;
+    } finally {
+      setSaving(false);
     }
   }
-  return <section>
-    {stale && <p role="alert">This profile changed in another tab. Reload the profile history before editing again. <button onClick={() => { setSelected(undefined); refresh(); }}>Reload profile history</button></p>}
-    <h2>Immutable profile versions</h2>
-    {!profiles.length && <p>No subscription profiles yet. Create the first version below.</p>}
-    {profiles.map(profile => { const latest = profile.version === Math.max(...profiles.filter(item => item.profile_id === profile.profile_id).map(item => item.version)); return <article key={`${profile.profile_id}:${profile.version}`}><h3>Profile {profile.profile_id} · version {profile.version}</h3><p>Default billing: {profile.default_billing_mode}</p>{profile.preferences.map((preference, index) => <div key={index}><strong>{String(preference.purpose)}</strong>: requested {String((preference.preferred_route as Record<string, unknown>).model)} via {String((preference.preferred_route as Record<string, unknown>).client)}; auth {String((preference.preferred_route as Record<string, unknown>).auth_mode)}, billing {String((preference.preferred_route as Record<string, unknown>).billing_mode)}. Fallbacks: {((preference.fallback_routes as Record<string, unknown>[]) ?? []).map(route => String(route.model)).join(', ') || 'none'}</div>)}<p>Approved mappings: {profile.approved_mappings.map(mapping => `${String(mapping.requested_model)} → ${String(mapping.effective_model)} (${String(mapping.reason)})`).join('; ') || 'none'}</p><details><summary>View immutable configuration</summary><pre>{JSON.stringify(profile, null, 2)}</pre></details>{latest && !stale && <button type="button" onClick={() => setSelected(profile)}>Append from latest version {profile.version}</button>}</article>; })}
-    <h2>{selected ? `Append profile version ${selected.version + 1}` : 'Create profile'}</h2>
-    {!stale && <ProfileEditor key={selected ? `${selected.profile_id}:${selected.version}` : 'new'} initial={selected} expectedVersion={selected?.version} onSave={save} />}
-  </section>;
+
+  return (
+    <div className="profiles-layout">
+      {stale && (
+        <p role="alert" className="field-error">
+          This profile changed in another tab. Reload the profile history before editing again.{' '}
+          <Button
+            onClick={() => {
+              setSelected(undefined);
+              refresh();
+            }}
+          >
+            Reload profile history
+          </Button>
+        </p>
+      )}
+
+      <section aria-label="Immutable profile versions">
+        <h2>Immutable profile versions</h2>
+        <p className="meta">
+          Each profile version is permanently recorded and immutable once created.
+        </p>
+
+        {!profiles.length && (
+          <p className="empty-state">No subscription profiles yet. Create the first version below.</p>
+        )}
+
+        {[...profiles].sort((a, b) => a.profile_id.localeCompare(b.profile_id) || b.version - a.version).map(profile => {
+          const maxVersion = Math.max(
+            ...profiles
+              .filter(item => item.profile_id === profile.profile_id)
+              .map(item => item.version)
+          );
+          const latest = profile.version === maxVersion;
+
+          return (
+            <article
+              key={`${profile.profile_id}:${profile.version}`}
+              className="profile-version-card"
+              data-latest={latest}
+            >
+              <div className="profile-card-header">
+                <div>
+                  <h3>
+                    Profile {profile.profile_id} · version {profile.version}
+                  </h3>
+                  <p className="meta" style={{ margin: '2px 0 0' }}>
+                    Default billing: <strong>{profileLabel(profile.default_billing_mode)}</strong>
+                  </p>
+                </div>
+                <div>
+                  {latest ? (
+                    <StatusBadge label="Latest version" tone="success" />
+                  ) : (
+                    <StatusBadge label="Historical version" tone="neutral" />
+                  )}
+                </div>
+              </div>
+
+              <details open={latest}>
+                <summary>{latest ? 'Assigned roles' : 'Show historical roles'}</summary>
+              <div className="profile-roles-grid">
+                {profile.preferences.map((preference, index) => {
+                  const preferred = (preference.preferred_route ?? {}) as Record<string, unknown>;
+                  const provider = String(preferred.provider ?? '');
+                  const cue = getProviderCue(provider);
+                  const fallbacks = ((preference.fallback_routes as Record<string, unknown>[]) ?? []);
+                  const friendlyPurpose = profileLabel(preference.purpose);
+
+                  return (
+                    <div
+                      key={index}
+                      className="profile-role-card card-provider"
+                      data-provider={cue.tone}
+                    >
+                      <div className="profile-role-card-header">
+                        <div>
+                          <span className="profile-role-title">{friendlyPurpose}</span>
+                        </div>
+                        <ProviderBadge provider={provider} />
+                      </div>
+
+                      <div style={{ fontSize: '0.8125rem', display: 'grid', gap: '4px' }}>
+                        <div>
+                          <span className="meta">Requested model: </span>
+                          <strong style={{ fontFamily: 'monospace' }}>
+                            {String(preferred.model ?? '')}
+                          </strong>
+                        </div>
+                        <div>
+                          <span className="meta">Client: </span>
+                          <span>{profileLabel(preferred.client)}</span>
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          <span className="meta">
+                            Auth: <strong>{profileLabel(preferred.auth_mode)}</strong>
+                          </span>
+                          <span className="meta">
+                            Billing: <strong>{profileLabel(preferred.billing_mode)}</strong>
+                          </span>
+                          <span className="meta">
+                            Effort: <strong>{profileLabel(preferred.effort)}</strong>
+                          </span>
+                        </div>
+                      </div>
+
+                      <div style={{ borderTop: '1px solid var(--border)', paddingTop: '6px', fontSize: '0.75rem' }}>
+                        <span className="meta">Fallbacks: </span>
+                        {fallbacks.length > 0 ? (
+                          <span style={{ fontWeight: 500 }}>
+                            {fallbacks.map(route => String(route.model)).join(', ')}
+                          </span>
+                        ) : (
+                          <span>none</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              </details>
+
+              <p style={{ margin: '4px 0 0', fontSize: '0.8125rem' }}>
+                Approved mappings:{' '}
+                {profile.approved_mappings
+                  .map(
+                    mapping =>
+                      `${String(mapping.requested_model)} → ${String(mapping.effective_model)} (${String(
+                        mapping.reason
+                      )})`
+                  )
+                  .join('; ') || 'none'}
+              </p>
+
+              <details>
+                <summary>View immutable configuration</summary>
+                <pre>{JSON.stringify(profile, null, 2)}</pre>
+              </details>
+
+              {latest && !stale && (
+                <div style={{ marginTop: '4px' }}>
+                  <Button type="button" disabled={saving} onClick={() => setSelected(profile)}>
+                    Append from latest version {profile.version}
+                  </Button>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </section>
+
+      <section aria-label="Profile editor container">
+        {selected && !stale && (
+          <div className="append-notice">
+            <span>
+              Appending version <strong>{selected.version + 1}</strong> based on Profile{' '}
+              <code>{selected.profile_id}</code> version {selected.version}.
+            </span>
+            <Button variant="quiet" disabled={saving} onClick={() => setSelected(undefined)}>
+              Cancel editing
+            </Button>
+          </div>
+        )}
+
+        <h2>{selected ? `Append profile version ${selected.version + 1}` : 'Create profile'}</h2>
+
+        {!stale && (
+          <ProfileEditor
+            key={selected ? `${selected.profile_id}:${selected.version}` : 'new'}
+            initial={selected}
+            expectedVersion={selected?.version}
+            onSave={save}
+          />
+        )}
+      </section>
+    </div>
+  );
 }
 
 export { keyFor };

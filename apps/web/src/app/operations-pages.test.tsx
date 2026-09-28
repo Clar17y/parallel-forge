@@ -67,3 +67,16 @@ test('audit applies source-aware filters and links exact event evidence', async 
   expect(vi.mocked(api).mock.calls.at(-1)?.[0]).toContain('operation_status=PENDING');
   expect(document.querySelector('script')).toBeNull();
 });
+
+test('audit resets controls, query and pagination when clearing filters', async () => {
+  vi.mocked(api).mockResolvedValue({ items: [], truncated: false });
+  render(<AuditPage />);
+  const runIdInput = screen.getByLabelText('Run ID');
+  await userEvent.type(runIdInput, '11111111-1111-4111-8111-111111111111');
+  await userEvent.click(screen.getByRole('button', { name: 'Apply filters' }));
+  expect(vi.mocked(api).mock.calls.at(-1)?.[0]).toContain('run_id=11111111-1111-4111-8111-111111111111');
+
+  await userEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+  expect(runIdInput).toHaveValue('');
+  expect(vi.mocked(api).mock.calls.at(-1)?.[0]).toBe('/audit?offset=0&limit=25');
+});
