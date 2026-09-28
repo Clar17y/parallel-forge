@@ -187,8 +187,11 @@ async def test_named_check_admits_before_launch_and_replays_terminal_receipt(
         operation = await work.operations.get(record.operation_intent_id)
         assert operation.status is OperationStatus.SUCCEEDED
         assert record.status is expected
+        assert "command_name" not in record.result_metadata
         events = await work.events.list_after(run_id, 0)
         assert sum(event.payload.get("tool_call_id") == str(call_id) for event in events) == 1
+        named_event = next(event for event in events if event.payload.get("tool_call_id") == str(call_id))
+        assert named_event.payload["command_name"] == "unit"
     replay = await service.invoke(context, request)
     assert replay.status is expected
     assert replay.artifact_digests == result.artifact_digests

@@ -108,6 +108,7 @@ async def test_evidence_tool_uses_live_head_and_caller_context_scope(tmp_path: P
     assert result.status is ToolCallStatus.SUCCEEDED
     assert result.metadata["head_sha"] == _LIVE_HEAD
     assert result.artifact_digests
+    assert work.events.events[-1].payload["has_evidence"] is True
     recorded = work.tool_calls.records[-1]
     assert recorded.step_id == context.step_id
     assert recorded.result_metadata["evidence"]["step_id"] == str(manifest.step_id)
@@ -122,7 +123,7 @@ async def test_evidence_tool_uses_live_head_and_caller_context_scope(tmp_path: P
 
 async def test_absent_prior_is_successful_empty_evidence(tmp_path: Path) -> None:
     reader = _Reader()
-    service, _, _ = _review_service(tmp_path, reader)
+    service, work, _ = _review_service(tmp_path, reader)
 
     result = await service.invoke(
         _context(role=AgentRole.REVIEWER, worktree_id=_WORKTREE_ID),
@@ -131,6 +132,7 @@ async def test_absent_prior_is_successful_empty_evidence(tmp_path: Path) -> None
 
     assert result.status is ToolCallStatus.SUCCEEDED
     assert result.metadata == {"evidence": None}
+    assert work.events.events[-1].payload["has_evidence"] is False
     assert reader.scopes[0][0] is EvidenceInputPurpose.PRIOR_REVIEW
 
 
