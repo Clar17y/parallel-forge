@@ -356,16 +356,16 @@ describe('activity-presentation', () => {
     expect(describe()).toMatchObject({ title: `Checked for ${kind} evidence`, outcome: 'Availability not recorded' });
   });
 
-  test('read grouping requires coherent lineage, authorization and total window', () => {
-    const event = (seconds: number, extra = {}, version = 1) => ({ event_type: 'tool_call.completed', occurred_at: new Date(Date.parse('2026-09-28T10:00:00Z') + seconds * 1000).toISOString(), run_version: version, payload: { tool_name: 'repository.read_file', status: 'succeeded', authorized: true, agent_execution_id: 'exec', step_id: 'step', ...extra } });
+  test.each(['repository.read_file', 'repository.search_semantic'])('read grouping requires coherent lineage, authorization and total window: %s', toolName => {
+    const event = (seconds: number, extra = {}, version = 1) => ({ event_type: 'tool_call.completed', occurred_at: new Date(Date.parse('2026-09-28T10:00:00Z') + seconds * 1000).toISOString(), run_version: version, payload: { tool_name: toolName, status: 'succeeded', authorized: true, agent_execution_id: 'exec', step_id: 'step', ...extra } });
     expect(groupRecentActivity([event(110), event(55), event(0)])).toHaveLength(2);
-    for (const extra of [{ authorized: false }, { caller_cancelled: true }, { step_id: 'other' }, { agent_execution_id: 'other' }, { agent_execution_id: 5 }, { subscription_attempt_id: 'different' }]) {
+    for (const extra of [{ status: 'failed' }, { status: 'denied' }, { authorized: false }, { caller_cancelled: true }, { timed_out: true }, { error_code: 'adapter_error' }, { step_id: 'other' }, { agent_execution_id: 'other' }, { agent_execution_id: 5 }, { subscription_attempt_id: 'different' }]) {
       expect(groupRecentActivity([event(10), event(0, extra)])).toHaveLength(2);
     }
     expect(groupRecentActivity([event(10), event(0, {}, 2)])).toHaveLength(2);
     expect(groupRecentActivity([event(10), { ...event(0), occurred_at: 'bad' }])).toHaveLength(2);
     expect(groupRecentActivity([event(10), event(0)])).toHaveLength(1);
-    expect(groupRecentActivity([event(10), event(0)])[0].summaryTitle).toBe('2 file reads');
+    expect(groupRecentActivity([event(10), event(0)])[0].summaryTitle).toBe(toolName === 'repository.read_file' ? '2 file reads' : '2 read actions');
   });
 
   test.each([
@@ -375,6 +375,7 @@ describe('activity-presentation', () => {
     ['repository.rename_file', { source: 'a.ts', destination: 'b.ts' }, ['Rename denied: a.ts → b.ts', 'Rename denied'], ['Rename failed: a.ts → b.ts', 'Rename failed'], ['Rename cancelled: a.ts → b.ts', 'cancelled'], ['Rename pending: a.ts → b.ts', 'pending'], ['Rename outcome unknown: a.ts → b.ts', 'outcome unknown']],
     ['repository.list_files', {}, ['List files denied', 'denied'], ['List files failed', 'failed'], ['List files cancelled', 'cancelled'], ['List files pending', 'pending'], ['List files outcome unknown', 'outcome unknown']],
     ['repository.search', {}, ['Search repository denied', 'denied'], ['Search repository failed', 'failed'], ['Search repository cancelled', 'cancelled'], ['Search repository pending', 'pending'], ['Search repository outcome unknown', 'outcome unknown']],
+    ['repository.search_semantic', {}, ['Search repository denied', 'denied'], ['Search repository failed', 'failed'], ['Search repository cancelled', 'cancelled'], ['Search repository pending', 'pending'], ['Search repository outcome unknown', 'outcome unknown']],
     ['repository.read_instructions', {}, ['Read project instructions denied', 'denied'], ['Read project instructions failed', 'failed'], ['Read project instructions cancelled', 'cancelled'], ['Read project instructions pending', 'pending'], ['Read project instructions outcome unknown', 'outcome unknown']],
     ['git.status', {}, ['Git status denied', 'denied'], ['Git status failed', 'failed'], ['Git status cancelled', 'cancelled'], ['Git status pending', 'pending'], ['Git status outcome unknown', 'outcome unknown']],
     ['git.diff', {}, ['Git diff denied', 'denied'], ['Git diff failed', 'failed'], ['Git diff cancelled', 'cancelled'], ['Git diff pending', 'pending'], ['Git diff outcome unknown', 'outcome unknown']],

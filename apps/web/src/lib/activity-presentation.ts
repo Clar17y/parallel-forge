@@ -82,6 +82,7 @@ const READ_ONLY_TOOLS = new Set([
   'repository.read_file',
   'repository.list_files',
   'repository.search',
+  'repository.search_semantic',
   'repository.read_instructions',
   'git.status',
   'git.diff',
@@ -228,7 +229,7 @@ function describeBase(event: BaseEvent): ActivityDescription {
       return { title, outcome: isSucceeded ? (durText ? `Completed (${durText})` : 'Completed') : undefined, status, actionKind: 'list', tone, durationMs };
     }
 
-    if (toolName === 'repository.search') {
+    if (toolName === 'repository.search' || toolName === 'repository.search_semantic') {
       const count = validCount(p.match_count);
       const title = isSucceeded ? count !== undefined ? `Searched repository (${count} matches)` : 'Searched repository' : '';
       return { title, outcome: isSucceeded ? (durText ? `Completed (${durText})` : 'Completed') : undefined, status, actionKind: 'search', tone, durationMs };

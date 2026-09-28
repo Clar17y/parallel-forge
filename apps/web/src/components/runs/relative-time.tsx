@@ -23,7 +23,8 @@ function subscribe(listener: () => void) {
   };
 }
 function snapshot() { return currentTime; }
-function serverSnapshot() { return 0; }
+// Keep server HTML and the first hydration render neutral until the client clock is available.
+function serverSnapshot() { return null; }
 
 export function RelativeTime({
   timestamp,
@@ -32,13 +33,14 @@ export function RelativeTime({
   timestamp: string | undefined;
   className?: string;
 }) {
-  const now = useSyncExternalStore(subscribe, snapshot, serverSnapshot);
+  const now = useSyncExternalStore<number | null>(subscribe, snapshot, serverSnapshot);
 
-  const relative = formatRelativeTime(timestamp, now);
   const exact = safeExactTime(timestamp);
+  const relative = exact === 'Unknown time' ? exact
+    : now === null ? 'Loading time…' : formatRelativeTime(timestamp, now);
 
   return (
-    <time dateTime={exact === 'Unknown time' ? undefined : timestamp} title={exact} className={className}>
+    <time dateTime={exact === 'Unknown time' ? undefined : timestamp} title={now === null ? undefined : exact} className={className}>
       {relative}
     </time>
   );

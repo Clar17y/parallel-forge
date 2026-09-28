@@ -43,16 +43,17 @@ test('renders human-readable action descriptions, relative times, and exact time
   expect(screen.getByText(/Sequence 1 · Run version 1/)).toBeInTheDocument();
 });
 
-test('groups adjacent repetitive successful read-only activity before selecting six visible entries', async () => {
+test.each(['repository.read_file', 'repository.search', 'repository.search_semantic'])(
+  'groups recent %s calls so older checks and commits remain visible', async toolName => {
   const baseTime = Date.now() - 100_000;
   // Create 8 read events followed by a check and a commit
   const events: EventItem[] = [
     {
-      sequence: 10,
+      sequence: 1,
       run_version: 1,
       actor_class: 'agent',
       event_type: 'tool_call.completed',
-      occurred_at: new Date(baseTime + 90_000).toISOString(),
+      occurred_at: new Date(baseTime + 45_000).toISOString(),
       payload: {
         tool_name: 'git.commit',
         commit_sha: 'abcdef0123456789abcdef0123456789abcdef01',
@@ -60,11 +61,11 @@ test('groups adjacent repetitive successful read-only activity before selecting 
       },
     },
     {
-      sequence: 9,
+      sequence: 2,
       run_version: 1,
       actor_class: 'agent',
       event_type: 'tool_call.completed',
-      occurred_at: new Date(baseTime + 85_000).toISOString(),
+      occurred_at: new Date(baseTime + 50_000).toISOString(),
       payload: {
         tool_name: 'build.run_named_check',
         command_name: 'unit',
@@ -73,14 +74,14 @@ test('groups adjacent repetitive successful read-only activity before selecting 
       },
     },
     ...Array.from({ length: 8 }, (_, i) => ({
-      sequence: 8 - i,
+      sequence: 10 - i,
       run_version: 1,
       actor_class: 'agent',
       event_type: 'tool_call.completed',
-      occurred_at: new Date(baseTime + (8 - i) * 5_000).toISOString(),
+      occurred_at: new Date(baseTime + 90_000 - i * 5_000).toISOString(),
       payload: {
-        tool_name: 'repository.read_file',
-        path: `file_${8 - i}.txt`,
+        tool_name: toolName,
+        ...(toolName === 'repository.read_file' ? { path: `file_${8 - i}.txt` } : {}),
         status: 'succeeded',
         agent_execution_id: 'exec-1',
       },
@@ -94,12 +95,19 @@ test('groups adjacent repetitive successful read-only activity before selecting 
   // If grouping happened AFTER slice(0, 6), the commit and check wouldn't be visible or reads would crowd out
   expect(screen.getByText('Committed changes (abcdef0)')).toBeInTheDocument();
   expect(screen.getByText('Check passed: unit')).toBeInTheDocument();
-  expect(screen.getByText('8 file reads')).toBeInTheDocument();
+  const groupTitle = toolName === 'repository.read_file' ? '8 file reads' : '8 read actions';
+  expect(screen.getByText(groupTitle)).toBeInTheDocument();
 
   // Expanding the group shows individual reads
-  await userEvent.click(screen.getByText('8 file reads'));
-  expect(screen.getByText('Read file_1.txt')).toBeInTheDocument();
-  expect(screen.getByText('Read file_8.txt')).toBeInTheDocument();
+  await userEvent.click(screen.getByText(groupTitle));
+  if (toolName === 'repository.read_file') {
+    expect(screen.getByText('Read file_1.txt')).toBeVisible();
+    expect(screen.getByText('Read file_8.txt')).toBeVisible();
+  } else {
+    const searches = screen.getAllByText('Searched repository');
+    expect(searches).toHaveLength(8);
+    searches.forEach(search => expect(search).toBeVisible());
+  }
 });
 
 test('does not group across distinct writes or failures', () => {
