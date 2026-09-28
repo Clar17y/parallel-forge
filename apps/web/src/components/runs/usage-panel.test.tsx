@@ -8,12 +8,18 @@ vi.mock('@/lib/api/client', () => ({ api: vi.fn() }));
 afterEach(() => { cleanup(); vi.mocked(api).mockReset(); });
 
 function mockLegacyUsage(value: unknown) {
-  vi.mocked(api).mockImplementation(async <T,>(path: string) =>
-    (path.startsWith('/subscription-usage') ? { items: [], has_more: false } : value) as T);
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => path.startsWith('/subscription-usage')
+    ? { items: [], has_more: false } as T
+    : path.endsWith('/jev') ? emptyJev as T : value as T);
 }
 
+const emptyJev = { schema_version: 1, run_id: 'run-1', requested_mode: 'off', effective_mode: 'not_yet_observed',
+  requested_model: 'jev-latest', actual_model: null, calls: 0, attempts: 0, cache_hits: 0, unknown: 0,
+  actual_input_units: 0, actual_output_units: 0, reserved_input_units: 0, duration_ms: 0,
+  remaining_requests: 64, remaining_input_units: 250000, by_kind: {}, by_status: {}, review_focus_available: false, availability: 'off' };
+
 test('run usage also exposes subscription measurements', async () => {
-  vi.mocked(api).mockResolvedValue({ items: [], truncated: false, has_more: false });
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => (path.endsWith('/jev') ? emptyJev : { items: [], truncated: false, has_more: false }) as T);
   render(<UsagePanel runId="run-1" />);
   expect(screen.getByRole('region', { name: 'Subscription usage' })).toBeInTheDocument();
   expect(await screen.findByText('No subscription attempts on this page.')).toBeInTheDocument();
@@ -53,6 +59,7 @@ test('usage failure is recoverable without displaying an invented empty result',
   let failed = false;
   vi.mocked(api).mockImplementation(async <T,>(path: string) => {
     if (path.startsWith('/subscription-usage')) return { items: [], has_more: false } as T;
+    if (path.endsWith('/jev')) return emptyJev as T;
     if (!failed) { failed = true; throw new Error('offline'); }
     return { items: [], truncated: false } as T;
   });

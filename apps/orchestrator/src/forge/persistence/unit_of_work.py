@@ -24,6 +24,7 @@ from forge.persistence.repositories.controller_steps import PostgresControllerSt
 from forge.persistence.repositories.events import PostgresEventRepository
 from forge.persistence.repositories.evidence import PostgresEvidenceRepository
 from forge.persistence.repositories.executions import PostgresExecutionRepository
+from forge.persistence.repositories.jev import PostgresJevRepository
 from forge.persistence.repositories.mutations import PostgresMutationRepository
 from forge.persistence.repositories.operations import PostgresOperationRepository
 from forge.persistence.repositories.projects import PostgresProjectRepository
@@ -86,6 +87,7 @@ class PostgresUnitOfWork:
         self.executions: ExecutionRepository
         self.controller_steps: ControllerStepRepository
         self.evidence: EvidenceRepository
+        self.jev: PostgresJevRepository
         self.releases: PostgresReleaseRepository
         self.subscription_execution: PostgresSubscriptionExecutionRepository
         self.subscription_feedback: PostgresSubscriptionFeedbackRepository
@@ -122,6 +124,7 @@ class PostgresUnitOfWork:
         self.operations = PostgresOperationRepository(session=self._session)
         self.artifacts = ArtifactRepository(session=self._session, redactor=self._redactor)
         self.evidence = PostgresEvidenceRepository(self._session, artifacts=self.artifacts)
+        self.jev = PostgresJevRepository(self._session)
         self.executions = PostgresExecutionRepository(
             self._session,
             events=self.events,

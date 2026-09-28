@@ -588,6 +588,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/jev": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report */
+        get: operations["report_api_runs__run_id__jev_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/projection": {
         parameters: {
             query?: never;
@@ -1626,6 +1643,139 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * JevPolicy
+         * @description Bounded, explicit consent and per-run limits for advisory Jev work.
+         */
+        JevPolicy: {
+            /**
+             * Allow Remote
+             * @default false
+             */
+            allow_remote: boolean;
+            /**
+             * Cache Ttl Seconds
+             * @default 3600
+             */
+            cache_ttl_seconds: number;
+            /**
+             * Max Candidates
+             * @default 96
+             */
+            max_candidates: number;
+            /**
+             * Max Input Units Per Run
+             * @default 250000
+             */
+            max_input_units_per_run: number;
+            /**
+             * Max Requests Per Run
+             * @default 64
+             */
+            max_requests_per_run: number;
+            /**
+             * Max Result Chars
+             * @default 12000
+             */
+            max_result_chars: number;
+            /**
+             * Mode
+             * @default off
+             * @enum {string}
+             */
+            mode: "off" | "shadow" | "on";
+            /**
+             * Model
+             * @default jev-latest
+             */
+            model: string;
+            /**
+             * Review Focus
+             * @default true
+             */
+            review_focus: boolean;
+            /**
+             * Semantic Search
+             * @default true
+             */
+            semantic_search: boolean;
+            /**
+             * Timeout Seconds
+             * @default 15
+             */
+            timeout_seconds: number;
+            /**
+             * Top K
+             * @default 15
+             */
+            top_k: number;
+        };
+        /** JevReportResponse */
+        JevReportResponse: {
+            /** Actual Input Units */
+            actual_input_units: number;
+            /** Actual Model */
+            actual_model: string | null;
+            /** Actual Output Units */
+            actual_output_units: number;
+            /** Attempts */
+            attempts: number;
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "off" | "not_enabled" | "no_samples" | "sampled" | "degraded";
+            /** By Diagnostic */
+            by_diagnostic?: {
+                [key: string]: number;
+            };
+            /** By Kind */
+            by_kind: {
+                [key: string]: number;
+            };
+            /** By Status */
+            by_status: {
+                [key: string]: number;
+            };
+            /** Cache Hits */
+            cache_hits: number;
+            /** Calls */
+            calls: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * Effective Mode
+             * @enum {string}
+             */
+            effective_mode: "off" | "shadow" | "on" | "not_yet_observed";
+            /** Remaining Input Units */
+            remaining_input_units: number;
+            /** Remaining Requests */
+            remaining_requests: number;
+            /**
+             * Requested Mode
+             * @enum {string}
+             */
+            requested_mode: "off" | "shadow" | "on";
+            /** Requested Model */
+            requested_model: string | null;
+            /** Reserved Input Units */
+            reserved_input_units: number;
+            /** Review Focus Available */
+            review_focus_available: boolean;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version: number;
+            /** Unknown */
+            unknown: number;
+        };
         /** ListPage[AgentItem] */
         ListPage_AgentItem_: {
             /** Items */
@@ -1878,6 +2028,7 @@ export interface components {
             github_repository: string;
             /** Instructions Path */
             instructions_path?: string | null;
+            jev?: components["schemas"]["JevPolicy"] | null;
             /**
              * Local Remediation Limit
              * @default 3
@@ -1964,6 +2115,7 @@ export interface components {
             developer_model?: components["schemas"]["AgentModelPolicy"] | null;
             /** Expected Policy Version */
             expected_policy_version: number;
+            jev?: components["schemas"]["JevPolicy"] | null;
             /** Local Remediation Limit */
             local_remediation_limit?: number | null;
             /** Merge Blocking Severities */
@@ -4433,6 +4585,37 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_api_runs__run_id__jev_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JevReportResponse"];
                 };
             };
             /** @description Validation Error */

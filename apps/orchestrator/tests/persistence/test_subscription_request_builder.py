@@ -35,6 +35,7 @@ async def test_real_planning_request_uses_frozen_context_and_read_only_authority
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         }
     )
@@ -119,7 +120,8 @@ async def test_closed_candidate_request_advertises_only_inspection_tools(session
     request = await SubscriptionRequestBuilder(factory).build(admission)
     assert request.authorization.permitted_tools == frozenset({
         ToolName.REPOSITORY_LIST_FILES, ToolName.REPOSITORY_READ_FILE,
-        ToolName.REPOSITORY_SEARCH, ToolName.REPOSITORY_READ_INSTRUCTIONS,
+        ToolName.REPOSITORY_SEARCH, ToolName.REPOSITORY_SEARCH_SEMANTIC,
+        ToolName.REPOSITORY_READ_INSTRUCTIONS,
         ToolName.GIT_STATUS, ToolName.GIT_DIFF,
         ToolName.VALIDATION_RESULTS_READ, ToolName.REVIEW_ARTIFACTS_READ,
     })

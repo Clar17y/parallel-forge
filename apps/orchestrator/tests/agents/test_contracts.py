@@ -792,6 +792,43 @@ class TestRoleInputContracts:
         assert "scratchpad" not in context_dict
         assert "worktree_id" not in context_dict
 
+    def test_review_focus_survives_reviewer_json_serialization(self) -> None:
+        focus = build_untrusted_content("Advisory review scores", source_kind=UntrustedSourceKind.REVIEW)
+        context = build_reviewer_input().model_copy(
+            update={"review_focus": focus, "review_focus_status": "succeeded"}
+        )
+        payload = context.model_dump(mode="json")
+        assert payload["review_focus"] == focus.model_dump(mode="json")
+        assert payload["review_focus_status"] == "succeeded"
+        assert ReviewerInput.model_validate_json(context.model_dump_json()) == context
+
+    def test_review_focus_is_not_part_of_planner_context(self) -> None:
+        data = build_planner_input().model_dump()
+        assert "review_focus" not in data and "review_focus_status" not in data
+        with pytest.raises(ValidationError, match="Extra inputs"):
+            PlannerInput.model_validate({**data, "review_focus_status": "succeeded"})
+
+    def test_review_focus_counts_toward_reviewer_context_bound(self, monkeypatch) -> None:
+        import forge.domain.agent as agent_contracts
+
+        context = build_reviewer_input()
+        size = len((context.original_task.content + context.current_diff.content).encode())
+        monkeypatch.setattr(agent_contracts, "_MAX_CONTEXT_BYTES", size)
+        with pytest.raises(ValidationError, match="context exceeds maximum byte size"):
+            ReviewerInput.model_validate({
+                **context.model_dump(),
+                "review_focus": build_untrusted_content("Advisory context"),
+                "review_focus_status": "succeeded",
+            })
+
+    def test_review_focus_cannot_be_promoted_into_system_instructions(self) -> None:
+        focus = build_untrusted_content("Untrusted review advice", source_kind=UntrustedSourceKind.REVIEW)
+        context = build_reviewer_input().model_copy(update={"review_focus": focus})
+        with pytest.raises(ValidationError, match="must not contain untrusted context"):
+            build_agent_request(
+                role=AgentRole.REVIEWER, context=context, system_instruction=focus.content
+            )
+
 
 # ===========================================================================
 # AgentBudget Contract Tests

@@ -91,6 +91,15 @@ def build_adk_tools(
             ToolName.REPOSITORY_SEARCH, {"literal": literal, "path": path}, tool_context
         )
 
+    async def repository_search_semantic(
+        query: str, tool_context: ToolContext, path: str = "."
+    ) -> dict[str, object]:
+        """Find bounded source excerpts relevant to a question within the repository."""
+
+        return await invoke(
+            ToolName.REPOSITORY_SEARCH_SEMANTIC, {"query": query, "path": path}, tool_context
+        )
+
     async def repository_read_instructions(
         tool_context: ToolContext, target_path: str = "."
     ) -> dict[str, object]:
@@ -177,6 +186,7 @@ def build_adk_tools(
         ToolName.REPOSITORY_LIST_FILES: repository_list_files,
         ToolName.REPOSITORY_READ_FILE: repository_read_file,
         ToolName.REPOSITORY_SEARCH: repository_search,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC: repository_search_semantic,
         ToolName.REPOSITORY_READ_INSTRUCTIONS: repository_read_instructions,
         ToolName.REPOSITORY_WRITE_FILE: repository_write_file,
         ToolName.REPOSITORY_DELETE_FILE: repository_delete_file,
