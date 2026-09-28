@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.application.ports.provider_credentials import validate_provider_secret_reference
 from forge.domain.local_cli import LocalCliTrust
-from forge.domain.subscription import TaskBudget
+from forge.domain.subscription import TaskBudget, UnknownTelemetryPolicy
 from forge.domain.subscription_installations import (
     load_subscription_installation_manifest,
     merge_installation_quota_policy,
@@ -46,7 +46,12 @@ class Settings(BaseSettings):
     subscription_client_trust: LocalCliTrust = LocalCliTrust.OPERATOR
     subscription_quota_policy: QuotaPolicy = Field(default_factory=QuotaPolicy)
     subscription_primary_budget: TaskBudget = Field(
-        default_factory=lambda: TaskBudget(max_provider_attempts=64)
+        # Subscription clients omit cash cost and remaining quota. Bound those
+        # unknown responses by the same cumulative limit as provider attempts.
+        default_factory=lambda: TaskBudget(
+            max_provider_attempts=64,
+            unknown_telemetry_policy=UnknownTelemetryPolicy(max_uncertain_attempts=64),
+        )
     )
     subscription_worker_concurrency: int = Field(default=3, ge=1, le=64, strict=True)
     # Advisory search ranking. "shadow" measures without changing agent input;
