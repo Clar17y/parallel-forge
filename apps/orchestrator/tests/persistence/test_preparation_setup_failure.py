@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -16,21 +14,17 @@ from forge.domain.run import RunState, SuspensionKind
 from forge.persistence.models import Run, RunCommand
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from sqlalchemy import update
-
-PERSISTENCE_TESTS = Path(__file__).resolve().parents[1] / "persistence"
-if str(PERSISTENCE_TESTS) not in sys.path:
-    sys.path.insert(0, str(PERSISTENCE_TESTS))
-
 from test_subscription_preparation import (
     _remove_disposable_subscription_rows,  # noqa: F401
     preparation_case,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
-pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 
 
-def _make_setup_failure(*, exit_code: int | None = 1, timed_out: bool = False) -> WorktreeSetupFailed:
+def _make_setup_failure(
+    *, exit_code: int | None = 1, timed_out: bool = False
+) -> WorktreeSetupFailed:
     return WorktreeSetupFailed(
         "worktree setup command failed",
         failure={
@@ -188,9 +182,7 @@ async def test_pending_control_stop_fences_failure_publication(
         assert len(events) == 0
 
 
-async def test_stale_lease_fences_failure_publication(
-    session_factory, tmp_path
-) -> None:
+async def test_stale_lease_fences_failure_publication(session_factory, tmp_path) -> None:
     factory, evidence, command, service, _ = await preparation_case(session_factory, tmp_path)
     failure = _make_setup_failure(exit_code=1)
 
@@ -239,7 +231,8 @@ async def test_worker_completes_failed_setup_delivery_and_cannot_reclaim_it(
         )
     commands = PostgresCommandRepository(session_factory)
     worker = Worker(
-        commands, session_factory,
+        commands,
+        session_factory,
         handlers={"prepare_worktree": service.execute},
         worker_id="recovery-test-worker",
     )
@@ -255,14 +248,14 @@ async def test_worker_completes_failed_setup_delivery_and_cannot_reclaim_it(
         assert sum(event.event_type == "run.preparation_failed" for event in events) == 1
 
 
-async def test_unknown_provisioner_error_requires_recovery(
-    session_factory, tmp_path
-) -> None:
+async def test_unknown_provisioner_error_requires_recovery(session_factory, tmp_path) -> None:
     factory, evidence, command, service, _ = await preparation_case(session_factory, tmp_path)
     service._provisioner = _FailingProvisioner(RuntimeError("unexpected disk error"))
 
     async with factory() as work:
-        with pytest.raises(CommandRecoveryRequired, match="worktree provisioning requires recovery"):
+        with pytest.raises(
+            CommandRecoveryRequired, match="worktree provisioning requires recovery"
+        ):
             await service.execute(command, work)
 
     async with factory() as work:

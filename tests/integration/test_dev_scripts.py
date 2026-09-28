@@ -231,12 +231,12 @@ def test_runner_image_rejects_mutable_or_invalid_digest() -> None:
         supervisor.build_and_inspect_runner_image()
 
 
-def test_operator_rotate_prints_url_once_and_never_persists(capsys: pytest.CaptureFixture[str]) -> None:
+def test_operator_open_prints_url_once_and_never_persists(capsys: pytest.CaptureFixture[str]) -> None:
     token = "test-token-12345"
     expected_url = f"http://127.0.0.1:3000/#bootstrap={token}"
     runner = FakeCommandRunner(
         responses={
-            "forge operator rotate": CommandResult(0, f"{expected_url}\n", ""),
+            "forge operator open": CommandResult(0, f"{expected_url}\n", ""),
         }
     )
     supervisor = DevSupervisor(repo_root=REPO_ROOT, runner=runner)
@@ -250,6 +250,13 @@ def test_operator_rotate_prints_url_once_and_never_persists(capsys: pytest.Captu
     for p in REPO_ROOT.glob("*.env*"):
         assert token not in p.read_text(encoding="utf-8", errors="ignore")
 
+    # Verify operator open was invoked with --print-url and --no-wait
+    open_call = next(call for call in runner.calls if "operator" in " ".join(call[0]) and "open" in " ".join(call[0]))
+    assert open_call[0][:4] == ["uv", "run", "--frozen", "forge"]
+    assert "open" in open_call[0]
+    assert "--print-url" in open_call[0]
+    assert "--no-wait" in open_call[0]
+
 
 def test_lifecycle_exact_sequence_and_worker_environment() -> None:
     digest = "sha256:" + "b" * 64
@@ -260,7 +267,7 @@ def test_lifecycle_exact_sequence_and_worker_environment() -> None:
     responses.update(
         {
             "docker inspect": CommandResult(0, f"{digest}\n", ""),
-            "forge operator rotate": CommandResult(0, f"{url}\n", ""),
+            "forge operator open": CommandResult(0, f"{url}\n", ""),
         }
     )
     runner = FakeCommandRunner(responses=responses)
@@ -729,14 +736,14 @@ def test_postgres_health_ambiguity_and_scoping() -> None:
     assert not any("parallel-forge-postgres-1" in cmd for cmd in all_cmds)
 
 
-def test_operator_rotate_failure_redacts_secrets() -> None:
+def test_operator_bootstrap_failure_redacts_secrets() -> None:
     token = "sensitive-super-secret-token-12345"
     runner = FakeCommandRunner(
         responses={
-            "forge operator rotate": CommandResult(
+            "forge operator open": CommandResult(
                 1,
                 "",
-                f"Error: failed to rotate with http://127.0.0.1:3000/#bootstrap={token} and token={token}",
+                f"Error: failed to open with http://127.0.0.1:3000/#bootstrap={token} and token={token}",
             ),
         }
     )
@@ -1048,7 +1055,7 @@ def test_lifecycle_exact_sequence_web_config_resolved_after_sync(
     responses.update(
         {
             "docker inspect": CommandResult(0, f"{digest}\n", ""),
-            "forge operator rotate": CommandResult(0, f"{url}\n", ""),
+            "forge operator open": CommandResult(0, f"{url}\n", ""),
         }
     )
     runner = FakeCommandRunner(responses=responses)
@@ -1067,11 +1074,11 @@ def test_lifecycle_exact_sequence_web_config_resolved_after_sync(
     uv_sync_idx = next(i for i, cmd in enumerate(cmd_strings) if "uv sync" in cmd)
     web_config_idx = next(i for i, cmd in enumerate(cmd_strings) if "forge.settings" in cmd or "Settings" in cmd)
     alembic_idx = next(i for i, cmd in enumerate(cmd_strings) if "alembic" in cmd)
-    rotate_idx = next(i for i, cmd in enumerate(cmd_strings) if "operator rotate" in cmd)
+    open_idx = next(i for i, cmd in enumerate(cmd_strings) if "operator open" in cmd)
 
     assert uv_sync_idx < web_config_idx, "Web config must be resolved after uv sync"
     assert web_config_idx < alembic_idx, "Web config must be resolved before migrations and child processes"
-    assert alembic_idx < rotate_idx, "Migrations must run before operator credentials rotation"
+    assert alembic_idx < open_idx, "Migrations must run before operator bootstrap issuance"
 
     for _, options in runner.calls:
         child_env = options["env"]

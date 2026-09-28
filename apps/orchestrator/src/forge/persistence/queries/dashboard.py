@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from forge.application.services.public_data import public_payload
 from forge.domain.actor import AgentRole
@@ -14,7 +15,7 @@ from forge.domain.branch_removal import branch_removal_recorded
 from forge.domain.operation import OperationStatus, canonical_digest
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
-from forge.domain.run import RunSnapshot
+from forge.domain.run import RunSnapshot, RunState
 from forge.domain.teardown import TEARDOWN_STATES, has_removable_resources, teardown_confirmation
 from forge.domain.worktree_operation import worktree_creation_request
 from forge.observability.redaction import redact_value
@@ -23,6 +24,8 @@ from forge.persistence.models import (
     AgentExecutionEvidenceInput,
     Approval,
     Artifact,
+    ArtifactLineage,
+    ArtifactLineageParent,
     EvidenceSet,
     ModelUsage,
     OperationIntent,
@@ -32,6 +35,7 @@ from forge.persistence.models import (
     Review,
     Run,
     RunEvent,
+    SubscriptionPlanGate,
     Task,
     ValidationResult,
 )
@@ -66,6 +70,7 @@ class DashboardQuery:
             run = await session.get(Run, run_id)
             if run is None:
                 return None
+            snapshot = _snapshot_from_record(run)
             project = await session.get(Project, run.project_id)
             task = await session.get(Task, run.task_id)
             policy_row = await session.get(
@@ -125,6 +130,52 @@ class DashboardQuery:
                 .order_by(Approval.created_at.desc(), Approval.id)
                 .limit(1)
             )
+            plan_evidence_digest = None
+            if snapshot.pending_gate == "plan":
+                plan_evidence_digest = snapshot.pending_evidence_digest
+            elif snapshot.state is RunState.PAUSED and snapshot.suspension_context is not None:
+                context = snapshot.suspension_context
+                if context.pending_gate == "plan":
+                    plan_evidence_digest = context.pending_evidence_digest
+                elif approval is not None and context.state not in {
+                    RunState.CREATED,
+                    RunState.PLANNING,
+                }:
+                    plan_evidence_digest = approval.evidence_digest
+            elif approval is not None and snapshot.state not in {
+                RunState.CREATED,
+                RunState.PLANNING,
+            }:
+                # Once approved, the active approval is the durable binding for
+                # the plan while the run advances through later gates.
+                plan_evidence_digest = approval.evidence_digest
+            subscription_gate = (
+                await session.scalar(
+                    select(SubscriptionPlanGate).where(
+                        SubscriptionPlanGate.run_id == run_id,
+                        SubscriptionPlanGate.evidence_digest == plan_evidence_digest,
+                    )
+                )
+                if plan_evidence_digest is not None
+                else None
+            )
+            has_subscription_plan = subscription_gate is not None
+            if not has_subscription_plan:
+                has_subscription_plan = (
+                    await session.scalar(
+                        select(SubscriptionPlanGate.attempt_id)
+                        .where(SubscriptionPlanGate.run_id == run_id)
+                        .limit(1)
+                    )
+                    is not None
+                )
+            plan_output_digest = agents["planner"]["output_artifact_digest"]
+            displayed_plan_evidence_digest = approval.evidence_digest if approval else None
+            if has_subscription_plan:
+                plan_output_digest = await _subscription_plan_digest(session, subscription_gate)
+                displayed_plan_evidence_digest = (
+                    plan_evidence_digest if plan_output_digest is not None else None
+                )
             pr = await session.scalar(
                 select(PullRequest)
                 .where(PullRequest.run_id == run_id)
@@ -152,7 +203,6 @@ class DashboardQuery:
                     .limit(50)
                 )
             )
-            snapshot = _snapshot_from_record(run)
             branch_removed = await _branch_removed(session, snapshot)
             branch_retained = not branch_removed and await _owned_retained_branch(
                 session, snapshot, policy
@@ -220,7 +270,7 @@ class DashboardQuery:
                 },
                 "resource": {
                     "branch_removed": branch_removed,
-                    "teardown_confirmation": teardown_confirmation(_snapshot_from_record(run)),
+                    "teardown_confirmation": teardown_confirmation(snapshot),
                     "database_role": run.database_role,
                     "worktree_path": run.worktree_path,
                     "branch_name": run.branch_name,
@@ -228,9 +278,9 @@ class DashboardQuery:
                     "database_name": run.database_name,
                 },
                 "plan": {
-                    "output_artifact_digest": agents["planner"]["output_artifact_digest"],
+                    "output_artifact_digest": plan_output_digest,
                     "approval_id": approval.id if approval else None,
-                    "approval_evidence_digest": approval.evidence_digest if approval else None,
+                    "approval_evidence_digest": displayed_plan_evidence_digest,
                 },
                 "candidate": {
                     "commit": candidate_commit,
@@ -520,6 +570,39 @@ def _text(value: str | None) -> str | None:
         return None
     result = redact_value(value)
     return result if isinstance(result, str) else "[REDACTED]"
+
+
+async def _subscription_plan_digest(
+    session: AsyncSession, gate: SubscriptionPlanGate | None
+) -> str | None:
+    """Return only the plan artifact linked to this gate's exact approval evidence."""
+    if gate is None:
+        return None
+    evidence_lineage = aliased(ArtifactLineage)
+    evidence_artifact = aliased(Artifact)
+    plan_digests = await session.scalars(
+        select(Artifact.digest)
+        .select_from(ArtifactLineage)
+        .join(Artifact, Artifact.id == ArtifactLineage.artifact_id)
+        .join(ArtifactLineageParent, ArtifactLineageParent.parent_artifact_id == Artifact.id)
+        .join(
+            evidence_lineage,
+            evidence_lineage.artifact_id == ArtifactLineageParent.artifact_id,
+        )
+        .join(evidence_artifact, evidence_artifact.id == evidence_lineage.artifact_id)
+        .where(
+            ArtifactLineage.run_id == gate.run_id,
+            ArtifactLineage.producer_kind == "subscription_plan",
+            ArtifactLineage.producer_id == gate.attempt_id,
+            Artifact.digest == gate.plan_digest,
+            ArtifactLineageParent.run_id == gate.run_id,
+            evidence_lineage.run_id == gate.run_id,
+            evidence_lineage.producer_kind == "subscription_plan_approval_evidence",
+            evidence_lineage.producer_id == gate.attempt_id,
+            evidence_artifact.digest == gate.evidence_digest,
+        )
+    )
+    return plan_digests.first()
 
 
 def _remote_observation(pr: PullRequest | None) -> dict[str, object] | None:
