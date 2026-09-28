@@ -42,6 +42,9 @@ _MAX_IDEMPOTENCY_KEY_BYTES = 255
 _MAX_FEEDBACK_BYTES = 4096
 _TERMINAL_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED})
 _MERGE_SETTLEMENT_REFUSAL = "cancellation is unavailable while merge settlement is in progress"
+_STALE_POLICY_PREPARATION_RESUME_REFUSAL = (
+    "cannot resume preparation after project policy changed"
+)
 
 
 class RunServiceError(RuntimeError):
@@ -50,6 +53,16 @@ class RunServiceError(RuntimeError):
 
 class RunCommandValidationError(ValueError):
     """A closed command request does not match the locked run state."""
+
+
+class StaleProjectPolicyConflict(RunCommandValidationError):
+    """Resume is refused because project policy changed while preparation was paused."""
+
+
+@runtime_checkable
+class ProjectWork(Protocol):
+    projects: ProjectRepository
+    tasks: TaskRepository
 
 
 class RunUnitOfWork(Protocol):
@@ -355,6 +368,10 @@ class RunCommandService:
                 reason = cancellation_rejection_reason(run)
                 if reason is not None:
                     raise RunCommandValidationError(reason)
+            if request.command_type == RunCommandType.RESUME:
+                reason = await preparation_resume_policy_conflict_reason(work, run)
+                if reason is not None:
+                    raise StaleProjectPolicyConflict(reason)
             _validate_state(run.state, request.command_type)
             payload = _command_payload(request, run)
             if request.command_type == RunCommandType.TEARDOWN_RUN_RESOURCES:
@@ -438,6 +455,24 @@ def cancellation_rejection_reason(run: RunSnapshot) -> str | None:
         and run.suspended_state is RunState.MERGING
     ):
         return _MERGE_SETTLEMENT_REFUSAL
+    return None
+
+
+async def preparation_resume_policy_conflict_reason(
+    work: ProjectWork, run: RunSnapshot
+) -> str | None:
+    """Refuse preparation resume if project policy changed during pause."""
+
+    if (
+        run.state is RunState.PAUSED
+        and run.suspended_state is RunState.PREPARING_WORKTREE
+        and run.policy_version is not None
+    ):
+        # Match run creation and approval loading: task, then project.
+        await work.tasks.get(run.task_id, for_update=True)
+        project = await work.projects.get(run.project_id, for_update=True)
+        if project.current_policy_version != run.policy_version:
+            return _STALE_POLICY_PREPARATION_RESUME_REFUSAL
     return None
 
 
@@ -534,6 +569,7 @@ def _digest(value: object) -> str:
 
 
 __all__ = [
+    "ProjectWork",
     "RunApplicationService",
     "RunCommandApplicationService",
     "RunCommandInput",
@@ -544,6 +580,8 @@ __all__ = [
     "RunCreationService",
     "RunService",
     "RunServiceError",
+    "StaleProjectPolicyConflict",
     "cancellation_rejection_reason",
     "hash_run_command_idempotency_key",
+    "preparation_resume_policy_conflict_reason",
 ]

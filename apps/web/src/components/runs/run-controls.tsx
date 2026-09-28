@@ -31,7 +31,12 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
   async function report(error: unknown, signal: AbortSignal) {
     if (signal.aborted) return;
     if (error instanceof ApiError && error.status === 409) {
-      setBinding(null); setMessage('The run or evidence changed. Review the refreshed state before acting.');
+      setBinding(null);
+      if (error.code === 'stale-project-policy') {
+        setMessage('This run uses older project configuration. Start a new run with the current plan.');
+      } else {
+        setMessage('The run or evidence changed. Review the refreshed state before acting.');
+      }
       await onRefresh().catch(() => {});
     } else setMessage('The request could not be confirmed. Retry after checking the connection.');
   }
