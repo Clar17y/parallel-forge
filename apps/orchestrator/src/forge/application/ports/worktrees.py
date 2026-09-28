@@ -48,6 +48,59 @@ class SnapshotReadError(RuntimeError):
         super().__init__("working tree snapshot rejected")
 
 
+class WorktreeSetupFailed(RuntimeError):
+    """A durable, completed setup command produced a nonzero exit code or timed out."""
+
+    def __init__(
+        self,
+        message: str = "worktree setup command failed",
+        *,
+        failure: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failure = MappingProxyType(dict(failure or {}))
+
+    @property
+    def command_name(self) -> str:
+        return cast(str, self.failure["command_name"])
+
+    @property
+    def kind(self) -> str:
+        return cast(str, self.failure["kind"])
+
+    @property
+    def exit_code(self) -> int | None:
+        return cast(int | None, self.failure.get("exit_code"))
+
+    @property
+    def timed_out(self) -> bool:
+        return cast(bool, self.failure.get("timed_out", False))
+
+    @property
+    def evidence_digest(self) -> str:
+        return cast(str, self.failure["evidence_digest"])
+
+    @property
+    def command_digest(self) -> str:
+        return cast(str, self.failure["command_digest"])
+
+    @property
+    def stdout_digest(self) -> str:
+        return cast(str, self.failure["stdout_digest"])
+
+    @property
+    def stderr_digest(self) -> str:
+        return cast(str, self.failure["stderr_digest"])
+
+    @property
+    def duration_ms(self) -> int:
+        return cast(int, self.failure.get("duration_ms", 0))
+
+    @property
+    def operation_intent_id(self) -> str:
+        return cast(str, self.failure["operation_intent_id"])
+
+
 class _RedactedEnvironment(Mapping[str, str]):
     """Immutable environment values whose diagnostic form reveals keys only."""
 
@@ -697,6 +750,7 @@ __all__ = [
     "PublishedGitCommit",
     "SecretStorePort",
     "WorktreeProvisionerPort",
+    "WorktreeSetupFailed",
 ]
 
 

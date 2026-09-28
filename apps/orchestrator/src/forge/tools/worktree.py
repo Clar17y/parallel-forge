@@ -10,6 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Protocol, cast
 from uuid import UUID
 
@@ -30,6 +31,9 @@ from forge.application.ports.worktrees import (
     EnvironmentStagingPlan,
     EnvironmentStagingPort,
     ManagedWorktree,
+)
+from forge.application.ports.worktrees import (
+    WorktreeSetupFailed as WorktreeSetupPortFailed,
 )
 from forge.application.services.recovery import OperationExecutor, RecoveryService
 from forge.domain.event import RunEvent
@@ -150,6 +154,19 @@ class WorktreeReconciliationRequired(WorktreeProvisionerError):
 
     def __init__(self) -> None:
         super().__init__(_RECONCILIATION_ERROR)
+
+
+class WorktreeSetupFailed(WorktreeProvisionerError, WorktreeSetupPortFailed):
+    """A durable, completed setup command produced a nonzero exit code or timed out."""
+
+    def __init__(
+        self,
+        message: str = "worktree setup command failed",
+        *,
+        failure: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failure = MappingProxyType(dict(failure or {}))
 
 
 class _ResourceConflict(WorktreeReconciliationRequired):
@@ -442,7 +459,33 @@ class WorktreeProvisioner:
                 if command_adapter.caller_cancelled:
                     raise asyncio.CancelledError()
                 if result.get("exit_code") != 0 or result.get("timed_out") is not False:
-                    raise WorktreeReconciliationRequired()
+                    failure_payload: dict[str, object] = {
+                        "operation_intent_id": str(command_intent.id),
+                        "ordinal": result.get("ordinal", ordinal),
+                        "kind": result["kind"],
+                        "command_name": result["command_name"],
+                        "command_digest": result["command_digest"],
+                        "evidence_digest": result["evidence_digest"],
+                        "policy_version": result["policy_version"],
+                        "exit_code": result["exit_code"],
+                        "timed_out": result["timed_out"],
+                        "started_at": result["started_at"],
+                        "duration_ms": result["duration_ms"],
+                        "stdout_digest": result["stdout_digest"],
+                        "stderr_digest": result["stderr_digest"],
+                        "runner_mode": result["runner_mode"],
+                        "image_digest": result.get("image_digest"),
+                        "network_enabled": result["network_enabled"],
+                        "stdout_original_byte_count": result["stdout_original_byte_count"],
+                        "stderr_original_byte_count": result["stderr_original_byte_count"],
+                        "stdout_truncated": result["stdout_truncated"],
+                        "stderr_truncated": result["stderr_truncated"],
+                        "unsandboxed": result["unsandboxed"],
+                    }
+                    raise WorktreeSetupFailed(
+                        f"worktree setup command {command.name} failed with exit code {result.get('exit_code')}",
+                        failure=failure_payload,
+                    )
                 ordinal += 1
 
         latest = await self._load_context(
@@ -2626,4 +2669,5 @@ __all__ = [
     "WorktreeProvisioner",
     "WorktreeProvisionerError",
     "WorktreeReconciliationRequired",
+    "WorktreeSetupFailed",
 ]
