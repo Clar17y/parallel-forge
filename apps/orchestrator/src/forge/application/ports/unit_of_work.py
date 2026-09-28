@@ -11,6 +11,7 @@ from forge.application.ports.commands import CommandRepository
 from forge.application.ports.controller_steps import ControllerStepRepository
 from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
+from forge.application.ports.jev import JevRepository
 from forge.application.ports.operations import OperationRepository
 from forge.application.ports.projects import ProjectRepository
 from forge.application.ports.release import ReleaseRepository
@@ -51,6 +52,7 @@ class UnitOfWork(Protocol):
     executions: ExecutionRepository
     controller_steps: ControllerStepRepository
     evidence: EvidenceRepository
+    jev: JevRepository
     tasks: TaskRepository
     commands: CommandRepository
     auth: AuthRepository

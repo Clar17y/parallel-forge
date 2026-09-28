@@ -51,6 +51,8 @@ from forge.domain.agent import (
     AgentResult,
     DeveloperOutput,
     ReviewOutput,
+    UntrustedContent,
+    UntrustedSourceKind,
 )
 from forge.domain.plan import PlanOutput
 from forge.domain.tool import ToolName
@@ -416,6 +418,28 @@ async def test_gateway_returns_valid_typed_output_for_reviewer() -> None:
     assert result.output == rev_output
     assert result.role is AgentRole.REVIEWER
     assert result.execution_id == request.execution_id
+
+
+@pytest.mark.parametrize("status", ["succeeded", "unknown"])
+async def test_gateway_serializes_review_focus_in_provider_payload(status) -> None:
+    runtime = _FakeAdkRuntime([
+        _make_invocation_result(build_review_output().model_dump_json())
+    ])
+    gateway = GoogleAdkGateway(runtime, _make_loader(), _FakeAdkToolProvider(), _pricing_catalog())
+    request = _make_request(AgentRole.REVIEWER)
+    focus = UntrustedContent.from_text(
+        '{"scores":[{"topic":"concurrency","score":2}],"advisory_only":true}',
+        source_kind=UntrustedSourceKind.REVIEW, source_reference="jev_review_focus",
+    ) if status == "succeeded" else None
+    context = request.context.model_copy(
+        update={"review_focus": focus, "review_focus_status": status}
+    )
+
+    await gateway.execute(request.model_copy(update={"context": context}))
+
+    payload = json.loads(runtime.invocations[0].user_payload_json)
+    assert payload["review_focus"] == (focus.model_dump(mode="json") if focus else None)
+    assert payload["review_focus_status"] == status
 
 
 # ---------------------------------------------------------------------------

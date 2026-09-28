@@ -592,6 +592,7 @@ async def test_planning_initial_execution_binds_immutable_task_and_readonly_tool
         ToolName.REPOSITORY_LIST_FILES,
         ToolName.REPOSITORY_READ_FILE,
         ToolName.REPOSITORY_SEARCH,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC,
         ToolName.REPOSITORY_READ_INSTRUCTIONS,
     )
     assert request.context.original_task.content == work.tasks.task.normalized_text

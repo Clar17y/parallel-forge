@@ -93,7 +93,9 @@ async def test_named_receipt_recovers_after_audit_transaction_failure(
     assert case.factory.calls == 1
     async with PostgresUnitOfWork(session_factory) as work:
         final = await work.tool_calls.get(call.id)
+        assert "command_name" not in final.result_metadata
         assert final.status is expected
         assert final.artifact_digests == replay.artifact_digests
         events = await work.events.list_after(call.run_id, 0)
         assert sum(event.payload.get("tool_call_id") == str(call.id) for event in events) == 1
+        assert next(event for event in events if event.payload.get("tool_call_id") == str(call.id)).payload["command_name"] == "unit"

@@ -22,6 +22,7 @@ from forge.api.routes.auth import router_for as auth_router_for
 from forge.api.routes.dashboard import router_for as dashboard_router_for
 from forge.api.routes.events import router_for as event_router_for
 from forge.api.routes.health import router_for as health_router_for
+from forge.api.routes.jev import router_for as jev_router_for
 from forge.api.routes.projection_lists import router_for as list_router_for
 from forge.api.routes.projects import router_for as project_router_for
 from forge.api.routes.prompts import router_for as prompt_router_for
@@ -43,6 +44,7 @@ from forge.application.services.approvals import (
 from forge.application.services.artifact_reads import ArtifactReadService
 from forge.application.services.auth import AuthService
 from forge.application.services.github_issue_import import GitHubIssueImportService
+from forge.application.services.jev_reporting import JevReportingService
 from forge.application.services.plan_evidence import PlanEvidenceValidator
 from forge.application.services.projections import ProjectionService
 from forge.application.services.projects import ProjectService
@@ -93,6 +95,7 @@ def create_app(
     subscription_quota_service: Any | None = None,
     subscription_task_control_service: Any | None = None,
     subscription_task_feedback_service: Any | None = None,
+    jev_reporting_service: Any | None = None,
 ) -> FastAPI:
     """Create the API without opening a database connection."""
 
@@ -146,6 +149,9 @@ def create_app(
         resolved_uow_factory, settings=resolved_settings
     )
     resolved_run_command_service = run_command_service or RunCommandService(resolved_uow_factory)
+    resolved_jev_reporting_service = jev_reporting_service or JevReportingService(
+        resolved_uow_factory
+    )
     owned_github: GitHubClient | None = None
     resolved_issue_import = github_issue_import_service
     if resolved_issue_import is None and resolved_settings.github_token_reference:
@@ -205,6 +211,7 @@ def create_app(
     app.state.github_issue_import_service = resolved_issue_import
     app.state.run_service = resolved_run_service
     app.state.run_command_service = resolved_run_command_service
+    app.state.jev_reporting_service = resolved_jev_reporting_service
     app.state.session_factory = session_factory
     app.state.subscription_task_query = (
         SubscriptionTaskQuery(
@@ -253,6 +260,7 @@ def create_app(
     app.include_router(prompt_router_for(), prefix="/api")
     app.include_router(task_router_for(), prefix="/api")
     app.include_router(run_router_for(), prefix="/api")
+    app.include_router(jev_router_for(), prefix="/api")
     app.include_router(dashboard_router_for(), prefix="/api")
     app.include_router(artifact_router_for(), prefix="/api")
     app.include_router(event_router_for(), prefix="/api")

@@ -10,6 +10,8 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import UUID, uuid5
 
+from pydantic import ValidationError
+
 from forge.agents.errors import (
     AgentBudgetExceeded,
     AgentGatewayError,
@@ -32,13 +34,14 @@ from forge.application.ports.evidence import (
     ReviewEvidenceDraft,
 )
 from forge.application.ports.executions import ExecutionUnsettledError, ReviewerEvidenceBinding
+from forge.application.ports.jev import USABLE_JEV_STATUSES, JevRequest
 from forge.application.ports.repository import (
     InstructionDocument,
     RepositoryError,
     RepositoryReader,
 )
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
+from forge.application.ports.worktrees import ControlledGitPort, GitCandidateDiff, ManagedWorktree
 from forge.application.services.agent_results import (
     safe_usage,
     safe_usage_attempts,
@@ -53,6 +56,13 @@ from forge.application.services.approved_plan import (
 from forge.application.services.control_settlement import (
     controlled_stop,
     pending_current_control_stop,
+)
+from forge.application.services.jev import JevService
+from forge.application.services.jev_review import (
+    MAX_REVIEW_FOCUS_SOURCES,
+    REVIEW_QUESTIONS,
+    review_focus_payload,
+    safe_diff_hunks,
 )
 from forge.application.services.resume_source import (
     RESUME_FIELDS,
@@ -79,6 +89,7 @@ from forge.domain.evidence import (
     decode_evidence_manifest,
     encode_evidence_manifest,
 )
+from forge.domain.operation import canonical_digest
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
@@ -92,6 +103,7 @@ _TOOLS = (
     ToolName.REPOSITORY_LIST_FILES,
     ToolName.REPOSITORY_READ_FILE,
     ToolName.REPOSITORY_SEARCH,
+    ToolName.REPOSITORY_SEARCH_SEMANTIC,
     ToolName.REPOSITORY_READ_INSTRUCTIONS,
     ToolName.GIT_STATUS,
     ToolName.GIT_DIFF,
@@ -117,6 +129,8 @@ class ReviewService:
         approved_plans: ApprovedPlanLoader,
         git_factory: Callable[[ProjectPolicy], ControlledGitPort],
         repository_reader_factory: Callable[[ProjectPolicy, ManagedWorktree], RepositoryReader],
+        *,
+        jev_service: JevService | None = None,
     ) -> None:
         self._gateway, self._store, self._prompts = agent_gateway, artifact_store, prompt_loader
         self._approved, self._git_factory, self._reader_factory = (
@@ -124,6 +138,7 @@ class ReviewService:
             git_factory,
             repository_reader_factory,
         )
+        self._jev_service = jev_service
 
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> EvidenceSetDescriptor:
         origin = await resume_origin(work, command)
@@ -173,6 +188,18 @@ class ReviewService:
             return evidence
         await work.commit()
         context = await self._context(approved, worktree, candidate.diff.text, validation)
+        focus, focus_status = await self._review_focus(approved, worktree, candidate, git)
+        if focus is not None or focus_status is not None:
+            baseline = context.model_dump()
+            try:
+                context = ReviewerInput.model_validate({
+                    **baseline, "review_focus": focus, "review_focus_status": focus_status,
+                })
+            except ValidationError:
+                # Optional advice must fit alongside the required review evidence.
+                context = ReviewerInput.model_validate({
+                    **baseline, "review_focus_status": "context_limit",
+                })
         prompt = self._prompt()
         request = AgentRequest(
             execution_id=execution_id,
@@ -401,6 +428,66 @@ class ReviewService:
             ),
             relevant_instructions=instructions,
         )
+
+    async def _review_focus(
+        self, approved: ApprovedPlan, tree: ManagedWorktree, candidate: GitCandidateDiff, git: ControlledGitPort
+    ) -> tuple[UntrustedContent | None, str | None]:
+        jev = approved.policy.jev
+        if jev is None or jev.mode == "off" or not jev.review_focus:
+            return None, None
+        if self._jev_service is None:
+            return None, "unavailable" if jev.mode == "on" else None
+        try:
+            reader = self._reader_factory(approved.policy, tree)
+            hunks, complete = safe_diff_hunks(
+                reader, candidate.diff.text, changed_paths=candidate.changed_paths,
+                max_hunks=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates),
+            )
+            if not hunks:
+                return None, "no_eligible_hunks" if jev.mode == "on" else None
+            diff_digest = hashlib.sha256(candidate.diff.text.encode("utf-8")).hexdigest()
+            request = JevRequest(
+                run_id=approved.run.id,
+                policy_version=approved.policy.version,
+                operation_key=f"review:{approved.run.id.hex}:{diff_digest[:24]}",
+                kind="review_focus",
+                worktree_digest=canonical_digest({"path": str(tree.path), "head": candidate.head_sha}),
+                candidate_digest=diff_digest,
+                scope_digest=canonical_digest({"hunks": hunks, "complete": complete}),
+                state={"head_sha": candidate.head_sha, "diff_digest": diff_digest,
+                       "hunks": hunks, "coverage_complete": complete},
+                questions=REVIEW_QUESTIONS,
+            )
+            result = await self._jev_service.evaluate(request, policy=jev)
+            if result.status not in USABLE_JEV_STATUSES:
+                return None, result.status if jev.mode == "on" else None
+            current = git.candidate_diff(tree)
+            if (current.head_sha != candidate.head_sha or
+                    hashlib.sha256(current.diff.text.encode("utf-8")).hexdigest() != diff_digest):
+                return None, "stale_candidate" if jev.mode == "on" else None
+            current_hunks, _ = safe_diff_hunks(
+                reader, current.diff.text, changed_paths=current.changed_paths,
+                max_hunks=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates),
+            )
+            if current_hunks != hunks:
+                return None, "stale_source" if jev.mode == "on" else None
+            if jev.mode == "shadow":
+                return None, None
+            content = json.dumps(
+                review_focus_payload(
+                    result.status, result.answers, coverage_complete=complete,
+                    identity={"head_sha": candidate.head_sha, "diff_digest": diff_digest},
+                ),
+                sort_keys=True, separators=(",", ":"),
+            )
+            return UntrustedContent.from_text(
+                content, source_kind=UntrustedSourceKind.REVIEW,
+                source_reference="jev_review_focus",
+            ), result.status
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - advisory focus cannot block required review
+            return None, "unavailable" if jev.mode == "on" else None
 
     async def _admit(
         self,

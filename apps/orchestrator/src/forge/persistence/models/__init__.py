@@ -23,6 +23,7 @@ from forge.persistence.models.execution import (
     ToolCall,
     ValidationResult,
 )
+from forge.persistence.models.jev import JevEvaluation
 from forge.persistence.models.project import Project, ProjectPolicyVersion, Task
 from forge.persistence.models.recovery import RecoveryBarrier
 from forge.persistence.models.release import PullRequest
@@ -80,6 +81,7 @@ __all__ = [
     "EvaluationCase",
     "EvaluationSuite",
     "EvidenceSet",
+    "JevEvaluation",
     "ModelUsage",
     "OperationIntent",
     "OperatorAuditEvent",

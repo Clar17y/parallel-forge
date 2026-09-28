@@ -179,12 +179,21 @@
   .check-list li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
   .check-list .status-badge { flex: none; max-width: 50%; }
   .check-detail { display: block; margin-top: 4px; font-size: .75rem; color: var(--muted); }
-  .activity-list { list-style: none; margin: 0; padding: 0; }
+  .activity-list { list-style: none; margin: 0; padding: 0; overflow-wrap: anywhere; }
   .activity-list > li { border-top: 1px solid var(--border); padding: 0; }
   .activity-list time { color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
   .activity-list summary { min-height: 44px; padding: 8px 0; font-size: .8125rem; }
   .activity-list summary > span { margin-left: 10px; }
   .activity-list .event-details { padding: 0 0 6px 16px; color: var(--muted); font-size: .75rem; }
+  .activity-list .grouped-meta { margin: 4px 0 8px; font-weight: 550; color: var(--muted); }
+  .activity-list .grouped-sublist { list-style: none; margin: 0; padding: 0 0 0 8px; display: grid; gap: 6px; }
+  .activity-list .grouped-sublist li { display: flex; align-items: center; gap: 8px; font-size: .75rem; flex-wrap: wrap; min-width: 0; }
+  .activity-list .grouped-sublist details { min-width: 0; flex-basis: 100%; }
+  .activity-list .grouped-sublist .meta-text { color: var(--muted); font-size: .6875rem; }
+  .activity-list .outcome-text { color: var(--muted); }
+  .audit-card { overflow-wrap: anywhere; }
+  .audit-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .audit-card-header h2 { margin: 0; font-size: 1rem; }
   .run-tab-content { min-width: 0; }
   .run-tab-content > section { margin-top: 0; }
   .run-tab-content > section:not(.panel) { padding: 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }

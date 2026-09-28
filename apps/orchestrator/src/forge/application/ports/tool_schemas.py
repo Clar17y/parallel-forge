@@ -15,6 +15,7 @@ TOOL_ARGUMENT_SCHEMAS = MappingProxyType(
         ToolName.REPOSITORY_LIST_FILES: (frozenset(), frozenset({"path"})),
         ToolName.REPOSITORY_READ_FILE: (frozenset({"path"}), frozenset()),
         ToolName.REPOSITORY_SEARCH: (frozenset({"literal"}), frozenset({"path"})),
+        ToolName.REPOSITORY_SEARCH_SEMANTIC: (frozenset({"query"}), frozenset({"path"})),
         ToolName.REPOSITORY_READ_INSTRUCTIONS: (frozenset(), frozenset({"target_path"})),
         ToolName.REPOSITORY_WRITE_FILE: (frozenset({"content", "path"}), frozenset()),
         ToolName.REPOSITORY_DELETE_FILE: (frozenset({"path", "expected_digest"}), frozenset()),

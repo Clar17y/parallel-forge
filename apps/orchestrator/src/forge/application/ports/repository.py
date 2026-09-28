@@ -16,6 +16,12 @@ from .worktrees import ControlledGitPort, ManagedWorktree
 MAX_REPOSITORY_WRITE_BYTES = 1024 * 1024
 
 
+def is_hidden_search_path(path: str) -> bool:
+    """Use one hidden-path rule for literal and semantic search."""
+
+    return any(part.startswith(".") and part != ".env.example" for part in path.split("/"))
+
+
 class RepositoryError(RuntimeError):
     """Base class for bounded repository-tool failures."""
 

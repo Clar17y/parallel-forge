@@ -42,6 +42,7 @@ _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         }
     ),
@@ -50,6 +51,7 @@ _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
             ToolName.REPOSITORY_WRITE_FILE,
             ToolName.REPOSITORY_DELETE_FILE,
@@ -65,6 +67,7 @@ _ALLOWED_ROLE_TOOLS: dict[AgentRole, frozenset[ToolName]] = {
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
             ToolName.GIT_STATUS,
             ToolName.GIT_DIFF,
@@ -387,6 +390,8 @@ class ReviewerInput(BaseModel):
     relevant_instructions: tuple[UntrustedContent, ...] = Field(
         default=(), max_length=_MAX_COLLECTION_SIZE
     )
+    review_focus: UntrustedContent | None = None
+    review_focus_status: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def validate_context_size(self) -> Self:
@@ -396,6 +401,7 @@ class ReviewerInput(BaseModel):
                 self.current_diff,
                 *self.check_evidence,
                 *self.relevant_instructions,
+                *((self.review_focus,) if self.review_focus is not None else ()),
             )
         )
         return self
@@ -827,6 +833,7 @@ def _iter_untrusted_content(
         context.current_diff,
         *context.check_evidence,
         *context.relevant_instructions,
+        *((context.review_focus,) if context.review_focus is not None else ()),
     )
 
 

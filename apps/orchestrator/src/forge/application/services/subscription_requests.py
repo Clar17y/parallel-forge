@@ -1,15 +1,30 @@
-"""Assemble an invocation from current durable authority, without provider IO."""
+"""Assemble an invocation with advisory IO outside durable authority transactions."""
 
+import asyncio
 from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
 from secrets import token_urlsafe
 
+from forge.application.ports.jev import USABLE_JEV_STATUSES, JevRequest
+from forge.application.ports.repository import RepositoryReader
+from forge.application.ports.subscription_candidate import CandidateInspection
 from forge.application.ports.subscription_execution import SubscriptionAdmission
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.ports.worktrees import GitWorkingTreeSnapshot, ManagedWorktree
+from forge.application.services.jev import JevService
+from forge.application.services.jev_review import (
+    MAX_REVIEW_FOCUS_SOURCES,
+    REVIEW_QUESTIONS,
+    review_focus_payload,
+    safe_snapshot_sources,
+)
 from forge.domain.agent import PolicySummary
+from forge.domain.operation import canonical_digest
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
-from forge.domain.run import RunState
+from forge.domain.run import RunSnapshot, RunState
 from forge.domain.subscription import (
     CANDIDATE_READ_TOOLS,
     SPECIALIST_ALLOWED_TOOLS,
@@ -84,14 +99,25 @@ _READS = frozenset(
         ToolName.REPOSITORY_LIST_FILES,
         ToolName.REPOSITORY_READ_FILE,
         ToolName.REPOSITORY_SEARCH,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC,
         ToolName.REPOSITORY_READ_INSTRUCTIONS,
     }
 )
 
 
 class SubscriptionRequestBuilder:
-    def __init__(self, work_factory: Callable[[], UnitOfWork]) -> None:
+    def __init__(
+        self,
+        work_factory: Callable[[], UnitOfWork],
+        *,
+        jev_service: JevService | None = None,
+        snapshot: Callable[[ProjectPolicy, ManagedWorktree], GitWorkingTreeSnapshot] | None = None,
+        reader: Callable[[ProjectPolicy, ManagedWorktree], RepositoryReader] | None = None,
+    ) -> None:
         self._work_factory = work_factory
+        self._jev_service = jev_service
+        self._snapshot = snapshot
+        self._reader = reader
 
     async def build(self, admission: SubscriptionAdmission) -> SubscriptionInvocationRequest:
         async with self._work_factory() as work:
@@ -224,4 +250,114 @@ class SubscriptionRequestBuilder:
                 },
             )
             await work.commit()
+        return await self._with_review_focus(request, run, policy, review_selection, admission)
+
+    async def _with_review_focus(
+        self,
+        request: SubscriptionInvocationRequest,
+        run: RunSnapshot,
+        policy: ProjectPolicy,
+        selection: dict[str, object] | None,
+        admission: SubscriptionAdmission,
+    ) -> SubscriptionInvocationRequest:
+        jev = policy.jev
+        if (
+            selection is None or jev is None or jev.mode == "off" or not jev.review_focus
+            or self._jev_service is None or self._snapshot is None or self._reader is None
+            or not run.worktree_path or not run.branch_name or not run.base_sha
+            or not request.task.purpose is SpecialistPurpose.INDEPENDENT_REVIEW
+        ):
             return request
+        observation = selection.get("observation")
+        epoch = selection.get("candidate_epoch")
+        if type(observation) is not dict or type(epoch) is not int or epoch != admission.candidate_epoch:
+            return request
+        identity = WorktreeIdentity.for_run(
+            run.project_id, run.id, run.branch_name, policy.database.enabled
+        )
+        tree = ManagedWorktree(identity=identity, path=Path(run.worktree_path), base_sha=run.base_sha)
+        status: str | None = None
+        focus: dict[str, object] | None = None
+        try:
+            snapshot = await asyncio.to_thread(self._snapshot, policy, tree)
+            inspection = CandidateInspection.from_snapshot(snapshot)
+            if inspection.payload() != observation:
+                return self._attach_focus_status(request, "stale_candidate", jev.mode)
+            reader = self._reader(policy, tree)
+            sources, complete = safe_snapshot_sources(
+                reader, snapshot, max_sources=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates)
+            )
+            if not sources:
+                return self._attach_focus_status(request, "no_eligible_hunks", jev.mode)
+            jev_request = JevRequest(
+                run_id=run.id,
+                policy_version=policy.version,
+                operation_key=f"subscription_review:{run.id.hex}:{epoch}",
+                kind="review_focus",
+                worktree_digest=canonical_digest({"path": str(tree.path), "epoch": epoch}),
+                candidate_digest=snapshot.candidate_tree_digest,
+                scope_digest=inspection.manifest_digest,
+                state={"observation": inspection.payload(), "candidate_epoch": epoch,
+                       "sources": sources, "coverage_complete": complete},
+                questions=REVIEW_QUESTIONS,
+            )
+            result = await self._jev_service.evaluate(jev_request, policy=jev)
+            status = result.status
+            latest = await asyncio.to_thread(self._snapshot, policy, tree)
+            latest_sources, _ = safe_snapshot_sources(
+                reader, latest, max_sources=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates)
+            )
+            if CandidateInspection.from_snapshot(latest).payload() != observation or latest_sources != sources:
+                status = "stale_candidate"
+            elif jev.mode == "on" and status in USABLE_JEV_STATUSES:
+                focus = review_focus_payload(
+                    status, result.answers, coverage_complete=complete,
+                    identity={"observation": inspection.payload(), "candidate_epoch": epoch},
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - advisory focus never blocks review admission
+            status = "unavailable"
+        # Authority is mandatory even if optional scoring failed. A revoked
+        # admission must abort setup rather than become advisory telemetry.
+        if not await self._assert_review_admission(admission, run, policy, selection, request):
+            return self._attach_focus_status(request, "stale_candidate", jev.mode)
+        if status == "stale_candidate":
+            return self._attach_focus_status(request, status, jev.mode)
+        if jev.mode != "on":
+            return request
+        payload = dict(request.untrusted_context)
+        payload["review_focus"] = focus if focus is not None else {"status": status or "unavailable"}
+        return replace(request, untrusted_context=payload)
+
+    async def _assert_review_admission(
+        self,
+        admission: SubscriptionAdmission,
+        run: RunSnapshot,
+        policy: ProjectPolicy,
+        selection: dict[str, object],
+        request: SubscriptionInvocationRequest,
+    ) -> bool:
+        async with self._work_factory() as work:
+            await work.subscription_execution.invocation_context(admission)
+            current_run = await work.runs.get_for_update(run.id)
+            current = await work.subscription_decisions.review_selection_context(
+                run.id, request.task.task_id
+            )
+            current_matches = not (
+                current_run.policy_version != policy.version
+                or current_run.state is not run.state
+                or current != selection
+            )
+            await work.rollback()
+            return current_matches
+
+    @staticmethod
+    def _attach_focus_status(
+        request: SubscriptionInvocationRequest, status: str, mode: str
+    ) -> SubscriptionInvocationRequest:
+        if mode != "on":
+            return request
+        payload = dict(request.untrusted_context)
+        payload["review_focus"] = {"status": status}
+        return replace(request, untrusted_context=payload)

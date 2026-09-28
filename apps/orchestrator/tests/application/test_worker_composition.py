@@ -126,7 +126,10 @@ def test_compose_worker_handlers_subscription_startup_defers_legacy_config(tmp_p
         pricing_catalog_path=tmp_path / "pricing.json",
         prompt_root=prompt_root,
     )
-    handlers = compose_worker_handlers(settings_no_secret, session_factory=object())  # type: ignore[arg-type]
+    shared_redactor = Redactor(secrets=("literal-jev-secret",))
+    handlers = compose_worker_handlers(  # type: ignore[arg-type]
+        settings_no_secret, session_factory=object(), redactor=shared_redactor
+    )
     from forge.application.services.subscription_candidate import SubscriptionCandidateApplication
     from forge.application.services.subscription_decision_recovery import (
         SubscriptionDecisionRecovery,
@@ -137,6 +140,10 @@ def test_compose_worker_handlers_subscription_startup_defers_legacy_config(tmp_p
     from forge.worker.subscription_tools import SubscriptionToolServiceFactory
 
     assert isinstance(handlers.subscription_tools, SubscriptionToolServiceFactory)
+    assert handlers.subscription_tools._jev_service._redactor is shared_redactor
+    assert handlers.subscription_tools._jev_service._redactor.redact(
+        {"source": "literal-jev-secret"}
+    ) == {"source": "[REDACTED]"}
     assert isinstance(handlers.subscription_decision_recovery, SubscriptionDecisionRecovery)
     assert isinstance(handlers.subscription_handoffs, SubscriptionHandoffApplication)
     assert handlers.subscription_decision_recovery._handoffs is handlers.subscription_handoffs
@@ -484,6 +491,28 @@ async def test_release_without_configuration_fails_before_using_command_or_datab
     await handlers.aclose()
 
 
+@pytest.mark.asyncio
+async def test_composed_jev_provider_closes_with_worker_handlers(tmp_path, monkeypatch):
+    from forge.ranking.jev import TypeSafeJevProvider
+
+    class FakeJevProvider:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    provider = FakeJevProvider()
+    monkeypatch.setattr(TypeSafeJevProvider, "from_environment", lambda: provider)
+    handlers = compose_worker_handlers(
+        Settings(data_root=tmp_path, prompt_root=_make_prompt_root(tmp_path)),
+        object(),
+        agent_gateway=object(),
+    )
+    assert provider.closed is False
+    await handlers.aclose()
+    assert provider.closed is True
+
+
 # =========================================================================
 # BoundPlanningGateway tests
 # =========================================================================
@@ -744,6 +773,7 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         ),
         budget=AgentBudget.from_model_policy(policy.planner_model),
@@ -777,11 +807,12 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
     assert len(captured_bound_tools) == 1
     tools = captured_bound_tools[0]
 
-    # Exact four repository read tools
+    # Exact five repository read tools
     assert tools.names == (
         ToolName.REPOSITORY_LIST_FILES,
         ToolName.REPOSITORY_READ_FILE,
         ToolName.REPOSITORY_SEARCH,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC,
         ToolName.REPOSITORY_READ_INSTRUCTIONS,
     )
     # NO developer capabilities
@@ -790,6 +821,7 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         }
         assert name != ToolName.REPOSITORY_WRITE_FILE
@@ -858,6 +890,7 @@ async def test_bound_planning_gateway_binding_mismatches_fail_closed(tmp_path: P
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         ),
         budget=AgentBudget.from_model_policy(policy.planner_model),
@@ -1072,6 +1105,7 @@ async def test_bound_planning_gateway_independent_request_binding(tmp_path: Path
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         ),
         budget=AgentBudget.from_model_policy(policy.planner_model),
@@ -1092,6 +1126,7 @@ async def test_bound_planning_gateway_independent_request_binding(tmp_path: Path
             ToolName.REPOSITORY_LIST_FILES,
             ToolName.REPOSITORY_READ_FILE,
             ToolName.REPOSITORY_SEARCH,
+            ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         ),
         budget=AgentBudget.from_model_policy(policy.planner_model),

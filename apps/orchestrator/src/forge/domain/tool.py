@@ -46,6 +46,7 @@ class ToolName(StrEnum):
     REPOSITORY_LIST_FILES = "repository.list_files"
     REPOSITORY_READ_FILE = "repository.read_file"
     REPOSITORY_SEARCH = "repository.search"
+    REPOSITORY_SEARCH_SEMANTIC = "repository.search_semantic"
     REPOSITORY_READ_INSTRUCTIONS = "repository.read_instructions"
     REPOSITORY_WRITE_FILE = "repository.write_file"
     REPOSITORY_DELETE_FILE = "repository.delete_file"

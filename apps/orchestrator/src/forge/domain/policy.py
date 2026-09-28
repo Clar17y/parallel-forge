@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -166,6 +166,32 @@ class DatabaseProvisioningPolicy(BaseModel):
         return self
 
 
+class JevPolicy(BaseModel):
+    """Bounded, explicit consent and per-run limits for advisory Jev work."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    mode: Literal["off", "shadow", "on"] = "off"
+    allow_remote: bool = False
+    model: str = Field(default="jev-latest", min_length=1, max_length=128)
+    semantic_search: bool = True
+    review_focus: bool = True
+    top_k: int = Field(default=15, ge=1, le=100)
+    max_requests_per_run: int = Field(default=64, ge=1, le=1000)
+    max_input_units_per_run: int = Field(default=250_000, ge=1, le=10_000_000)
+    max_candidates: int = Field(default=96, ge=1, le=100)
+    max_result_chars: int = Field(default=12_000, ge=1, le=100_000)
+    timeout_seconds: float = Field(default=15.0, ge=1, le=60)
+    cache_ttl_seconds: int = Field(default=3600, ge=0, le=86_400)
+
+    @field_validator("model")
+    @classmethod
+    def model_must_be_bounded_and_nonblank(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("Jev model must be a nonblank alias without surrounding whitespace")
+        return value
+
+
 class _RequiredChecks(tuple[CommandSpec, ...]):
     """Tuple result that supports both property and method-style callers."""
 
@@ -194,6 +220,7 @@ class ProjectPolicy(BaseModel):
     developer_model: AgentModelPolicy = Field(default_factory=AgentModelPolicy)
     reviewer_model: AgentModelPolicy = Field(default_factory=AgentModelPolicy)
     database: DatabaseProvisioningPolicy = Field(default_factory=DatabaseProvisioningPolicy)
+    jev: JevPolicy | None = None
     commands: tuple[CommandSpec, ...] = ()
     allowed_environment_files: tuple[str, ...] = ()
     secret_paths: tuple[str, ...] = (".env", ".env.local")
@@ -301,6 +328,7 @@ __all__ = [
     "AgentModelPolicy",
     "CommandSpec",
     "DatabaseProvisioningPolicy",
+    "JevPolicy",
     "ProjectPolicy",
     "RunnerMode",
     "StepKind",

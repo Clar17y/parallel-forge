@@ -42,6 +42,7 @@ from forge.application.services.tools import (
     _git_result_metadata,
     _git_terminal_result,
     _named_result,
+    _record_command_name,
     _repository_mutation_result_artifact_bytes,
     _repository_mutation_schema_version,
     _safe_metadata,
@@ -495,7 +496,12 @@ class ToolRecoveryService:
         )
         await work.tool_calls.finalize(final)
         context = _recovery_context(call)
-        await work.events.append(_tool_event(result, context, run, call.id, authorized=True))
+        await work.events.append(
+            _tool_event(
+                result, context, run, call.id, authorized=True,
+                command_name=_record_command_name(call),
+            )
+        )
         await work.commit()
         return ToolRecoveryResult(call.id, ToolRecoveryDisposition.SETTLED)
 
