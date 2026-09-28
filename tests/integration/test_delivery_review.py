@@ -3,13 +3,21 @@
 import json
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from forge.application.ports.worktrees import GitCandidateDiff, GitDiff
 from forge.application.services.approved_plan import ApprovedPlanLoader
 from forge.application.services.review import ReviewRecoveryRequired, ReviewService
 from forge.domain.actor import AgentRole
-from forge.domain.agent import AgentFinishStatus, AgentResult, ReviewDecision, ReviewOutput
+from forge.domain.agent import (
+    AgentFinishStatus,
+    AgentResult,
+    ReviewDecision,
+    ReviewOutput,
+    UntrustedContent,
+    UntrustedSourceKind,
+)
 from forge.domain.run import RunState
 from forge.domain.tool import ToolName
 from forge.observability.usage import UsageRecord
@@ -157,6 +165,51 @@ async def test_review_is_fresh_bound_and_persists_canonical_evidence(
         review is not None
         and review.validation_evidence_set_id == decision.validation_evidence_set_id
     )
+
+
+@pytest.mark.parametrize("outcome", ["succeeded", "unknown", "shadow", "context_limit"])
+async def test_review_focus_survives_admission_and_persisted_artifact(
+    tmp_path, workflow_session_factory, monkeypatch, outcome
+):
+    case, command, service, gateway, _git, _decision = await _review_case(
+        tmp_path, workflow_session_factory
+    )
+    focus = UntrustedContent.from_text(
+        '{"scores":[{"topic":"concurrency","score":2}],"advisory_only":true}',
+        source_kind=UntrustedSourceKind.REVIEW, source_reference="jev_review_focus",
+    ) if outcome in {"succeeded", "context_limit"} else None
+    service._review_focus = AsyncMock(return_value=(
+        focus, "succeeded" if focus else None if outcome == "shadow" else "unknown"
+    ))
+    if outcome == "context_limit":
+        import forge.domain.agent as agent_contracts
+
+        original_context = service._context
+
+        async def bounded_context(*args):
+            context = await original_context(*args)
+            size = sum(len(item.content.encode()) for item in (
+                context.original_task, context.current_diff,
+                *context.check_evidence, *context.relevant_instructions,
+            ))
+            monkeypatch.setattr(agent_contracts, "_MAX_CONTEXT_BYTES", size)
+            return context
+
+        service._context = bounded_context
+
+    async with PostgresUnitOfWork(workflow_session_factory) as work:
+        await service.execute(command, work)
+
+    assert gateway.admitted and len(gateway.requests) == 1
+    async with workflow_session_factory() as session:
+        execution = await session.get(AgentExecution, gateway.requests[0].execution_id)
+        artifact = await session.get(Artifact, execution.input_artifact_id)
+    persisted = json.loads(await case.artifact_store.open_bytes(artifact.digest))["context"]
+    assert persisted == gateway.requests[0].context.model_dump(mode="json")
+    assert persisted["review_focus"] == (
+        focus.model_dump(mode="json") if outcome == "succeeded" else None
+    )
+    assert persisted["review_focus_status"] == (None if outcome == "shadow" else outcome)
 
 
 async def test_wrong_validation_binding_never_calls_gateway(tmp_path, workflow_session_factory):

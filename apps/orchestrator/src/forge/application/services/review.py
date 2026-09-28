@@ -10,6 +10,8 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import UUID, uuid5
 
+from pydantic import ValidationError
+
 from forge.agents.errors import (
     AgentBudgetExceeded,
     AgentGatewayError,
@@ -188,7 +190,16 @@ class ReviewService:
         context = await self._context(approved, worktree, candidate.diff.text, validation)
         focus, focus_status = await self._review_focus(approved, worktree, candidate, git)
         if focus is not None or focus_status is not None:
-            context = context.model_copy(update={"review_focus": focus, "review_focus_status": focus_status})
+            baseline = context.model_dump()
+            try:
+                context = ReviewerInput.model_validate({
+                    **baseline, "review_focus": focus, "review_focus_status": focus_status,
+                })
+            except ValidationError:
+                # Optional advice must fit alongside the required review evidence.
+                context = ReviewerInput.model_validate({
+                    **baseline, "review_focus_status": "context_limit",
+                })
         prompt = self._prompt()
         request = AgentRequest(
             execution_id=execution_id,
