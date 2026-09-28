@@ -429,3 +429,64 @@ async def test_with_auth_service_disposes_engine_on_success_and_failure(monkeypa
     with pytest.raises(RuntimeError, match="boom"):
         await cli_main._with_auth_service(settings, fail_action)
     assert disposed == 2
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["operator", "open"],
+        ["operator", "open", "--no-wait"],
+        ["operator", "open", "--no-wait", "--print-url"],
+        ["operator", "open", "--no-wait", "--headless"],
+        ["operator", "rotate"],
+    ],
+)
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://external.example",
+        "http://127.0.0.1:3000/unexpected-path",
+        "http://operator:fake-password@127.0.0.1:3000",
+    ],
+)
+def test_operator_rejects_unsafe_origin_before_any_side_effect(monkeypatch, args, origin):
+    calls: list[str] = []
+
+    async def fake_token(_settings):
+        calls.append("credential")
+        return "credential-must-not-escape"
+
+    monkeypatch.setenv("FORGE_WEB_ORIGIN", origin)
+    monkeypatch.setattr(cli_main, "_issue_bootstrap", fake_token)
+    monkeypatch.setattr(cli_main, "_rotate", fake_token)
+    monkeypatch.setattr(cli_main, "wait_for_dashboard", lambda *a, **kw: calls.append("probe"))
+    monkeypatch.setattr(cli_main.webbrowser, "open", lambda *a, **kw: calls.append("browser"))
+
+    result = CliRunner().invoke(app, args)
+
+    assert result.exit_code == 1
+    assert calls == []
+    assert "Could not load Forge configuration" in result.stderr
+    assert origin not in result.output
+    assert "credential-must-not-escape" not in result.output
+    assert "fake-password" not in result.output
+
+
+@pytest.mark.parametrize(
+    "args", [["operator", "open", "--no-wait", "--print-url"], ["operator", "rotate"]]
+)
+@pytest.mark.parametrize(
+    "origin", ["http://127.0.0.1:3000", "http://localhost:3000", "https://[::1]:3000"]
+)
+def test_operator_accepts_canonical_loopback_origins(monkeypatch, args, origin):
+    async def fake_token(_settings):
+        return "local-bootstrap"
+
+    monkeypatch.setenv("FORGE_WEB_ORIGIN", origin)
+    monkeypatch.setattr(cli_main, "_issue_bootstrap", fake_token)
+    monkeypatch.setattr(cli_main, "_rotate", fake_token)
+
+    result = CliRunner().invoke(app, args)
+
+    assert result.exit_code == 0
+    assert result.stdout == f"{origin}/#bootstrap=local-bootstrap\n"

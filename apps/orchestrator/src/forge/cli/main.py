@@ -61,6 +61,20 @@ def _validate_timeout(value: float) -> float:
     return value
 
 
+def _operator_settings() -> Settings:
+    """Validate the credential destination before probing or issuing any token."""
+    try:
+        settings = Settings(process_role="cli")
+        parse_web_origin(settings.web_origin)
+    except Exception:  # noqa: BLE001 - configuration failures expose no credentials
+        typer.echo(
+            "Could not load Forge configuration. Check the local environment settings.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+    return settings
+
+
 def wait_for_dashboard(settings: Settings, timeout: float = 30.0) -> None:
     """Poll the local web origin /api/health endpoint until the API reports ready."""
 
@@ -120,15 +134,7 @@ def open_operator(
     """Open Forge in a browser with a fresh, non-revoking sign-in link."""
 
     _validate_timeout(timeout)
-
-    try:
-        settings = Settings(process_role="cli")
-    except Exception:  # noqa: BLE001 - configuration failures expose no credentials
-        typer.echo(
-            "Could not load Forge configuration. Check the local environment settings.",
-            err=True,
-        )
-        raise typer.Exit(1) from None
+    settings = _operator_settings()
 
     if wait:
         try:
@@ -175,14 +181,7 @@ def open_operator(
 def rotate_operator() -> None:
     """Revoke current local credentials and print one fresh bootstrap URL."""
 
-    try:
-        settings = Settings(process_role="cli")
-    except Exception:  # noqa: BLE001 - configuration failures expose no credentials
-        typer.echo(
-            "Could not load Forge configuration. Check the local environment settings.",
-            err=True,
-        )
-        raise typer.Exit(1) from None
+    settings = _operator_settings()
 
     try:
         token = asyncio.run(_rotate(settings))
