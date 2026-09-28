@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, TypedDict, cast
+from typing import Any, TypedDict, TypeGuard, cast
 from uuid import UUID, uuid4
 
 from forge.application.adapters.git_commit import (
@@ -1696,7 +1696,12 @@ class ControlledToolService:
                 result_metadata_schema_version=1,
             )
         )
-        await work.events.append(_tool_event(result, context, run, reserved.id, authorized=True))
+        await work.events.append(
+            _tool_event(
+                result, context, run, reserved.id, authorized=True,
+                command_name=_record_command_name(reserved),
+            )
+        )
         await work.commit()
         return result
 
@@ -4471,6 +4476,144 @@ def _record_metadata(
     return _safe_metadata(metadata, redactor=redactor)
 
 
+def _is_safe_relative_path(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    if not value or value != value.strip() or len(value.encode("utf-8")) > 512:
+        return False
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return False
+    if value.startswith(("/", "\\")):
+        return False
+    if len(value) >= 2 and value[1] == ":":
+        return False
+    parts = re.split(r"[/\\]", value)
+    return ".." not in parts
+
+
+def _safe_presentation_label(value: object) -> str | None:
+    if not isinstance(value, str) or not value or value != value.strip():
+        return None
+    if len(value.encode("utf-8")) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+    return value
+
+
+def _record_command_name(record: ToolCallRecord) -> str | None:
+    if not isinstance(record.normalized_arguments, Mapping):
+        return None
+    return _safe_presentation_label(record.normalized_arguments.get("command_name"))
+
+
+def _is_count_sequence(value: object) -> TypeGuard[Sequence[object]]:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
+def _safe_presentation_metadata(result: ToolResult) -> dict[str, object]:
+    """Extract strictly allowlisted presentation fields from sanitized result metadata.
+
+    Never copies raw content, search text/matches, diff/stdout/stderr, arbitrary
+    error messages, secret environment, or whole metadata structures.
+    """
+    if not isinstance(result.metadata, Mapping):
+        return {}
+    meta = result.metadata
+    name = result.tool_name
+    presentation: dict[str, object] = {}
+
+    if name is ToolName.REPOSITORY_READ_FILE:
+        path = meta.get("path")
+        if _is_safe_relative_path(path):
+            presentation["path"] = path
+        byte_count = meta.get("original_byte_count")
+        if isinstance(byte_count, int) and not isinstance(byte_count, bool) and byte_count >= 0:
+            presentation["byte_count"] = byte_count
+
+    elif name is ToolName.REPOSITORY_WRITE_FILE:
+        path = meta.get("path")
+        if _is_safe_relative_path(path):
+            presentation["path"] = path
+        byte_count = meta.get("byte_count")
+        if isinstance(byte_count, int) and not isinstance(byte_count, bool) and byte_count >= 0:
+            presentation["byte_count"] = byte_count
+        created = meta.get("created")
+        if isinstance(created, bool):
+            presentation["created"] = created
+
+    elif name is ToolName.REPOSITORY_DELETE_FILE:
+        path = meta.get("path")
+        if _is_safe_relative_path(path):
+            presentation["path"] = path
+
+    elif name is ToolName.REPOSITORY_RENAME_FILE:
+        source = meta.get("source")
+        if _is_safe_relative_path(source):
+            presentation["source"] = source
+        destination = meta.get("destination")
+        if _is_safe_relative_path(destination):
+            presentation["destination"] = destination
+
+    elif name is ToolName.REPOSITORY_LIST_FILES:
+        entries = meta.get("entries")
+        if _is_count_sequence(entries):
+            presentation["entry_count"] = len(entries)
+
+    elif name is ToolName.REPOSITORY_SEARCH:
+        ranking = meta.get("ranking")
+        if isinstance(ranking, Mapping) and isinstance(ranking.get("match_count"), int) and not isinstance(ranking.get("match_count"), bool):
+            presentation["match_count"] = max(0, ranking["match_count"])
+        else:
+            matches = meta.get("matches")
+            if _is_count_sequence(matches):
+                presentation["match_count"] = len(matches)
+
+    elif name is ToolName.REPOSITORY_READ_INSTRUCTIONS:
+        documents = meta.get("documents")
+        if _is_count_sequence(documents):
+            presentation["document_count"] = len(documents)
+
+    elif name is ToolName.BUILD_RUN_NAMED_CHECK:
+        exit_code = meta.get("exit_code")
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+            presentation["exit_code"] = exit_code
+        timed_out = meta.get("timed_out")
+        if isinstance(timed_out, bool):
+            presentation["timed_out"] = timed_out
+        caller_cancelled = meta.get("caller_cancelled")
+        if isinstance(caller_cancelled, bool):
+            presentation["caller_cancelled"] = caller_cancelled
+
+    elif name is ToolName.GIT_COMMIT:
+        new_sha = meta.get("new_sha")
+        if isinstance(new_sha, str) and re.fullmatch(r"[0-9a-f]{40}", new_sha):
+            presentation["commit_sha"] = new_sha
+
+    elif name is ToolName.GIT_DIFF:
+        changed_path_count = meta.get("changed_path_count")
+        if (
+            isinstance(changed_path_count, int)
+            and not isinstance(changed_path_count, bool)
+            and changed_path_count >= 0
+        ):
+            presentation["changed_path_count"] = changed_path_count
+        else:
+            changed_paths = meta.get("changed_paths")
+            if _is_count_sequence(changed_paths):
+                presentation["changed_path_count"] = len(changed_paths)
+        head_sha = meta.get("head_sha")
+        if isinstance(head_sha, str) and re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            presentation["commit_sha"] = head_sha
+
+    elif name in {ToolName.VALIDATION_RESULTS_READ, ToolName.REVIEW_ARTIFACTS_READ}:
+        presentation["evidence_kind"] = (
+            "validation" if name is ToolName.VALIDATION_RESULTS_READ else "review"
+        )
+        # Successful evidence reads attach the manifest digest; absent evidence does not.
+        presentation["has_evidence"] = bool(result.artifact_digests)
+
+    return presentation
+
+
 def _tool_event(
     result: ToolResult,
     context: _ToolContext,
@@ -4478,6 +4621,7 @@ def _tool_event(
     tool_call_id: UUID,
     *,
     authorized: bool,
+    command_name: str | None = None,
 ) -> RunEvent:
     lineage = _tool_lineage(context)
     payload: dict[str, object] = {
@@ -4510,6 +4654,10 @@ def _tool_event(
         )
     if result.error is not None:
         payload["error_code"] = result.error.code.value
+    presentation = _safe_presentation_metadata(result)
+    payload.update(presentation)
+    if result.tool_name is ToolName.BUILD_RUN_NAMED_CHECK and command_name is not None:
+        payload["command_name"] = command_name
     return RunEvent(
         run_id=context.run_id,
         run_version=run.version,
