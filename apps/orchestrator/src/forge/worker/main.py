@@ -52,22 +52,27 @@ from forge.worker.subscription_readiness import SubscriptionReadinessEnricher
 from forge.worker.subscription_status import SubscriptionRuntimeReporter
 
 logger = logging.getLogger(__name__)
+_RECOVERY_HEARTBEAT_SECONDS = 10.0
+_RECOVERY_PERSIST_SECONDS = 3.0
 
 
 async def _publish_recovery_worker(
     factory: async_sessionmaker[AsyncSession], worker_id: str
 ) -> None:
-    async with factory() as session:
-        statement = insert(SubscriptionRecoveryWorker).values(
-            worker_id=worker_id, contract_version=1, observed_at=datetime.now(UTC)
-        )
-        await session.execute(
-            statement.on_conflict_do_update(
-                index_elements=[SubscriptionRecoveryWorker.worker_id],
-                set_={"contract_version": 1, "observed_at": datetime.now(UTC)},
+    try:
+        async with asyncio.timeout(_RECOVERY_PERSIST_SECONDS), factory() as session:
+            statement = insert(SubscriptionRecoveryWorker).values(
+                worker_id=worker_id, contract_version=1, observed_at=datetime.now(UTC)
             )
-        )
-        await session.commit()
+            await session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[SubscriptionRecoveryWorker.worker_id],
+                    set_={"contract_version": 1, "observed_at": datetime.now(UTC)},
+                )
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - failed reports expire; never log database credentials
+        logger.warning("Recovery worker compatibility report unavailable")
 
 
 async def _recovery_worker_heartbeat(
@@ -75,9 +80,10 @@ async def _recovery_worker_heartbeat(
 ) -> None:
     while not stop_event.is_set():
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=10)
+            await asyncio.wait_for(stop_event.wait(), timeout=_RECOVERY_HEARTBEAT_SECONDS)
         except TimeoutError:
-            await _publish_recovery_worker(factory, worker_id)
+            if not stop_event.is_set():
+                await _publish_recovery_worker(factory, worker_id)
 
 
 async def run_worker(
