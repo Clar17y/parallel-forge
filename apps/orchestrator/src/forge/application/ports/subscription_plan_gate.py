@@ -9,6 +9,7 @@ from uuid import UUID
 from forge.application.ports.subscription_execution import SubscriptionSettlement
 from forge.domain.approval import SubscriptionPlanApprovalEvidence, SubscriptionPlanProducer
 from forge.domain.plan import PlanOutput
+from forge.domain.subscription import LogicalTaskContract
 
 
 class SubscriptionPlanGateError(RuntimeError):
@@ -38,6 +39,9 @@ class SettledSubscriptionPlan:
 
 
 class SubscriptionPlanGateRepository(Protocol):
+    async def implementation_context(
+        self, task_id: UUID, contract: LogicalTaskContract
+    ) -> dict[str, object] | None: ...
     async def rejection(self, attempt_id: UUID) -> SubscriptionSettlement | None: ...
     async def reject(
         self, evidence: SubscriptionPlanApprovalEvidence

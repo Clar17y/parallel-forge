@@ -237,6 +237,63 @@ async def test_wait_uses_first_causal_primary_admission_and_not_mutable_update_t
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    "mutation", ["missing_version", "source_digest", "child_snapshot", "receipt_digest", "legacy_empty"]
+)
+async def test_wait_application_receipt_requires_independent_historical_proof(
+    session_factory, tmp_path, mutation
+):
+    from forge.application.ports.subscription_gateway import SubscriptionInvocationResult
+    from forge.domain.operation import canonical_digest
+    from forge.domain.subscription import WaitDecision
+    from forge.persistence.models.subscription_results import SubscriptionAttemptResult
+    from sqlalchemy import null, update
+    from subscription_launch_fixture import record_stopped_launch
+    from test_subscription_usage import _known, _reservation
+    from test_subscription_wait_application import waiting_case
+
+    factory, executor, application, parent, children, completed = await waiting_case(
+        session_factory, tmp_path
+    )
+    waiting = await executor.admit_next("usage-wait", _reservation())
+    assert waiting is not None and waiting.task.task_id == parent.task.task_id
+    selected = next(child for child in children if child.task_id != completed.task.task_id)
+    assert (await executor.settle(waiting, SubscriptionInvocationResult(
+        attempt=waiting.attempt,
+        decision=WaitDecision(
+            run_id=parent.task.run_id, task_id=parent.task.task_id,
+            waiting_on_task_ids=(selected.task_id,), reason="Wait for selected child",
+        ),
+        telemetry=_known(), launch_proof=await record_stopped_launch(session_factory, waiting),
+    ))).disposition == "decision_pending"
+    assert (await application.apply_wait(waiting.attempt.attempt_id)).accepted
+    async with factory() as work:
+        result = await work.session.get(SubscriptionAttemptResult, waiting.attempt.attempt_id)
+        if mutation == "legacy_empty":
+            await work.session.execute(
+                update(SubscriptionAttemptResult)
+                .where(SubscriptionAttemptResult.attempt_id == waiting.attempt.attempt_id)
+                .values(application_payload=null(), application_digest=None)
+            )
+        else:
+            receipt = dict(result.application_payload)
+            if mutation == "missing_version":
+                receipt.pop("schema_version")
+            elif mutation == "source_digest":
+                receipt["source_result_digest"] = "0" * 64
+            elif mutation == "child_snapshot":
+                receipt["child_attempt_ids"] = {str(selected.task_id): "not-an-attempt"}
+            result.application_payload = receipt
+            result.application_digest = (
+                "0" * 64 if mutation == "receipt_digest" else canonical_digest(receipt)
+            )
+        await work.commit()
+    value = await _assessment(session_factory, parent.task.run_id)
+    assert value.wait_decisions == int(mutation == "legacy_empty")
+    assert value.unverified_decisions == int(mutation != "legacy_empty")
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("state,ended", [("PAUSED", False), ("CANCELLED", True)])
 async def test_applied_wait_without_continuation_distinguishes_ended_run(
     session_factory, tmp_path, state, ended

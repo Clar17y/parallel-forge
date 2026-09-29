@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 from forge.application.ports.commands import CommandLane
+from forge.domain.local_cli import LocalCliTrust
 from forge.worker import main
 
 
@@ -23,6 +24,7 @@ async def test_production_worker_polls_composed_subscription_invocations(
         database_url = "postgresql+asyncpg://unused/forge"
         subscription_worker_concurrency = 2
         subscription_installations_path = object() if registration_source == "operator" else None
+        subscription_client_trust = LocalCliTrust.VERIFIED
         artifact_root = "."
         subscription_quota_policy = object()
 
@@ -703,6 +705,7 @@ async def test_worker_startup_fails_closed_without_aborting_on_whitespace_only_m
         database_url = "postgresql+asyncpg://unused/forge"
         subscription_worker_concurrency = 1
         subscription_installations_path = manifest_path
+        subscription_client_trust = LocalCliTrust.VERIFIED
         artifact_root = str(tmp_path)
         subscription_quota_policy = None
 

@@ -570,6 +570,43 @@ async def _pause_id(session: AsyncSession, resume: CommandEnvelope) -> UUID:
     return pause.id
 
 
+async def _paused_stopped_plan_is_retainable(
+    session: AsyncSession, run: RunSnapshot, source: _Source, resume: CommandEnvelope
+) -> bool:
+    """Keep only a legal stopped plan whose staleness was caused by this pause."""
+    if (
+        run.suspended_state is not RunState.PLANNING
+        or source.contract.purpose is not SpecialistPurpose.PRIMARY
+        or source.result.disposition != "stale"
+        or not _pending_decision_is_admissible(source, run, phase=RunState.PLANNING)
+    ):
+        return False
+    events = (
+        await session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run.id,
+                RunEvent.run_version == resume.expected_run_version,
+                RunEvent.event_type == "run.paused",
+            )
+        )
+    ).all()
+    if len(events) != 1 or source.result.created_at < events[0].occurred_at:
+        return False
+    launches = (
+        await session.scalars(
+            select(SubscriptionClientLaunch).where(
+                SubscriptionClientLaunch.attempt_id == source.attempt.id
+            )
+        )
+    ).all()
+    proof = SubscriptionLaunchTerminalProof.model_validate(
+        source.result.result_payload["launch_proof"]
+    )
+    return launches_confirmed(
+        launches, proof, require_decision=True, worker_identity=source.attempt.lease_owner
+    )
+
+
 async def resume_paused_attempts(
     session: AsyncSession, resume: CommandEnvelope, pause: CommandEnvelope
 ) -> tuple[SubscriptionResumption, ...]:
@@ -611,6 +648,9 @@ async def resume_paused_attempts(
     resumptions = []
     for attempt_id in sources:
         source = await _source(session, run, attempt_id, historical=False)
+        if await _paused_stopped_plan_is_retainable(session, run, source, resume):
+            source.result.disposition = "decision_pending"
+            continue
         quota_observation = await quota_deferral_observation(session, source)
         if quota_observation is None and (
             source.scheduled.repairs >= source.scheduled.max_repairs

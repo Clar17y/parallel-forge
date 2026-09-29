@@ -375,6 +375,46 @@ async def test_recovery_completes_real_snapshot_handoff_without_mocked_evidence(
             stored = await work.session.get(SubscriptionAttemptResult, child.attempt.attempt_id)
             assert stored.disposition == "decision_pending" and stored.application_payload is None
             assert (await work.subscription_budget.usage(child.task.run_id)).consumed.repairs == 0
+            from forge.persistence.models.subscription_recovery import (
+                SubscriptionApplicationDiagnostic,
+                SubscriptionRecoveryWorker,
+            )
+
+            diagnostic = await work.session.get(SubscriptionApplicationDiagnostic, child.attempt.attempt_id)
+            assert diagnostic is not None
+            assert (diagnostic.classification, diagnostic.reason_code, diagnostic.resolution) == (
+                "unsupported", "application_invariant", "attention"
+            )
+            work.session.add(SubscriptionRecoveryWorker(
+                worker_id=f"handoff-test-{uuid4()}", contract_version=1,
+                observed_at=datetime.now(UTC),
+            ))
+            await work.commit()
+        from forge.application.services.auth import AuthenticatedActor
+        from forge.application.services.subscription_recovery import SubscriptionRecoveryService
+        from forge.domain.subscription_recovery import (
+            RecoveryAction,
+            RecoveryApplyRequest,
+            RecoveryPreviewRequest,
+        )
+
+        actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+        operator = SubscriptionRecoveryService(factory)
+        preview = await operator.preview(
+            run_id=child.task.run_id, task_id=child.task.task_id,
+            attempt_id=child.attempt.attempt_id, actor=actor,
+            request=RecoveryPreviewRequest(action=RecoveryAction.RETRY_APPLICATION),
+        )
+        assert preview.eligible, preview.reason_code
+        await operator.apply(
+            run_id=child.task.run_id, task_id=child.task.task_id,
+            attempt_id=child.attempt.attempt_id, actor=actor,
+            idempotency_key="restore-handoff-evidence",
+            request=RecoveryApplyRequest(
+                action=preview.action, preview_token=preview.preview_token,
+                reason="Storage is available again",
+            ),
+        )
     report = await recovery.reconcile_all()
     assert (report.applied, report.deferred, report.unsupported) == (1, 0, 0)
     assert (await recovery.reconcile_all()).applied == 0

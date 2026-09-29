@@ -2465,6 +2465,38 @@ class PostgresSubscriptionDecisionRepository:
         if record is None:
             raise SubscriptionDecisionError("delegation record was not persisted")
         record.task_row_id, record.attempt_id = task.id, attempt.id
+        if isinstance(decision, WaitDecision):
+            # Snapshot every child, not only those named by the wait. A later
+            # child recovery can prove that this wait preceded its provider
+            # attempt without relying on transaction-start timestamps.
+            child_ids = (
+                await self._session.scalars(
+                    select(SubscriptionTask.id).where(
+                        SubscriptionTask.run_id == task.run_id,
+                        SubscriptionTask.parent_task_id == task.id,
+                    )
+                )
+            ).all()
+            attempts = (
+                await self._session.scalars(
+                    select(SubscriptionAttempt)
+                    .where(SubscriptionAttempt.task_row_id.in_(child_ids))
+                    .order_by(SubscriptionAttempt.attempt_number.desc())
+                )
+            ).all()
+            latest: dict[str, str | None] = {str(child_id): None for child_id in child_ids}
+            for child_attempt in attempts:
+                key = str(child_attempt.task_row_id)
+                if latest[key] is None:
+                    latest[key] = str(child_attempt.id)
+            receipt: dict[str, object] = {
+                "schema_version": 1,
+                "kind": "wait_child_attempt_snapshot",
+                "source_result_digest": result.result_digest,
+                "child_attempt_ids": latest,
+            }
+            result.application_payload = receipt
+            result.application_digest = canonical_digest(receipt)
         task.state = scheduled.state = state
         task.version += 1
         scheduled.lease_owner = scheduled.lease_expires_at = None

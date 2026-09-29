@@ -7,15 +7,23 @@ import logging
 import math
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import uuid4
+
+from sqlalchemy import delete
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
 from forge.application.ports.commands import CommandLane, CommandRecoveryRequired
 from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.recovery import RecoveryError, RecoveryService
-from forge.application.services.subscription_decision_recovery import SubscriptionDecisionRecovery
+from forge.application.services.subscription_decision_recovery import (
+    SubscriptionDecisionRecovery,
+    is_transient_recovery_error,
+)
 from forge.application.services.subscription_effect_recovery import SubscriptionEffectRecovery
 from forge.application.services.terminal_recovery import TerminalMergeRecovery
 from forge.application.services.worker import CommandHandler, Worker
@@ -24,7 +32,9 @@ from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription_installations import SubscriptionInstallationSpec
 from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPoolKey
 from forge.domain.subscription_readiness import SubscriptionRouteReadiness
+from forge.domain.subscription_recovery import RECOVERY_WORKER_FRESHNESS_SECONDS
 from forge.persistence.database import create_engine, create_session_factory
+from forge.persistence.models.subscription_recovery import SubscriptionRecoveryWorker
 from forge.persistence.repositories.capability_evidence import PostgresCapabilityEvidenceSource
 from forge.persistence.repositories.capability_probe_diagnostics import (
     PostgresCapabilityProbeDiagnosticStore,
@@ -49,6 +59,43 @@ from forge.worker.subscription_readiness import SubscriptionReadinessEnricher
 from forge.worker.subscription_status import SubscriptionRuntimeReporter
 
 logger = logging.getLogger(__name__)
+_RECOVERY_HEARTBEAT_SECONDS = 10.0
+_RECOVERY_PERSIST_SECONDS = 3.0
+
+
+async def _publish_recovery_worker(
+    factory: async_sessionmaker[AsyncSession], worker_id: str
+) -> None:
+    try:
+        async with asyncio.timeout(_RECOVERY_PERSIST_SECONDS), factory() as session:
+            observed_at = datetime.now(UTC)
+            await session.execute(delete(SubscriptionRecoveryWorker).where(
+                SubscriptionRecoveryWorker.observed_at
+                < observed_at - timedelta(seconds=RECOVERY_WORKER_FRESHNESS_SECONDS)
+            ))
+            statement = insert(SubscriptionRecoveryWorker).values(
+                worker_id=worker_id, contract_version=1, observed_at=observed_at
+            )
+            await session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[SubscriptionRecoveryWorker.worker_id],
+                    set_={"contract_version": 1, "observed_at": observed_at},
+                )
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - failed reports expire; never log database credentials
+        logger.warning("Recovery worker compatibility report unavailable")
+
+
+async def _recovery_worker_heartbeat(
+    factory: async_sessionmaker[AsyncSession], worker_id: str, stop_event: asyncio.Event
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=_RECOVERY_HEARTBEAT_SECONDS)
+        except TimeoutError:
+            if not stop_event.is_set():
+                await _publish_recovery_worker(factory, worker_id)
 
 
 async def run_worker(
@@ -206,6 +253,11 @@ async def run_worker(
             status_reporter = effective_handlers.subscription_status
         if status_reporter is not None:
             await status_reporter.publish()
+        if (
+            isinstance(effective_handlers, WorkerHandlers)
+            and effective_handlers.subscription_invocations is not None
+        ):
+            await _publish_recovery_worker(factory, base_worker_id)
         logger.info("Forge worker recovered and is polling")
         polls = [
             asyncio.create_task(_poll(worker, stop_event, poll_interval)),
@@ -238,6 +290,9 @@ async def run_worker(
             isinstance(effective_handlers, WorkerHandlers)
             and effective_handlers.subscription_invocations is not None
         ):
+            polls.append(
+                asyncio.create_task(_recovery_worker_heartbeat(factory, base_worker_id, stop_event))
+            )
             for slot in range(settings.subscription_worker_concurrency):
                 invocation = effective_handlers.subscription_invocations(
                     f"{base_worker_id}-subscription-{slot}"
@@ -354,6 +409,13 @@ async def _poll_decisions(
             if scan not in done:
                 return
             report = await scan
+        except Exception as error:
+            if not is_transient_recovery_error(error):
+                raise
+            # Scans and their diagnostics can share an outage. Leave retained
+            # sources for the next scan without stopping unrelated pollers.
+            logger.warning("Subscription decision retry unavailable; will retry")
+            continue
         finally:
             # Keep resources alive until an interrupted scan has closed its UoW
             # or artifact operation. A settled source remains replayable.

@@ -20,6 +20,7 @@ from forge.application.services.jev_review import (
     review_focus_payload,
     safe_snapshot_sources,
 )
+from forge.application.services.subscription_context import bounded_approved_context
 from forge.domain.agent import PolicySummary
 from forge.domain.operation import canonical_digest
 from forge.domain.policy import ProjectPolicy
@@ -32,6 +33,7 @@ from forge.domain.subscription import (
     SpecialistPurpose,
     encode_subscription_record,
 )
+from forge.domain.subscription_decision_policy import is_approved_plan_primary_contract
 from forge.domain.subscription_execution import SUBSCRIPTION_WORK_STATES
 from forge.domain.tool import ToolName, repository_resource_identity
 
@@ -176,28 +178,23 @@ class SubscriptionRequestBuilder:
             budget = await work.subscription_budget.reserved_budget(
                 run.id, admission.task.task_id, admission.attempt.attempt_id
             )
-            request = SubscriptionInvocationRequest(
-                task=admission.task,
-                attempt=admission.attempt,
-                envelope=admission.envelope,
-                run_state=run.state,
-                attempt_budget=budget,
-                known_tasks=known,
-                prompt_version=_PROMPT_VERSION,
-                trusted_system_prompt=_SYSTEM
-                + (_PLANNING if run.state is RunState.PLANNING else "")
-                + (_CLOSED if context.candidate_closed else ""),
-                authorization=BrokerAuthorizationBinding(
-                    run_id=run.id,
-                    task_id=admission.task.task_id,
-                    attempt_id=admission.attempt.attempt_id,
-                    worktree_id=resource,
-                    role=admission.task.purpose,
-                    policy_version=run.policy_version,
-                    permitted_tools=tools,
-                    broker_token=token_urlsafe(32),
-                ),
-                untrusted_context={
+            implementation = await work.subscription_plan_gate.implementation_context(
+                admission.task.task_id,
+                admission.task,
+            )
+            correction_feedback = await work.subscription_recovery.correction_feedback(
+                admission.task.task_id,
+                canonical_digest(encode_subscription_record(admission.task)),
+            )
+            if (
+                run.state is RunState.IMPLEMENTING
+                and is_approved_plan_primary_contract(admission.task)
+                and implementation is None
+            ):
+                # Historical planning contracts remain inspectable but cannot
+                # silently become an implementation invocation.
+                raise ValueError("primary implementation contract revision is unavailable")
+            untrusted_context = bounded_approved_context({
                     "candidate_epoch": admission.candidate_epoch,
                     "pending_worker_feedback": feedback.pending_primary,
                     "operator_feedback": list(feedback.worker_feedback),
@@ -208,6 +205,8 @@ class SubscriptionRequestBuilder:
                         "digest": human.task_digest,
                     },
                     "base_sha": run.base_sha,
+                    "approved_implementation": implementation,
+                    "role_correction": correction_feedback,
                     "policy": PolicySummary.from_policy(policy).model_dump(mode="json"),
                     "named_checks": [command.name for command in policy.commands],
                     "known_tasks": [encode_subscription_record(task) for task in known],
@@ -247,7 +246,29 @@ class SubscriptionRequestBuilder:
                         }
                         for outcome in outcomes
                     ],
-                },
+                }, implementation)
+            request = SubscriptionInvocationRequest(
+                task=admission.task,
+                attempt=admission.attempt,
+                envelope=admission.envelope,
+                run_state=run.state,
+                attempt_budget=budget,
+                known_tasks=known,
+                prompt_version=_PROMPT_VERSION,
+                trusted_system_prompt=_SYSTEM
+                + (_PLANNING if run.state is RunState.PLANNING else "")
+                + (_CLOSED if context.candidate_closed else ""),
+                authorization=BrokerAuthorizationBinding(
+                    run_id=run.id,
+                    task_id=admission.task.task_id,
+                    attempt_id=admission.attempt.attempt_id,
+                    worktree_id=resource,
+                    role=admission.task.purpose,
+                    policy_version=run.policy_version,
+                    permitted_tools=tools,
+                    broker_token=token_urlsafe(32),
+                ),
+                untrusted_context=untrusted_context,
             )
             await work.commit()
         return await self._with_review_focus(request, run, policy, review_selection, admission)

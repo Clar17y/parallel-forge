@@ -40,6 +40,7 @@ from forge.persistence.models import (
     ValidationResult,
 )
 from forge.persistence.queries.recovery import startup_intervention_hold
+from forge.persistence.queries.subscription_recovery_attention import current_attention
 from forge.persistence.repositories.events import _event_from_record
 from forge.persistence.repositories.operations import (
     PostgresOperationRepository,
@@ -385,6 +386,7 @@ class DashboardQuery:
                 "recovery_hold": bool(
                     await session.scalar(select(startup_intervention_hold(run_id)))
                 ),
+                "subscription_recovery_attention": bool(await current_attention(session, run_id)),
                 "teardown_eligible": (
                     snapshot.state in TEARDOWN_STATES
                     and (has_removable_resources(snapshot) or branch_retained)

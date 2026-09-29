@@ -32,6 +32,17 @@ def test_planning_primary_rejects_non_plan_decisions(kind: str) -> None:
         decode_final({"kind": kind}, request)
 
 
+@pytest.mark.parametrize("kind", ["handoff", "scope_request"])
+def test_primary_schema_and_decoder_exclude_worker_only_decisions(kind: str) -> None:
+    from forge.agents.subscription_protocol import output_schema
+
+    request = _request(purpose=SpecialistPurpose.PRIMARY)
+    choices = output_schema(request)["properties"]["decision"]["anyOf"]
+    assert kind not in {choice["properties"]["kind"]["const"] for choice in choices}
+    with pytest.raises(ProtocolError, match="role"):
+        decode_final({"kind": kind}, request)
+
+
 def test_accept_preserves_known_child_target_and_defaults_to_primary() -> None:
     request = _request(purpose=SpecialistPurpose.PRIMARY)
     child = replace(

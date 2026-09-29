@@ -36,7 +36,7 @@ from test_subscription_usage import _known, _reservation
 
 
 async def proposal_case(
-    session_factory, tmp_path, *, primary_budget=None, plan_scope=None, plan_checks=("unit",), review_route=None
+    session_factory, tmp_path, *, primary_budget=None, plan_scope=None, plan_checks=("unit",), review_route=None, pause_before_settle=False, pause_callback=None
 ):
     factory = lambda: PostgresUnitOfWork(session_factory)
     project_id, task_id = uuid4(), uuid4()
@@ -135,6 +135,13 @@ async def proposal_case(
     if plan_scope is not None:
         plan = ScopedPlanOutput(**plan.model_dump(), owned_paths=plan_scope)
     launch_proof = await record_stopped_launch(session_factory, admission)
+    if pause_callback is not None:
+        await pause_callback(factory, admission.attempt.run_id)
+    elif pause_before_settle:
+        async with factory() as work:
+            current = await work.runs.get_for_update(admission.attempt.run_id)
+            await work.runs.pause(current.id, current.version, "run.paused", {})
+            await work.commit()
     telemetry = _known()
     outcome = await executor.settle(
         admission,
@@ -142,6 +149,9 @@ async def proposal_case(
             attempt=admission.attempt, decision=plan, telemetry=telemetry, launch_proof=launch_proof
         ),
     )
+    if pause_before_settle or pause_callback is not None:
+        assert outcome.disposition == "stale"
+        return factory, admission
     assert outcome.disposition == "decision_pending"
     async with factory() as work:
         result = await work.session.get(SubscriptionAttemptResult, admission.attempt.attempt_id)
