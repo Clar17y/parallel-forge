@@ -196,49 +196,22 @@ export function deriveModelFromCatalogs(
  * catalogs when feasible, falling back cleanly to offline seeds when unavailable.
  */
 export function defaultRolePreferences(catalogs?: SubscriptionModelCatalogView[]): Preference[] {
-  return offlineRoleSeeds.map(role => {
-    const derivedPreferred = deriveModelFromCatalogs(
+  const routeForSeed = (seed: RoleSeedConfig['preferred']): Route => {
+    const derived = deriveModelFromCatalogs(
       {
-        provider: role.preferred.provider,
-        client: role.preferred.client,
-        family: role.preferred.family,
-        effort: role.preferred.effort,
-        seedModel: role.preferred.model,
+        provider: seed.provider,
+        client: seed.client,
+        family: seed.family,
+        effort: seed.effort,
+        seedModel: seed.model,
       },
       catalogs
     );
-
-    const preferred_route = createRoute(
-      role.preferred.provider,
-      role.preferred.client,
-      derivedPreferred.model,
-      role.preferred.effort
-    );
-
-    const fallback_routes = role.fallbacks.map(fb => {
-      const derivedFallback = deriveModelFromCatalogs(
-        {
-          provider: fb.provider,
-          client: fb.client,
-          family: fb.family,
-          effort: fb.effort,
-          seedModel: fb.model,
-        },
-        catalogs
-      );
-
-      return createRoute(
-        fb.provider,
-        fb.client,
-        derivedFallback.model,
-        fb.effort
-      );
-    });
-
-    return {
-      purpose: role.purpose,
-      preferred_route,
-      fallback_routes,
-    };
-  });
+    return createRoute(seed.provider, seed.client, derived.model, seed.effort);
+  };
+  return offlineRoleSeeds.map(role => ({
+    purpose: role.purpose,
+    preferred_route: routeForSeed(role.preferred),
+    fallback_routes: role.fallbacks.map(routeForSeed),
+  }));
 }

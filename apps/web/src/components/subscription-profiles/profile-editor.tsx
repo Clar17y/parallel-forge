@@ -17,6 +17,7 @@ import {
   type SubscriptionModelCatalogView,
   type SubscriptionModelOption,
 } from './models';
+import { JevSettings, type JevPolicy } from '@/components/projects/jev-settings';
 
 type ProfileCreate = components['schemas']['ProfileCreateRequest'];
 type ProfileAppend = components['schemas']['ProfileAppendRequest'];
@@ -62,13 +63,8 @@ const defaultPreference = (purpose: Preference['purpose'] = 'primary'): Preferen
   fallback_routes: [],
 });
 
-const isSeedModelId = (modelId: string): boolean => {
-  const trimmed = modelId.trim();
-  if (!trimmed) return false;
-  return offlineRoleSeeds.some(
-    seed => seed.preferred.model === trimmed || seed.fallbacks.some(fb => fb.model === trimmed)
-  );
-};
+const seedRoutes = offlineRoleSeeds.flatMap(seed => [seed.preferred, ...seed.fallbacks]);
+const seedModelIds = new Set(seedRoutes.map(route => route.model));
 
 function RouteFields({
   route,
@@ -90,11 +86,7 @@ function RouteFields({
 
   // Derive known providers across catalogs and offline seeds
   const knownProviders = useMemo(() => {
-    const set = new Set<string>();
-    offlineRoleSeeds.forEach(s => {
-      set.add(s.preferred.provider);
-      s.fallbacks.forEach(fb => set.add(fb.provider));
-    });
+    const set = new Set(seedRoutes.map(route => route.provider));
     catalogs?.forEach(c => {
       if (c.provider) set.add(c.provider);
     });
@@ -106,11 +98,8 @@ function RouteFields({
     const providerLower = route.provider.trim().toLowerCase();
     if (!providerLower) return [];
     const set = new Set<string>();
-    offlineRoleSeeds.forEach(s => {
-      if (s.preferred.provider.toLowerCase() === providerLower) set.add(s.preferred.client);
-      s.fallbacks.forEach(fb => {
-        if (fb.provider.toLowerCase() === providerLower) set.add(fb.client);
-      });
+    seedRoutes.forEach(seed => {
+      if (seed.provider.toLowerCase() === providerLower) set.add(seed.client);
     });
     catalogs?.forEach(c => {
       if (c.provider.toLowerCase() === providerLower && c.client) set.add(c.client);
@@ -124,7 +113,7 @@ function RouteFields({
 
   const catalogModels: SubscriptionModelOption[] = activeCatalog?.models ?? [];
   const isCatalogModel = catalogModels.some(m => m.id === route.model);
-  const isSeed = isSeedModelId(route.model);
+  const isSeed = seedModelIds.has(route.model.trim());
   const currentProviderReport = activeCatalog?.source === 'provider' &&
     activeCatalog.status === 'available' && !activeCatalog.stale &&
     !!activeCatalog.observed_at && Number.isFinite(Date.parse(activeCatalog.observed_at));
@@ -229,13 +218,7 @@ function RouteFields({
             Model choices
             <select
               aria-label={`${label} model choice`}
-              value={
-                catalogModels.some(m => m.id === route.model)
-                  ? route.model
-                  : route.model
-                  ? route.model
-                  : ''
-              }
+              value={route.model}
               onChange={event => {
                 const val = event.target.value;
                 if (!val) return;
@@ -265,7 +248,7 @@ function RouteFields({
                   {m.efforts.length ? ` (${m.efforts.join(', ')})` : ''}
                 </option>
               ))}
-              {route.model && !catalogModels.some(m => m.id === route.model) && (
+              {route.model && !isCatalogModel && (
                 <option value={route.model}>
                   Custom / uncataloged: {route.model}
                 </option>
@@ -376,6 +359,10 @@ export function ProfileEditor({
       })) ?? []
   );
 
+  const [jev, setJev] = useState<JevPolicy | null | undefined>(
+    () => (initial?.jev ? { ...initial.jev } : undefined)
+  );
+
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
@@ -445,14 +432,20 @@ export function ProfileEditor({
       const sanitizedPreferences: Preference[] = preferences.map(
         ({ id: _id, ...rest }) => rest
       );
-      await onSave({
+      const payload: ProfileCreate | ProfileAppend = {
         preferences: sanitizedPreferences,
         approved_mappings: mappings,
         default_billing_mode: billing,
         ...(expectedVersion === undefined
           ? {}
           : { expected_current_version: expectedVersion }),
-      } as ProfileCreate | ProfileAppend);
+        ...(jev != null
+          ? { jev }
+          : expectedVersion !== undefined && initial?.jev != null
+          ? { jev: null }
+          : {}),
+      };
+      await onSave(payload);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Profile could not be saved.');
     } finally {
@@ -766,6 +759,15 @@ export function ProfileEditor({
           </Button>
         </div>
       </fieldset>
+
+      <div style={{ margin: '20px 0' }}>
+        <JevSettings
+          value={jev}
+          onChange={setJev}
+          checkboxLabel="Configure Jev default"
+          description="Configure optional Jev advisory search and review defaults for projects using this profile. Explicit project Jev settings override this default."
+        />
+      </div>
 
       <div className="form-actions">
         {error && <p role="alert" className="field-error">{error}</p>}

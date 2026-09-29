@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 from forge.application.services.jev_reporting import JevReportingService
+from forge.domain.policy import JevPolicy
 from forge.domain.run import RunSnapshot
 from forge.persistence.repositories.runs import RunNotFound
 from httpx import ASGITransport, AsyncClient
@@ -22,9 +23,9 @@ async def test_jev_report_uses_policy_version_bound_to_run():
         async def __aexit__(self, *_args): pass
         async def get(self, _run_id):
             return RunSnapshot(id=run_id, project_id=project_id, task_id=uuid4(), policy_version=3)
-        async def get_policy(self, _project_id, version):
-            assert version == 3
-            return type("Policy", (), {"document": {"jev": {"mode": "shadow", "model": "model-free"}}})()
+        async def policy_for_run(self, requested_run, *, policy_version):
+            assert requested_run == run_id and policy_version == 3
+            return JevPolicy(mode="shadow", model="model-free")
         async def summary(self, requested_run, *, policy):
             assert requested_run == run_id
             assert policy.mode == "shadow" and policy.model == "model-free"
@@ -77,3 +78,17 @@ async def test_jev_route_requires_operator_session_and_returns_safe_report(task1
     body = authorized.json()
     assert body["schema_version"] == 1 and body["requested_model"] == "jev-latest"
     assert "prompt" not in body and body["actual_model"] is None
+
+
+@pytest.mark.asyncio
+async def test_jev_report_with_unavailable_policy_returns_safe_unavailable_status(
+    task10_client, task10_route_context, route_headers,
+):
+    class Report:
+        async def report(self, run_id):
+            raise ValueError("private details from an inconsistent policy binding")
+
+    task10_route_context.app.state.jev_reporting_service = Report()
+    response = await task10_client.get(f"/api/runs/{uuid4()}/jev", headers=route_headers)
+    assert response.status_code == 503
+    assert "private details" not in response.text

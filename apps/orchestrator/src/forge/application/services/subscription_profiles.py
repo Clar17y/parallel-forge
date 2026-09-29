@@ -15,6 +15,7 @@ from forge.application.ports.audit import AuditRepository
 from forge.application.ports.mutations import ApiMutationRecord, MutationRepository
 from forge.application.ports.subscription import SubscriptionRepository
 from forge.application.services.auth import AuthenticatedActor
+from forge.domain.policy import JevPolicy
 from forge.domain.subscription import (
     AuthMode,
     BillingMode,
@@ -96,6 +97,7 @@ class ProfileBody(BaseModel):
     preferences: tuple[PreferenceInput, ...] = Field(min_length=1, max_length=16)
     approved_mappings: tuple[MappingInput, ...] = Field(default=(), max_length=64)
     default_billing_mode: BillingMode = BillingMode.ALLOWANCE_ONLY
+    jev: JevPolicy | None = None
 
 
 class ProfileVersionRequest(ProfileBody):
@@ -124,7 +126,7 @@ class SubscriptionProfileService:
         self, *, actor: ProfileActor, idempotency_key: str, request: ProfileBody
     ) -> OperatorProfile:
         body = _coerce(request, ProfileBody)
-        digest = _digest(body.model_dump(mode="json"))
+        digest = _digest(body.model_dump(mode="json", exclude={"jev"} if body.jev is None else set()))
         async with self._unit_of_work_factory() as work:
             receipt = await work.mutations.reserve(
                 actor_id=actor.actor_id,
@@ -157,7 +159,9 @@ class SubscriptionProfileService:
         request: ProfileVersionRequest,
     ) -> OperatorProfile:
         body = _coerce(request, ProfileVersionRequest)
-        digest = _digest({"profile_id": str(profile_id), "request": body.model_dump(mode="json")})
+        digest = _digest({"profile_id": str(profile_id), "request": body.model_dump(
+            mode="json", exclude={"jev"} if body.jev is None else set()
+        )})
         async with self._unit_of_work_factory() as work:
             receipt = await work.mutations.reserve(
                 actor_id=actor.actor_id,
@@ -304,6 +308,7 @@ def _profile(
             for value in body.approved_mappings
         ),
         default_billing_mode=body.default_billing_mode,
+        jev=body.jev,
     )
 
 

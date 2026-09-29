@@ -113,6 +113,11 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
                   </h3>
                   <p className="meta" style={{ margin: '2px 0 0' }}>
                     Default billing: <strong>{profileLabel(profile.default_billing_mode)}</strong>
+                    {' · '}
+                    Jev default:{' '}
+                    <strong>
+                      {profile.jev ? `${profileLabel(profile.jev.mode)} (${profile.jev.model})` : 'None'}
+                    </strong>
                   </p>
                 </div>
                 <div>
@@ -197,6 +202,15 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
                       )})`
                   )
                   .join('; ') || 'none'}
+              </p>
+
+              <p style={{ margin: '4px 0 0', fontSize: '0.8125rem' }}>
+                Jev default:{' '}
+                {profile.jev
+                  ? `${profileLabel(profile.jev.mode)} · ${profile.jev.model}${
+                      profile.jev.allow_remote ? ' · remote processing allowed' : ''
+                    }`
+                  : 'None'}
               </p>
 
               <details>

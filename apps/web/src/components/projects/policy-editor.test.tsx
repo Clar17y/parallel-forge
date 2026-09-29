@@ -36,15 +36,18 @@ test('round-trips an explicitly configured Jev policy into a new immutable versi
   expect(save.mock.calls[0][0]).toMatchObject({ expected_policy_version: 2, jev });
 });
 
-test('disables an existing Jev policy explicitly instead of silently omitting it', async () => {
+test('keeps an explicit Jev Off override separate from returning to profile inheritance', async () => {
   const save = vi.fn().mockResolvedValue(undefined);
   const jev = { mode: 'on' as const, allow_remote: true, model: 'operator-alias', semantic_search: true,
     review_focus: true, top_k: 8, max_requests_per_run: 20, max_input_units_per_run: 10000,
     max_candidates: 30, max_result_chars: 5000, timeout_seconds: 8, cache_ttl_seconds: 100 };
   render(<PolicyEditor policy={{ project_id: 'project-1', version: 2, policy_version: 2,
     policy_digest: 'c'.repeat(64), document_schema_version: 1, document: { ...projectDefaults, jev } }} onSave={save} />);
-  expect(screen.getByLabelText('Configure Jev for this project')).toBeDisabled();
+  expect(screen.getByLabelText('Configure Jev for this project')).toBeEnabled();
   await userEvent.selectOptions(screen.getByRole('combobox', { name: /Jev mode/ }), 'off');
   await userEvent.click(screen.getByRole('button', { name: 'Create policy version' }));
   expect(save.mock.calls[0][0]).toMatchObject({ expected_policy_version: 2, jev: { ...jev, mode: 'off' } });
+  await userEvent.click(screen.getByLabelText('Configure Jev for this project'));
+  await userEvent.click(screen.getByRole('button', { name: 'Create policy version' }));
+  expect(save.mock.calls[1][0]).not.toHaveProperty('jev');
 });

@@ -2835,6 +2835,16 @@
             "title": "Expected Current Version",
             "type": "integer"
           },
+          "jev": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JevPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "preferences": {
             "items": {
               "$ref": "#/components/schemas/PreferenceInput"
@@ -2868,6 +2878,16 @@
             "$ref": "#/components/schemas/BillingMode",
             "default": "allowance_only"
           },
+          "jev": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JevPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "preferences": {
             "items": {
               "$ref": "#/components/schemas/PreferenceInput"
@@ -2898,6 +2918,16 @@
           "default_billing_mode": {
             "title": "Default Billing Mode",
             "type": "string"
+          },
+          "jev": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JevPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "preferences": {
             "items": {

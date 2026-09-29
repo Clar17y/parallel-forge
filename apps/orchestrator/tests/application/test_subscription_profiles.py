@@ -8,7 +8,12 @@ from uuid import uuid4
 import pytest
 from forge.application.ports.mutations import ApiMutationRecord
 from forge.application.services.auth import AuthenticatedActor
-from forge.application.services.subscription_profiles import ProfileBody, SubscriptionProfileService
+from forge.application.services.subscription_profiles import (
+    ProfileBody,
+    SubscriptionProfileService,
+    _digest,
+)
+from forge.domain.policy import JevPolicy
 
 
 class Work:
@@ -91,3 +96,24 @@ async def test_create_controls_profile_identity_version_and_mapping_actor():
     assert work.reservation["action"] == "subscription.profile.create"
     assert work.completed["response_payload"]["profile_version"] == 1
     assert work.audit_rows[0]["payload"]["request_digest"] == work.reservation["request_digest"]
+
+
+@pytest.mark.asyncio
+async def test_profile_jev_is_saved_without_changing_legacy_request_identity():
+    work = Work()
+    service = SubscriptionProfileService(lambda: work)
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    body = {
+        "preferences": [{"purpose": "primary", "preferred_route": {
+            "provider": "openai", "client": "codex", "model": "gpt-test",
+        }}],
+    }
+    legacy = ProfileBody.model_validate(body)
+    expected = _digest(legacy.model_dump(mode="json", exclude={"jev"}))
+    old = await service.create(actor=actor, idempotency_key="old", request=legacy)
+    assert work.reservation["request_digest"] == expected
+    configured = ProfileBody.model_validate(body | {"jev": {"mode": "on", "allow_remote": True}})
+    new = await service.create(actor=actor, idempotency_key="new", request=configured)
+    assert new.jev == JevPolicy(mode="on", allow_remote=True)
+    assert old.jev is None
+    assert work.reservation["request_digest"] != expected

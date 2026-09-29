@@ -112,3 +112,30 @@ test('a confirmed create clears its draft even while history refresh is pending;
   expect(screen.getByLabelText('Preferred route model')).not.toBe(draft);
   expect(screen.getByLabelText('Preferred route model')).toHaveValue('');
 });
+
+test('displays saved Jev default in profile version card details', () => {
+  const profileWithJev = {
+    ...profile(1),
+    jev: {
+      mode: 'on' as const,
+      allow_remote: true,
+      model: 'jev-latest',
+      semantic_search: true,
+      review_focus: true,
+      top_k: 15,
+      max_requests_per_run: 64,
+      max_input_units_per_run: 250000,
+      max_candidates: 96,
+      max_result_chars: 12000,
+      timeout_seconds: 15,
+      cache_ttl_seconds: 3600,
+    },
+  };
+  const profileWithoutJev = profile(2);
+
+  render(<ProfileList profiles={[profileWithJev, profileWithoutJev]} refresh={vi.fn()} />);
+
+  expect(screen.getByText('On (jev-latest)')).toBeInTheDocument();
+  expect(screen.getByText('Jev default: On · jev-latest · remote processing allowed')).toBeInTheDocument();
+  expect(screen.getByText('Jev default: None')).toBeInTheDocument();
+});

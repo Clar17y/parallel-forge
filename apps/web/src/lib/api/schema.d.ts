@@ -2031,6 +2031,7 @@ export interface components {
             default_billing_mode: components["schemas"]["BillingMode"];
             /** Expected Current Version */
             expected_current_version: number;
+            jev?: components["schemas"]["JevPolicy"] | null;
             /** Preferences */
             preferences: components["schemas"]["PreferenceInput"][];
         };
@@ -2043,6 +2044,7 @@ export interface components {
             approved_mappings: components["schemas"]["MappingInput"][];
             /** @default allowance_only */
             default_billing_mode: components["schemas"]["BillingMode"];
+            jev?: components["schemas"]["JevPolicy"] | null;
             /** Preferences */
             preferences: components["schemas"]["PreferenceInput"][];
         };
@@ -2054,6 +2056,7 @@ export interface components {
             }[];
             /** Default Billing Mode */
             default_billing_mode: string;
+            jev?: components["schemas"]["JevPolicy"] | null;
             /** Preferences */
             preferences: {
                 [key: string]: unknown;

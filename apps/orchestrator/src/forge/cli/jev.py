@@ -23,7 +23,11 @@ def report(
     run_id: UUID = typer.Argument(..., help="Run whose Jev activity is summarized."),
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable report."),
 ) -> None:
-    value = asyncio.run(_report(run_id))
+    try:
+        value = asyncio.run(_report(run_id))
+    except ValueError:
+        typer.echo("Jev report unavailable for the current run policy.", err=True)
+        raise typer.Exit(1) from None
     if value is None:
         typer.echo("Run not found.", err=True)
         raise typer.Exit(1)

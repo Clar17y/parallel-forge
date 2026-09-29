@@ -2,7 +2,7 @@ import { useId } from 'react';
 
 export function Field({ label, value, onChange, error, multiline = false, ...input }: {
   label: string; value: string | number; onChange: (value: string) => void; error?: string;
-  multiline?: boolean; required?: boolean; type?: string; min?: number; max?: number; maxLength?: number; pattern?: string;
+  multiline?: boolean; required?: boolean; type?: string; min?: number; max?: number; step?: number | 'any'; maxLength?: number; pattern?: string;
 }) {
   const id = useId();
   const common = { id, value, onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(event.target.value),

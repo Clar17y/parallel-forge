@@ -14,6 +14,7 @@ from forge.application.ports.subscription_gateway import SubscriptionInvocationR
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import GitWorkingTreeSnapshot, ManagedWorktree
 from forge.application.services.jev import JevService
+from forge.application.services.jev_policy import run_jev_policy
 from forge.application.services.jev_review import (
     MAX_REVIEW_FOCUS_SOURCES,
     REVIEW_QUESTIONS,
@@ -23,7 +24,7 @@ from forge.application.services.jev_review import (
 from forge.application.services.subscription_context import bounded_approved_context
 from forge.domain.agent import PolicySummary
 from forge.domain.operation import canonical_digest
-from forge.domain.policy import ProjectPolicy
+from forge.domain.policy import JevPolicy, ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.subscription import (
@@ -270,8 +271,9 @@ class SubscriptionRequestBuilder:
                 ),
                 untrusted_context=untrusted_context,
             )
+            jev = await run_jev_policy(work, run, policy.jev) if review_selection is not None else None
             await work.commit()
-        return await self._with_review_focus(request, run, policy, review_selection, admission)
+        return await self._with_review_focus(request, run, policy, review_selection, admission, jev=jev)
 
     async def _with_review_focus(
         self,
@@ -280,8 +282,9 @@ class SubscriptionRequestBuilder:
         policy: ProjectPolicy,
         selection: dict[str, object] | None,
         admission: SubscriptionAdmission,
+        *,
+        jev: JevPolicy | None,
     ) -> SubscriptionInvocationRequest:
-        jev = policy.jev
         if (
             selection is None or jev is None or jev.mode == "off" or not jev.review_focus
             or self._jev_service is None or self._snapshot is None or self._reader is None

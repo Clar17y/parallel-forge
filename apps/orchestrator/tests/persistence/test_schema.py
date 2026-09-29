@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-CURRENT_REVISION = "20260929_0029"
+CURRENT_REVISION = "20260929_0030"
 V01_TABLES = {
     "recovery_barrier",
     "api_mutations",
@@ -88,6 +88,11 @@ EXPECTED_TABLES = V01_TABLES | {
     "subscription_task_stops",
     "subscription_task_feedback",
     "subscription_worker_status",
+    "subscription_contract_revisions",
+    "subscription_recovery_receipts",
+    "subscription_recovery_workers",
+    "subscription_recovery_signing_keys",
+    "subscription_application_diagnostics",
 }
 
 
@@ -715,9 +720,14 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
         ("subscription_task_stops", "settlement_payload"),
         ("subscription_worker_status", "routes"),
         ("subscription_worker_status", "model_catalogs"),
+        ("subscription_contract_revisions", "original_contract_payload"),
+        ("subscription_contract_revisions", "contract_payload"),
         ("jev_evaluations", "scores"),
     }
     alternate_primary_keys = {
+        "subscription_application_diagnostics": {"attempt_id": Uuid},
+        "subscription_recovery_signing_keys": {"id": Integer},
+        "subscription_recovery_workers": {"worker_id": String},
         "project_policy_versions": {"project_id": Uuid, "version": Integer},
         "agent_execution_evidence_inputs": {"consumer_execution_id": Uuid, "purpose": String},
         "project_subscription_profiles": {"project_id": Uuid},

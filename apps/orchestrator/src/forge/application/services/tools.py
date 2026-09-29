@@ -68,6 +68,7 @@ from forge.application.ports.worktrees import (
 )
 from forge.application.services.evidence_reader import EvidenceReader
 from forge.application.services.jev import JevService
+from forge.application.services.jev_policy import run_jev_policy
 from forge.application.services.recovery import OperationExecutor
 from forge.application.services.semantic_search import (
     SemanticCandidate,
@@ -2928,10 +2929,13 @@ class ControlledToolService:
                         current = await self._budget_available(context, policy, work)
             else:
                 current = False
+            jev = (
+                await run_jev_policy(work, run, policy.jev)
+                if current and run is not None and policy is not None else None
+            )
             await work.rollback()
         if error is not None or not current or authorization is None or policy is None:
             return None
-        jev = policy.jev
         if request.name is ToolName.REPOSITORY_SEARCH:
             if jev is None:
                 return None  # Legacy search ranking remains available for old policies.

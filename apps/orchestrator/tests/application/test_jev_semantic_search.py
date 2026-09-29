@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from forge.application.ports.jev import JevResult
@@ -274,12 +275,21 @@ def _work(tmp_path: Path) -> _TrackedWork:
 
 
 @pytest.mark.asyncio
-async def test_controlled_semantic_tool_finds_late_nonliteral_source_outside_uow(tmp_path: Path) -> None:
+@pytest.mark.parametrize("inherit_profile", [False, True])
+async def test_controlled_semantic_tool_finds_late_nonliteral_source_outside_uow(
+    tmp_path: Path, inherit_profile: bool,
+) -> None:
     (tmp_path / "a.py").write_text("unrelated\n", encoding="utf-8")
     (tmp_path / "z.py").write_text("padding\n" * 50 + "def exponential_backoff():\n    pass\n", encoding="utf-8")
     work = _work(tmp_path)
     jev = _Jev(work)
     service = _controlled(tmp_path, jev)
+    if inherit_profile:
+        project = work.projects.project
+        document = {**project.policy.document}
+        inherited = JevPolicy.model_validate(document.pop("jev"))
+        work.projects.project = replace(project, policy=replace(project.policy, document=document))
+        work.jev = SimpleNamespace(policy_for_run=AsyncMock(return_value=inherited))
 
     result = await service.invoke(_context(), ToolRequest(
         name=ToolName.REPOSITORY_SEARCH_SEMANTIC,
@@ -290,6 +300,8 @@ async def test_controlled_semantic_tool_finds_late_nonliteral_source_outside_uow
     assert result.metadata["search"]["scored"] is True
     assert result.metadata["candidates"][0]["path"] == "z.py"
     assert any("item 0" in question["instructions"] for question in jev.requests[0].questions.values())
+    if inherit_profile:
+        work.jev.policy_for_run.assert_awaited_once_with(RUN_ID, policy_version=1)
 
 
 @pytest.mark.asyncio

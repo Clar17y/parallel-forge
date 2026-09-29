@@ -18,3 +18,14 @@ def test_jev_report_json_is_read_only_projection(monkeypatch):
     assert result.exit_code == 0
     assert '"requested_mode": "shadow"' in result.stdout
     assert '"effective_mode": "not_yet_observed"' in result.stdout
+
+
+def test_jev_report_policy_failure_has_a_safe_operator_message(monkeypatch):
+    async def report(_run_id):
+        raise ValueError("private policy details")
+
+    monkeypatch.setattr(jev_module, "_report", report)
+    result = CliRunner().invoke(app, ["jev", "report", "00000000-0000-0000-0000-000000000123", "--json"])
+    assert result.exit_code == 1
+    assert "Jev report unavailable for the current run policy" in result.stderr
+    assert "private" not in result.output

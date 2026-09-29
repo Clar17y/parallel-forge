@@ -15,6 +15,7 @@ from uuid import UUID
 from forge.domain.agent import ReviewOutput
 from forge.domain.paths import normalize_policy_paths, policy_path_key
 from forge.domain.payload import validate_durable_payload
+from forge.domain.policy import JevPolicy
 from forge.domain.tool import ToolName
 
 _WORKTREE_ID = re.compile(r"\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\Z")
@@ -408,6 +409,7 @@ class OperatorProfile:
     preferences: tuple[RolePreference, ...]
     approved_mappings: tuple[ModelMapping, ...] = ()
     default_billing_mode: BillingMode = BillingMode.ALLOWANCE_ONLY
+    jev: JevPolicy | None = None
 
     def __post_init__(self) -> None:
         _validate_non_nil_uuid(self.profile_id, "profile_id")
@@ -425,6 +427,8 @@ class OperatorProfile:
         object.__setattr__(self, "approved_mappings", mappings)
         if not isinstance(self.default_billing_mode, BillingMode):
             raise TypeError("default_billing_mode must be a BillingMode")
+        if self.jev is not None and not isinstance(self.jev, JevPolicy):
+            raise TypeError("jev must be a JevPolicy")
 
     def preference_for(self, purpose: SpecialistPurpose) -> RolePreference:
         """Retrieve preference for a purpose or raise KeyError."""
@@ -1449,6 +1453,10 @@ def _validate_serialization_shape(
     if counter[0] > _MAX_SERIALIZATION_ITEMS:
         raise ValueError("subscription record encoding exceeds maximum item count")
     if isinstance(value, Mapping):
+        if set(value) == {"$jev_policy"}:
+            # This closed policy schema includes a bounded fractional timeout.
+            JevPolicy.model_validate(value["$jev_policy"])
+            return
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError("subscription record encoding keys must be strings")
@@ -1466,6 +1474,8 @@ def _subscription_record_payload(record: object) -> dict[str, object]:
         raise TypeError("record must be a subscription domain dataclass")
 
     def encode(value: object) -> object:
+        if isinstance(value, JevPolicy):
+            return {"$jev_policy": value.model_dump(mode="json")}
         if isinstance(value, ReviewOutput):
             return {"$review_output": value.model_dump(mode="json")}
         if isinstance(value, StrEnum):
@@ -1479,6 +1489,7 @@ def _subscription_record_payload(record: object) -> dict[str, object]:
                 "$record": type(value).__name__,
                 "fields": [
                     [field.name, encode(getattr(value, field.name))] for field in fields(value)
+                    if not (isinstance(value, OperatorProfile) and field.name == "jev" and value.jev is None)
                 ],
             }
         if isinstance(value, (tuple, frozenset)):
@@ -1527,6 +1538,8 @@ def decode_subscription_record(payload: Mapping[str, object]) -> object:
             if value is None or type(value) in {str, int, bool}:
                 return value
             raise ValueError("invalid subscription record encoding")
+        if set(value) == {"$jev_policy"}:
+            return JevPolicy.model_validate(value["$jev_policy"])
         if set(value) == {"$review_output"}:
             return ReviewOutput.model_validate(value["$review_output"])
         if "$enum" in value:
@@ -1575,6 +1588,8 @@ def decode_subscription_record(payload: Mapping[str, object]) -> object:
                     raise ValueError("invalid subscription record field shape")
                 encoded_fields[pair[0]] = pair[1]
             expected_fields = {field.name for field in fields(cls)}  # type: ignore[arg-type]
+            if cls is OperatorProfile and "jev" not in encoded_fields:
+                expected_fields.remove("jev")  # Preserve existing encoded profiles and digests.
             if set(encoded_fields) != expected_fields:
                 raise ValueError("invalid subscription record field shape")
             return cls(**{key: decode(item) for key, item in encoded_fields.items()})

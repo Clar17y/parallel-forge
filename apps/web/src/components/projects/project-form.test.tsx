@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ProjectForm } from './project-form';
 import { ApiError } from '@/lib/api/client';
+import { defaultJev } from './jev-settings';
 
 afterEach(cleanup);
 async function identity() {
@@ -52,6 +53,18 @@ test('Jev settings expose source consent and editable unpinned model alias', asy
   await user.type(screen.getByLabelText('Jev model alias'), 'custom-alias');
   await user.click(screen.getByRole('button', { name: 'Register project' }));
   expect(save.mock.calls[0][0].jev).toMatchObject({ mode: 'off', model: 'custom-alias', allow_remote: false });
+});
+
+test('a project can return to its profile default while explicit Off remains available', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProjectForm policyOnly initial={{ jev: { ...defaultJev, mode: 'off' } }} onSave={save} />);
+  const override = screen.getByLabelText('Configure Jev for this project');
+  expect(override).toBeEnabled();
+  await userEvent.click(screen.getByRole('button', { name: 'Create policy version' }));
+  expect(save.mock.calls[0][0].jev.mode).toBe('off');
+  await userEvent.click(override);
+  await userEvent.click(screen.getByRole('button', { name: 'Create policy version' }));
+  expect(JSON.parse(JSON.stringify(save.mock.calls[1][0]))).not.toHaveProperty('jev');
 });
 
 test('trusted host requires explicit warning acknowledgement and merge methods are constrained', async () => {

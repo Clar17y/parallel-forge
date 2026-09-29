@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import type { components } from '@/lib/api/schema';
 import { ApiError, api } from '@/lib/api/client';
 import { Button } from '@/components/ui/button';
+import { profileLabel } from './labels';
 
 type Profile = components['schemas']['ProfileResponse'];
 
@@ -102,6 +103,7 @@ export function ProfileSelector({
                   value={`${profile.profile_id}:${profile.version}`}
                 >
                   Version {profile.version} · {profile.profile_id}
+                  {profile.jev ? ` (Jev: ${profileLabel(profile.jev.mode)})` : ''}
                 </option>
               ))}
             </select>
@@ -109,9 +111,17 @@ export function ProfileSelector({
         </div>
 
         {current && (
-          <p className="meta" style={{ marginTop: '8px' }}>
-            Current selection: <strong>version {current.version}</strong> · <code>{current.profile_id}</code>
-          </p>
+          <div className="meta" style={{ marginTop: '8px' }}>
+            <p style={{ margin: 0 }}>
+              Current selection: <strong>version {current.version}</strong> · <code>{current.profile_id}</code>
+            </p>
+            <p style={{ margin: '4px 0 0' }}>
+              Jev default:{' '}
+              <strong>
+                {current.jev ? `${profileLabel(current.jev.mode)} (${current.jev.model})` : 'None'}
+              </strong>
+            </p>
+          </div>
         )}
 
         {error && <p role="alert" className="field-error">{error}</p>}

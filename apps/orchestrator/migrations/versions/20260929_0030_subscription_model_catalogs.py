@@ -1,15 +1,15 @@
 """Bounded advisory worker model catalogs.
 
-Revision ID: 20260929_0029
-Revises: 20260926_0028
+Revision ID: 20260929_0030
+Revises: 20260929_0029
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "20260929_0029"
-down_revision = "20260926_0028"
+revision = "20260929_0030"
+down_revision = "20260929_0029"
 branch_labels = None
 depends_on = None
 
