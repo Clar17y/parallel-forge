@@ -137,7 +137,9 @@ class SubscriptionDecisionRecovery:
                     else:
                         unsupported += 1
                         continue
-                except Exception as error:  # noqa: BLE001 - persist safe classification
+                except Exception as error:
+                    if isinstance(error, DBAPIError) and not is_transient_recovery_error(error):
+                        raise
                     async with self._factory() as work:
                         run_id = await work.subscription_recovery.attempt_run_id(
                             candidate.attempt_id

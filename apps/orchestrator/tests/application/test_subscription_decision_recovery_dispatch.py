@@ -135,21 +135,28 @@ async def test_recovery_does_not_swallow_cancellation():
     (PoolTimeoutError("pool unavailable"), "temporary"),
     (DisconnectionError("connection lost"), "temporary"),
     (DBAPIError("statement", {}, RuntimeError("connection lost"), connection_invalidated=True), "temporary"),
-    (ProgrammingError("statement", {}, RuntimeError("schema differs")), "unsupported"),
-    (IntegrityError("statement", {}, RuntimeError("constraint violated")), "unsupported"),
-    (DataError("statement", {}, RuntimeError("invalid data")), "unsupported"),
-    (DBAPIError("statement", {}, RuntimeError("unknown failure")), "unsupported"),
+    (DBAPIError("statement", {}, SimpleNamespace(sqlstate="40001")), "temporary"),
+    (DBAPIError("statement", {}, SimpleNamespace(sqlstate="40P01")), "temporary"),
+    (DBAPIError("statement", {}, SimpleNamespace(sqlstate="55P03")), "temporary"),
+    (ValueError("domain invariant"), "unsupported"),
+    (ProgrammingError("statement", {}, RuntimeError("schema differs")), "fatal"),
+    (IntegrityError("statement", {}, RuntimeError("constraint violated")), "fatal"),
+    (DataError("statement", {}, RuntimeError("invalid data")), "fatal"),
+    (DBAPIError("statement", {}, RuntimeError("unknown failure")), "fatal"),
 ])
 async def test_recovery_classifies_database_failures_consistently(error, classification):
     identity = UUID(int=1)
     projection = RecoveryProjectionStub()
     projection.record_failure = AsyncMock()
+    factory_calls = 0
 
     async def pending(cursor, _limit):
         return () if cursor else (PendingSubscriptionDecision(identity, PendingDecisionKind.WAIT),)
 
     @asynccontextmanager
     async def factory():
+        nonlocal factory_calls
+        factory_calls += 1
         yield SimpleNamespace(
             subscription_decisions=SimpleNamespace(pending_applications=pending),
             subscription_recovery=projection, runs=SimpleNamespace(get=_run),
@@ -161,6 +168,13 @@ async def test_recovery_classifies_database_failures_consistently(error, classif
 
     recovery = SubscriptionDecisionRecovery(factory, object())
     recovery._decisions = SimpleNamespace(apply_wait=apply)
+    if classification == "fatal":
+        with pytest.raises(type(error)) as caught:
+            await recovery.reconcile_all()
+        assert caught.value is error
+        assert factory_calls == 2
+        projection.record_failure.assert_not_awaited()
+        return
     report = await recovery.reconcile_all()
     assert report.deferred == 1 and report.applied == 0
     reason = "application_infrastructure" if classification == "temporary" else "application_invariant"

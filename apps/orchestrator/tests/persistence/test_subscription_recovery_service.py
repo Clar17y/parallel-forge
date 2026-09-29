@@ -7,7 +7,11 @@ from uuid import UUID, uuid4
 
 import pytest
 from forge.agents.subscription_protocol import ProtocolError, decode_final, output_schema
-from forge.application.ports.subscription_gateway import SubscriptionInvocationResult
+from forge.application.ports.subscription_gateway import (
+    RoleDecisionRejection,
+    SubscriptionFailure,
+    SubscriptionInvocationResult,
+)
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.subscription_decision_recovery import SubscriptionDecisionRecovery
 from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
@@ -62,7 +66,7 @@ from test_subscription_usage import _reservation
 
 async def recovery_case(
     session_factory, tmp_path, *, incident_decision="handoff", defer_settlement=False,
-    plan_checks=("unit",), plan_scope=("apps",),
+    plan_checks=("unit",), plan_scope=("apps",), modern_rejection_kind=None,
 ):
     """Return a disposable historical defect after the complete approval flow."""
     factory, evidence, command, preparation, _ = await preparation_case(
@@ -144,7 +148,12 @@ async def recovery_case(
     )
     result = SubscriptionInvocationResult(
         attempt=admission.attempt,
-        decision=decision,
+        decision=None if modern_rejection_kind is not None else decision,
+        failure=SubscriptionFailure.PROTOCOL if modern_rejection_kind is not None else None,
+        role_rejection=(
+            RoleDecisionRejection.for_kind(modern_rejection_kind)
+            if modern_rejection_kind is not None else None
+        ),
         telemetry=AttemptTelemetry(input_tokens=10, output_tokens=5, duration_ms=100),
         launch_proof=launch_proof,
     )
@@ -1093,6 +1102,138 @@ async def test_repair_preview_is_read_only_and_apply_is_idempotent(session_facto
         assert isinstance(contract, LogicalTaskContract)
         assert contract.typed_acceptance[0].criterion_id == "approved-implementation"
         assert await work.session.get(SubscriptionRepairDebit, case["attempt_id"]) is not None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("kind", ["plan", "handoff"])
+async def test_modern_gateway_role_rejection_repairs_stale_approved_contract(
+    session_factory, tmp_path, kind
+):
+    case = await recovery_case(session_factory, tmp_path, modern_rejection_kind=kind)
+    async with case["factory"]() as work:
+        result = await work.session.get(SubscriptionAttemptResult, case["attempt_id"])
+        assert result is not None and result.disposition == "role_rejected"
+        assert result.result_payload["decision"] is None
+        assert result.result_payload["effective_failure"] == "protocol"
+        assert result.result_payload["role_rejection"] == {
+            "kind": kind, "reason_code": f"role_{kind}_forbidden",
+        }
+        original_digest = result.result_digest
+        original_payload = result.result_payload.copy()
+        usage_before = await work.subscription_budget.usage(case["run_id"])
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    service = SubscriptionRecoveryService(case["factory"])
+    preview = await service.preview(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=actor,
+        request=RecoveryPreviewRequest(action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT),
+    )
+    assert preview.eligible, preview.reason_code
+    request = RecoveryApplyRequest(
+        action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT,
+        preview_token=preview.preview_token,
+        reason="Repair the verified stale approved primary contract",
+    )
+    receipt = await service.apply(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=actor, idempotency_key=f"modern-{kind}", request=request,
+    )
+    replay = await service.apply(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=actor, idempotency_key=f"modern-{kind}", request=request,
+    )
+    assert replay == receipt and receipt.status == "applied"
+    async with case["factory"]() as work:
+        result = await work.session.get(SubscriptionAttemptResult, case["attempt_id"])
+        task = await work.session.get(SubscriptionTask, case["task_id"])
+        contract = decode_subscription_record(task.payload)
+        assert result.result_digest == original_digest and result.result_payload == original_payload
+        assert isinstance(contract, LogicalTaskContract)
+        assert contract.typed_acceptance[0].criterion_id == "approved-implementation"
+        assert await work.session.get(SubscriptionRepairDebit, case["attempt_id"]) is not None
+        revisions = (await work.session.scalars(select(SubscriptionContractRevision).where(
+            SubscriptionContractRevision.task_id == case["task_id"]
+        ))).all()
+        assert len(revisions) == 1
+        usage_after = await work.subscription_budget.usage(case["run_id"])
+        assert usage_after.consumed.provider_attempts == usage_before.consumed.provider_attempts
+        assert usage_after.consumed.repairs == usage_before.consumed.repairs + 1
+    admitted = await SubscriptionDecisionExecutor(case["factory"]).admit_next(
+        "repaired-primary", _reservation()
+    )
+    assert admitted is not None and admitted.task.task_id == case["task_id"]
+    request = await SubscriptionRequestBuilder(case["factory"]).build(admitted)
+    assert request.task.typed_acceptance[0].criterion_id == "approved-implementation"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mutation", ["missing", "malformed", "mismatched", "allowed", "wrong_failure"])
+async def test_modern_role_rejection_requires_exact_typed_forbidden_proof(
+    session_factory, tmp_path, mutation
+):
+    case = await recovery_case(session_factory, tmp_path, modern_rejection_kind="plan")
+    async with case["factory"]() as work:
+        result = await work.session.get(SubscriptionAttemptResult, case["attempt_id"])
+        payload = dict(result.result_payload)
+        if mutation == "missing":
+            payload.pop("role_rejection")
+        elif mutation == "malformed":
+            payload["role_rejection"] = {"kind": "plan", "reason_code": "invalid"}
+        elif mutation == "mismatched":
+            payload["role_rejection"] = {"kind": "plan", "reason_code": "role_handoff_forbidden"}
+        elif mutation == "allowed":
+            payload["role_rejection"] = {"kind": "delegate", "reason_code": "role_delegate_forbidden"}
+        else:
+            payload["failure"] = None
+        result.result_payload = payload
+        result.result_digest = canonical_digest(payload)
+        await work.commit()
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    preview = await SubscriptionRecoveryService(case["factory"]).preview(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=actor,
+        request=RecoveryPreviewRequest(action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT),
+    )
+    assert not preview.eligible and preview.reason_code == "not_stale_plan"
+    async with case["factory"]() as work:
+        assert await work.session.get(SubscriptionRepairDebit, case["attempt_id"]) is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fence", ["terminal", "approval", "budget"])
+async def test_modern_role_rejection_keeps_repair_authority_fences(
+    session_factory, tmp_path, fence
+):
+    case = await recovery_case(session_factory, tmp_path, modern_rejection_kind="handoff")
+    async with case["factory"]() as work:
+        if fence == "terminal":
+            launch = await work.session.scalar(select(SubscriptionClientLaunch).where(
+                SubscriptionClientLaunch.attempt_id == case["attempt_id"]
+            ))
+            launch.state = "uncertain"
+        elif fence == "approval":
+            approval = await work.session.scalar(select(Approval).where(
+                Approval.run_id == case["run_id"], Approval.gate == "plan"
+            ))
+            approval.invalidated_at = datetime.now(UTC)
+        else:
+            await work.subscription.initialize_budget(
+                case["run_id"], None,
+                TaskBudget(max_provider_attempts=2, max_repairs=3),
+            )
+        await work.commit()
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    preview = await SubscriptionRecoveryService(case["factory"]).preview(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=actor,
+        request=RecoveryPreviewRequest(action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT),
+    )
+    assert not preview.eligible
+    assert preview.reason_code in {
+        "terminal": {"effect_uncertain"},
+        "approval": {"approval_missing", "not_stale_plan"},
+        "budget": {"budget_exhausted"},
+    }[fence]
 
 
 @pytest.mark.integration

@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.application.ports.subscription_gateway import RoleDecisionRejection
 from forge.domain.event import RunEvent as DomainRunEvent
 from forge.domain.operation import canonical_digest
 from forge.domain.paths import policy_path_key
@@ -86,6 +87,32 @@ def _stored_decision(payload: object) -> object | None:
     if "record" in payload:
         return decode_subscription_record(payload)
     return None
+
+
+def _stored_role_rejection(payload: object) -> RoleDecisionRejection | None:
+    if not isinstance(payload, dict) or set(payload) != {"kind", "reason_code"}:
+        return None
+    try:
+        return RoleDecisionRejection(**payload)
+    except (TypeError, ValueError):
+        return None
+
+
+def _forbidden_role_rejection(
+    result: SubscriptionAttemptResult, contract: LogicalTaskContract
+) -> bool:
+    payload = result.result_payload
+    if (
+        result.disposition != "role_rejected"
+        or payload.get("decision") is not None
+        or payload.get("failure") != "protocol"
+        or payload.get("effective_failure") != "protocol"
+    ):
+        return False
+    rejection = _stored_role_rejection(payload.get("role_rejection"))
+    return rejection is not None and not decision_allowed(
+        rejection.kind, contract.purpose, RunState.IMPLEMENTING
+    )
 
 
 _EXPLANATIONS = {
@@ -848,9 +875,15 @@ class PostgresSubscriptionRecoveryRepository:
         stale_plan = (
             stale_contract
             and result.disposition in {"decision_pending", "role_rejected"}
-            and decision is not None
-            and not decision_allowed(
-                decision_kind(decision) or "unknown", contract.purpose, RunState.IMPLEMENTING
+            and (
+                (
+                    decision is not None
+                    and not decision_allowed(
+                        decision_kind(decision) or "unknown", contract.purpose,
+                        RunState.IMPLEMENTING,
+                    )
+                )
+                or (decision is None and _forbidden_role_rejection(result, contract))
             )
         )
         if action is RecoveryAction.RETRY_APPLICATION:
