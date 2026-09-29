@@ -79,3 +79,36 @@ test('server capability exposes mutually exclusive issue import with no browser 
   expect(vi.mocked(mutate).mock.calls[0].slice(0, 2)).toEqual(['/tasks/import-github', { project_id: 'project-1', issue_number: 42 }]);
   expect(vi.mocked(mutate).mock.calls[1].slice(0, 2)).toEqual(['/runs', { task_id: 'imported-task' }]);
 });
+
+test('renders provider-tinted compact role cards with explicit provider labels and grouped metadata', () => {
+  const multiProviderProject: components['schemas']['ProjectResponse'] = {
+    ...project,
+    policy: {
+      runner_mode: 'docker',
+      commands: [{ name: 'check', required: true }],
+      planner_model: { provider: 'google', model: 'gemini-3.8-flash', max_input_tokens: 100000, max_output_tokens: 8000, max_tool_calls: 30, max_duration_seconds: 300, max_cost_minor: 150 },
+      developer_model: { provider: 'openai', model: 'gpt-6-sol', max_input_tokens: 120000, max_output_tokens: 16000, max_tool_calls: 40, max_duration_seconds: 600, max_cost_minor: 300 },
+      reviewer_model: { provider: 'anthropic', model: 'claude-opus-5-5', max_input_tokens: 200000, max_output_tokens: 32000, max_tool_calls: 20, max_duration_seconds: 400, max_cost_minor: 500 },
+    },
+  };
+  render(<NewRunForm projects={[multiProviderProject]} onCreated={vi.fn()} />);
+
+  // Role sections
+  expect(screen.getByRole('region', { name: 'planner policy' })).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'developer policy' })).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'reviewer policy' })).toBeInTheDocument();
+
+  // Explicit provider badges
+  expect(screen.getByText('Google / Gemini')).toBeInTheDocument();
+  expect(screen.getByText('OpenAI')).toBeInTheDocument();
+  expect(screen.getByText('Anthropic / Claude')).toBeInTheDocument();
+
+  // Models prominent
+  expect(screen.getAllByText('gemini-3.8-flash').length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText('gpt-6-sol').length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText('claude-opus-5-5').length).toBeGreaterThanOrEqual(1);
+
+  // Grouped budget details exist rather than single dense sentence
+  expect(screen.queryByText(/Input 100000 tokens · Output 8000 tokens · 30 tools · 300 seconds · Cost limit 150 minor currency units/)).not.toBeInTheDocument();
+  expect(screen.getAllByText(/All policy limits/i)).toHaveLength(3);
+});

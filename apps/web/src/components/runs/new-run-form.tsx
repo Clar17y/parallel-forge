@@ -3,6 +3,8 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { ApiError, mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
+import { Button } from '@/components/ui/button';
+import { ProviderBadge, getProviderCue } from '@/components/ui/provider-badge';
 
 type Project = components['schemas']['ProjectResponse'];
 type TaskInput = components['schemas']['TaskCreateRequest'];
@@ -26,7 +28,9 @@ export function NewRunForm({ projects, onCreated }: {
   const busy = useRef(false);
   const project = projects.find(item => item.id === projectId);
   const importing = source === 'github' && project?.issue_import_available === true;
-  const validSource = importing ? /^[1-9][0-9]*$/.test(issueNumber) && Number.isSafeInteger(Number(issueNumber)) : !!title.trim() && !!body.trim();
+  const validSource = importing
+    ? /^[1-9][0-9]*$/.test(issueNumber) && Number.isSafeInteger(Number(issueNumber))
+    : !!title.trim() && !!body.trim();
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -69,63 +73,220 @@ export function NewRunForm({ projects, onCreated }: {
   }
 
   if (!projects.length) return <p>Register a project before creating a run.</p>;
-  return <form onSubmit={submit} aria-label="New run">
-    <label htmlFor="run-project">Project</label>
-    <select id="run-project" value={projectId} disabled={locked || pending}
-      aria-invalid={!!fields.project_id} aria-describedby={fields.project_id ? 'project-error' : undefined}
-      onChange={event => { setProjectId(event.target.value); setSource('text'); }}>
-      {projects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-    </select>
-    {fields.project_id && <p id="project-error">{fields.project_id}</p>}
-    {project && <ProjectRunSummary project={project} />}
-    {project?.issue_import_available === true && <label>Task source<select value={source} disabled={locked || pending}
-      onChange={event => setSource(event.target.value as 'text' | 'github')}>
-      <option value="text">Write a task</option><option value="github">Import GitHub issue</option>
-    </select></label>}
-    {importing ? <>
-      <p>Import from {project.github_repository}. Issue content is untrusted task input.</p>
-      <label htmlFor="issue-number">GitHub issue number</label>
-      <input id="issue-number" type="number" min="1" max={Number.MAX_SAFE_INTEGER} step="1" required readOnly={locked}
-        value={issueNumber} onChange={event => setIssueNumber(event.target.value)}
-        aria-invalid={!!fields.issue_number} aria-describedby={fields.issue_number ? 'issue-error' : undefined} />
-      {fields.issue_number && <p id="issue-error">{fields.issue_number}</p>}
-    </> : <>
-    <label htmlFor="task-title">Task title</label>
-    <input id="task-title" required value={title} readOnly={locked}
-      aria-invalid={!!fields.title} aria-describedby={fields.title ? 'title-error' : undefined}
-      onChange={event => setTitle(event.target.value)} />
-    {fields.title && <p id="title-error">{fields.title}</p>}
-    <label htmlFor="task-body">Task description</label>
-    <textarea id="task-body" required rows={8} value={body} readOnly={locked}
-      aria-invalid={!!fields.body} aria-describedby={fields.body ? 'body-error' : undefined}
-      onChange={event => setBody(event.target.value)} />
-    {fields.body && <p id="body-error">{fields.body}</p>}
-    </>}
-    {error && <p role="alert">{error}</p>}
-    {pending && <p role="status">Creating task and run…</p>}
-    <button type="submit" disabled={pending || !project || (!locked && !validSource)}>
-      {pending ? 'Creating…' : locked && error ? 'Retry creation' : 'Create run'}
-    </button>
-  </form>;
+
+  return (
+    <form onSubmit={submit} aria-label="New run" className="new-run-form">
+      <div className="new-run-layout">
+        <div className="new-run-primary">
+          <section className="panel" aria-labelledby="task-details-heading">
+            <h2 id="task-details-heading">Task details</h2>
+            <div className="form-field">
+              <label htmlFor="run-project">Project</label>
+              <select
+                id="run-project"
+                value={projectId}
+                disabled={locked || pending}
+                aria-invalid={!!fields.project_id}
+                aria-describedby={fields.project_id ? 'project-error' : undefined}
+                onChange={event => {
+                  setProjectId(event.target.value);
+                  setSource('text');
+                }}
+              >
+                {projects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              {fields.project_id && <p id="project-error" className="field-error">{fields.project_id}</p>}
+              <span className="field-hint">Target repository and project policy enforcing run constraints.</span>
+            </div>
+
+            {project?.issue_import_available === true && (
+              <div className="form-field">
+                <label htmlFor="task-source">Task source</label>
+                <select
+                  id="task-source"
+                  value={source}
+                  disabled={locked || pending}
+                  onChange={event => setSource(event.target.value as 'text' | 'github')}
+                >
+                  <option value="text">Write a task</option>
+                  <option value="github">Import GitHub issue</option>
+                </select>
+                <span className="field-hint">Choose whether to author a manual task description or import from GitHub.</span>
+              </div>
+            )}
+
+            {importing ? (
+              <div className="github-import-fields">
+                <p className="meta">Import from {project.github_repository}. Issue content is untrusted task input.</p>
+                <div className="form-field">
+                  <label htmlFor="issue-number">GitHub issue number</label>
+                  <input
+                    id="issue-number"
+                    type="number"
+                    min="1"
+                    max={Number.MAX_SAFE_INTEGER}
+                    step="1"
+                    required
+                    readOnly={locked}
+                    value={issueNumber}
+                    onChange={event => setIssueNumber(event.target.value)}
+                    aria-invalid={!!fields.issue_number}
+                    aria-describedby={fields.issue_number ? 'issue-error' : undefined}
+                    placeholder="e.g. 42"
+                  />
+                  {fields.issue_number && <p id="issue-error" className="field-error">{fields.issue_number}</p>}
+                  <span className="field-hint">Numerical issue ID within {project.github_repository}.</span>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="form-field">
+                  <label htmlFor="task-title">Task title</label>
+                  <input
+                    id="task-title"
+                    required
+                    value={title}
+                    readOnly={locked}
+                    aria-invalid={!!fields.title}
+                    aria-describedby={fields.title ? 'title-error' : undefined}
+                    onChange={event => setTitle(event.target.value)}
+                    placeholder="Brief summary of the desired outcome"
+                  />
+                  {fields.title && <p id="title-error" className="field-error">{fields.title}</p>}
+                  <span className="field-hint">State the bounded outcome or fix clearly.</span>
+                </div>
+                <div className="form-field">
+                  <label htmlFor="task-body">Task description</label>
+                  <textarea
+                    id="task-body"
+                    required
+                    rows={8}
+                    value={body}
+                    readOnly={locked}
+                    aria-invalid={!!fields.body}
+                    aria-describedby={fields.body ? 'body-error' : undefined}
+                    onChange={event => setBody(event.target.value)}
+                    placeholder="Provide full context, acceptance criteria, relevant file paths, and verification expectations..."
+                  />
+                  {fields.body && <p id="body-error" className="field-error">{fields.body}</p>}
+                  <span className="field-hint">Complete task specification and constraints for planning and execution.</span>
+                </div>
+              </>
+            )}
+
+            <div className="form-actions">
+              {error && <p role="alert" className="field-error">{error}</p>}
+              {pending && <p role="status" className="meta">Creating task and run…</p>}
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={pending || !project || (!locked && !validSource)}
+              >
+                {pending ? 'Creating…' : locked && error ? 'Retry creation' : 'Create run'}
+              </Button>
+            </div>
+          </section>
+        </div>
+
+        <aside className="new-run-aside">
+          {project && <ProjectRunSummary project={project} />}
+        </aside>
+      </div>
+    </form>
+  );
 }
 
 function ProjectRunSummary({ project }: { project: Project }) {
   const policy = project.policy;
   const commands = policy?.commands as components['schemas']['CommandSpec'][] | undefined;
-  return <section aria-label="Run policy summary">
-    <h2>Run policy</h2>
-    <dl>
-      <dt>Base branch</dt><dd>{project.default_branch}</dd>
-      <dt>Policy version</dt><dd>{project.policy_version ?? 'Unavailable'}</dd>
-      <dt>Runner</dt><dd>{policy?.runner_mode === 'trusted_host' ? 'Trusted host · unsandboxed' : policy?.runner_mode === 'docker' ? 'Docker' : 'Unavailable'}</dd>
-      <dt>Required checks</dt><dd>{commands?.filter(item => item.required).map(item => item.name).join(', ') || 'None configured'}</dd>
-    </dl>
-    {(['planner', 'developer', 'reviewer'] as const).map(role => {
-      const model = policy?.[`${role}_model`] as components['schemas']['AgentModelPolicy'] | undefined;
-      return <section key={role} aria-label={`${role} policy`}>
-        <h3>{role[0].toUpperCase() + role.slice(1)}</h3>
-        {model ? <p>{model.provider} / {model.model} · Input {model.max_input_tokens ?? 'unavailable'} tokens · Output {model.max_output_tokens ?? 'unavailable'} tokens · {model.max_tool_calls ?? 'unavailable'} tools · {model.max_duration_seconds ?? 'unavailable'} seconds · Cost limit {model.max_cost_minor ?? 'unavailable'} minor currency units</p> : <p>Model policy unavailable</p>}
-      </section>;
-    })}
-  </section>;
+  const roles = [
+    { key: 'planner', name: 'Planner' },
+    { key: 'developer', name: 'Developer' },
+    { key: 'reviewer', name: 'Reviewer' },
+  ] as const;
+
+  return (
+    <section aria-label="Run policy summary" className="panel">
+      <h2>Run policy</h2>
+      <p className="meta">Controlled execution policy for {project.name}</p>
+      <dl className="key-values" style={{ marginBottom: '16px' }}>
+        <div>
+          <dt>Base branch</dt>
+          <dd><code>{project.default_branch}</code></dd>
+        </div>
+        <div>
+          <dt>Policy version</dt>
+          <dd>{project.policy_version ?? 'Unavailable'}</dd>
+        </div>
+        <div>
+          <dt>Runner</dt>
+          <dd>{policy?.runner_mode === 'trusted_host' ? 'Trusted host · unsandboxed' : policy?.runner_mode === 'docker' ? 'Docker' : 'Unavailable'}</dd>
+        </div>
+        <div>
+          <dt>Required checks</dt>
+          <dd>{commands?.filter(item => item.required).map(item => item.name).join(', ') || 'None configured'}</dd>
+        </div>
+      </dl>
+
+      <h3 style={{ marginTop: '16px', marginBottom: '8px', fontSize: '0.8125rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)' }}>
+        Assigned Agent Roles
+      </h3>
+      {roles.map(({ key, name }) => {
+        const model = policy?.[`${key}_model` as keyof typeof policy] as components['schemas']['AgentModelPolicy'] | undefined;
+        const cue = getProviderCue(model?.provider);
+        return (
+          <section
+            key={key}
+            aria-label={`${key} policy`}
+            className="role-card card-provider"
+            data-provider={cue.tone}
+          >
+            <div className="role-card-header">
+              <h4>{name}</h4>
+              <ProviderBadge provider={model?.provider} />
+            </div>
+            {model ? (
+              <>
+                <div className="role-card-model">{model.model}</div>
+                <div className="role-budget-grid">
+                  <div className="role-budget-item">
+                    <span className="role-budget-label">Tokens</span>
+                    <span className="role-budget-value">
+                      {model.max_input_tokens?.toLocaleString() ?? '—'} in / {model.max_output_tokens?.toLocaleString() ?? '—'} out
+                    </span>
+                  </div>
+                  <div className="role-budget-item">
+                    <span className="role-budget-label">Tool calls</span>
+                    <span className="role-budget-value">{model.max_tool_calls ?? '—'}</span>
+                  </div>
+                  <div className="role-budget-item">
+                    <span className="role-budget-label">Max time</span>
+                    <span className="role-budget-value">{model.max_duration_seconds ? `${model.max_duration_seconds}s` : '—'}</span>
+                  </div>
+                  <div className="role-budget-item">
+                    <span className="role-budget-label">Cost limit</span>
+                    <span className="role-budget-value">{model.max_cost_minor != null ? `${model.max_cost_minor} minor units` : '—'}</span>
+                  </div>
+                </div>
+                <details className="agent-policy-details">
+                  <summary>All policy limits</summary>
+                  <dl className="key-values">
+                    <div><dt>Provider</dt><dd>{model.provider}</dd></div>
+                    <div><dt>Model</dt><dd>{model.model}</dd></div>
+                    <div><dt>Max input tokens</dt><dd>{model.max_input_tokens ?? 'unavailable'}</dd></div>
+                    <div><dt>Max output tokens</dt><dd>{model.max_output_tokens ?? 'unavailable'}</dd></div>
+                    <div><dt>Max tool calls</dt><dd>{model.max_tool_calls ?? 'unavailable'}</dd></div>
+                    <div><dt>Max duration</dt><dd>{model.max_duration_seconds ? `${model.max_duration_seconds} seconds` : 'unavailable'}</dd></div>
+                    <div><dt>Cost limit</dt><dd>{model.max_cost_minor != null ? `${model.max_cost_minor} minor currency units` : 'unavailable'}</dd></div>
+                  </dl>
+                </details>
+              </>
+            ) : (
+              <p className="meta">Model policy unavailable</p>
+            )}
+          </section>
+        );
+      })}
+    </section>
+  );
 }
