@@ -31,6 +31,17 @@ preview expired, refresh and obtain a new preview. If a response is lost, use
 **Retry same request** to retrieve the receipt for the original request; do not
 create a second recovery to discover whether the first succeeded.
 
+The dashboard saves the exact request in this browser before sending it. If the
+response is lost, reopen the same run, task and attempt as the same signed-in
+operator and choose **Retry same request**. The retry is never sent automatically;
+it remains available even if the old preview expired or the task changed. A new
+session for the same operator can retry with its current credentials. The saved
+request is removed when its receipt is confirmed. Browser storage must remain
+available across reloads; clearing site data, private browsing cleanup or using
+a different browser removes access to the saved request. Starting a new recovery
+also requires browser support for secure-context request coordination. If the
+dashboard reports that saving or coordination failed, it has sent no new request.
+
 Keep the receipt ID with the incident record. A receipt proves that the recovery
 transition was recorded. Check the refreshed task and subsequent attempt to
 establish whether execution progressed. Existing pause and cancellation controls

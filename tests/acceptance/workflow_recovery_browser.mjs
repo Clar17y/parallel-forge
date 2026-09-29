@@ -133,12 +133,22 @@ try {
   await bridge('/worker/heartbeat', 'POST');
   await preview.getByRole('button', { name: 'Apply recovery' }).click();
   await expect(firstView.recovery.getByRole('button', { name: 'Retry same request' })).toBeVisible();
-  await firstView.recovery.getByRole('button', { name: 'Retry same request' }).click();
-  await expect(firstView.recovery).toContainText('Recovery receipt');
+  expect(lost.requests).toHaveLength(1);
+  await expect.poll(async () => (await bridge('/snapshot')).receipt_count).toBe(1);
+  await first.reload();
+  await waitForRunHeader(first, 'IMPLEMENTING');
+  await first.getByRole('button', { name: 'Tasks', exact: true }).click();
+  const restoredInspector = first.getByRole('region', { name: 'Subscription tasks' });
+  await restoredInspector.getByRole('button', { name: `Inspect primary task ${taskId}` }).click();
+  const restoredRecovery = restoredInspector.getByRole('region', { name: 'Task recovery' });
+  await expect(restoredRecovery.getByRole('button', { name: 'Retry same request' })).toBeVisible();
+  expect(lost.requests).toHaveLength(1);
+  await restoredRecovery.getByRole('button', { name: 'Retry same request' }).click();
+  await expect(restoredRecovery).toContainText('Recovery receipt');
   await expect(attention).toHaveCount(0, { timeout: 20000 });
   await expect(first.getByText('Events: connected', { exact: true })).toBeVisible();
-  expect(eventRequests).toHaveLength(initialEventRequests);
-  expect(navigations).toHaveLength(initialNavigations);
+  expect(eventRequests.length).toBeGreaterThan(initialEventRequests);
+  expect(navigations.length).toBeGreaterThan(initialNavigations);
   expect(lost.statuses).toHaveLength(2);
   expect(lost.statuses[0]).toBeGreaterThanOrEqual(200);
   expect(lost.statuses[0]).toBeLessThan(300);
@@ -194,6 +204,7 @@ try {
     proof: 'Chromium, rendered UI, authenticated API process, isolated PostgreSQL',
     run_id: runId, task_id: taskId, attempt_id: attemptId,
     replay_count: lost.requests.length, receipt_id: lost.replies[0].receipt_id,
+    browser_reload_before_retry: true,
     stale_outcome: staleOutcome,
     event_requests_before_restart: initialEventRequests,
     navigations_before_restart: initialNavigations,

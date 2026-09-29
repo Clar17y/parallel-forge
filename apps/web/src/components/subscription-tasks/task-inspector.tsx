@@ -102,18 +102,18 @@ function Attempts({ runId, task, runVersion, runAllowsExecution, runIsTerminal, 
         const eligibleActions = recovery?.eligible_actions ?? [];
         return <article key={attempt.attempt_id} className="space-y-2 rounded bg-[var(--surface-muted)] p-3">
         <h3 className="font-semibold">Attempt {attempt.attempt_number} · {attempt.state}</h3>
-        {recovery ? <><div className="space-y-1"><p>Recovery reason: {recoveryReason(recovery.reason_code)}</p>
+        {recovery ? <div className="space-y-1"><p>Recovery reason: {recoveryReason(recovery.reason_code)}</p>
           <p>Result handling: {recovery.classification} · {recovery.resolution}</p>
           <p>Failed applications: {recovery.failed_applications}</p>
           {recovery.last_failure_at ? <p>Last failure: {recoveryReason(recovery.reason_code)} · {recovery.last_failure_at}</p> : null}
           {recovery.next_retry_at ? <p>Next retry: {recovery.next_retry_at}</p> : null}
-          <p>The last completed tool is recorded activity and does not mean it is still executing.</p></div>
-          <TaskRecovery runId={runId} taskId={taskId} attemptId={attempt.attempt_id}
+          <p>The last completed tool is recorded activity and does not mean it is still executing.</p></div> : null}
+          <TaskRecovery runId={runId} taskId={taskId} attemptId={attempt.attempt_id} hasRecovery={!!recovery}
             taskVersion={task.version} runVersion={runVersion} runAllowsExecution={runAllowsExecution && !runIsTerminal}
             taskState={task.state} pauseRequested={task.pause_requested} cancelRequested={task.cancel_requested}
             unsettledEffects={task.unsettled_effects} eligibleActions={eligibleActions}
-            authorityKey={`${runVersion}:${task.version}:${task.state}:${task.pause_requested}:${task.cancel_requested}:${task.unsettled_effects}:${attempt.state}:${recovery.reason_code}:${recovery.resolution}:${recovery.last_failure_at}:${eligibleActions.join(',')}`}
-            onRefresh={() => { const token = onRefresh(); attempts.refresh(); return token; }} /></> : null}
+            authorityKey={`${runVersion}:${task.version}:${task.state}:${task.pause_requested}:${task.cancel_requested}:${task.unsettled_effects}:${attempt.state}:${recovery?.reason_code}:${recovery?.resolution}:${recovery?.last_failure_at}:${eligibleActions.join(',')}`}
+            onRefresh={() => { const token = onRefresh(); attempts.refresh(); return token; }} />
         <p>Requested: {routeLabel(attempt.requested_route)}</p>
         <p>Effective: {routeLabel(attempt.effective_route)}</p>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">

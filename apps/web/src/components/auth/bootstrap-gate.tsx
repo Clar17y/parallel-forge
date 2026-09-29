@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '@/lib/api/client';
 import { csrf } from '@/lib/api/csrf';
+import { SessionIdentity } from './session-identity';
 
-type Session = { csrfToken: string };
+type Session = { csrfToken: string; actorId?: string };
 type Props = {
   children: ReactNode;
   exchange?: (token: string, signal: AbortSignal) => Promise<Session>;
@@ -13,6 +14,7 @@ type Props = {
 
 export function BootstrapGate({ children, exchange = exchangeBootstrap, session = recoverSession }: Props) {
   const [state, setState] = useState<'pending' | 'ready' | 'failed'>('pending');
+  const [actorId, setActorId] = useState<string | null>(null);
   const fragment = useRef<string | null>(null);
   useEffect(() => {
     const owner = new AbortController();
@@ -40,6 +42,7 @@ export function BootstrapGate({ children, exchange = exchangeBootstrap, session 
       if (!owner.signal.aborted) {
         if (!result.csrfToken) { csrf.clear(); setState('failed'); return; }
         csrf.set(result.csrfToken);
+        setActorId(result.actorId ?? null);
         setState('ready');
       }
     }, () => {
@@ -51,7 +54,7 @@ export function BootstrapGate({ children, exchange = exchangeBootstrap, session 
     });
     return () => { owner.abort(); unsubscribe(); };
   }, [exchange, session]);
-  if (state === 'ready') return children;
+  if (state === 'ready') return <SessionIdentity.Provider value={actorId}>{children}</SessionIdentity.Provider>;
   if (state === 'failed') return <main><div role="alert"><h1>Sign-in required</h1><p>Use a fresh bootstrap link to start a session.</p></div></main>;
   return <p role="status">Starting secure session…</p>;
 }
@@ -65,9 +68,10 @@ async function exchangeBootstrap(token: string, signal: AbortSignal): Promise<Se
 }
 
 async function recoverSession(signal: AbortSignal): Promise<Session> {
-  await api('/auth/session', { cache: 'no-store', signal });
+  const session = await api<{ actor_id: string; actor_class: string }>('/auth/session', { cache: 'no-store', signal });
+  if (!session?.actor_id || session.actor_class !== 'operator') throw new Error('Invalid session identity');
   signal.throwIfAborted();
   const result = await api<{ csrf_token: string }>('/auth/csrf', { cache: 'no-store', signal });
   if (!result?.csrf_token) throw new Error('Invalid session response');
-  return { csrfToken: result.csrf_token };
+  return { csrfToken: result.csrf_token, actorId: session.actor_id };
 }
