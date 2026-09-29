@@ -38,24 +38,40 @@ recovered-and-polling message; a working API alone does not prove execution.
 The development supervisor is available as `npm run dev`, `scripts/dev.ps1`
 on Windows, or `bash scripts/dev.sh` on Linux. It requires a healthy PostgreSQL
 compose service, installs both frozen locks,
-applies migrations, builds the immutable runner image, rotates operator credentials
-and prints a fresh bootstrap URL, then supervises the three processes together.
+applies migrations, builds the immutable runner image, generates a fresh non-revoking
+operator bootstrap URL without invalidating active sessions, then supervises the three
+processes together.
 Ctrl+C or SIGTERM stops its owned process trees; an unexpected child exit fails
 the command. A hosted Linux acceptance job starts this exact supervisor against the
 repository Compose PostgreSQL service, confirms API, worker and web readiness,
 then verifies clean signal shutdown without surviving owned children. This passed
 on 9 September 2026 at checkpoint `140fb43`; see the evidence ledger for the
-hosted run. Use the separate commands above when preserving an existing operator session.
+hosted run. Use the separate commands above when managing services individually.
 
 The default browser origin is `http://127.0.0.1:3000`; the server-side web proxy
 uses `http://127.0.0.1:8000` internally. When changing ports, configure
 `FORGE_WEB_ORIGIN` consistently and `FORGE_API_INTERNAL_ORIGIN` on the web server.
 Keep the instance on loopback and credentials out of browser configuration.
 
-Run `uv run --frozen forge operator rotate` to revoke existing local sessions and
-obtain a fresh bootstrap URL. Open that private URL once. Its fragment contains
-the short-lived token; do not share it. The dashboard exchanges it for an HttpOnly
-session and removes the fragment. A stale link requires rotation.
+To re-open Forge after session expiry or to obtain a fresh sign-in link for an
+already-running instance, run:
+
+```text
+uv run --frozen forge operator open
+```
+
+This verifies that the dashboard is ready, issues a fresh single-use bootstrap link
+without revoking existing sessions, and normally opens the configured local web
+origin in the default browser. In headless or terminal-only environments, pass
+`--print-url` (or `--headless`) to print the link instead of launching a browser.
+Use `--no-wait` to skip the dashboard readiness probe if needed.
+
+When an explicit revocation is required (such as rotating credentials or responding
+to an incident), run `uv run --frozen forge operator rotate` to revoke all existing
+local sessions and obtain a fresh bootstrap URL. Open that private URL once. Its
+fragment contains the short-lived token; do not share it. The dashboard exchanges it
+for an HttpOnly session and removes the fragment. A stale link requires re-opening
+or rotation.
 
 ## Credentials and project policy
 
@@ -65,6 +81,11 @@ Keep `operator_trusted` / **Ready to attempt** distinct from optional verified
 admission. Antigravity's `approved_tools_unproved` warning means native tools may
 remain available. Actual callback, route, credential-filtering, ownership, budget,
 quota, process-settlement and human approval controls still apply.
+
+Existing `FORGE_SUBSCRIPTION_PRIMARY_BUDGET` JSON overrides copied from the old example
+retain `max_uncertain_attempts=1`. Operators may remove that override to inherit the new
+defaults, or set `unknown_telemetry_policy.max_uncertain_attempts` explicitly to the
+intended attempt budget.
 
 Legacy API-key provider credentials use `secret://forge/<secret-id>` references in
 `LocalSecretStore`. `FORGE_PROVIDER_SECRET_REFERENCE` selects one;

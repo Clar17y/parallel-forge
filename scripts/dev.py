@@ -709,16 +709,16 @@ class DevSupervisor:
         return image_id
 
     def issue_operator_bootstrap(self) -> str:
-        """Rotate operator credentials and print bootstrap URL directly once."""
-        self.log("Rotating operator credentials and generating bootstrap URL...")
+        """Issue a fresh non-revoking operator bootstrap URL directly once."""
+        self.log("Generating fresh non-revoking operator bootstrap URL...")
         res = self.run_cmd(
-            ["uv", "run", "--frozen", "forge", "operator", "rotate"],
+            ["uv", "run", "--frozen", "forge", "operator", "open", "--print-url", "--no-wait"],
             cwd=self.repo_root,
         )
         if res.returncode != 0:
             raw_err = res.stderr.strip() or res.stdout.strip()
             redacted_err = redact_secrets(raw_err)
-            raise SupervisorError(f"Operator rotate failed: {redacted_err}")
+            raise SupervisorError(f"Operator open failed: {redacted_err}")
 
         output = res.stdout.strip()
         url = ""

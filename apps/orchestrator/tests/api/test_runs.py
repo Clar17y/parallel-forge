@@ -63,6 +63,27 @@ async def test_run_command_missing_idempotency_key_is_422_and_not_enqueued(
     assert task10_route_context.commands.calls == []
 
 
+@pytest.mark.asyncio
+async def test_run_command_stale_policy_conflict_returns_409_with_safe_code(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    from forge.application.services.runs import StaleProjectPolicyConflict
+
+    async def raise_stale(*_args, **_kwargs):
+        raise StaleProjectPolicyConflict("cannot resume preparation after project policy changed")
+
+    task10_route_context.commands.enqueue = raise_stale
+
+    response = await task10_client.post(
+        f"/api/runs/{task10_route_context.run.id}/commands",
+        headers={**route_headers, "Idempotency-Key": "resume-stale-key"},
+        json={"command_type": "resume", "expected_run_version": 1},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "stale-project-policy"
+
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_postgres_operator_client_registers_task_and_created_run(

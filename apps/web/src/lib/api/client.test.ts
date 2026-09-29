@@ -15,6 +15,19 @@ test('mutation binds CSRF, idempotency and expected version; conflicts stay stru
   expect(JSON.parse(options.body as string)).toEqual({ command: 'pause', expected_run_version: 7 });
 });
 
+test('conflict recognition maps explicit safe stale-project-policy code and falls back safely', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'stale-project-policy' }), { status: 409 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'unexpected server error detail' }), { status: 409 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'stale-project-policy' }), { status: 409 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ detail: { code: 'stale-project-policy' } }), { status: 409 }))
+    .mockResolvedValueOnce(new Response('not-valid-json', { status: 409 }));
+  await expect(mutate('/runs/one/commands', { command_type: 'resume' }, { idempotencyKey: 'k1' })).rejects.toMatchObject({ status: 409, code: 'stale-project-policy' });
+  await expect(mutate('/runs/one/commands', { command_type: 'resume' }, { idempotencyKey: 'k2' })).rejects.toMatchObject({ status: 409, code: 'stale-projection' });
+  await expect(mutate('/runs/one/commands', { command_type: 'resume' }, { idempotencyKey: 'k3' })).rejects.toMatchObject({ status: 409, code: 'stale-projection' });
+  await expect(mutate('/runs/one/commands', { command_type: 'resume' }, { idempotencyKey: 'k4' })).rejects.toMatchObject({ status: 409, code: 'stale-projection' });
+  await expect(mutate('/runs/one/commands', { command_type: 'resume' }, { idempotencyKey: 'k5' })).rejects.toMatchObject({ status: 409, code: 'stale-projection' });
+});
+
 test('validation errors expose bounded field identifiers without raw messages or input', async () => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ detail: [
     { loc: ['body', 'name'], type: 'string_too_short', msg: 'private server text', input: 'secret input' },

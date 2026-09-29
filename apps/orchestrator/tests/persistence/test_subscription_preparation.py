@@ -66,6 +66,48 @@ async def preparation_case(session_factory, tmp_path, *, primary_budget=None, pl
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("strict_limit", [False, True])
+async def test_prepared_primary_with_unreported_usage_obeys_configured_budget(
+    session_factory, tmp_path, monkeypatch, strict_limit
+):
+    from dataclasses import replace
+
+    from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
+    from forge.domain.subscription import AttemptTelemetry, UnknownTelemetryPolicy
+    from forge.settings import Settings
+
+    monkeypatch.delenv("FORGE_SUBSCRIPTION_PRIMARY_BUDGET", raising=False)
+    settings = Settings(_env_file=None)
+    budget = settings.subscription_primary_budget
+    if strict_limit:
+        budget = replace(budget, unknown_telemetry_policy=UnknownTelemetryPolicy())
+    # Real subscription clients report token usage but no cash cost or quota balance.
+    monkeypatch.setattr(
+        "test_subscription_plan_gate._known",
+        lambda: AttemptTelemetry(input_tokens=10, output_tokens=5, duration_ms=100),
+    )
+    factory, evidence, command, service, _ = await preparation_case(
+        session_factory, tmp_path, primary_budget=budget
+    )
+    async with factory() as work:
+        await service.execute(command, work)
+    admission = await SubscriptionDecisionExecutor(factory).admit_next(
+        "next-primary", settings.subscription_attempt_budget
+    )
+    async with factory() as work:
+        usage = await work.subscription_budget.usage(evidence.producer.run_id)
+        assert usage.uncertain_attempts == 1
+        assert usage.consumed.provider_attempts == 1
+        assert usage.outstanding.provider_attempts == (0 if strict_limit else 1)
+    if strict_limit:
+        assert admission is None
+    else:
+        assert admission is not None
+        assert admission.task.task_id == evidence.producer.task_id
+        assert admission.attempt.attempt_number == 2
+
+
+@pytest.mark.integration
 async def test_prepared_subscription_queues_primary_without_legacy_implementation(
     session_factory, tmp_path
 ):

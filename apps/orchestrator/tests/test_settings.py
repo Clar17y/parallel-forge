@@ -12,6 +12,26 @@ def test_subscription_primary_budget_is_validated_from_environment(monkeypatch):
         Settings()
 
 
+def test_subscription_default_budget_allows_unreported_subscription_usage(monkeypatch):
+    monkeypatch.delenv("FORGE_SUBSCRIPTION_PRIMARY_BUDGET", raising=False)
+    budget = Settings(_env_file=None).subscription_primary_budget
+    assert budget.max_provider_attempts == 64
+    assert budget.unknown_telemetry_policy.max_uncertain_attempts == 64
+    assert budget.billing_mode.value == "allowance_only"
+    assert budget.max_duration_seconds == 1800
+    assert budget.max_tool_calls == 100
+
+
+def test_explicit_subscription_budget_keeps_its_stricter_uncertainty_limit(monkeypatch):
+    monkeypatch.setenv(
+        "FORGE_SUBSCRIPTION_PRIMARY_BUDGET",
+        '{"max_provider_attempts":12,"unknown_telemetry_policy":{"max_uncertain_attempts":1}}',
+    )
+    budget = Settings(_env_file=None).subscription_primary_budget
+    assert budget.max_provider_attempts == 12
+    assert budget.unknown_telemetry_policy.max_uncertain_attempts == 1
+
+
 def test_subscription_worker_limits_are_configurable_from_environment(monkeypatch):
     monkeypatch.setenv("FORGE_SUBSCRIPTION_WORKER_CONCURRENCY", "4")
     monkeypatch.setenv(

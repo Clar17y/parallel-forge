@@ -31,7 +31,10 @@ from forge.application.services.release_resume import (
 from forge.application.services.resume_continuation import enqueue_resumed_stage
 from forge.application.services.resume_reconciliation import ResumeReconciler
 from forge.application.services.resume_source import continuation_binding, resume_command_ids
-from forge.application.services.runs import cancellation_rejection_reason
+from forge.application.services.runs import (
+    cancellation_rejection_reason,
+    preparation_resume_policy_conflict_reason,
+)
 from forge.application.services.state_engine import StateEngine
 from forge.application.services.subscription_delivery_ack import ACKNOWLEDGMENTS
 from forge.application.services.subscription_remote_remediation import (
@@ -145,6 +148,9 @@ class ResumeRunHandler:
 
         if run.version != command.expected_run_version:
             raise ControlCommandRejected("resume command version is stale")
+        conflict_reason = await preparation_resume_policy_conflict_reason(work, run)
+        if conflict_reason is not None:
+            raise ControlCommandRejected(conflict_reason)
         target = _restored_state(run)
         if target not in _ACTIVE_RESUME_STATES | {
             RunState.MONITORING_PR,

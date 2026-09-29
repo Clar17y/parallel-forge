@@ -55,8 +55,11 @@ Antigravity retains its `approved_tools_unproved` warning.
 
 Run `npm run dev` (or `scripts/dev.ps1` / `bash scripts/dev.sh`) to install the
 frozen dependencies, migrate, build the runner and supervise the API, worker and
-web app. This command rotates the operator session and prints a fresh bootstrap
-URL. The operator runbook records retained supervisor startup/shutdown evidence.
+web app. This command issues a fresh non-revoking operator bootstrap URL without
+invalidating existing sessions. To re-open Forge in a browser after session expiry
+on an already-running instance, run `uv run --frozen forge operator open` (or pass
+`--print-url` / `--headless` to print the link without launching a browser). The
+operator runbook records retained supervisor startup/shutdown evidence.
 
 Use `npm run test`, `npm run lint`, `npm run typecheck` and `npm run build` for
 development checks. `npm run verify` includes the deterministic backend

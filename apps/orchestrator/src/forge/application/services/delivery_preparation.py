@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from uuid import UUID
 
 from forge.application.ports.commands import CommandRecoveryRequired
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.application.ports.worktrees import WorktreeProvisionerPort
+from forge.application.ports.worktrees import WorktreeProvisionerPort, WorktreeSetupFailed
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
 from forge.application.services.control_settlement import pending_current_control_stop
 from forge.application.services.preparation_resume import (
@@ -21,7 +21,7 @@ from forge.domain.approval import SubscriptionPlanApprovalEvidence
 from forge.domain.command import CommandEnvelope, CommandStatus
 from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState, WorktreeIdentity, database_secret_id
-from forge.domain.run import RunSnapshot, RunState
+from forge.domain.run import RunSnapshot, RunState, SuspensionKind
 
 
 class DeliveryPreparationService:
@@ -100,6 +100,27 @@ class DeliveryPreparationService:
             ):
                 raise CommandRecoveryRequired("preparation replay requires recovery")
             return
+        if approved.run.state is RunState.AWAITING_HUMAN_INTERVENTION:
+            if (
+                approved.run.suspended_state is not RunState.PREPARING_WORKTREE
+                or approved.run.suspension_kind is not SuspensionKind.INTERVENTION
+            ):
+                raise CommandRecoveryRequired("preparation command authority is invalid")
+            queued = await work.commands.get_by_idempotency_key(f"{command.run_id}:implement:1")
+            events = [
+                event
+                for event in await work.events.list_after(command.run_id, 0)
+                if event.event_type == "run.preparation_failed"
+            ]
+            if (
+                queued is not None
+                or len(events) != 1
+                or events[0].run_version != approved.run.version
+                or events[0].actor_class != "worker"
+                or not _valid_preparation_failed_payload(events[0].payload, command, approved)
+            ):
+                raise CommandRecoveryRequired("preparation replay requires recovery")
+            return
         if approved.run.state is not RunState.PREPARING_WORKTREE:
             raise CommandRecoveryRequired("preparation command authority is invalid")
         if await pending_current_control_stop(work, approved.run):
@@ -147,6 +168,34 @@ class DeliveryPreparationService:
         await work.commit()
         try:
             worktree = await self._provisioner.prepare(command.run_id, approved.policy)
+        except WorktreeSetupFailed as failure:
+            fenced = await work.commands.assert_current_lease(command)
+            refreshed = await self._approved_plans.load(work, command.run_id)
+            if (
+                refreshed.run.state is not RunState.PREPARING_WORKTREE
+                or refreshed.approval_id != approved.approval_id
+                or fenced.actor_id != command.actor_id
+                or fenced.payload != command.payload
+                or fenced.idempotency_key != command.idempotency_key
+                or fenced.command_type != command.command_type
+                or fenced.expected_run_version != command.expected_run_version
+                or fenced.payload_schema_version != command.payload_schema_version
+            ):
+                raise CommandRecoveryRequired("preparation outcome requires recovery")
+            if await pending_current_control_stop(work, refreshed.run):
+                raise CommandRecoveryRequired(
+                    "preparation failure publication is fenced by operator control"
+                )
+            await work.runs.intervene(
+                command.run_id,
+                refreshed.run.version,
+                "run.preparation_failed",
+                _preparation_failed_payload(command, refreshed, failure),
+                actor_class="worker",
+                actor_id=command.actor_id,
+            )
+            await work.commit()
+            return
         except Exception:  # noqa: BLE001 - an uncertain resource effect needs reconciliation
             raise CommandRecoveryRequired("worktree provisioning requires recovery") from None
         fenced = await work.commands.assert_current_lease(command)
@@ -322,3 +371,41 @@ def _subscription_prepared_payload(
         "plan_attempt_id": str(approved.evidence.producer.attempt_id),
         "resource_digest": _resource_digest(approved),
     }
+
+
+def _preparation_failed_payload(
+    command: CommandEnvelope,
+    approved: ApprovedPlan,
+    failure: WorktreeSetupFailed,
+) -> dict[str, object]:
+    return {
+        "source_command_id": str(command.id),
+        "approval_id": str(approved.approval_id),
+        "reason": "setup_command_failed",
+        "operation_intent_id": failure.operation_intent_id,
+        "command_name": failure.command_name,
+        "kind": failure.kind,
+        "command_digest": failure.command_digest,
+        "evidence_digest": failure.evidence_digest,
+        "exit_code": failure.exit_code,
+        "timed_out": failure.timed_out,
+        "stdout_digest": failure.stdout_digest,
+        "stderr_digest": failure.stderr_digest,
+        "duration_ms": failure.duration_ms,
+        "failure": dict(failure.failure),
+    }
+
+
+def _valid_preparation_failed_payload(
+    payload: Mapping[str, object],
+    command: CommandEnvelope,
+    approved: ApprovedPlan,
+) -> bool:
+    return (
+        payload.get("source_command_id") == str(command.id)
+        and payload.get("approval_id") == str(approved.approval_id)
+        and payload.get("reason") == "setup_command_failed"
+        and isinstance(payload.get("failure"), Mapping)
+        and isinstance(payload.get("command_name"), str)
+        and isinstance(payload.get("evidence_digest"), str)
+    )

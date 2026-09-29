@@ -710,12 +710,18 @@ async def test_cancelled_terminal_step_is_checkpointed_before_cancellation_propa
 
 @pytest.mark.asyncio
 async def test_nonzero_terminal_step_is_checkpointed_and_stops_later_steps() -> None:
-    from forge.tools.worktree import WorktreeReconciliationRequired
+    from forge.application.ports.worktrees import WorktreeSetupFailed
 
     log, uow, operations, policy, provisioner = _case(fail_on="install-first")
 
-    with pytest.raises(WorktreeReconciliationRequired):
+    with pytest.raises(WorktreeSetupFailed) as captured:
         await provisioner.prepare(RUN_ID, policy)
+
+    assert captured.value.command_name == "install-first"
+    assert captured.value.exit_code == 2
+    assert captured.value.timed_out is False
+    assert captured.value.operation_intent_id
+    assert captured.value.evidence_digest
 
     assert [entry for entry in log if entry.startswith("run:")] == [
         "run:bootstrap-first",
@@ -734,6 +740,17 @@ async def test_nonzero_terminal_step_is_checkpointed_and_stops_later_steps() -> 
     assert install.status is OperationStatus.SUCCEEDED
     assert install.outcome is not None
     assert install.outcome["exit_code"] == 2
+
+    # Replaying the failed setup step must not re-run any commands
+    with pytest.raises(WorktreeSetupFailed) as replayed:
+        await provisioner.prepare(RUN_ID, policy)
+    assert replayed.value.command_name == "install-first"
+    assert replayed.value.exit_code == 2
+    assert [entry for entry in log if entry.startswith("run:")] == [
+        "run:bootstrap-first",
+        "run:bootstrap-second",
+        "run:install-first",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1043,12 +1060,17 @@ async def test_reordered_setup_checkpoints_fail_closed_without_rerun() -> None:
 
 @pytest.mark.asyncio
 async def test_timed_out_terminal_step_is_checkpointed_and_stops_later_steps() -> None:
-    from forge.tools.worktree import WorktreeReconciliationRequired
+    from forge.application.ports.worktrees import WorktreeSetupFailed
 
     log, uow, operations, policy, provisioner = _case(timeout_on="install-first")
 
-    with pytest.raises(WorktreeReconciliationRequired):
+    with pytest.raises(WorktreeSetupFailed) as captured:
         await provisioner.prepare(RUN_ID, policy)
+
+    assert captured.value.command_name == "install-first"
+    assert captured.value.timed_out is True
+    assert captured.value.operation_intent_id
+    assert captured.value.evidence_digest
 
     assert [entry for entry in log if entry.startswith("run:")] == [
         "run:bootstrap-first",

@@ -10,6 +10,7 @@ from forge.application.services.projects import ProjectServiceError
 from forge.application.services.runs import (
     RunCommandValidationError,
     RunServiceError,
+    StaleProjectPolicyConflict,
 )
 from forge.application.services.tasks import TaskServiceError
 from forge.domain.subscription_feedback import TaskFeedbackConflict
@@ -68,6 +69,10 @@ def translate_error(error: BaseException) -> HTTPException:
 
     if isinstance(error, _NOT_FOUND):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="resource not found")
+    if isinstance(error, StaleProjectPolicyConflict):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="stale-project-policy"
+        )
     if isinstance(error, _CONFLICT):
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="request conflicts with current state"

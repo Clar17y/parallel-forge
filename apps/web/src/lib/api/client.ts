@@ -16,9 +16,9 @@ function apiPath(path: string): string {
   return `/api${relative}`;
 }
 
-async function validationFields(response: Response): Promise<Record<string, string>> {
+async function readBoundedPayload(response: Response): Promise<unknown> {
   const reader = response.body?.getReader();
-  if (!reader) return {};
+  if (!reader) return null;
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -26,26 +26,36 @@ async function validationFields(response: Response): Promise<Record<string, stri
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > 16_384) { await reader.cancel(); return {}; }
+      if (size > 16_384) { await reader.cancel(); return null; }
       chunks.push(value);
     }
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-    const payload: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    if (!payload || typeof payload !== 'object' || !('detail' in payload) || !Array.isArray(payload.detail)) return {};
-    const fields: Record<string, string> = {};
-    for (const item of payload.detail.slice(0, 32)) {
-      if (!item || typeof item !== 'object' || !Array.isArray(item.loc)) continue;
-      const parts: unknown[] = item.loc[0] === 'body' ? item.loc.slice(1) : item.loc;
-      if (!parts.length || parts.length > 8 || !parts.every(part =>
-        typeof part === 'number' ? Number.isSafeInteger(part) && part >= 0 :
-        typeof part === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(part))) continue;
-      fields[parts.join('.')] = 'Invalid value.';
-    }
-    return fields;
-  } catch { return {}; }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch { return null; }
   finally { reader.releaseLock(); }
+}
+
+async function conflictCode(response: Response): Promise<string> {
+  const payload = await readBoundedPayload(response);
+  if (payload && typeof payload === 'object' && 'detail' in payload && payload.detail === 'stale-project-policy') return 'stale-project-policy';
+  return 'stale-projection';
+}
+
+async function validationFields(response: Response): Promise<Record<string, string>> {
+  const payload = await readBoundedPayload(response);
+  if (!payload || typeof payload !== 'object' || !('detail' in payload) || !Array.isArray(payload.detail)) return {};
+  const fields: Record<string, string> = {};
+  for (const item of payload.detail.slice(0, 32)) {
+    if (!item || typeof item !== 'object' || !Array.isArray(item.loc)) continue;
+    const parts: unknown[] = item.loc[0] === 'body' ? item.loc.slice(1) : item.loc;
+    if (!parts.length || parts.length > 8 || !parts.every(part =>
+      typeof part === 'number' ? Number.isSafeInteger(part) && part >= 0 :
+      typeof part === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(part))) continue;
+    fields[parts.join('.')] = 'Invalid value.';
+  }
+  return fields;
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T | undefined> {
@@ -59,7 +69,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T | 
   const response = await fetch(url, { ...init, method, headers, credentials: 'same-origin' });
   if (!response.ok) {
     if (response.status === 401) { csrf.clear(); throw new ApiError(401, 'bootstrap-required'); }
-    if (response.status === 409) throw new ApiError(409, 'stale-projection');
+    if (response.status === 409) throw new ApiError(409, await conflictCode(response));
     throw new ApiError(response.status, 'request-failed', response.status === 422 ? await validationFields(response) : {});
   }
   if (response.status === 204 || method === 'HEAD') return undefined;

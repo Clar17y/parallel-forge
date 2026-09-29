@@ -185,6 +185,34 @@ test('409 closes the stale approval and requests authoritative evidence again', 
   expect(refresh).toHaveBeenCalledTimes(2);
 });
 
+test('resume confirmation refuses stale project policy with clear user guidance', async () => {
+  const value = projection({ available_commands: [{ name: 'resume', expected_run_version: 7, requires_feedback: false, gate: null, evidence_digest: null, policy_version: null }] });
+  const refresh = vi.fn().mockResolvedValue(value);
+  vi.mocked(mutate).mockRejectedValueOnce(new ApiError(409, 'stale-project-policy'));
+  render(<RunControls projection={value} onRefresh={refresh} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Resume' }));
+  await screen.findByRole('dialog');
+  expect(screen.getByRole('dialog')).toHaveTextContent('Resume within the run’s retained policy');
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm resume' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('This run uses older project configuration');
+  expect(alert).toHaveTextContent('current plan');
+  expect(refresh).toHaveBeenCalledTimes(2);
+});
+
+test('resume confirmation succeeds and sends resume command when valid', async () => {
+  const value = projection({ available_commands: [{ name: 'resume', expected_run_version: 7, requires_feedback: false, gate: null, evidence_digest: null, policy_version: null }] });
+  const refresh = vi.fn().mockResolvedValue(value);
+  vi.mocked(mutate).mockResolvedValue({ id: 'resume-cmd-1' });
+  render(<RunControls projection={value} onRefresh={refresh} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Resume' }));
+  await screen.findByRole('dialog');
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm resume' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(mutate).toHaveBeenCalledWith('/runs/run-1/commands', { command_type: 'resume' }, expect.objectContaining({ expectedVersion: 7 }));
+});
+
 test('cancel requires confirmation and preserves the supplied expected version', async () => {
   const value = projection({ available_commands: [{ name: 'cancel', expected_run_version: 7, requires_feedback: false, gate: null, evidence_digest: null, policy_version: null }] });
   vi.mocked(mutate).mockResolvedValue({ id: 'command-1' });
