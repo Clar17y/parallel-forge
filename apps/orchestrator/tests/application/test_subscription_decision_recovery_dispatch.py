@@ -11,6 +11,32 @@ from forge.application.ports.subscription_decisions import (
     PendingSubscriptionDecision,
 )
 from forge.application.services.subscription_decision_recovery import SubscriptionDecisionRecovery
+from forge.domain.run import RunState
+
+
+class RecoveryProjectionStub:
+    async def due(self, attempt_id):
+        return True
+
+    async def role_violation(self, attempt_id):
+        return None
+
+    async def record_success(self, attempt_id):
+        pass
+
+    async def attempt_run_id(self, attempt_id):
+        return UUID(int=1)
+
+    async def record_failure(self, attempt_id, *, classification, reason_code):
+        pass
+
+
+async def _commit():
+    pass
+
+
+async def _run(run_id):
+    return SimpleNamespace(state=RunState.IMPLEMENTING)
 
 
 async def test_recovery_pages_past_deferred_and_unsupported_sources():
@@ -44,6 +70,9 @@ async def test_recovery_pages_past_deferred_and_unsupported_sources():
         try:
             yield SimpleNamespace(
                 subscription_decisions=SimpleNamespace(pending_applications=pending),
+                subscription_recovery=RecoveryProjectionStub(),
+                runs=SimpleNamespace(get=_run),
+                commit=_commit,
                 rollback=rollback,
             )
         finally:
@@ -75,7 +104,11 @@ async def test_recovery_does_not_swallow_cancellation():
     @asynccontextmanager
     async def factory():
         yield SimpleNamespace(
-            subscription_decisions=SimpleNamespace(pending_applications=pending), rollback=rollback
+            subscription_decisions=SimpleNamespace(pending_applications=pending),
+            subscription_recovery=RecoveryProjectionStub(),
+            runs=SimpleNamespace(get=_run),
+            commit=_commit,
+            rollback=rollback,
         )
 
     async def cancel(*args):
@@ -101,7 +134,11 @@ async def test_recovery_dispatches_handoff_only_when_observer_is_configured():
     @asynccontextmanager
     async def factory():
         yield SimpleNamespace(
-            subscription_decisions=SimpleNamespace(pending_applications=pending), rollback=rollback
+            subscription_decisions=SimpleNamespace(pending_applications=pending),
+            subscription_recovery=RecoveryProjectionStub(),
+            runs=SimpleNamespace(get=_run),
+            commit=_commit,
+            rollback=rollback,
         )
 
     async def apply(attempt):

@@ -17,6 +17,7 @@ from forge.domain.subscription import (
 from forge.domain.subscription_execution import run_allows_subscription_attempt
 from forge.domain.subscription_feedback import MAX_FEEDBACK_PER_TASK
 from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPolicy
+from forge.domain.subscription_recovery import RecoveryAction
 from forge.observability.redaction import redact_value
 from forge.persistence.models.run import Run
 from forge.persistence.models.scheduling import (
@@ -30,13 +31,18 @@ from forge.persistence.models.subscription import (
     SubscriptionTask,
 )
 from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
+from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
 from forge.persistence.queries.subscription_capacity import capacity_observation
+from forge.persistence.queries.subscription_recovery_attention import current_attention
 from forge.persistence.queries.subscription_task_controls import (
     control_view,
     latest_control_receipts,
 )
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.subscription_quota import PostgresSubscriptionQuotaRepository
+from forge.persistence.repositories.subscription_recovery import (
+    PostgresSubscriptionRecoveryRepository,
+)
 
 
 class SubscriptionTaskQuery:
@@ -90,6 +96,24 @@ class SubscriptionTaskQuery:
             ids = [row[0].id for row in page]
             control_receipts = await latest_control_receipts(session, ids)
             feedback_receipts = await _feedback_receipts(session, run_id, ids)
+            recovery_rows = (
+                (
+                    await session.scalars(
+                        select(SubscriptionApplicationDiagnostic)
+                        .where(SubscriptionApplicationDiagnostic.task_id.in_(ids))
+                        .distinct(SubscriptionApplicationDiagnostic.task_id)
+                        .order_by(
+                            SubscriptionApplicationDiagnostic.task_id,
+                            SubscriptionApplicationDiagnostic.last_failure_at.desc(),
+                        )
+                    )
+                ).all()
+                if ids
+                else []
+            )
+            recovery_by_task = {row.task_id: row for row in recovery_rows}
+            attention_by_task = await current_attention(session, run_id)
+            recovery_attention = bool(attention_by_task)
             effects = (
                 dict(
                     (
@@ -149,6 +173,12 @@ class SubscriptionTaskQuery:
                         "version": row.version,
                         "repairs": scheduled.repairs if scheduled is not None else None,
                         "unsettled_effects": effects.get(row.id, 0),
+                        "recovery_attention": row.id in attention_by_task,
+                        "recovery_reason_code": (
+                            recovery_by_task[row.id].reason_code
+                            if row.id in recovery_by_task
+                            else None
+                        ),
                         "control": await control_view(
                             session, row, scheduled, control_receipts.get(row.id)
                         ),
@@ -179,6 +209,7 @@ class SubscriptionTaskQuery:
                 "capacity": capacity.projection() if capacity is not None else None,
                 "tasks": tasks,
                 "has_more": has_more,
+                "recovery_attention": recovery_attention,
                 "quota_statuses": [_quota_status(value) for value in quota_statuses],
             }
 
@@ -209,10 +240,47 @@ class SubscriptionTaskQuery:
                     )
                 ).all()
             )
+            diagnostic_ids = [row.id for row in rows[:limit]]
+            diagnostics = {
+                row.attempt_id: row
+                for row in (
+                    (
+                        await session.scalars(
+                            select(SubscriptionApplicationDiagnostic).where(
+                                SubscriptionApplicationDiagnostic.attempt_id.in_(diagnostic_ids)
+                            )
+                        )
+                    ).all()
+                    if diagnostic_ids
+                    else []
+                )
+            }
+            recovery = PostgresSubscriptionRecoveryRepository(session)
+            projected = []
+            for row in rows[:limit]:
+                item = _attempt(row)
+                diagnostic = diagnostics.get(row.id)
+                if diagnostic is not None:
+                    eligible = []
+                    for action in RecoveryAction:
+                        snapshot = await recovery.preview(run_id, task_id, row.id, action)
+                        if snapshot.eligible:
+                            eligible.append(action.value)
+                    item["recovery"] = {
+                        "classification": diagnostic.classification,
+                        "reason_code": diagnostic.reason_code,
+                        "resolution": diagnostic.resolution,
+                        "failed_applications": diagnostic.failed_applications,
+                        "first_failure_at": diagnostic.first_failure_at,
+                        "last_failure_at": diagnostic.last_failure_at,
+                        "next_retry_at": diagnostic.next_retry_at,
+                        "eligible_actions": eligible,
+                    }
+                projected.append(item)
             return {
                 "run_id": run_id,
                 "task_id": task_id,
-                "attempts": [_attempt(row) for row in rows[:limit]],
+                "attempts": projected,
                 "has_more": len(rows) > limit,
             }
 

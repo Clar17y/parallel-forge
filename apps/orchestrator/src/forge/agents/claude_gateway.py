@@ -40,6 +40,7 @@ from forge.agents.codex_gateway import ToolBroker
 from forge.agents.subscription_protocol import (
     ProtocolError,
     ProviderToolCall,
+    RoleDecisionError,
     decode_final,
     freeze_context,
     json_value,
@@ -48,6 +49,7 @@ from forge.agents.subscription_protocol import (
 )
 from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
+    RoleDecisionRejection,
     SubscriptionFailure,
     SubscriptionGateway,
     SubscriptionInterrupted,
@@ -896,6 +898,11 @@ class ClaudeGateway(SubscriptionGateway):
             result = failed(SubscriptionFailure.UNCERTAIN)
         except CapabilityEvidenceSourceError, ClaudeConfigurationError:
             result = failed(SubscriptionFailure.UNAVAILABLE)
+        except RoleDecisionError as error:
+            result = replace(
+                failed(SubscriptionFailure.PROTOCOL),
+                role_rejection=RoleDecisionRejection(error.kind, f"role_{error.kind}_forbidden"),
+            )
         except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)
         except Exception:  # noqa: BLE001 - provider/verifier failures are sanitized

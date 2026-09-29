@@ -381,6 +381,21 @@ class PostgresSchedulingRepository:
                     or logical.cancel_requested
                 ):
                     continue
+                contract = decode_subscription_record(logical.payload)
+                if (
+                    isinstance(contract, LogicalTaskContract)
+                    and contract.purpose is SpecialistPurpose.PRIMARY
+                    and source_run.state == "IMPLEMENTING"
+                    and any(item.criterion_id == "approved-plan" for item in contract.typed_acceptance)
+                ):
+                    from forge.persistence.repositories.subscription_recovery import (
+                        PostgresSubscriptionRecoveryRepository,
+                    )
+
+                    await PostgresSubscriptionRecoveryRepository(self._session).block_stale_queued_contract(
+                        candidate.run_id, logical, candidate
+                    )
+                    continue
                 route = await self._quota.route_for_task(logical, eligible_routes=eligible_routes)
                 if route is None:
                     continue
@@ -440,6 +455,11 @@ class PostgresSchedulingRepository:
                 )
                 selected_logical.version += 1
                 row.provider = selected_route.effective.provider
+        # The database refuses older worker code that cannot opt into revised
+        # contracts. SET LOCAL expires with this claim transaction.
+        await self._session.execute(
+            text("SELECT set_config('forge.recovery_contract_version', '1', true)")
+        )
         row.state, row.lease_owner, row.lease_generation, row.lease_expires_at = (
             "leased",
             owner,

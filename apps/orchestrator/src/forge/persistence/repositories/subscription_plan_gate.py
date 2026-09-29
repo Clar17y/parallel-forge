@@ -29,6 +29,7 @@ from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
 from forge.domain.subscription import (
+    AcceptanceCriterion,
     AttemptTelemetry,
     ExecutionEnvelope,
     HandoffStatus,
@@ -54,6 +55,7 @@ from forge.persistence.models.subscription import (
     SubscriptionTask,
 )
 from forge.persistence.models.subscription_plan_gate import SubscriptionPlanGate
+from forge.persistence.models.subscription_recovery import SubscriptionContractRevision
 from forge.persistence.models.subscription_results import (
     SubscriptionAttemptResult,
     SubscriptionRepairDebit,
@@ -69,6 +71,51 @@ from forge.persistence.repositories.subscription_launch import launches_confirme
 class PostgresSubscriptionPlanGateRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def implementation_context(
+        self, task_id: UUID, contract: LogicalTaskContract
+    ) -> dict[str, object] | None:
+        revision = await self._session.scalar(
+            select(SubscriptionContractRevision)
+            .where(SubscriptionContractRevision.task_id == task_id)
+            .order_by(SubscriptionContractRevision.revision.desc())
+            .limit(1)
+        )
+        if revision is None:
+            return None
+        revised_contract = decode_subscription_record(revision.contract_payload)
+        if (
+            not isinstance(revised_contract, LogicalTaskContract)
+            or canonical_digest(revision.contract_payload) != revision.contract_digest
+            or replace(revised_contract, route=contract.route) != contract
+            or (contract.route.is_primary and revised_contract.route != contract.route)
+        ):
+            raise SubscriptionPlanGateError("implementation contract differs from approved revision")
+        gate = await self._session.get(SubscriptionPlanGate, revision.source_attempt_id)
+        approval = await self._session.get(Approval, revision.approval_id)
+        if (
+            gate is None
+            or approval is None
+            or approval.invalidated_at is not None
+            or gate.plan_digest != revision.plan_digest
+            or gate.task_id != task_id
+            or gate.run_id != revision.run_id
+            or approval.run_id != revision.run_id
+            or approval.gate != "plan"
+            or approval.evidence_digest != gate.evidence_digest
+        ):
+            raise SubscriptionPlanGateError("implementation approval provenance differs")
+        decision = gate.snapshot.get("decision")
+        if not isinstance(decision, dict) or decision.get("type") != "PlanOutput":
+            raise SubscriptionPlanGateError("implementation plan provenance differs")
+        plan = decode_plan_output(decision.get("value"))
+        return {
+            "revision": revision.revision,
+            "source_attempt_id": str(revision.source_attempt_id),
+            "approval_id": str(revision.approval_id),
+            "plan_digest": revision.plan_digest,
+            "approved_plan": plan.model_dump(mode="json"),
+        }
 
     async def rejection(self, attempt_id: UUID) -> SubscriptionSettlement | None:
         result = await self._session.get(SubscriptionAttemptResult, attempt_id)
@@ -347,16 +394,66 @@ class PostgresSubscriptionPlanGateRepository:
         plan = decode_plan_output(decision_source["value"])
         original = decode_subscription_record(context_source["task"])
         assert isinstance(original, LogicalTaskContract)
-        prepared = (
-            replace(original, owned_paths=plan.owned_paths, named_checks=plan.required_checks)
-            if isinstance(plan, ScopedPlanOutput)
-            else original
+        # Legacy approvals predate explicit plan scope. Their frozen task scope
+        # remains authoritative; do not manufacture writable paths from prose.
+        paths = plan.owned_paths if isinstance(plan, ScopedPlanOutput) else original.owned_paths
+        prepared = replace(
+            original,
+            owned_paths=paths,
+            named_checks=plan.required_checks,
+            typed_acceptance=(
+                AcceptanceCriterion(
+                    criterion_id="approved-implementation",
+                    description="Implement the approved plan outcomes within the approved scope and provide required validation evidence.",
+                    required_check_names=plan.required_checks,
+                ),
+            ),
+            untrusted_context_refs=(
+                *original.untrusted_context_refs,
+                f"approved-plan:{producer.attempt_id}:{producer.plan_digest}:{approval_id}",
+            ),
         )
         prepared_payload = encode_subscription_record(prepared)
         prepared_paths = tuple(policy_path_key(path) for path in prepared.owned_paths)
+        revision = await self._session.scalar(
+            select(SubscriptionContractRevision)
+            .where(
+                SubscriptionContractRevision.task_id == task.id,
+                SubscriptionContractRevision.revision == 1,
+            )
+            .with_for_update()
+        )
+        expected_revision = (
+            run.id,
+            task.id,
+            producer.attempt_id,
+            approval_id,
+            producer.plan_digest,
+            canonical_digest(context_source["task"]),
+            context_source["task"],
+            canonical_digest(prepared_payload),
+            prepared_payload,
+        )
+        if (
+            revision is not None
+            and (
+                revision.run_id,
+                revision.task_id,
+                revision.source_attempt_id,
+                revision.approval_id,
+                revision.plan_digest,
+                revision.original_contract_digest,
+                revision.original_contract_payload,
+                revision.contract_digest,
+                revision.contract_payload,
+            )
+            != expected_revision
+        ):
+            raise SubscriptionPlanGateError("prepared contract revision differs")
         if run.state is RunState.IMPLEMENTING:
             if (
-                scheduled.worktree_id != worktree_id
+                revision is None
+                or scheduled.worktree_id != worktree_id
                 or task.version < attempt.task_version + 3
                 or (
                     task.version == attempt.task_version + 3
@@ -369,6 +466,21 @@ class PostgresSubscriptionPlanGateRepository:
                 raise SubscriptionPlanGateError("prepared primary replay differs")
             return task.id
         await self._current(attempt, task, run.id, task.id, applied=True)
+        if revision is None:
+            self._session.add(
+                SubscriptionContractRevision(
+                    run_id=run.id,
+                    task_id=task.id,
+                    revision=1,
+                    source_attempt_id=producer.attempt_id,
+                    approval_id=approval_id,
+                    plan_digest=producer.plan_digest,
+                    original_contract_digest=canonical_digest(context_source["task"]),
+                    original_contract_payload=context_source["task"],
+                    contract_digest=canonical_digest(prepared_payload),
+                    contract_payload=prepared_payload,
+                )
+            )
         scheduled.worktree_id = worktree_id
         task.payload = prepared_payload
         scheduled.owned_paths = list(prepared_paths)

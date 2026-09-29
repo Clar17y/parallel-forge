@@ -316,6 +316,21 @@ def _application_matches(
 ) -> bool:
     """Validate historical receipt shape/bindings; do not re-run current effects."""
     decision = source.decision
+    if isinstance(decision, WaitDecision):
+        children = receipt.get("child_attempt_ids")
+        return (
+            set(receipt) == {
+                "schema_version", "kind", "source_result_digest", "child_attempt_ids"
+            }
+            and receipt["kind"] == "wait_child_attempt_snapshot"
+            and receipt["source_result_digest"] == result.result_digest
+            and isinstance(children, dict)
+            and all(
+                _uuid(child_id) and (attempt_id is None or _uuid(attempt_id))
+                for child_id, attempt_id in children.items()
+            )
+            and all(str(child_id) in children for child_id in decision.waiting_on_task_ids)
+        )
     if isinstance(decision, DelegateDecision):
         return (
             receipt.get("kind") == "candidate_reopened"

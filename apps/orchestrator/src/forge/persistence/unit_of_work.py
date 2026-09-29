@@ -46,6 +46,9 @@ from forge.persistence.repositories.subscription_plan_gate import (
     PostgresSubscriptionPlanGateRepository,
 )
 from forge.persistence.repositories.subscription_quota import PostgresSubscriptionQuotaRepository
+from forge.persistence.repositories.subscription_recovery import (
+    PostgresSubscriptionRecoveryRepository,
+)
 from forge.persistence.repositories.subscription_task_controls import (
     PostgresSubscriptionTaskControlRepository,
 )
@@ -97,6 +100,7 @@ class PostgresUnitOfWork:
         self.scheduler: PostgresSchedulingRepository
         self.quota: PostgresSubscriptionQuotaRepository
         self.subscription_plan_gate: PostgresSubscriptionPlanGateRepository
+        self.subscription_recovery: PostgresSubscriptionRecoveryRepository
         self.task_controls: PostgresSubscriptionTaskControlRepository
 
     @property
@@ -154,6 +158,7 @@ class PostgresUnitOfWork:
             self._session, scheduler=self.scheduler
         )
         self.subscription_plan_gate = PostgresSubscriptionPlanGateRepository(self._session)
+        self.subscription_recovery = PostgresSubscriptionRecoveryRepository(self._session)
         self._entered = True
         self._committed = False
         return self

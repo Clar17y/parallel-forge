@@ -15,7 +15,6 @@ from forge.application.ports.subscription_gateway import (
 )
 from forge.application.ports.tool_schemas import GIT_DIFF_SCOPES, TOOL_ARGUMENT_SCHEMAS
 from forge.domain.plan import ScopedPlanOutput
-from forge.domain.run import RunState
 from forge.domain.subscription import (
     AcceptDecision,
     BoundReassignDecision,
@@ -32,6 +31,7 @@ from forge.domain.subscription import (
     WaitDecision,
     validate_task_dag,
 )
+from forge.domain.subscription_decision_policy import decision_allowed
 from forge.domain.subscription_delegation import validate_child_authority
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
@@ -39,6 +39,14 @@ from pydantic import TypeAdapter
 
 class ProtocolError(RuntimeError):
     """Malformed, foreign or inadmissible provider data; messages contain no payload."""
+
+
+class RoleDecisionError(ProtocolError):
+    """A recognized decision kind is forbidden for the request's role or phase."""
+
+    def __init__(self, kind: str, message: str = "decision is not allowed for this role or run phase") -> None:
+        self.kind = kind
+        super().__init__(message)
 
 
 def freeze_context(value: Mapping[str, object]) -> Mapping[str, object]:
@@ -159,6 +167,7 @@ _DECISIONS: dict[str, type[Any]] = {
     "review_selection": ReviewSelection,
     "forward_feedback": ForwardFeedbackDecision,
 }
+_KNOWN_KINDS = frozenset((*_DECISIONS, "plan", "delegate"))
 _PRIMARY_KINDS = frozenset(
     {
         "plan",
@@ -211,13 +220,7 @@ def _child(payload: object, request: SubscriptionInvocationRequest) -> LogicalTa
 
 
 def _phase_allows(kind: str, request: SubscriptionInvocationRequest) -> bool:
-    if request.run_state is None:
-        return True
-    if kind == "plan":
-        return request.run_state is RunState.PLANNING
-    return not (
-        request.task.purpose is SpecialistPurpose.PRIMARY and request.run_state is RunState.PLANNING
-    )
+    return decision_allowed(kind, request.task.purpose, request.run_state)
 
 
 def decode_final(
@@ -229,13 +232,15 @@ def decode_final(
     kind = payload.pop("kind", None)
     if not isinstance(kind, str):
         raise ProtocolError("missing decision kind")
+    if kind in _PRIMARY_KINDS and request.task.purpose is not SpecialistPurpose.PRIMARY:
+        raise RoleDecisionError(kind, "only the primary may make this decision")
+    if kind in _KNOWN_KINDS and not _phase_allows(kind, request):
+        raise RoleDecisionError(kind)
     pending_feedback = request.untrusted_context.get("pending_worker_feedback")
     if pending_feedback is not None and kind != "forward_feedback":
         raise ProtocolError("pending worker feedback must be forwarded exactly")
-    if kind in _PRIMARY_KINDS and request.task.purpose is not SpecialistPurpose.PRIMARY:
-        raise ProtocolError("only the primary may make this decision")
-    if not _phase_allows(kind, request):
-        raise ProtocolError("decision is not allowed in this run phase")
+    if kind not in _KNOWN_KINDS:
+        raise ProtocolError("unknown decision kind")
     for name, expected in (
         ("run_id", request.attempt.run_id),
         ("attempt_id", request.attempt.attempt_id),

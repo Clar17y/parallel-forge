@@ -156,6 +156,12 @@ intents, quarantines or recovery barriers merely to resume polling. See
 [recovery procedures](recovery-environment.md) for manifest failures and historical
 environment details.
 
+For subscription runs with a result that cannot be applied or outdated
+approved-plan instructions, use the
+[workflow recovery procedure](workflow-recovery.md). Inspect the reason and
+preview a supported repair from the run's Tasks section. Preserve the original
+attempt and use the same request identity if the response is uncertain.
+
 ## Resource retention and teardown
 
 Completion and cancellation retain worktrees, databases and evidence. Teardown

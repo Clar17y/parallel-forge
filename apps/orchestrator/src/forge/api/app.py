@@ -52,6 +52,7 @@ from forge.application.services.runs import RunCommandService, RunService
 from forge.application.services.subscription_feedback import SubscriptionTaskFeedbackService
 from forge.application.services.subscription_profiles import SubscriptionProfileService
 from forge.application.services.subscription_quota import SubscriptionQuotaService
+from forge.application.services.subscription_recovery import SubscriptionRecoveryService
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
 from forge.application.services.tasks import TaskService
 from forge.artifacts.filesystem import FilesystemArtifactStore
@@ -96,6 +97,7 @@ def create_app(
     subscription_task_control_service: Any | None = None,
     subscription_task_feedback_service: Any | None = None,
     jev_reporting_service: Any | None = None,
+    subscription_recovery_service: Any | None = None,
 ) -> FastAPI:
     """Create the API without opening a database connection."""
 
@@ -144,6 +146,9 @@ def create_app(
     )
     resolved_task_feedback_service = (
         subscription_task_feedback_service or SubscriptionTaskFeedbackService(resolved_uow_factory)
+    )
+    resolved_subscription_recovery_service = (
+        subscription_recovery_service or SubscriptionRecoveryService(resolved_uow_factory)
     )
     resolved_run_service = run_service or RunService(
         resolved_uow_factory, settings=resolved_settings
@@ -208,6 +213,7 @@ def create_app(
     app.state.subscription_quota_service = resolved_subscription_quota_service
     app.state.subscription_task_control_service = resolved_task_control_service
     app.state.subscription_task_feedback_service = resolved_task_feedback_service
+    app.state.subscription_recovery_service = resolved_subscription_recovery_service
     app.state.github_issue_import_service = resolved_issue_import
     app.state.run_service = resolved_run_service
     app.state.run_command_service = resolved_run_command_service

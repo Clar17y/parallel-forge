@@ -93,6 +93,10 @@ export function RunCockpit({ initial, tasks }: { initial: Projection; tasks?: Re
     </header>
     {failed && <p className="run-notice" role="alert">Current run state could not be refreshed. Actions are disabled until a successful refresh.</p>}
     <RunStatusBanner projection={value} stale={stale} />
+    {value.subscription_recovery_attention ? <section className="run-notice" role="alert" aria-label="Workflow recovery attention">
+      <p>This workflow needs recovery review. The last completed tool is historical activity and does not mean it is still executing.</p>
+      {tasks ? <Button variant="quiet" onClick={() => openSection('tasks')}>Review recovery</Button> : <p>Task recovery details are unavailable in this view.</p>}
+    </section> : null}
     <p className="meta" role="status">Events: {connection}{connection !== 'connected' && ' · Live updates are unavailable. Actions stay disabled until the event connection is restored.'}</p>
     {value.security.runner_mode === 'trusted_host' && <p className="run-notice">Trusted host · unsandboxed execution. Commands are not isolated in Docker.</p>}
     {value.pull_request && <section className="panel run-pr-outcome" aria-label="PR / Merge"><h2>PR / Merge</h2>

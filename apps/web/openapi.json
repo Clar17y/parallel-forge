@@ -3877,6 +3877,206 @@
         "title": "ReasoningEffort",
         "type": "string"
       },
+      "RecoveryAction": {
+        "enum": [
+          "retry_application",
+          "reject_and_retry_step",
+          "repair_approved_plan_contract"
+        ],
+        "title": "RecoveryAction",
+        "type": "string"
+      },
+      "RecoveryApplyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RecoveryAction"
+          },
+          "preview_token": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Preview Token",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "preview_token",
+          "reason"
+        ],
+        "title": "RecoveryApplyRequest",
+        "type": "object"
+      },
+      "RecoveryBudgetImpact": {
+        "additionalProperties": false,
+        "properties": {
+          "provider_attempts": {
+            "minimum": 0.0,
+            "title": "Provider Attempts",
+            "type": "integer"
+          },
+          "repair_units": {
+            "minimum": 0.0,
+            "title": "Repair Units",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider_attempts",
+          "repair_units"
+        ],
+        "title": "RecoveryBudgetImpact",
+        "type": "object"
+      },
+      "RecoveryPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RecoveryAction"
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "budget_impact": {
+            "$ref": "#/components/schemas/RecoveryBudgetImpact"
+          },
+          "changes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "preview_token": {
+            "title": "Preview Token",
+            "type": "string"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "retained_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Retained Evidence",
+            "type": "array"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "task_id",
+          "attempt_id",
+          "action",
+          "eligible",
+          "reason_code",
+          "message",
+          "changes",
+          "retained_evidence",
+          "budget_impact",
+          "preview_token",
+          "expires_at"
+        ],
+        "title": "RecoveryPreview",
+        "type": "object"
+      },
+      "RecoveryPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RecoveryAction"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "RecoveryPreviewRequest",
+        "type": "object"
+      },
+      "RecoveryReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RecoveryAction"
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "run_id",
+          "task_id",
+          "attempt_id",
+          "action",
+          "status",
+          "observed_at",
+          "reason_code"
+        ],
+        "title": "RecoveryReceipt",
+        "type": "object"
+      },
       "RemoteCheckItem": {
         "additionalProperties": false,
         "properties": {
@@ -4810,6 +5010,11 @@
           "security": {
             "$ref": "#/components/schemas/SecuritySection"
           },
+          "subscription_recovery_attention": {
+            "default": false,
+            "title": "Subscription Recovery Attention",
+            "type": "boolean"
+          },
           "task": {
             "$ref": "#/components/schemas/TaskSection"
           },
@@ -5248,6 +5453,68 @@
         "title": "SubscriptionAttemptPage",
         "type": "object"
       },
+      "SubscriptionAttemptRecoveryView": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "title": "Classification",
+            "type": "string"
+          },
+          "eligible_actions": {
+            "items": {
+              "$ref": "#/components/schemas/RecoveryAction"
+            },
+            "maxItems": 3,
+            "title": "Eligible Actions",
+            "type": "array"
+          },
+          "failed_applications": {
+            "minimum": 0.0,
+            "title": "Failed Applications",
+            "type": "integer"
+          },
+          "first_failure_at": {
+            "format": "date-time",
+            "title": "First Failure At",
+            "type": "string"
+          },
+          "last_failure_at": {
+            "format": "date-time",
+            "title": "Last Failure At",
+            "type": "string"
+          },
+          "next_retry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Retry At"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "resolution": {
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "classification",
+          "reason_code",
+          "resolution",
+          "failed_applications",
+          "first_failure_at",
+          "last_failure_at"
+        ],
+        "title": "SubscriptionAttemptRecoveryView",
+        "type": "object"
+      },
       "SubscriptionAttemptView": {
         "additionalProperties": false,
         "properties": {
@@ -5343,6 +5610,16 @@
           "quota_status": {
             "title": "Quota Status",
             "type": "string"
+          },
+          "recovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubscriptionAttemptRecoveryView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "requested_route": {
             "$ref": "#/components/schemas/AttemptRoute"
@@ -5785,6 +6062,11 @@
             "title": "Quota Statuses",
             "type": "array"
           },
+          "recovery_attention": {
+            "default": false,
+            "title": "Recovery Attention",
+            "type": "boolean"
+          },
           "run_allows_execution": {
             "default": false,
             "title": "Run Allows Execution",
@@ -5930,6 +6212,22 @@
                 "type": "null"
               }
             ]
+          },
+          "recovery_attention": {
+            "default": false,
+            "title": "Recovery Attention",
+            "type": "boolean"
+          },
+          "recovery_reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Reason Code"
           },
           "repairs": {
             "anyOf": [
@@ -9395,6 +9693,167 @@
           }
         ],
         "summary": "Attempts"
+      }
+    },
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery": {
+      "post": {
+        "operationId": "recovery_apply_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Attempt Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Recovery Apply"
+      }
+    },
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery/preview": {
+      "post": {
+        "operationId": "recovery_preview_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Attempt Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Recovery Preview"
       }
     },
     "/api/runs/{run_id}/subscription-tasks/{task_id}/controls": {

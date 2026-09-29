@@ -32,11 +32,13 @@ from forge.agents.local_cli_mcp import LocalCliMcp
 from forge.agents.runtime_factory import RouteUnavailable
 from forge.agents.subscription_protocol import (
     ProtocolError,
+    RoleDecisionError,
     decode_final,
     json_value,
     output_schema,
 )
 from forge.application.ports.subscription_gateway import (
+    RoleDecisionRejection,
     SubscriptionFailure,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
@@ -420,6 +422,12 @@ class AntigravityGateway:
                 ), telemetry
             try:
                 decision = decode_final(output["decision"], request)
+            except RoleDecisionError as error:
+                return SubscriptionInvocationResult(
+                    attempt=request.attempt,
+                    failure=SubscriptionFailure.PROTOCOL,
+                    role_rejection=RoleDecisionRejection(error.kind, f"role_{error.kind}_forbidden"),
+                ), telemetry
             except ProtocolError:
                 return SubscriptionInvocationResult(
                     attempt=request.attempt,

@@ -7,8 +7,12 @@ import logging
 import math
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
+
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
 from forge.application.ports.commands import CommandLane, CommandRecoveryRequired
@@ -24,6 +28,7 @@ from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPoolKey
 from forge.domain.subscription_readiness import SubscriptionRouteReadiness
 from forge.persistence.database import create_engine, create_session_factory
+from forge.persistence.models.subscription_recovery import SubscriptionRecoveryWorker
 from forge.persistence.repositories.capability_evidence import PostgresCapabilityEvidenceSource
 from forge.persistence.repositories.capability_probe_diagnostics import (
     PostgresCapabilityProbeDiagnosticStore,
@@ -47,6 +52,32 @@ from forge.worker.subscription_readiness import SubscriptionReadinessEnricher
 from forge.worker.subscription_status import SubscriptionRuntimeReporter
 
 logger = logging.getLogger(__name__)
+
+
+async def _publish_recovery_worker(
+    factory: async_sessionmaker[AsyncSession], worker_id: str
+) -> None:
+    async with factory() as session:
+        statement = insert(SubscriptionRecoveryWorker).values(
+            worker_id=worker_id, contract_version=1, observed_at=datetime.now(UTC)
+        )
+        await session.execute(
+            statement.on_conflict_do_update(
+                index_elements=[SubscriptionRecoveryWorker.worker_id],
+                set_={"contract_version": 1, "observed_at": datetime.now(UTC)},
+            )
+        )
+        await session.commit()
+
+
+async def _recovery_worker_heartbeat(
+    factory: async_sessionmaker[AsyncSession], worker_id: str, stop_event: asyncio.Event
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=10)
+        except TimeoutError:
+            await _publish_recovery_worker(factory, worker_id)
 
 
 async def run_worker(
@@ -202,6 +233,11 @@ async def run_worker(
             status_reporter = effective_handlers.subscription_status
         if status_reporter is not None:
             await status_reporter.publish()
+        if (
+            isinstance(effective_handlers, WorkerHandlers)
+            and effective_handlers.subscription_invocations is not None
+        ):
+            await _publish_recovery_worker(factory, base_worker_id)
         logger.info("Forge worker recovered and is polling")
         polls = [
             asyncio.create_task(_poll(worker, stop_event, poll_interval)),
@@ -226,6 +262,9 @@ async def run_worker(
             isinstance(effective_handlers, WorkerHandlers)
             and effective_handlers.subscription_invocations is not None
         ):
+            polls.append(
+                asyncio.create_task(_recovery_worker_heartbeat(factory, base_worker_id, stop_event))
+            )
             for slot in range(settings.subscription_worker_concurrency):
                 invocation = effective_handlers.subscription_invocations(
                     f"{base_worker_id}-subscription-{slot}"

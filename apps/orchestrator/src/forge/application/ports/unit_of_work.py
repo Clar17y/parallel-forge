@@ -24,6 +24,7 @@ from forge.application.ports.subscription_execution import SubscriptionExecution
 from forge.application.ports.subscription_feedback import SubscriptionFeedbackRepository
 from forge.application.ports.subscription_plan_gate import SubscriptionPlanGateRepository
 from forge.application.ports.subscription_quota import SubscriptionQuotaRepository
+from forge.application.ports.subscription_recovery import SubscriptionRecoveryRepository
 from forge.application.ports.tasks import TaskRepository
 from forge.application.ports.tools import ToolCallRepository
 from forge.application.services.auth import AuthRepository
@@ -65,6 +66,7 @@ class UnitOfWork(Protocol):
     subscription_plan_gate: SubscriptionPlanGateRepository
     scheduler: SchedulingRepository
     quota: SubscriptionQuotaRepository
+    subscription_recovery: SubscriptionRecoveryRepository
 
     async def __aenter__(self) -> Self: ...
 

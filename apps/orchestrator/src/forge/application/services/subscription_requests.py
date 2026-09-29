@@ -176,6 +176,25 @@ class SubscriptionRequestBuilder:
             budget = await work.subscription_budget.reserved_budget(
                 run.id, admission.task.task_id, admission.attempt.attempt_id
             )
+            implementation = await work.subscription_plan_gate.implementation_context(
+                admission.task.task_id,
+                admission.task,
+            )
+            correction_feedback = await work.subscription_recovery.correction_feedback(
+                admission.task.task_id,
+                canonical_digest(encode_subscription_record(admission.task)),
+            )
+            if (
+                run.state is RunState.IMPLEMENTING
+                and admission.task.purpose is SpecialistPurpose.PRIMARY
+                and implementation is None
+                and any(
+                    item.criterion_id == "approved-plan" for item in admission.task.typed_acceptance
+                )
+            ):
+                # Historical planning contracts remain inspectable but cannot
+                # silently become an implementation invocation.
+                raise ValueError("primary implementation contract revision is unavailable")
             request = SubscriptionInvocationRequest(
                 task=admission.task,
                 attempt=admission.attempt,
@@ -208,6 +227,8 @@ class SubscriptionRequestBuilder:
                         "digest": human.task_digest,
                     },
                     "base_sha": run.base_sha,
+                    "approved_implementation": implementation,
+                    "role_correction": correction_feedback,
                     "policy": PolicySummary.from_policy(policy).model_dump(mode="json"),
                     "named_checks": [command.name for command in policy.commands],
                     "known_tasks": [encode_subscription_record(task) for task in known],

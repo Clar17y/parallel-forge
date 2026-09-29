@@ -141,3 +141,27 @@ test('the selected specialist shows its retained feedback receipt and bounded fe
   expect(feedback).toHaveTextContent('Receipt feedback-1');
   expect(feedback).toHaveTextContent('does not issue provider commands');
 });
+
+test('shows attention for primary and child task and navigates to the affected attempt', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => new Response(JSON.stringify(
+    String(input).includes('/attempts') ? { run_id: 'run-1', task_id: 'primary-1', attempts: [{
+      attempt_id: 'attempt-1', attempt_number: 2, state: 'decision_pending', requested_route: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' },
+      effective_route: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' },
+      input_tokens: null, output_tokens: null, cached_tokens: null, duration_ms: null, tool_calls: null, named_checks: null,
+      estimated_api_cost_minor: null, currency: null, quota_status: 'unknown',
+      recovery: { classification: 'unsupported_application', reason_code: 'invalid_primary_handoff', resolution: 'attention_required', failed_applications: 2, first_failure_at: '2026-09-28T10:00:00Z', last_failure_at: '2026-09-28T10:01:00Z', next_retry_at: '2026-09-28T10:02:00Z', eligible_actions: [] },
+    }], has_more: false } : { run_id: 'run-1', subscription: true, recovery_attention: true, tasks: [
+      { task_id: 'primary-1', parent_task_id: null, dependency_task_ids: [], purpose: 'primary', owned_paths: [], state: 'decision_pending', recovery_attention: true, recovery_reason_code: 'invalid_primary_handoff', pause_requested: false, cancel_requested: false, version: 1, repairs: 0, unsettled_effects: 0 },
+      { task_id: 'child-1', parent_task_id: 'primary-1', dependency_task_ids: [], purpose: 'routine_implementation', owned_paths: ['src'], state: 'blocked', recovery_attention: true, recovery_reason_code: 'application_failed', pause_requested: false, cancel_requested: false, version: 1, repairs: 0, unsettled_effects: 0 },
+    ], has_more: false, run_version: 2, run_allows_execution: true, run_is_terminal: false, quota_statuses: [] },
+  ), { status: 200 }));
+  render(<TaskInspector runId="run-1" />);
+  await screen.findByText(/Recovery attention required/);
+  expect(screen.getByText(/Primary needs recovery/)).toBeInTheDocument();
+  expect(screen.getByText(/Task needs recovery/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Recover task' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Recover run' }));
+  expect(await screen.findByText(/Last failure: .*invalid_primary_handoff/)).toBeInTheDocument();
+  expect(screen.getByText(/Next retry: 2026-09-28T10:02:00Z/)).toBeInTheDocument();
+  expect(screen.getAllByText(/last completed tool/).length).toBeGreaterThan(0);
+});

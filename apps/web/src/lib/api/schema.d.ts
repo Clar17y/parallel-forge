@@ -656,6 +656,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Recovery Apply */
+        post: operations["recovery_apply_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Recovery Preview */
+        post: operations["recovery_preview_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/subscription-tasks/{task_id}/controls": {
         parameters: {
             query?: never;
@@ -2310,6 +2344,100 @@ export interface components {
          * @enum {string}
          */
         ReasoningEffort: "none" | "low" | "medium" | "high" | "maximum";
+        /**
+         * RecoveryAction
+         * @enum {string}
+         */
+        RecoveryAction: "retry_application" | "reject_and_retry_step" | "repair_approved_plan_contract";
+        /** RecoveryApplyRequest */
+        RecoveryApplyRequest: {
+            action: components["schemas"]["RecoveryAction"];
+            /** Preview Token */
+            preview_token: string;
+            /** Reason */
+            reason: string;
+        };
+        /** RecoveryBudgetImpact */
+        RecoveryBudgetImpact: {
+            /** Provider Attempts */
+            provider_attempts: number;
+            /** Repair Units */
+            repair_units: number;
+        };
+        /** RecoveryPreview */
+        RecoveryPreview: {
+            action: components["schemas"]["RecoveryAction"];
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            budget_impact: components["schemas"]["RecoveryBudgetImpact"];
+            /** Changes */
+            changes: string[];
+            /** Eligible */
+            eligible: boolean;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Message */
+            message: string;
+            /** Preview Token */
+            preview_token: string;
+            /** Reason Code */
+            reason_code: string;
+            /** Retained Evidence */
+            retained_evidence: string[];
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+        };
+        /** RecoveryPreviewRequest */
+        RecoveryPreviewRequest: {
+            action: components["schemas"]["RecoveryAction"];
+        };
+        /** RecoveryReceipt */
+        RecoveryReceipt: {
+            action: components["schemas"]["RecoveryAction"];
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Reason Code */
+            reason_code: string;
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Status */
+            status: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+        };
         /** RemoteCheckItem */
         RemoteCheckItem: {
             /** Conclusion */
@@ -2638,6 +2766,11 @@ export interface components {
             review: components["schemas"]["ReviewSection"];
             run: components["schemas"]["RunResponse"];
             security: components["schemas"]["SecuritySection"];
+            /**
+             * Subscription Recovery Attention
+             * @default false
+             */
+            subscription_recovery_attention: boolean;
             task: components["schemas"]["TaskSection"];
             usage: components["schemas"]["UsageSummary"];
         };
@@ -2791,6 +2924,31 @@ export interface components {
              */
             task_id: string;
         };
+        /** SubscriptionAttemptRecoveryView */
+        SubscriptionAttemptRecoveryView: {
+            /** Classification */
+            classification: string;
+            /** Eligible Actions */
+            eligible_actions?: components["schemas"]["RecoveryAction"][];
+            /** Failed Applications */
+            failed_applications: number;
+            /**
+             * First Failure At
+             * Format: date-time
+             */
+            first_failure_at: string;
+            /**
+             * Last Failure At
+             * Format: date-time
+             */
+            last_failure_at: string;
+            /** Next Retry At */
+            next_retry_at?: string | null;
+            /** Reason Code */
+            reason_code: string;
+            /** Resolution */
+            resolution: string;
+        };
         /** SubscriptionAttemptView */
         SubscriptionAttemptView: {
             /**
@@ -2817,6 +2975,7 @@ export interface components {
             output_tokens: number | null;
             /** Quota Status */
             quota_status: string;
+            recovery?: components["schemas"]["SubscriptionAttemptRecoveryView"] | null;
             requested_route: components["schemas"]["AttemptRoute"];
             /** State */
             state: string;
@@ -2961,6 +3120,11 @@ export interface components {
             /** Quota Statuses */
             quota_statuses?: components["schemas"]["QuotaStatusResponse"][];
             /**
+             * Recovery Attention
+             * @default false
+             */
+            recovery_attention: boolean;
+            /**
              * Run Allows Execution
              * @default false
              */
@@ -3008,6 +3172,13 @@ export interface components {
             /** Purpose */
             purpose: string;
             quota_status?: components["schemas"]["QuotaStatusResponse"] | null;
+            /**
+             * Recovery Attention
+             * @default false
+             */
+            recovery_attention: boolean;
+            /** Recovery Reason Code */
+            recovery_reason_code?: string | null;
             /** Repairs */
             repairs: number | null;
             requested_route?: components["schemas"]["AttemptRoute"] | null;
@@ -4716,6 +4887,82 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SubscriptionAttemptPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recovery_apply_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+                task_id: string;
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoveryApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recovery_preview_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                task_id: string;
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoveryPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryPreview"];
                 };
             };
             /** @description Validation Error */

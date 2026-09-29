@@ -8,7 +8,7 @@ const task = {
   task_id: 'task-1', parent_task_id: 'primary', dependency_task_ids: [],
   purpose: 'routine_implementation', owned_paths: ['src'], state: 'leased',
   pause_requested: false, cancel_requested: false, version: 4, repairs: 0, unsettled_effects: 0,
-  control: null, fallback_selected: false,
+  control: null, fallback_selected: false, recovery_attention: false,
 };
 const pause = {
   receipt_id: 'pause-1', action: 'pause' as const, status: 'paused' as const,

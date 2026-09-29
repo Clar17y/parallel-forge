@@ -459,6 +459,23 @@ class PostgresSubscriptionBudgetRepository:
         )
 
     async def try_debit_repair(self, run_id: UUID, task_id: UUID, attempt_id: UUID) -> bool:
+        if not await self.can_debit_repair(run_id, task_id, attempt_id):
+            return False
+        if await self._session.get(SubscriptionRepairDebit, attempt_id) is not None:
+            return True
+        self._session.add(SubscriptionRepairDebit(attempt_id=attempt_id))
+        await self._session.flush()
+        # A repair reserves its next provider attempt immediately. Reconcile any
+        # accepted, unbound feedback under the same run lock so that consuming
+        # the final cumulative slot cannot leave a receipt pending forever.
+        from forge.persistence.repositories.subscription_feedback import (
+            PostgresSubscriptionFeedbackRepository,
+        )
+
+        await PostgresSubscriptionFeedbackRepository(self._session).close_exhausted(run_id)
+        return True
+
+    async def can_debit_repair(self, run_id: UUID, task_id: UUID, attempt_id: UUID) -> bool:
         contract, primary, _, _ = await self._contracts(run_id, task_id, attempt_id)
         if await self._session.get(SubscriptionRepairDebit, attempt_id) is not None:
             return True
@@ -480,14 +497,4 @@ class PostgresSubscriptionBudgetRepository:
                 ).fits_within(budget)
             ):
                 return False
-        self._session.add(SubscriptionRepairDebit(attempt_id=attempt_id))
-        await self._session.flush()
-        # A repair reserves its next provider attempt immediately. Reconcile any
-        # accepted, unbound feedback under the same run lock so that consuming
-        # the final cumulative slot cannot leave a receipt pending forever.
-        from forge.persistence.repositories.subscription_feedback import (
-            PostgresSubscriptionFeedbackRepository,
-        )
-
-        await PostgresSubscriptionFeedbackRepository(self._session).close_exhausted(run_id)
         return True

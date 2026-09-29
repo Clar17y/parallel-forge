@@ -62,6 +62,20 @@ class SubscriptionFailure(StrEnum):
     BUDGET = "budget"
 
 
+@dataclass(frozen=True, slots=True)
+class RoleDecisionRejection:
+    kind: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        from forge.domain.subscription_decision_policy import PRIMARY_DECISIONS, WORKER_DECISIONS
+
+        if self.kind not in PRIMARY_DECISIONS | WORKER_DECISIONS:
+            raise ValueError("role rejection kind is unknown")
+        if self.reason_code != f"role_{self.kind}_forbidden":
+            raise ValueError("role rejection reason is invalid")
+
+
 def _freeze(value: object, *, depth: int = 0, counter: list[int] | None = None) -> object:
     counter = [0, 0] if counter is None else counter
     counter[0] += 1
@@ -182,6 +196,7 @@ class SubscriptionInvocationResult:
     telemetry: AttemptTelemetry = field(default_factory=AttemptTelemetry)
     failure: SubscriptionFailure | None = None
     failure_detail: str | None = None
+    role_rejection: RoleDecisionRejection | None = None
     quota_exhaustion: QuotaExhaustion | None = None
     launch_proof: SubscriptionLaunchTerminalProof | None = None
 
@@ -194,6 +209,12 @@ class SubscriptionInvocationResult:
             raise TypeError("launch proof must be typed supervisor evidence")
         if self.failure is not None and not isinstance(self.failure, SubscriptionFailure):
             raise TypeError("invalid subscription failure")
+        if self.role_rejection is not None and (
+            not isinstance(self.role_rejection, RoleDecisionRejection)
+            or self.failure is not SubscriptionFailure.PROTOCOL
+            or self.decision is not None
+        ):
+            raise ValueError("role rejection requires a protocol failure without a decision")
         if self.quota_exhaustion is not None and not isinstance(
             self.quota_exhaustion, QuotaExhaustion
         ):
