@@ -33,6 +33,7 @@ from forge.domain.subscription_decision_policy import (
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
 from forge.domain.subscription_plan_contract import approved_implementation_contract
 from forge.domain.subscription_recovery import (
+    RECOVERY_WORKER_FRESHNESS_SECONDS,
     RecoveryAction,
     RecoveryReceipt,
     RecoveryReceiptRecord,
@@ -785,7 +786,8 @@ class PostgresSubscriptionRecoveryRepository:
             select(SubscriptionRecoveryWorker.worker_id)
             .where(
                 SubscriptionRecoveryWorker.contract_version >= 1,
-                SubscriptionRecoveryWorker.observed_at >= datetime.now(UTC) - timedelta(seconds=30),
+                SubscriptionRecoveryWorker.observed_at
+                >= datetime.now(UTC) - timedelta(seconds=RECOVERY_WORKER_FRESHNESS_SECONDS),
             )
             .limit(1)
         )

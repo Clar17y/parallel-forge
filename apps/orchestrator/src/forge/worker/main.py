@@ -7,10 +7,11 @@ import logging
 import math
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import uuid4
 
+from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -27,6 +28,7 @@ from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPoolKey
 from forge.domain.subscription_readiness import SubscriptionRouteReadiness
+from forge.domain.subscription_recovery import RECOVERY_WORKER_FRESHNESS_SECONDS
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.models.subscription_recovery import SubscriptionRecoveryWorker
 from forge.persistence.repositories.capability_evidence import PostgresCapabilityEvidenceSource
@@ -61,13 +63,18 @@ async def _publish_recovery_worker(
 ) -> None:
     try:
         async with asyncio.timeout(_RECOVERY_PERSIST_SECONDS), factory() as session:
+            observed_at = datetime.now(UTC)
+            await session.execute(delete(SubscriptionRecoveryWorker).where(
+                SubscriptionRecoveryWorker.observed_at
+                < observed_at - timedelta(seconds=RECOVERY_WORKER_FRESHNESS_SECONDS)
+            ))
             statement = insert(SubscriptionRecoveryWorker).values(
-                worker_id=worker_id, contract_version=1, observed_at=datetime.now(UTC)
+                worker_id=worker_id, contract_version=1, observed_at=observed_at
             )
             await session.execute(
                 statement.on_conflict_do_update(
                     index_elements=[SubscriptionRecoveryWorker.worker_id],
-                    set_={"contract_version": 1, "observed_at": datetime.now(UTC)},
+                    set_={"contract_version": 1, "observed_at": observed_at},
                 )
             )
             await session.commit()

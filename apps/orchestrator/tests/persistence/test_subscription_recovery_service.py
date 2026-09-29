@@ -61,13 +61,15 @@ from test_subscription_usage import _reservation
 
 
 async def recovery_case(
-    session_factory, tmp_path, *, incident_decision="handoff", defer_settlement=False
+    session_factory, tmp_path, *, incident_decision="handoff", defer_settlement=False,
+    plan_checks=("unit",), plan_scope=("apps",),
 ):
     """Return a disposable historical defect after the complete approval flow."""
     factory, evidence, command, preparation, _ = await preparation_case(
         session_factory,
         tmp_path,
-        plan_scope=("apps",),
+        plan_scope=plan_scope,
+        plan_checks=plan_checks,
         primary_budget=TaskBudget(
             max_provider_attempts=5,
             max_repairs=3,
@@ -1091,6 +1093,44 @@ async def test_repair_preview_is_read_only_and_apply_is_idempotent(session_facto
         assert isinstance(contract, LogicalTaskContract)
         assert contract.typed_acceptance[0].criterion_id == "approved-implementation"
         assert await work.session.get(SubscriptionRepairDebit, case["attempt_id"]) is not None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("count", [32, 33, 100])
+async def test_approved_plan_repair_retains_every_check(session_factory, tmp_path, count):
+    checks = tuple(f"check_{index:03d}" for index in range(count))
+    case = await recovery_case(
+        session_factory, tmp_path, plan_checks=checks, plan_scope=None
+    )
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    service = SubscriptionRecoveryService(case["factory"])
+    preview = await service.preview(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=actor,
+        request=RecoveryPreviewRequest(action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT),
+    )
+    assert preview.eligible, preview.reason_code
+    receipt = await service.apply(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=actor, idempotency_key=f"repair-checks-{count}",
+        request=RecoveryApplyRequest(
+            action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT,
+            preview_token=preview.preview_token,
+            reason="Repair the approved contract with all named checks",
+        ),
+    )
+    assert receipt.status == "applied"
+    async with case["factory"]() as work:
+        task = await work.session.get(SubscriptionTask, case["task_id"])
+        assert task is not None
+        contract = decode_subscription_record(task.payload)
+        assert isinstance(contract, LogicalTaskContract)
+        assert contract.named_checks == checks
+        assert tuple(
+            check for criterion in contract.typed_acceptance
+            for check in criterion.required_check_names
+        ) == checks
+        assert all(len(criterion.required_check_names) <= 32 for criterion in contract.typed_acceptance)
 
 
 @pytest.mark.integration

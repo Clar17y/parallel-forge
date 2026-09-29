@@ -20,6 +20,7 @@ from forge.application.services.jev_review import (
     review_focus_payload,
     safe_snapshot_sources,
 )
+from forge.application.services.subscription_context import bounded_approved_context
 from forge.domain.agent import PolicySummary
 from forge.domain.operation import canonical_digest
 from forge.domain.policy import ProjectPolicy
@@ -193,28 +194,7 @@ class SubscriptionRequestBuilder:
                 # Historical planning contracts remain inspectable but cannot
                 # silently become an implementation invocation.
                 raise ValueError("primary implementation contract revision is unavailable")
-            request = SubscriptionInvocationRequest(
-                task=admission.task,
-                attempt=admission.attempt,
-                envelope=admission.envelope,
-                run_state=run.state,
-                attempt_budget=budget,
-                known_tasks=known,
-                prompt_version=_PROMPT_VERSION,
-                trusted_system_prompt=_SYSTEM
-                + (_PLANNING if run.state is RunState.PLANNING else "")
-                + (_CLOSED if context.candidate_closed else ""),
-                authorization=BrokerAuthorizationBinding(
-                    run_id=run.id,
-                    task_id=admission.task.task_id,
-                    attempt_id=admission.attempt.attempt_id,
-                    worktree_id=resource,
-                    role=admission.task.purpose,
-                    policy_version=run.policy_version,
-                    permitted_tools=tools,
-                    broker_token=token_urlsafe(32),
-                ),
-                untrusted_context={
+            untrusted_context = bounded_approved_context({
                     "candidate_epoch": admission.candidate_epoch,
                     "pending_worker_feedback": feedback.pending_primary,
                     "operator_feedback": list(feedback.worker_feedback),
@@ -266,7 +246,29 @@ class SubscriptionRequestBuilder:
                         }
                         for outcome in outcomes
                     ],
-                },
+                }, implementation)
+            request = SubscriptionInvocationRequest(
+                task=admission.task,
+                attempt=admission.attempt,
+                envelope=admission.envelope,
+                run_state=run.state,
+                attempt_budget=budget,
+                known_tasks=known,
+                prompt_version=_PROMPT_VERSION,
+                trusted_system_prompt=_SYSTEM
+                + (_PLANNING if run.state is RunState.PLANNING else "")
+                + (_CLOSED if context.candidate_closed else ""),
+                authorization=BrokerAuthorizationBinding(
+                    run_id=run.id,
+                    task_id=admission.task.task_id,
+                    attempt_id=admission.attempt.attempt_id,
+                    worktree_id=resource,
+                    role=admission.task.purpose,
+                    policy_version=run.policy_version,
+                    permitted_tools=tools,
+                    broker_token=token_urlsafe(32),
+                ),
+                untrusted_context=untrusted_context,
             )
             await work.commit()
         return await self._with_review_focus(request, run, policy, review_selection, admission)

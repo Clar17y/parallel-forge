@@ -104,6 +104,11 @@ def _freeze(value: object, *, depth: int = 0, counter: list[int] | None = None) 
     raise TypeError("untrusted context must contain JSON values")
 
 
+def validate_subscription_context(value: Mapping[str, object]) -> None:
+    """Apply the invocation's exact aggregate context bounds before construction."""
+    _freeze(value)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SubscriptionInvocationRequest:
     task: LogicalTaskContract

@@ -24,15 +24,18 @@ def approved_implementation_contract(
         original,
         owned_paths=paths,
         named_checks=plan.required_checks,
-        typed_acceptance=(
+        typed_acceptance=tuple(
             AcceptanceCriterion(
-                criterion_id="approved-implementation",
+                criterion_id=(
+                    "approved-implementation" if index == 0 else f"approved-implementation-{index + 1}"
+                ),
                 description=(
                     "Implement the approved plan outcomes within the approved scope "
                     "and provide required validation evidence."
                 ),
-                required_check_names=plan.required_checks,
-            ),
+                required_check_names=plan.required_checks[index * 32 : (index + 1) * 32],
+            )
+            for index in range((len(plan.required_checks) + 31) // 32)
         ),
         untrusted_context_refs=(
             *original.untrusted_context_refs,

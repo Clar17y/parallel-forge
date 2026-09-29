@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+import pytest
 from forge.domain.plan import PlanOutput, ScopedPlanOutput
 from forge.domain.subscription import (
     AcceptanceCriterion,
@@ -99,3 +100,30 @@ def test_approved_implementation_contract_unscoped_legacy_plan():
         "task:initial",
         f"approved-plan:{attempt_id}:{digest}:{approval_id}",
     )
+
+
+@pytest.mark.parametrize("count", [32, 33, 100])
+def test_approved_implementation_contract_retains_every_bounded_check(count):
+    checks = tuple(f"check_{index:03d}" for index in range(count))
+    plan = PlanOutput(
+        summary="Plan summary",
+        assumptions=(),
+        affected_components=(),
+        steps=("Implement",),
+        risks=("risk",),
+        security_considerations=(),
+        dependency_changes=(),
+        required_checks=checks,
+    )
+    contract = approved_implementation_contract(
+        _sample_contract(), plan, uuid4(), "a" * 64, uuid4()
+    )
+    assert contract.named_checks == checks
+    assert tuple(
+        check for criterion in contract.typed_acceptance for check in criterion.required_check_names
+    ) == checks
+    assert all(len(criterion.required_check_names) <= 32 for criterion in contract.typed_acceptance)
+    assert len({criterion.criterion_id for criterion in contract.typed_acceptance}) == len(
+        contract.typed_acceptance
+    )
+    assert contract.typed_acceptance[0].criterion_id == "approved-implementation"

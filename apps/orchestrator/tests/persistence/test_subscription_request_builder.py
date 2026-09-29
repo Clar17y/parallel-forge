@@ -1,6 +1,10 @@
 """Real planning admission supplies model input and narrowly scoped broker authority."""
 
+from collections.abc import Mapping
+
 import pytest
+from forge.application.ports.subscription_gateway import validate_subscription_context
+from forge.application.services.subscription_context import bounded_approved_context
 from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
 from forge.application.services.subscription_planning import SubscriptionPlanningService
 from forge.application.services.subscription_requests import SubscriptionRequestBuilder
@@ -10,6 +14,98 @@ from forge.domain.tool import ToolName, repository_resource_identity
 from test_scheduler_acceptance import _remove_disposable_subscription_rows  # noqa: F401
 from test_subscription_planning_start import planning_start_case
 from test_subscription_usage import _reservation
+
+
+def test_approved_projection_distinguishes_base_context_and_preserves_small_plan():
+    provenance = {
+        "revision": 2,
+        "source_attempt_id": "source",
+        "approval_id": "approval",
+        "plan_digest": "a" * 64,
+        "approved_plan": {"summary": "A small plan", "steps": ["Do work"]},
+    }
+    small = bounded_approved_context({"task": {"text": "Normal task"}}, provenance)
+    assert small["approved_implementation"] is provenance
+    with pytest.raises(ValueError, match="base context"):
+        bounded_approved_context({"task": {"text": "x" * 1_048_577}}, provenance)
+    with pytest.raises(ValueError, match="approved plan reference"):
+        bounded_approved_context(
+            {"task": {"text": "x" * 1_048_450}},
+            provenance,
+        )
+    tight_provenance = {
+        **provenance,
+        "approved_plan": {"summary": "é" * 5000, "steps": ["x" * 5000]},
+    }
+    tight = bounded_approved_context(
+        {"task": {"text": "x" * 1_048_200}}, tight_provenance
+    )
+    assert tight["approved_implementation"]["summary_omitted"] is True
+    assert tight["approved_implementation"]["plan_digest"] == "a" * 64
+
+
+def test_approved_projection_uses_same_collection_node_limit():
+    provenance = {
+        "revision": 1,
+        "source_attempt_id": "source",
+        "approval_id": "approval",
+        "plan_digest": "a" * 64,
+        "approved_plan": {"summary": "Plan", "steps": ["step"] * 100},
+    }
+    context = bounded_approved_context({"known_tasks": [None] * 9970}, provenance)
+    assert context["approved_implementation"]["full_plan_omitted"] is True
+    validate_subscription_context(context)
+
+
+@pytest.mark.integration
+async def test_large_approved_plan_uses_bounded_provenance_reference(
+    session_factory, tmp_path, monkeypatch
+):
+    import test_subscription_plan_gate
+    from forge.domain.plan import PlanOutput
+    from forge.persistence.models.subscription_plan_gate import SubscriptionPlanGate
+    from test_subscription_preparation import preparation_case
+
+    def large_plan(**kwargs):
+        return PlanOutput(**{
+            **kwargs,
+            "summary": "Résumé 🧭" * 1000,
+            "steps": tuple(f"Step {index}: " + "é" * 4430 for index in range(100)),
+            "assumptions": tuple(f"{index}: " + "é" * 3700 for index in range(20)),
+        })
+
+    monkeypatch.setattr(test_subscription_plan_gate, "PlanOutput", large_plan)
+    factory, evidence, command, preparation, _ = await preparation_case(session_factory, tmp_path)
+    async with factory() as work:
+        await preparation.execute(command, work)
+    admission = await SubscriptionDecisionExecutor(factory).admit_next("primary", _reservation())
+    assert admission is not None
+    request = await SubscriptionRequestBuilder(factory).build(admission)
+    projection = request.untrusted_context["approved_implementation"]
+    assert isinstance(projection, Mapping)
+    assert projection["full_plan_omitted"] is True
+    assert projection["plan_digest"] == evidence.plan_digest
+    assert projection["source_attempt_id"] == str(evidence.producer.attempt_id)
+    assert projection["approval_id"]
+    assert projection["summary_shortened"] is True
+    assert projection["summary"] == ("Résumé 🧭" * 1000).encode("utf-8")[:2048].decode(
+        "utf-8", errors="ignore"
+    )
+    validate_subscription_context(request.untrusted_context)
+    async with factory() as work:
+        original = await work.subscription_plan_gate.implementation_context(
+            admission.task.task_id, admission.task
+        )
+        assert original is not None
+        with pytest.raises(ValueError, match="subscription context exceeds its bound"):
+            validate_subscription_context({
+                **request.untrusted_context, "approved_implementation": original,
+            })
+        gate = await work.session.get(SubscriptionPlanGate, evidence.producer.attempt_id)
+        assert gate is not None
+        assert original["approved_plan"] == gate.snapshot["decision"]["value"]
+        assert len(gate.snapshot["decision"]["value"]["steps"]) == 100
+        assert gate.snapshot["decision"]["value"]["summary"].startswith("Résumé 🧭")
 
 
 @pytest.mark.integration

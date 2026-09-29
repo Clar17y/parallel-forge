@@ -19,14 +19,37 @@ from test_scheduler_acceptance import _remove_disposable_subscription_rows  # no
 from test_subscription_plan_gate import approve_proposal, proposal_case
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("count", [32, 33, 100])
+async def test_preparation_retains_all_approved_checks(session_factory, tmp_path, count):
+    checks = tuple(f"check_{index:03d}" for index in range(count))
+    factory, evidence, command, service, _ = await preparation_case(
+        session_factory, tmp_path, plan_checks=checks
+    )
+    async with factory() as work:
+        await service.execute(command, work)
+    async with factory() as work:
+        task = await work.session.get(SubscriptionTask, evidence.producer.task_id)
+        assert task is not None
+        contract = decode_subscription_record(task.payload)
+        assert isinstance(contract, LogicalTaskContract)
+        assert contract.named_checks == checks
+        assert tuple(
+            check for criterion in contract.typed_acceptance
+            for check in criterion.required_check_names
+        ) == checks
+        assert all(len(criterion.required_check_names) <= 32 for criterion in contract.typed_acceptance)
+
+
 async def preparation_case(
-    session_factory, tmp_path, *, primary_budget=None, plan_scope=None, review_route=None
+    session_factory, tmp_path, *, primary_budget=None, plan_scope=None, plan_checks=("unit",), review_route=None
 ):
     factory, store, evidence, _, validator = await proposal_case(
         session_factory,
         tmp_path,
         primary_budget=primary_budget,
         plan_scope=plan_scope,
+        plan_checks=plan_checks,
         review_route=review_route,
     )
     outcome = await SubscriptionPlanGateService(store, factory).request_settled(

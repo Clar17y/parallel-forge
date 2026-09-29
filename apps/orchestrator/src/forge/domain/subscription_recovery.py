@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+RECOVERY_WORKER_FRESHNESS_SECONDS = 30
+
 
 class RecoveryAction(StrEnum):
     RETRY_APPLICATION = "retry_application"
