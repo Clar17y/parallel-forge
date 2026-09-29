@@ -26,6 +26,46 @@ async def test_client_process_exchanges_bounded_jsonl_frames() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bounded_text_metadata_command_settles_without_json_frames() -> None:
+    from forge.agents.client_process import ClientLaunchSpec, ClientProcessSupervisor
+
+    spec = ClientLaunchSpec(
+        argv=(
+            sys.executable,
+            "-c",
+            "print('Fetching available models...\\nmodel-low\\tModel Low')",
+        ),
+        cwd=".",
+        environment={},
+        protocol="text_document",
+        stdout_max_bytes=1024,
+    )
+    assert (await ClientProcessSupervisor().run_text_document(spec)).splitlines() == [
+        "Fetching available models...",
+        "model-low\tModel Low",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_text_metadata_timeout_stops_the_process() -> None:
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessSupervisor,
+        ClientProcessTimeout,
+    )
+
+    spec = ClientLaunchSpec(
+        argv=(sys.executable, "-c", "import time; time.sleep(30)"),
+        cwd=".",
+        environment={},
+        protocol="text_document",
+        duration_seconds=0.2,
+    )
+    with pytest.raises(ClientProcessTimeout):
+        await ClientProcessSupervisor().run_text_document(spec)
+
+
+@pytest.mark.asyncio
 async def test_pinned_launch_consumes_verified_executable_and_file_bytes(tmp_path) -> None:
     from forge.agents.client_process import (
         ClientLaunchSpec,

@@ -111,6 +111,8 @@ def _script(scenario: str) -> str:
     # critical outgoing fields. It does not establish live client conformance.
     return f"""import json,sys,time,tomllib
 scenario={scenario!r}
+expected_model="gpt-6-sol" if scenario in ("new_model","new_model_xhigh") else "gpt-5.6-luna"
+expected_effort="xhigh" if scenario=="new_model_xhigh" else "medium"
 def recv(method):
  m=json.loads(sys.stdin.readline())
  if m.get("method") != method: raise SystemExit("expected "+method+" got "+repr(m))
@@ -120,7 +122,7 @@ m=recv("initialize"); send({{"jsonrpc":"2.0","id":m["id"],"result":{{"userAgent"
 recv("initialized")
 m=recv("account/read"); send({{"jsonrpc":"2.0","id":m["id"],"result":{{"account":{{"type":"apiKey"}} if scenario=="account_mismatch" else {{"type":"chatgpt","email":"other@example.invalid" if scenario=="account_identity_mismatch" else "codex@example.invalid","planType":"plus"}}}}}})
 if scenario=="account_mismatch": raise SystemExit(0)
-m=recv("model/list"); models=[] if scenario=="model_missing" else [{{"id":"gpt-5.6-luna","supportedReasoningEfforts":[{{"reasoningEffort":"medium"}}]}}]
+m=recv("model/list"); models=[] if scenario=="model_missing" else [{{"id":expected_model,"supportedReasoningEfforts":[{{"reasoningEffort":expected_effort}}]}}]
 send({{"jsonrpc":"2.0","id":m["id"],"result":{{"data":models}}}})
 if scenario=="model_missing": raise SystemExit(0)
 m=recv("config/read")
@@ -129,7 +131,7 @@ config["mcp_servers"]={{}}
 send({{"id":m["id"],"result":{{"config":config}}}})
 m=recv("thread/start")
 p=m["params"]
-assert p["model"]=="gpt-5.6-luna" and p["allowProviderModelFallback"] is False
+assert p["model"]==expected_model and p["allowProviderModelFallback"] is False
 assert p["environments"]==[] and p["ephemeral"] is True
 if scenario=="no_tools":
  assert p["dynamicTools"]==[]
@@ -141,10 +143,10 @@ if scenario=="schema":
  s=namespace["tools"][0]["inputSchema"]
  assert s["type"]=="object" and s["additionalProperties"] is False
  assert "path" in s["properties"] and "path" in s["required"]
-send({{"jsonrpc":"2.0","id":m["id"],"result":{{"thread":{{"id":"thread-actual"}},"model":"gpt-5.6-luna"}}}})
+send({{"jsonrpc":"2.0","id":m["id"],"result":{{"thread":{{"id":"thread-actual"}},"model":expected_model}}}})
 m=recv("turn/start"); p=m["params"]
-assert p["threadId"]=="thread-actual" and p["model"]=="gpt-5.6-luna"
-assert p["effort"]=="medium" and p["environments"]==[]
+assert p["threadId"]=="thread-actual" and p["model"]==expected_model
+assert p["effort"]==expected_effort and p["environments"]==[]
 if scenario=="complete_context":
  assert "additionalContext" not in p
  context=json.loads(p["input"][1]["text"])["forge_task"]

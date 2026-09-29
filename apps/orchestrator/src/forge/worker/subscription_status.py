@@ -32,6 +32,10 @@ class SubscriptionRuntimeReporter:
         self._snapshot_supplier = snapshot_supplier
         self.instance_id = uuid4()
 
+    @property
+    def store(self) -> SubscriptionRuntimeStatusStore:
+        return self._store
+
     async def publish(self) -> None:
         try:
             routes: Iterable[RouteSpec | SubscriptionRouteReadiness] = self._routes

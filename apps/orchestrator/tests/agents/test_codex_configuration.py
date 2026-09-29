@@ -11,6 +11,8 @@ import pytest
 from forge.agents import codex_gateway
 from forge.agents.client_process import ClientProcessSupervisor
 from forge.application.ports.subscription_gateway import SubscriptionFailure
+from forge.domain.local_cli import LocalCliTrust
+from forge.domain.subscription import ReasoningEffort
 from test_codex_gateway import _Broker, _gateway, _report
 from test_subscription_protocol import _request
 
@@ -37,7 +39,7 @@ def _flatten(values, prefix=""):
     return flattened
 
 
-async def capture(client, *, mutate_configuration=None):
+async def capture(client, *, mutate_configuration=None, request=None):
     launches, sent = [], []
 
     class Session:
@@ -74,7 +76,7 @@ async def capture(client, *, mutate_configuration=None):
             return Session(await super().start(spec, **kwargs))
 
     client._supervisor = Supervisor()
-    result = await client.execute(_request())
+    result = await client.execute(request or _request())
     return result, launches, sent
 
 
@@ -153,6 +155,69 @@ async def test_server_and_thread_receive_fixed_controls_for_native_and_hosted_to
     expected_thread_config["model_catalog_json"] = bound_catalog
     assert thread["config"] == expected_thread_config
     assert thread["environments"] == [] and thread["allowProviderModelFallback"] is False
+
+
+def test_operator_trust_uses_installed_catalog_without_sealed_override():
+    client = _gateway("success")
+    client._trust = LocalCliTrust.OPERATOR
+    assert "model_catalog_json" not in client._configuration()
+    assert codex_gateway.CODEX_MODEL_CATALOG_ARGUMENT not in client._command()
+    assert "model_catalog_json" in codex_gateway.codex_isolation_configuration(client._installation)
+
+
+def test_operator_maximum_effort_uses_native_xhigh():
+    client = _gateway("success")
+    client._trust = LocalCliTrust.OPERATOR
+    client._installation = replace(client._installation, effort="maximum")
+    assert client._configuration()["model_reasoning_effort"] == "xhigh"
+
+
+@pytest.mark.parametrize(
+    "effort,scenario,wire_effort",
+    [
+        ("medium", "new_model", "medium"),
+        ("maximum", "new_model_xhigh", "xhigh"),
+    ],
+)
+async def test_operator_trust_runs_new_installed_model_without_sealed_catalog(
+    effort, scenario, wire_effort
+):
+    client = _gateway(scenario)
+    client._trust = LocalCliTrust.OPERATOR
+    client._installation = replace(client._installation, model="gpt-6-sol", effort=effort)
+    original = _request()
+    route = replace(
+        original.task.route,
+        requested=replace(
+            original.task.route.requested, model="gpt-6-sol", effort=ReasoningEffort(effort)
+        ),
+        effective=replace(
+            original.task.route.effective, model="gpt-6-sol", effort=ReasoningEffort(effort)
+        ),
+    )
+    request = replace(
+        original,
+        task=replace(original.task, route=route),
+        envelope=replace(
+            original.envelope,
+            routes=tuple(
+                (purpose, route if binding == original.task.route else binding)
+                for purpose, binding in original.envelope.routes
+            ),
+        ),
+    )
+    result, launches, sent = await capture(client, request=request)
+    assert result.failure is None
+    assert launches[0].pinned_files == ()
+    assert not any("model_catalog_json" in arg for arg in launches[0].argv)
+    assert (
+        next(frame for frame in sent if frame.get("method") == "thread/start")["params"]["model"]
+        == "gpt-6-sol"
+    )
+    assert (
+        next(frame for frame in sent if frame.get("method") == "turn/start")["params"]["effort"]
+        == wire_effort
+    )
 
 
 async def test_effective_configuration_is_verified_before_starting_thread():

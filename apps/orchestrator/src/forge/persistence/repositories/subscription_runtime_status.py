@@ -1,12 +1,13 @@
 """Short, separate PostgreSQL transactions for worker registration diagnostics."""
 
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from datetime import datetime
 from itertools import islice
 from uuid import UUID
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -18,6 +19,18 @@ from forge.persistence.models.subscription_runtime_status import SubscriptionWor
 
 RUNTIME_REPORT_SECONDS = 15
 RUNTIME_FRESH_SECONDS = 45
+MODEL_CATALOG_FRESH_SECONDS = 1800
+_SAFE_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,127}\Z")
+_SAFE_EFFORTS = {"none", "low", "medium", "high", "maximum"}
+_MESSAGES = {
+    "Configured choices only; worker configuration is required to run a selected model.",
+    "Available choices from the installed client; worker configuration is required to run a selected model.",
+    "Installed client returned more models than the catalog limit; showing first 200.",
+    "Installed client model metadata is unavailable; showing last known choices.",
+    "Installed client model metadata is unavailable; showing configured choices.",
+    "Installed client model choices are unavailable because no current worker is reporting them.",
+    "Configured model choices are unavailable because no current worker is reporting them.",
+}
 
 
 class SubscriptionRuntimeStatusStore:
@@ -76,6 +89,89 @@ class SubscriptionRuntimeStatusStore:
                 )
             )
             await session.commit()
+
+    async def report_catalogs(self, worker_instance_id: UUID, catalogs: object) -> bool:
+        """Update only advisory metadata; a slow discovery never renews heartbeat."""
+        _identity(worker_instance_id)
+        payload = _catalogs(catalogs)
+        async with self._factory() as session:
+            updated = await session.scalar(
+                update(SubscriptionWorkerStatus)
+                .where(
+                    SubscriptionWorkerStatus.worker_instance_id == worker_instance_id,
+                    SubscriptionWorkerStatus.stopped_at.is_(None),
+                )
+                .values(model_catalogs=payload)
+                .returning(SubscriptionWorkerStatus.worker_instance_id)
+            )
+            await session.commit()
+            return updated is not None
+
+    async def model_catalogs(self) -> dict[str, object]:
+        async with self._factory() as session:
+            now = await self._now(session)
+            rows = list(
+                await session.scalars(
+                    select(SubscriptionWorkerStatus)
+                    .order_by(SubscriptionWorkerStatus.last_seen_at.desc())
+                    .limit(100)
+                )
+            )
+        chosen: dict[
+            tuple[str, str], tuple[tuple[int, int, float, float, str], dict[str, object]]
+        ] = {}
+        for row in rows:
+            worker_fresh = (
+                row.stopped_at is None
+                and 0 <= (now - row.last_seen_at).total_seconds() < RUNTIME_FRESH_SECONDS
+            )
+            for catalog in row.model_catalogs:
+                key = (str(catalog["provider"]), str(catalog["client"]))
+                value = dict(catalog)
+                observed_raw = value["observed_at"]
+                observed = (
+                    datetime.fromisoformat(observed_raw) if isinstance(observed_raw, str) else None
+                )
+                fresh = (
+                    observed is not None
+                    and 0 <= (now - observed).total_seconds() < MODEL_CATALOG_FRESH_SECONDS
+                )
+                available = (
+                    worker_fresh
+                    and value["status"] == "available"
+                    and not value["stale"]
+                    and (value["source"] != "provider" or fresh)
+                )
+                if not available:
+                    value["stale"] = True
+                    value["status"] = "unavailable"
+                    if not worker_fresh:
+                        value["message"] = (
+                            "Installed client model choices are unavailable because no current worker is reporting them."
+                            if value["source"] == "provider"
+                            else "Configured model choices are unavailable because no current worker is reporting them."
+                        )
+                    elif value["source"] == "provider":
+                        value["message"] = (
+                            "Installed client model metadata is unavailable; showing last known choices."
+                        )
+                    else:
+                        value["message"] = (
+                            "Installed client model metadata is unavailable; showing configured choices."
+                        )
+                score = (
+                    int(available),
+                    int(value["source"] == "provider"),
+                    observed.timestamp() if observed is not None else 0.0,
+                    row.last_seen_at.timestamp(),
+                    row.worker_instance_id.hex,
+                )
+                if key not in chosen or score > chosen[key][0]:
+                    chosen[key] = (score, value)
+        return {
+            "observed_at": now,
+            "catalogs": [chosen[key][1] for key in sorted(chosen)[:8]],
+        }
 
     async def status(self, *, offset: int = 0, limit: int = 25) -> dict[str, object]:
         if (
@@ -136,6 +232,74 @@ def _worker_view(row: SubscriptionWorkerStatus, now: datetime) -> dict[str, obje
 def _identity(value: UUID) -> None:
     if not isinstance(value, UUID) or value.int == 0:
         raise ValueError("runtime worker instance must be a non-nil UUID")
+
+
+def _catalogs(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or len(value) > 8:
+        raise ValueError("invalid model catalogs")
+    seen: set[tuple[str, str]] = set()
+    for catalog in value:
+        if not isinstance(catalog, dict) or set(catalog) != {
+            "provider",
+            "client",
+            "source",
+            "status",
+            "observed_at",
+            "stale",
+            "models",
+            "message",
+        }:
+            raise ValueError("invalid model catalog")
+        key = (catalog["provider"], catalog["client"])
+        if key in seen or not all(
+            isinstance(part, str) and _SAFE_ID.fullmatch(part) for part in key
+        ):
+            raise ValueError("invalid model catalog identity")
+        seen.add(key)
+        if (
+            catalog["source"] not in {"provider", "configured"}
+            or catalog["status"] not in {"available", "unavailable"}
+            or type(catalog["stale"]) is not bool
+            or catalog["message"] not in _MESSAGES
+        ):
+            raise ValueError("invalid model catalog status")
+        observed = catalog["observed_at"]
+        if observed is not None:
+            try:
+                parsed = datetime.fromisoformat(observed)
+            except TypeError, ValueError:
+                raise ValueError("invalid model catalog observation") from None
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError("invalid model catalog observation")
+        models = catalog["models"]
+        if not isinstance(models, list) or len(models) > 200:
+            raise ValueError("invalid model catalog choices")
+        ids: set[str] = set()
+        for model in models:
+            if (
+                not isinstance(model, dict)
+                or set(model) != {"id", "label", "efforts"}
+                or not isinstance(model["id"], str)
+                or not _SAFE_ID.fullmatch(model["id"])
+            ):
+                raise ValueError("invalid model catalog choice")
+            if model["id"] in ids:
+                raise ValueError("duplicate model catalog choice")
+            ids.add(model["id"])
+            label = model["label"]
+            efforts = model["efforts"]
+            if (
+                not isinstance(label, str)
+                or not 0 < len(label) <= 128
+                or any(ord(char) < 32 for char in label)
+                or not isinstance(efforts, list)
+                or not 0 < len(efforts) <= 5
+                or len(set(efforts)) != len(efforts)
+                or not set(efforts) <= _SAFE_EFFORTS
+            ):
+                raise ValueError("invalid model catalog choice")
+    validate_durable_payload(value)
+    return value
 
 
 def _routes(routes: Iterable[RouteSpec | SubscriptionRouteReadiness]) -> list[dict[str, object]]:

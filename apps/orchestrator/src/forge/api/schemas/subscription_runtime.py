@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import Field
 
 from forge.api.schemas.subscription_tasks import ProjectionModel
+from forge.domain.subscription import ReasoningEffort
 
 
 class SubscriptionRuntimeRouteView(ProjectionModel):
@@ -86,3 +87,25 @@ class SubscriptionRuntimeStatusPage(ProjectionModel):
     fresh_for_seconds: int = Field(gt=0)
     workers: list[SubscriptionWorkerStatusView] = Field(max_length=100)
     has_more: bool
+
+
+class SubscriptionModelOption(ProjectionModel):
+    id: str
+    label: str
+    efforts: list[ReasoningEffort] = Field(max_length=5)
+
+
+class SubscriptionModelCatalogView(ProjectionModel):
+    provider: str
+    client: str
+    source: Literal["provider", "configured"]
+    status: Literal["available", "unavailable"]
+    observed_at: datetime | None
+    stale: bool
+    models: list[SubscriptionModelOption] = Field(max_length=200)
+    message: str
+
+
+class SubscriptionModelCatalogPage(ProjectionModel):
+    observed_at: datetime
+    catalogs: list[SubscriptionModelCatalogView] = Field(max_length=8)

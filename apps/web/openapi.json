@@ -5426,6 +5426,127 @@
         "title": "SubscriptionCapacityView",
         "type": "object"
       },
+      "SubscriptionModelCatalogPage": {
+        "additionalProperties": false,
+        "properties": {
+          "catalogs": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionModelCatalogView"
+            },
+            "maxItems": 8,
+            "title": "Catalogs",
+            "type": "array"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "observed_at",
+          "catalogs"
+        ],
+        "title": "SubscriptionModelCatalogPage",
+        "type": "object"
+      },
+      "SubscriptionModelCatalogView": {
+        "additionalProperties": false,
+        "properties": {
+          "client": {
+            "title": "Client",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionModelOption"
+            },
+            "maxItems": 200,
+            "title": "Models",
+            "type": "array"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "provider",
+              "configured"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "client",
+          "source",
+          "status",
+          "observed_at",
+          "stale",
+          "models",
+          "message"
+        ],
+        "title": "SubscriptionModelCatalogView",
+        "type": "object"
+      },
+      "SubscriptionModelOption": {
+        "additionalProperties": false,
+        "properties": {
+          "efforts": {
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffort"
+            },
+            "maxItems": 5,
+            "title": "Efforts",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "efforts"
+        ],
+        "title": "SubscriptionModelOption",
+        "type": "object"
+      },
       "SubscriptionRuntimeRouteView": {
         "additionalProperties": false,
         "properties": {
@@ -9615,6 +9736,29 @@
           }
         ],
         "summary": "Run Usage"
+      }
+    },
+    "/api/subscription-models": {
+      "get": {
+        "operationId": "subscription_models_api_subscription_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionModelCatalogPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Subscription Models"
       }
     },
     "/api/subscription-profiles": {

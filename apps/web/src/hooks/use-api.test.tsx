@@ -95,3 +95,41 @@ test('an opted-in refresh is shared across tabs without broadcasting background 
   expect(fetcher).toHaveBeenCalledTimes(3);
   expect(storage).toHaveBeenCalledTimes(1);
 });
+
+test('an opted-in failed refresh retains its last successful value and marks it unverified until retry', async () => {
+  let failRefresh!: (error: Error) => void;
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"id":"first"}'))
+    .mockImplementationOnce(() => new Promise((_resolve, reject) => { failRefresh = reject; }))
+    .mockResolvedValueOnce(new Response('{"id":"recovered"}'));
+  const hook = renderHook(() => useApi<{ id: string }>('/profiles', {
+    keepPreviousOnRefresh: true,
+    keepPreviousOnError: true,
+  }));
+  await waitFor(() => expect(hook.result.current.value?.id).toBe('first'));
+  act(() => { hook.result.current.refresh(); });
+  expect(hook.result.current.value?.id).toBe('first');
+  await act(async () => { failRefresh(new Error('offline')); });
+  expect(hook.result.current.failed).toBe(true);
+  expect(hook.result.current.value?.id).toBe('first');
+  expect(hook.result.current.token).toBe(0);
+  act(() => { hook.result.current.refresh(); });
+  await waitFor(() => expect(hook.result.current.value?.id).toBe('recovered'));
+  expect(hook.result.current.failed).toBe(false);
+  expect(fetcher).toHaveBeenCalledTimes(3);
+});
+
+test('retained error data never crosses to another path', async () => {
+  vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"id":"first"}'))
+    .mockRejectedValueOnce(new Error('offline'));
+  const hook = renderHook(({ path }) => useApi<{ id: string }>(path, {
+    keepPreviousOnRefresh: true,
+    keepPreviousOnError: true,
+  }), { initialProps: { path: '/profiles/first' } });
+  await waitFor(() => expect(hook.result.current.value?.id).toBe('first'));
+  hook.rerender({ path: '/profiles/second' });
+  expect(hook.result.current.value).toBeUndefined();
+  await waitFor(() => expect(hook.result.current.failed).toBe(true));
+  expect(hook.result.current.value).toBeUndefined();
+});

@@ -59,3 +59,18 @@ test('uses the approved official Gemini model and separate effort for routine de
     billing_mode: 'allowance_only',
   });
 });
+
+test('regression: uses updated offline fallback seeds and provides refresh model choices button', () => {
+  const defaults = defaultRolePreferences();
+  const complex = defaults.find(p => p.purpose === 'complex_implementation');
+  const review = defaults.find(p => p.purpose === 'independent_review');
+  const routine = defaults.find(p => p.purpose === 'routine_implementation');
+
+  expect(complex?.preferred_route.model).toBe('gpt-6-sol');
+  expect(complex?.preferred_route.effort).toBe('medium');
+  expect(review?.preferred_route.model).toBe('claude-opus-5-5');
+  expect(routine?.fallback_routes[0]?.model).toBe('gpt-6-luna');
+
+  render(<ProfileEditor onSave={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Refresh model choices' })).toBeInTheDocument();
+});

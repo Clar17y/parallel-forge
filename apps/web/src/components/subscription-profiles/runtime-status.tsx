@@ -135,9 +135,11 @@ export function SubscriptionRuntimeStatus() {
     {reports.loading ? <p role="status">Loading worker registration…</p> : reports.failed ?
       <p role="alert">Worker registration unavailable. Refresh to retry; current registration is unknown.</p> : reports.value ? <>
         <p>Observed: <time dateTime={reports.value.observed_at}>{reports.value.observed_at}</time>. Reports become stale after {reports.value.fresh_for_seconds} seconds without renewal.</p>
-        {reports.refreshing ? <p role="status">Refreshing worker registration…</p> : null}
-        {reports.value.workers.length === 0 ? <p>Worker registration is unknown: no reports on this page. Start the Forge worker to publish its registration.</p> :
-          <ul className="space-y-3">{reports.value.workers.map(worker => <li key={worker.worker_instance_id} className="rounded border p-3 [overflow-wrap:anywhere]">
+        <div role="status" aria-live="polite" className="runtime-refresh-status" style={{ minHeight: '1.5rem', margin: '4px 0' }}>
+          {reports.refreshing ? <p style={{ margin: 0 }}>Refreshing worker registration…</p> : null}
+        </div>
+        {(reports.value.workers ?? []).length === 0 ? <p>Worker registration is unknown: no reports on this page. Start the Forge worker to publish its registration.</p> :
+          <ul className="space-y-3">{(reports.value.workers ?? []).map(worker => <li key={worker.worker_instance_id} className="rounded border p-3 [overflow-wrap:anywhere]">
             <h3>{states[worker.state]}</h3>
             <p>Instance {worker.worker_instance_id} · last report <time dateTime={worker.last_seen_at}>{worker.last_seen_at}</time></p>
             {worker.routes.length > 0 ? <ul className="space-y-2">{worker.routes.map(route =>

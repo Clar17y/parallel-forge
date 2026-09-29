@@ -10,6 +10,8 @@ Jev is an optional, per-project advisory service for semantic search and review 
 
 To disable an existing configuration, save a policy with Jev mode `off`. Existing runs retain their bound policy version. Unconfigured legacy search-ranking activity continues to use the separate legacy ranking telemetry.
 
+New Jev settings are project policy defaults for future runs, not a global switch for full Jev review. The worker needs `TYPESAFE_API_KEY`, and remote project processing requires explicit `allow_remote` consent. Existing run policies and reports remain bound to their saved versions.
+
 ## Modes and source consent
 
 - `off` disables Jev work.

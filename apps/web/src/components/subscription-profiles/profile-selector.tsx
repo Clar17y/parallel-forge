@@ -77,7 +77,8 @@ export function ProfileSelector({
     <section className="panel" aria-label="Project subscription profile">
       <h2>Project subscription profile</h2>
       <p className="meta">
-        Selection is versioned and remains separate from the project safety policy.
+        Selection is versioned and remains separate from the{' '}
+        <a href="/policies" className="underline">project safety policy</a>.
       </p>
 
       <form onSubmit={submit}>

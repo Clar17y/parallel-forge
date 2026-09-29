@@ -5,7 +5,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from forge.api.dependencies import require_operator
-from forge.api.schemas.subscription_runtime import SubscriptionRuntimeStatusPage
+from forge.api.schemas.subscription_runtime import (
+    SubscriptionModelCatalogPage,
+    SubscriptionRuntimeStatusPage,
+)
 from forge.application.services.auth import AuthenticatedActor
 
 
@@ -25,5 +28,15 @@ def router_for() -> APIRouter:
         return SubscriptionRuntimeStatusPage.model_validate(
             await query.status(offset=offset, limit=limit)
         )
+
+    @router.get("/subscription-models", response_model=SubscriptionModelCatalogPage)
+    async def subscription_models(
+        request: Request,
+        _actor: AuthenticatedActor = Depends(require_operator),
+    ) -> SubscriptionModelCatalogPage:
+        query = request.app.state.subscription_runtime_status
+        if query is None:
+            raise HTTPException(503, "subscription model catalog unavailable")
+        return SubscriptionModelCatalogPage.model_validate(await query.model_catalogs())
 
     return router
