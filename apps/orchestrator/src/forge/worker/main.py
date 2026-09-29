@@ -13,8 +13,6 @@ from uuid import uuid4
 
 from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import DBAPIError
-from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
@@ -22,7 +20,10 @@ from forge.application.ports.commands import CommandLane, CommandRecoveryRequire
 from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.recovery import RecoveryError, RecoveryService
-from forge.application.services.subscription_decision_recovery import SubscriptionDecisionRecovery
+from forge.application.services.subscription_decision_recovery import (
+    SubscriptionDecisionRecovery,
+    is_transient_recovery_error,
+)
 from forge.application.services.subscription_effect_recovery import SubscriptionEffectRecovery
 from forge.application.services.terminal_recovery import TerminalMergeRecovery
 from forge.application.services.worker import CommandHandler, Worker
@@ -396,7 +397,9 @@ async def _poll_decisions(
             if scan not in done:
                 return
             report = await scan
-        except (DBAPIError, PoolTimeoutError, OSError, TimeoutError):
+        except Exception as error:
+            if not is_transient_recovery_error(error):
+                raise
             # Scans and their diagnostics can share an outage. Leave retained
             # sources for the next scan without stopping unrelated pollers.
             logger.warning("Subscription decision retry unavailable; will retry")

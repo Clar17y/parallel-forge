@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -12,6 +13,15 @@ from forge.application.ports.subscription_decisions import (
 )
 from forge.application.services.subscription_decision_recovery import SubscriptionDecisionRecovery
 from forge.domain.run import RunState
+from sqlalchemy.exc import (
+    DataError,
+    DBAPIError,
+    DisconnectionError,
+    IntegrityError,
+    OperationalError,
+    ProgrammingError,
+)
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 
 class RecoveryProjectionStub:
@@ -118,6 +128,45 @@ async def test_recovery_does_not_swallow_cancellation():
     recovery._plans = SimpleNamespace(request_settled=cancel)
     with pytest.raises(asyncio.CancelledError):
         await recovery.reconcile_all()
+
+
+@pytest.mark.parametrize("error, classification", [
+    (OperationalError("statement", {}, OSError("outage")), "temporary"),
+    (PoolTimeoutError("pool unavailable"), "temporary"),
+    (DisconnectionError("connection lost"), "temporary"),
+    (DBAPIError("statement", {}, RuntimeError("connection lost"), connection_invalidated=True), "temporary"),
+    (ProgrammingError("statement", {}, RuntimeError("schema differs")), "unsupported"),
+    (IntegrityError("statement", {}, RuntimeError("constraint violated")), "unsupported"),
+    (DataError("statement", {}, RuntimeError("invalid data")), "unsupported"),
+    (DBAPIError("statement", {}, RuntimeError("unknown failure")), "unsupported"),
+])
+async def test_recovery_classifies_database_failures_consistently(error, classification):
+    identity = UUID(int=1)
+    projection = RecoveryProjectionStub()
+    projection.record_failure = AsyncMock()
+
+    async def pending(cursor, _limit):
+        return () if cursor else (PendingSubscriptionDecision(identity, PendingDecisionKind.WAIT),)
+
+    @asynccontextmanager
+    async def factory():
+        yield SimpleNamespace(
+            subscription_decisions=SimpleNamespace(pending_applications=pending),
+            subscription_recovery=projection, runs=SimpleNamespace(get=_run),
+            commit=_commit, rollback=_commit,
+        )
+
+    async def apply(_attempt_id):
+        raise error
+
+    recovery = SubscriptionDecisionRecovery(factory, object())
+    recovery._decisions = SimpleNamespace(apply_wait=apply)
+    report = await recovery.reconcile_all()
+    assert report.deferred == 1 and report.applied == 0
+    reason = "application_infrastructure" if classification == "temporary" else "application_invariant"
+    projection.record_failure.assert_awaited_once_with(
+        identity, classification=classification, reason_code=reason
+    )
 
 
 async def test_recovery_dispatches_handoff_only_when_observer_is_configured():

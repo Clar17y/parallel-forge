@@ -17,7 +17,14 @@ from forge.application.services.subscription_decision_recovery import (
 )
 from forge.domain.run import RunState
 from forge.worker import main
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import (
+    DataError,
+    DBAPIError,
+    DisconnectionError,
+    IntegrityError,
+    OperationalError,
+    ProgrammingError,
+)
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 
@@ -57,19 +64,39 @@ async def test_decision_poll_stops_without_another_scan():
     await asyncio.wait_for(polling, 1)
 
 
-async def test_decision_scan_failure_propagates():
+@pytest.mark.parametrize("error", [
+    RuntimeError("unexpected defect"),
+    ProgrammingError("statement", {}, RuntimeError("schema differs")),
+    IntegrityError("statement", {}, RuntimeError("constraint violated")),
+    DataError("statement", {}, RuntimeError("invalid data")),
+    DBAPIError("statement", {}, RuntimeError("unclassified database failure")),
+])
+async def test_decision_scan_failure_propagates(error):
     async def fail():
-        raise RuntimeError("database unavailable")
+        raise error
 
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        await main._poll_decisions(SimpleNamespace(reconcile_all=fail), asyncio.Event(), 0.001)
+    with pytest.raises(type(error)) as raised:
+        await asyncio.wait_for(
+            main._poll_decisions(SimpleNamespace(reconcile_all=fail), asyncio.Event(), 0.001),
+            0.1,
+        )
+    assert raised.value is error
+
+
+class PostgresFailure(Exception):
+    def __init__(self, sqlstate):
+        super().__init__("private connection details")
+        self.sqlstate = sqlstate
 
 
 @pytest.mark.parametrize("error", [
     OSError("private connection details"),
     TimeoutError("private connection details"),
-    DBAPIError("private statement", {}, OSError("private connection details")),
+    OperationalError("private statement", {}, OSError("private connection details")),
     PoolTimeoutError("private connection details"),
+    DisconnectionError("private connection details"),
+    DBAPIError("private statement", {}, RuntimeError("private connection details"), connection_invalidated=True),
+    *(DBAPIError("private statement", {}, PostgresFailure(state)) for state in ("40001", "40P01", "55P03")),
 ])
 async def test_decision_poll_retries_database_and_io_failures(error, caplog):
     stop = asyncio.Event()

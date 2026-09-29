@@ -3,7 +3,8 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DBAPIError, DisconnectionError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.subscription_decisions import (
@@ -22,6 +23,16 @@ from forge.application.services.subscription_handoff_application import (
 from forge.application.services.subscription_plan_gate import SubscriptionPlanGateService
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
 from forge.domain.run import RunState
+
+
+def is_transient_recovery_error(error: Exception) -> bool:
+    """Recognize infrastructure outages without hiding unclassified DB defects."""
+    if isinstance(error, (OSError, OperationalError, DisconnectionError, PoolTimeoutError)):
+        return True
+    return isinstance(error, DBAPIError) and (
+        error.connection_invalidated
+        or getattr(error.orig, "sqlstate", None) in {"40001", "40P01", "55P03"}
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,10 +151,7 @@ class SubscriptionDecisionRecovery:
                             classification, reason = "prerequisite", "handoff_observation_changed"
                         elif isinstance(error, ValueError) and str(error) == "prepared candidate observation is required":
                             classification, reason = "prerequisite", "candidate_observation_missing"
-                        elif isinstance(error, (OSError, TimeoutError, OperationalError)) or (
-                            isinstance(error, DBAPIError)
-                            and getattr(error.orig, "sqlstate", None) in {"40001", "40P01", "55P03"}
-                        ):
+                        elif is_transient_recovery_error(error):
                             classification, reason = "temporary", "application_infrastructure"
                         else:
                             classification, reason = "unsupported", "application_invariant"
