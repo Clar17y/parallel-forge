@@ -3,7 +3,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from forge.agents.subscription_protocol import ProtocolError, decode_final, output_schema
@@ -2325,3 +2325,206 @@ async def test_repair_binds_prepared_plan_amid_competing_gate_rows(session_facto
         ))
         assert revision.source_attempt_id == original.attempt_id
         assert revision.plan_digest == original.plan_digest
+
+
+@pytest.mark.integration
+async def test_attempts_projection_avoids_run_write_lock_under_concurrent_update(
+    session_factory, tmp_path, monkeypatch
+):
+    from forge.persistence.models.run import Run
+    from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
+    from forge.persistence.repositories.subscription_recovery import (
+        PostgresSubscriptionRecoveryRepository,
+    )
+
+    case = await recovery_case(session_factory, tmp_path)
+    run_id = case["run_id"]
+    task_id = case["task_id"]
+
+    original_preview = PostgresSubscriptionRecoveryRepository.preview
+    concurrent_updated = False
+
+    async def preview_hook(self, *args, **kwargs):
+        nonlocal concurrent_updated
+        if not concurrent_updated:
+            concurrent_updated = True
+            async with session_factory() as session:
+                r = await session.get(Run, run_id)
+                assert r is not None
+                r.version += 1
+                await session.commit()
+        return await original_preview(self, *args, **kwargs)
+
+    monkeypatch.setattr(PostgresSubscriptionRecoveryRepository, "preview", preview_hook)
+
+    query = SubscriptionTaskQuery(session_factory)
+    result = await query.attempts(run_id, task_id)
+    assert result is not None
+    assert result["run_id"] == run_id
+    assert len(result["attempts"]) == 2
+    attempt2 = next(a for a in result["attempts"] if a["attempt_id"] == case["attempt_id"])
+    recovery_info = attempt2["recovery"]
+    assert recovery_info is not None
+    assert RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT.value in recovery_info["eligible_actions"]
+
+
+@pytest.mark.integration
+async def test_locked_preview_guards_run_lock(session_factory, tmp_path):
+    from forge.persistence.repositories.subscription_recovery import (
+        PostgresSubscriptionRecoveryRepository,
+    )
+
+    case = await recovery_case(session_factory, tmp_path)
+    async with session_factory() as session:
+        repo = PostgresSubscriptionRecoveryRepository(session)
+        with pytest.raises(ValueError, match="locked preview requires run write lock"):
+            await repo.preview(
+                case["run_id"],
+                case["task_id"],
+                case["attempt_id"],
+                RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT,
+                locked=True,
+                lock_run=False,
+            )
+
+
+@pytest.mark.integration
+async def test_attempts_projection_skips_previews_for_superseded_attempts_and_paginated_pages(
+    session_factory, tmp_path, monkeypatch
+):
+    from forge.persistence.models.subscription import SubscriptionAttempt
+    from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
+    from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
+    from forge.persistence.repositories.subscription_recovery import (
+        PostgresSubscriptionRecoveryRepository,
+    )
+
+    case = await recovery_case(session_factory, tmp_path)
+    run_id = case["run_id"]
+    task_id = case["task_id"]
+    latest_attempt_id = case["attempt_id"]
+
+    # Locate attempt 1 and attach a diagnostic to it
+    async with session_factory() as session:
+        attempts = list(
+            (
+                await session.scalars(
+                    select(SubscriptionAttempt)
+                    .where(
+                        SubscriptionAttempt.run_id == run_id,
+                        SubscriptionAttempt.task_row_id == task_id,
+                    )
+                    .order_by(SubscriptionAttempt.attempt_number)
+                )
+            ).all()
+        )
+        assert len(attempts) == 2
+        attempt1 = attempts[0]
+        assert attempt1.id != latest_attempt_id
+        session.add(
+            SubscriptionApplicationDiagnostic(
+                attempt_id=attempt1.id,
+                run_id=run_id,
+                task_id=task_id,
+                classification="temporary",
+                reason_code="planning_stale",
+                resolution="superseded",
+                failed_applications=1,
+                first_failure_at=datetime.now(UTC),
+                last_failure_at=datetime.now(UTC),
+                next_retry_at=None,
+            )
+        )
+        await session.commit()
+
+    preview_calls: list[UUID] = []
+    original_preview = PostgresSubscriptionRecoveryRepository.preview
+
+    async def tracking_preview(self, r_id, t_id, a_id, action, *args, **kwargs):
+        preview_calls.append(a_id)
+        return await original_preview(self, r_id, t_id, a_id, action, *args, **kwargs)
+
+    monkeypatch.setattr(PostgresSubscriptionRecoveryRepository, "preview", tracking_preview)
+
+    query = SubscriptionTaskQuery(session_factory)
+
+    # 1. Page omitting the latest attempt (offset=0, limit=1 -> attempt 1 only)
+    page1 = await query.attempts(run_id, task_id, offset=0, limit=1)
+    assert page1 is not None
+    assert len(page1["attempts"]) == 1
+    assert page1["has_more"] is True
+    item1 = page1["attempts"][0]
+    assert item1["attempt_id"] == attempt1.id
+    diag1 = item1["recovery"]
+    assert diag1 is not None
+    assert diag1["reason_code"] == "planning_stale"
+    assert diag1["resolution"] == "superseded"
+    assert diag1["eligible_actions"] == []
+    # No preview was invoked for the historical/superseded attempt
+    assert len(preview_calls) == 0
+
+    # 2. Page containing the latest attempt (offset=1, limit=1 -> attempt 2 only)
+    page2 = await query.attempts(run_id, task_id, offset=1, limit=1)
+    assert page2 is not None
+    assert len(page2["attempts"]) == 1
+    assert page2["has_more"] is False
+    item2 = page2["attempts"][0]
+    assert item2["attempt_id"] == latest_attempt_id
+    diag2 = item2["recovery"]
+    assert diag2 is not None
+    assert diag2["resolution"] == "attention"
+    assert RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT.value in diag2["eligible_actions"]
+    # Only the latest attempt invoked preview (3 times, once per RecoveryAction)
+    assert preview_calls == [latest_attempt_id, latest_attempt_id, latest_attempt_id]
+    preview_calls.clear()
+
+    # 3. Full page containing both attempts
+    full = await query.attempts(run_id, task_id, offset=0, limit=10)
+    assert full is not None
+    assert len(full["attempts"]) == 2
+    f_item1 = full["attempts"][0]
+    f_item2 = full["attempts"][1]
+    assert f_item1["recovery"]["eligible_actions"] == []
+    assert (
+        RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT.value
+        in f_item2["recovery"]["eligible_actions"]
+    )
+    # Still only the latest attempt was previewed
+    assert preview_calls == [latest_attempt_id, latest_attempt_id, latest_attempt_id]
+    assert f_item1["recovery"].keys() == f_item2["recovery"].keys()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("task_scope", [False, True])
+async def test_attempts_projection_preserves_aggregate_repair_budget(
+    session_factory, tmp_path, task_scope
+):
+    from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
+    from forge.persistence.repositories.subscription_recovery import (
+        PostgresSubscriptionRecoveryRepository,
+    )
+
+    case = await recovery_case(session_factory, tmp_path)
+    async with case["factory"]() as work:
+        # Two attempts have settled. The scheduler still permits repairs, but
+        # the frozen run/task pool has no provider attempt left for a retry.
+        await work.subscription.initialize_budget(
+            case["run_id"], case["task_id"] if task_scope else None,
+            TaskBudget(
+                max_provider_attempts=2, max_repairs=3,
+                unknown_telemetry_policy=UnknownTelemetryPolicy(max_uncertain_attempts=5),
+            ),
+        )
+        await work.commit()
+
+    async with session_factory() as session:
+        preview = await PostgresSubscriptionRecoveryRepository(session).preview(
+            case["run_id"], case["task_id"], case["attempt_id"],
+            RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT,
+        )
+        assert not preview.eligible and preview.reason_code == "budget_exhausted"
+
+    page = await SubscriptionTaskQuery(session_factory).attempts(case["run_id"], case["task_id"])
+    assert page is not None
+    current = next(row for row in page["attempts"] if row["attempt_id"] == case["attempt_id"])
+    assert current["recovery"]["eligible_actions"] == []

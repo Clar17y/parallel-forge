@@ -32,6 +32,7 @@ from forge.domain.subscription import (
     SpecialistPurpose,
     encode_subscription_record,
 )
+from forge.domain.subscription_decision_policy import is_approved_plan_primary_contract
 from forge.domain.subscription_execution import SUBSCRIPTION_WORK_STATES
 from forge.domain.tool import ToolName, repository_resource_identity
 
@@ -186,11 +187,8 @@ class SubscriptionRequestBuilder:
             )
             if (
                 run.state is RunState.IMPLEMENTING
-                and admission.task.purpose is SpecialistPurpose.PRIMARY
+                and is_approved_plan_primary_contract(admission.task)
                 and implementation is None
-                and any(
-                    item.criterion_id == "approved-plan" for item in admission.task.typed_acceptance
-                )
             ):
                 # Historical planning contracts remain inspectable but cannot
                 # silently become an implementation invocation.

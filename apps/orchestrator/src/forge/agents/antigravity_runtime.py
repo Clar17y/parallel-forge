@@ -426,7 +426,7 @@ class AntigravityGateway:
                 return SubscriptionInvocationResult(
                     attempt=request.attempt,
                     failure=SubscriptionFailure.PROTOCOL,
-                    role_rejection=RoleDecisionRejection(error.kind, f"role_{error.kind}_forbidden"),
+                    role_rejection=RoleDecisionRejection.for_kind(error.kind),
                 ), telemetry
             except ProtocolError:
                 return SubscriptionInvocationResult(

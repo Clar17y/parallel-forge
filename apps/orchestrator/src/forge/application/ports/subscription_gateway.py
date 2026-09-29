@@ -75,6 +75,10 @@ class RoleDecisionRejection:
         if self.reason_code != f"role_{self.kind}_forbidden":
             raise ValueError("role rejection reason is invalid")
 
+    @classmethod
+    def for_kind(cls, kind: str) -> RoleDecisionRejection:
+        return cls(kind, f"role_{kind}_forbidden")
+
 
 def _freeze(value: object, *, depth: int = 0, counter: list[int] | None = None) -> object:
     counter = [0, 0] if counter is None else counter
@@ -287,6 +291,7 @@ class SubscriptionInterrupted(asyncio.CancelledError):
 
 
 __all__ = [
+    "RoleDecisionRejection",
     "SubscriptionDecision",
     "SubscriptionFailure",
     "SubscriptionGateway",

@@ -31,7 +31,11 @@ from forge.domain.subscription import (
     WaitDecision,
     validate_task_dag,
 )
-from forge.domain.subscription_decision_policy import decision_allowed
+from forge.domain.subscription_decision_policy import (
+    PRIMARY_DECISIONS,
+    WORKER_DECISIONS,
+    decision_allowed,
+)
 from forge.domain.subscription_delegation import validate_child_authority
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
@@ -167,19 +171,8 @@ _DECISIONS: dict[str, type[Any]] = {
     "review_selection": ReviewSelection,
     "forward_feedback": ForwardFeedbackDecision,
 }
-_KNOWN_KINDS = frozenset((*_DECISIONS, "plan", "delegate"))
-_PRIMARY_KINDS = frozenset(
-    {
-        "plan",
-        "delegate",
-        "wait",
-        "scope_response",
-        "accept",
-        "reassign",
-        "review_selection",
-        "forward_feedback",
-    }
-)
+_PRIMARY_KINDS = PRIMARY_DECISIONS
+_KNOWN_KINDS = PRIMARY_DECISIONS | WORKER_DECISIONS
 _CHILD_TARGET_KINDS = frozenset(
     {
         "accept",

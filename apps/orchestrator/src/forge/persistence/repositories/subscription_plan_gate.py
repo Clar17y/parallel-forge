@@ -29,7 +29,6 @@ from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
 from forge.domain.subscription import (
-    AcceptanceCriterion,
     AttemptTelemetry,
     ExecutionEnvelope,
     HandoffStatus,
@@ -41,6 +40,7 @@ from forge.domain.subscription import (
     encode_subscription_record,
 )
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
+from forge.domain.subscription_plan_contract import approved_implementation_contract
 from forge.persistence.models.execution import Approval
 from forge.persistence.models.project import Project, ProjectPolicyVersion
 from forge.persistence.models.scheduling import (
@@ -394,24 +394,12 @@ class PostgresSubscriptionPlanGateRepository:
         plan = decode_plan_output(decision_source["value"])
         original = decode_subscription_record(context_source["task"])
         assert isinstance(original, LogicalTaskContract)
-        # Legacy approvals predate explicit plan scope. Their frozen task scope
-        # remains authoritative; do not manufacture writable paths from prose.
-        paths = plan.owned_paths if isinstance(plan, ScopedPlanOutput) else original.owned_paths
-        prepared = replace(
+        prepared = approved_implementation_contract(
             original,
-            owned_paths=paths,
-            named_checks=plan.required_checks,
-            typed_acceptance=(
-                AcceptanceCriterion(
-                    criterion_id="approved-implementation",
-                    description="Implement the approved plan outcomes within the approved scope and provide required validation evidence.",
-                    required_check_names=plan.required_checks,
-                ),
-            ),
-            untrusted_context_refs=(
-                *original.untrusted_context_refs,
-                f"approved-plan:{producer.attempt_id}:{producer.plan_digest}:{approval_id}",
-            ),
+            plan,
+            producer.attempt_id,
+            producer.plan_digest,
+            approval_id,
         )
         prepared_payload = encode_subscription_record(prepared)
         prepared_paths = tuple(policy_path_key(path) for path in prepared.owned_paths)

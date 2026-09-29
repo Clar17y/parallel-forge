@@ -12,6 +12,7 @@ from forge.domain.subscription import (
     BoundScopeResponseDecision,
     DelegateDecision,
     ForwardFeedbackDecision,
+    LogicalTaskContract,
     ReassignDecision,
     ReviewSelection,
     ScopeRequestDecision,
@@ -64,3 +65,20 @@ def decision_kind(decision: object) -> str | None:
         if isinstance(decision, cls):
             return kind
     return None
+
+
+def is_approved_plan_primary_contract(contract: LogicalTaskContract) -> bool:
+    """Return whether this contract is a primary task defined by an approved plan."""
+    return (
+        contract.purpose is SpecialistPurpose.PRIMARY
+        and any(item.criterion_id == "approved-plan" for item in contract.typed_acceptance)
+    )
+
+
+__all__ = [
+    "PRIMARY_DECISIONS",
+    "WORKER_DECISIONS",
+    "decision_allowed",
+    "decision_kind",
+    "is_approved_plan_primary_contract",
+]

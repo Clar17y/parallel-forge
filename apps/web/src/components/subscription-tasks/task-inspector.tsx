@@ -6,7 +6,7 @@ import { useApi } from '@/hooks/use-api';
 import { QuotaStatusCard, QuotaStatusList } from './quota-status';
 import { TaskControls, TaskControlSummary } from './task-controls';
 import { TaskFeedback } from './task-feedback';
-import { TaskRecovery } from './task-recovery';
+import { recoveryReason, TaskRecovery } from './task-recovery';
 import type { components } from '@/lib/api/schema';
 
 type TaskPage = components['schemas']['SubscriptionTaskPage'];
@@ -14,7 +14,6 @@ type AttemptPage = components['schemas']['SubscriptionAttemptPage'];
 type Route = components['schemas']['AttemptRoute'];
 const pageSize = 25;
 const unknown = (value: number | null | undefined) => value == null ? 'Unknown' : value.toLocaleString();
-const recoveryReason = (code: string) => `${code.replaceAll('_', ' ').replace(/^./, letter => letter.toUpperCase())} (${code})`;
 const routeLabel = (route: Route) => `${route.provider} / ${route.client} / ${route.model} · ${route.effort} · ${route.auth_mode} · ${route.billing_mode}`;
 
 export function TaskInspector({ runId }: { runId: string }) {

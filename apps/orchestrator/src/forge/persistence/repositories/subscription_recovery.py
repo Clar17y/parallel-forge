@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -12,24 +11,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from forge.domain.event import RunEvent as DomainRunEvent
 from forge.domain.operation import canonical_digest
 from forge.domain.paths import policy_path_key
-from forge.domain.plan import ScopedPlanOutput, decode_plan_output
+from forge.domain.plan import decode_plan_output
 from forge.domain.run import RunState
 from forge.domain.subscription import (
-    AcceptanceCriterion,
     BoundReassignDecision,
     BoundScopeResponseDecision,
     DelegateDecision,
     ForwardFeedbackDecision,
     HandoffStatus,
     LogicalTaskContract,
-    SpecialistPurpose,
     TaskHandoff,
     WaitDecision,
     decode_subscription_record,
     encode_subscription_record,
 )
-from forge.domain.subscription_decision_policy import decision_allowed, decision_kind
+from forge.domain.subscription_decision_policy import (
+    decision_allowed,
+    decision_kind,
+    is_approved_plan_primary_contract,
+)
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
+from forge.domain.subscription_plan_contract import approved_implementation_contract
 from forge.domain.subscription_recovery import (
     RecoveryAction,
     RecoveryReceipt,
@@ -102,6 +104,15 @@ _EXPLANATIONS = {
     "application_not_retryable": "The saved application has no changed prerequisite to retry.",
     "unsupported_source": "This result state cannot be recovered with the selected action.",
 }
+
+
+def _is_prior_role_rejection(result: SubscriptionAttemptResult) -> bool:
+    return (
+        result.disposition == "role_rejected"
+        and isinstance(result.application_payload, dict)
+        and result.application_payload.get("kind") == "role_rejection"
+        and canonical_digest(result.application_payload) == result.application_digest
+    )
 
 
 class PostgresSubscriptionRecoveryRepository:
@@ -209,6 +220,34 @@ class PostgresSubscriptionRecoveryRepository:
             },
         ))
 
+    async def _latest_attempt_id(self, task_id: UUID) -> UUID | None:
+        attempt_id: UUID | None = await self._session.scalar(
+            select(SubscriptionAttempt.id)
+            .where(SubscriptionAttempt.task_row_id == task_id)
+            .order_by(SubscriptionAttempt.attempt_number.desc())
+            .limit(1)
+        )
+        return attempt_id
+
+    async def _resolve_diagnostic(
+        self,
+        diagnostic: SubscriptionApplicationDiagnostic,
+        *,
+        resolution: str,
+        next_retry_at: datetime | None,
+    ) -> None:
+        was_attention = diagnostic.resolution == "attention"
+        diagnostic.resolution = resolution
+        diagnostic.next_retry_at = next_retry_at
+        await self._attention_changed(
+            diagnostic.run_id,
+            diagnostic.task_id,
+            diagnostic.attempt_id,
+            was_attention=was_attention,
+            is_attention=False,
+            reason_code=diagnostic.reason_code,
+        )
+
     async def correction_feedback(self, task_id: UUID, contract_digest: str) -> dict[str, str] | None:
         row = await self._session.scalar(
             select(SubscriptionAttemptResult)
@@ -234,12 +273,7 @@ class PostgresSubscriptionRecoveryRepository:
     async def block_stale_queued_contract(
         self, run_id: UUID, task: SubscriptionTask, scheduled: SubscriptionScheduledTask
     ) -> None:
-        source_id = await self._session.scalar(
-            select(SubscriptionAttempt.id)
-            .where(SubscriptionAttempt.task_row_id == task.id)
-            .order_by(SubscriptionAttempt.attempt_number.desc())
-            .limit(1)
-        )
+        source_id = await self._latest_attempt_id(task.id)
         if source_id is None:
             raise RecoveryConflict("approved planning source is unavailable")
         now = datetime.now(UTC)
@@ -358,14 +392,7 @@ class PostgresSubscriptionRecoveryRepository:
         )
         if not await self._application_pending(attempt_id, locked=True):
             if row is not None:
-                was_attention = row.resolution == "attention"
-                row.resolution = "superseded"
-                row.next_retry_at = None
-                await self._attention_changed(
-                    attempt.run_id, attempt.task_row_id, attempt_id,
-                    was_attention=was_attention, is_attention=False,
-                    reason_code=row.reason_code,
-                )
+                await self._resolve_diagnostic(row, resolution="superseded", next_retry_at=None)
                 await self._session.flush()
             return
         was_attention = row is not None and row.resolution == "attention"
@@ -416,18 +443,12 @@ class PostgresSubscriptionRecoveryRepository:
             SubscriptionApplicationDiagnostic, attempt_id, with_for_update=True
         )
         if row is not None:
-            was_attention = row.resolution == "attention"
             if await self._application_pending(attempt_id, locked=True):
-                row.resolution = "scheduled"
-                row.next_retry_at = datetime.now(UTC)
+                await self._resolve_diagnostic(
+                    row, resolution="scheduled", next_retry_at=datetime.now(UTC)
+                )
             else:
-                row.resolution = "applied"
-                row.next_retry_at = None
-            await self._attention_changed(
-                row.run_id, row.task_id, attempt_id,
-                was_attention=was_attention, is_attention=False,
-                reason_code=row.reason_code,
-            )
+                await self._resolve_diagnostic(row, resolution="applied", next_retry_at=None)
             await self._session.flush()
 
     async def _application_pending(self, attempt_id: UUID, *, locked: bool = False) -> bool:
@@ -439,12 +460,7 @@ class PostgresSubscriptionRecoveryRepository:
             return False
         run = await self._session.get(Run, attempt.run_id)
         task = await self._session.get(SubscriptionTask, attempt.task_row_id)
-        latest = await self._session.scalar(
-            select(SubscriptionAttempt.id)
-            .where(SubscriptionAttempt.task_row_id == attempt.task_row_id)
-            .order_by(SubscriptionAttempt.attempt_number.desc())
-            .limit(1)
-        )
+        latest = await self._latest_attempt_id(attempt.task_row_id)
         if (
             run is None
             or task is None
@@ -620,7 +636,11 @@ class PostgresSubscriptionRecoveryRepository:
         action: RecoveryAction,
         *,
         locked: bool = False,
+        lock_run: bool = True,
     ) -> RecoverySnapshot:
+        if locked and not lock_run:
+            raise ValueError("locked preview requires run write lock")
+
         def refused(reason: str, binding: str = "") -> RecoverySnapshot:
             return RecoverySnapshot(
                 binding,
@@ -635,7 +655,7 @@ class PostgresSubscriptionRecoveryRepository:
 
         # The run lock also serializes admission of an accepted pause/cancel
         # command with this preview and the locked apply revalidation.
-        run = await self._session.get(Run, run_id, with_for_update=True)
+        run = await self._session.get(Run, run_id, with_for_update=lock_run)
         task = await self._session.get(SubscriptionTask, task_id, with_for_update=locked)
         attempt = await self._session.get(SubscriptionAttempt, attempt_id, with_for_update=locked)
         result = await self._session.get(
@@ -660,12 +680,7 @@ class PostgresSubscriptionRecoveryRepository:
             or scheduled.run_id != run_id
         ):
             return refused("source_missing")
-        latest_attempt_id = await self._session.scalar(
-            select(SubscriptionAttempt.id)
-            .where(SubscriptionAttempt.task_row_id == task_id)
-            .order_by(SubscriptionAttempt.attempt_number.desc())
-            .limit(1)
-        )
+        latest_attempt_id = await self._latest_attempt_id(task_id)
         if (
             latest_attempt_id != attempt_id
             or scheduled.lease_generation != attempt.lease_generation
@@ -807,8 +822,7 @@ class PostgresSubscriptionRecoveryRepository:
         if effects is not None or not stopped or scheduled.state == "leased":
             return refused("effect_uncertain", binding)
         stale_contract = (
-            contract.purpose is SpecialistPurpose.PRIMARY
-            and any(item.criterion_id == "approved-plan" for item in contract.typed_acceptance)
+            is_approved_plan_primary_contract(contract)
             and gate is not None
             and approval is not None
         )
@@ -903,12 +917,7 @@ class PostgresSubscriptionRecoveryRepository:
                 parent_schedule = await self._session.get(
                     SubscriptionScheduledTask, task.parent_task_id
                 )
-                parent_latest = await self._session.scalar(
-                    select(SubscriptionAttempt.id)
-                    .where(SubscriptionAttempt.task_row_id == task.parent_task_id)
-                    .order_by(SubscriptionAttempt.attempt_number.desc())
-                    .limit(1)
-                )
+                parent_latest = await self._latest_attempt_id(task.parent_task_id)
                 parent_result = (
                     await self._session.get(SubscriptionAttemptResult, parent_latest)
                     if parent_latest is not None else None
@@ -990,12 +999,7 @@ class PostgresSubscriptionRecoveryRepository:
                 0,
                 0,
             )
-        prior_rejection = (
-            result.disposition == "role_rejected"
-            and isinstance(result.application_payload, dict)
-            and result.application_payload.get("kind") == "role_rejection"
-            and canonical_digest(result.application_payload) == result.application_digest
-        )
+        prior_rejection = _is_prior_role_rejection(result)
         if result.application_payload is not None and not prior_rejection:
             return refused("unsupported_source", binding)
         if scheduled.state not in {"reconciling", "terminal", "blocked"}:
@@ -1003,7 +1007,7 @@ class PostgresSubscriptionRecoveryRepository:
         if (
             scheduled.repairs >= scheduled.max_repairs
             or not await PostgresSubscriptionBudgetRepository(self._session).can_debit_repair(
-                run_id, task_id, attempt_id
+                run_id, task_id, attempt_id, locked=lock_run
             )
         ):
             return refused("budget_exhausted", binding)
@@ -1064,12 +1068,8 @@ class PostgresSubscriptionRecoveryRepository:
                 SubscriptionApplicationDiagnostic, attempt_id, with_for_update=True
             )
             assert diagnostic is not None
-            was_attention = diagnostic.resolution == "attention"
-            diagnostic.resolution = "scheduled"
-            diagnostic.next_retry_at = datetime.now(UTC)
-            await self._attention_changed(
-                run_id, task_id, attempt_id, was_attention=was_attention,
-                is_attention=False, reason_code=diagnostic.reason_code,
+            await self._resolve_diagnostic(
+                diagnostic, resolution="scheduled", next_retry_at=datetime.now(UTC)
             )
         else:
             contract_only = (
@@ -1088,12 +1088,8 @@ class PostgresSubscriptionRecoveryRepository:
                     SubscriptionApplicationDiagnostic, attempt_id, with_for_update=True
                 )
                 if diagnostic is not None:
-                    was_attention = diagnostic.resolution == "attention"
-                    diagnostic.resolution = "rejected"
-                    diagnostic.next_retry_at = None
-                    await self._attention_changed(
-                        run_id, task_id, attempt_id, was_attention=was_attention,
-                        is_attention=False, reason_code=diagnostic.reason_code,
+                    await self._resolve_diagnostic(
+                        diagnostic, resolution="rejected", next_retry_at=None
                     )
             else:
                 await self._reject_and_queue(
@@ -1127,12 +1123,7 @@ class PostgresSubscriptionRecoveryRepository:
         scheduled: SubscriptionScheduledTask,
         attempt: SubscriptionAttempt,
     ) -> None:
-        prior_rejection = (
-            result.disposition == "role_rejected"
-            and isinstance(result.application_payload, dict)
-            and result.application_payload.get("kind") == "role_rejection"
-            and canonical_digest(result.application_payload) == result.application_digest
-        )
+        prior_rejection = _is_prior_role_rejection(result)
         if result.application_payload is not None and not prior_rejection:
             raise RecoveryConflict("source already has an application receipt")
         budget = PostgresSubscriptionBudgetRepository(self._session)
@@ -1171,12 +1162,8 @@ class PostgresSubscriptionRecoveryRepository:
             SubscriptionApplicationDiagnostic, attempt_id, with_for_update=True
         )
         if diagnostic is not None:
-            was_attention = diagnostic.resolution == "attention"
-            diagnostic.resolution = "rejected"
-            diagnostic.next_retry_at = None
-            await self._attention_changed(
-                run_id, task_id, attempt_id, was_attention=was_attention,
-                is_attention=False, reason_code=diagnostic.reason_code,
+            await self._resolve_diagnostic(
+                diagnostic, resolution="rejected", next_retry_at=None
             )
 
     async def _repair_contract(
@@ -1192,23 +1179,12 @@ class PostgresSubscriptionRecoveryRepository:
         if not isinstance(decision, dict) or decision.get("type") != "PlanOutput":
             raise RecoveryConflict("approved plan differs")
         plan = decode_plan_output(decision["value"])
-        prepared = replace(
+        prepared = approved_implementation_contract(
             original,
-            owned_paths=plan.owned_paths
-            if isinstance(plan, ScopedPlanOutput)
-            else original.owned_paths,
-            named_checks=plan.required_checks,
-            typed_acceptance=(
-                AcceptanceCriterion(
-                    criterion_id="approved-implementation",
-                    description="Implement the approved plan outcomes within the approved scope and provide required validation evidence.",
-                    required_check_names=plan.required_checks,
-                ),
-            ),
-            untrusted_context_refs=(
-                *original.untrusted_context_refs,
-                f"approved-plan:{gate.attempt_id}:{gate.plan_digest}:{approval.id}",
-            ),
+            plan,
+            gate.attempt_id,
+            gate.plan_digest,
+            approval.id,
         )
         payload = encode_subscription_record(prepared)
         previous = await self._session.scalar(

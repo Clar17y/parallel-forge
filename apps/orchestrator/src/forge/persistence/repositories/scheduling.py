@@ -39,6 +39,7 @@ from forge.domain.subscription import (
     encode_subscription_record,
     is_read_only,
 )
+from forge.domain.subscription_decision_policy import is_approved_plan_primary_contract
 from forge.domain.subscription_execution import run_allows_subscription_attempt
 from forge.domain.tool import ToolName
 from forge.persistence.models.run import Run
@@ -384,9 +385,8 @@ class PostgresSchedulingRepository:
                 contract = decode_subscription_record(logical.payload)
                 if (
                     isinstance(contract, LogicalTaskContract)
-                    and contract.purpose is SpecialistPurpose.PRIMARY
+                    and is_approved_plan_primary_contract(contract)
                     and source_run.state == "IMPLEMENTING"
-                    and any(item.criterion_id == "approved-plan" for item in contract.typed_acceptance)
                 ):
                     from forge.persistence.repositories.subscription_recovery import (
                         PostgresSubscriptionRecoveryRepository,

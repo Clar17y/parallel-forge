@@ -651,7 +651,7 @@ class CodexGateway:
         except RoleDecisionError as error:
             result = replace(
                 failed(SubscriptionFailure.PROTOCOL),
-                role_rejection=RoleDecisionRejection(error.kind, f"role_{error.kind}_forbidden"),
+                role_rejection=RoleDecisionRejection.for_kind(error.kind),
             )
         except ProtocolError as error:
             # ProtocolError messages are Forge-owned constants, never provider payloads.

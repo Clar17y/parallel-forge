@@ -36,7 +36,11 @@ from forge.domain.subscription import (
     is_read_only,
     subscription_record_fingerprint,
 )
-from forge.domain.subscription_decision_policy import decision_allowed, decision_kind
+from forge.domain.subscription_decision_policy import (
+    decision_allowed,
+    decision_kind,
+    is_approved_plan_primary_contract,
+)
 from forge.domain.subscription_execution import run_allows_subscription_attempt
 from forge.observability.redaction import Redactor
 from forge.persistence.models.scheduling import (
@@ -627,10 +631,7 @@ class PostgresSubscriptionExecutionRepository:
             accepted = True
         elif role_violation:
             stale_plan = (
-                admission.task.purpose.value == "primary"
-                and any(
-                    item.criterion_id == "approved-plan" for item in admission.task.typed_acceptance
-                )
+                is_approved_plan_primary_contract(admission.task)
                 and logical_phase is RunState.IMPLEMENTING
             )
             previous_violation = await self._session.scalar(

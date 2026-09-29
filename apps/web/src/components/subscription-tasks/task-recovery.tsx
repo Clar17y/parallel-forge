@@ -21,7 +21,7 @@ const descriptions: Record<Action, string> = {
   repair_approved_plan_contract: 'Replace the approved planning-only instructions with the approved implementation contract, then queue a bounded attempt.',
 };
 const maxReasonBytes = 512;
-const humanizeCode = (code: string) => `${code.replaceAll('_', ' ').replace(/^./, letter => letter.toUpperCase())} (${code})`;
+export const recoveryReason = (code: string) => `${code.replaceAll('_', ' ').replace(/^./, letter => letter.toUpperCase())} (${code})`;
 const pathFor = (runId: string, taskId: string, attemptId: string) => `/runs/${runId}/subscription-tasks/${taskId}/attempts/${attemptId}/recovery`;
 
 export function TaskRecovery({ runId, taskId, attemptId, taskVersion, runVersion, runAllowsExecution, taskState, pauseRequested, cancelRequested, unsettledEffects, eligibleActions, authorityKey, onRefresh }: {
@@ -71,7 +71,7 @@ export function TaskRecovery({ runId, taskId, attemptId, taskVersion, runVersion
       if (!next || next.run_id !== runId || next.task_id !== taskId || next.attempt_id !== attemptId || next.action !== action) throw new Error('Preview unavailable');
       setClock(Date.now());
       setPreview({ value: next, authorityKey });
-      if (!next.eligible) setMessage(next.reason_code ? `Recovery unavailable: ${humanizeCode(next.reason_code)}` : 'Recovery is not eligible.');
+      if (!next.eligible) setMessage(next.reason_code ? `Recovery unavailable: ${recoveryReason(next.reason_code)}` : 'Recovery is not eligible.');
     } catch (error) {
       if (!signal.aborted) { setMessage(error instanceof ApiError && error.status === 409 ? 'Task, run, or attempt changed. Refresh state before previewing again.' : 'Recovery preview unavailable. Refresh task state and try again.'); onRefresh(); }
     } finally { if (!signal.aborted) setPreviewing(false); }
@@ -118,7 +118,7 @@ export function TaskRecovery({ runId, taskId, attemptId, taskVersion, runVersion
     </div>)}
     {preview ? <div aria-label="Recovery preview" className="space-y-2 rounded border border-slate-300 p-3 [overflow-wrap:anywhere]">
       <h5 className="font-semibold">Preview · {labels[preview.value.action]}</h5>
-      {!preview.value.eligible ? <p>{preview.value.message} {humanizeCode(preview.value.reason_code)}</p> : <>
+      {!preview.value.eligible ? <p>{preview.value.message} {recoveryReason(preview.value.reason_code)}</p> : <>
         <p>{preview.value.message}</p>
         <p>Expires {preview.value.expires_at}</p><p>Changes: {preview.value.changes.join('; ') || 'None reported'}</p>
         <p>Retained evidence: {preview.value.retained_evidence.join('; ') || 'None reported'}</p>
@@ -133,7 +133,7 @@ export function TaskRecovery({ runId, taskId, attemptId, taskVersion, runVersion
     {binding ? <div className="space-y-2 rounded border border-amber-500 p-3"><p>The outcome is unconfirmed. Retry this exact recovery request with the same idempotency key.</p>
       <button type="button" disabled={pending} onClick={() => void apply()}>Retry same request</button></div> : null}
     {pending ? <p role="status">Applying recovery…</p> : null}
-    {receipt ? <div role="status"><p>Recovery applied. Recovery receipt {receipt.receipt_id}</p><p>Action: {labels[receipt.action]}</p><p>Status: {receipt.status}</p><p>Recorded: {receipt.observed_at}</p><p>Reason: {humanizeCode(receipt.reason_code)}</p></div> : null}
+    {receipt ? <div role="status"><p>Recovery applied. Recovery receipt {receipt.receipt_id}</p><p>Action: {labels[receipt.action]}</p><p>Status: {receipt.status}</p><p>Recorded: {receipt.observed_at}</p><p>Reason: {recoveryReason(receipt.reason_code)}</p></div> : null}
     {message ? <p role="status">{message}</p> : null}
   </section>;
 }

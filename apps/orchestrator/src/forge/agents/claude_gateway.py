@@ -901,7 +901,7 @@ class ClaudeGateway(SubscriptionGateway):
         except RoleDecisionError as error:
             result = replace(
                 failed(SubscriptionFailure.PROTOCOL),
-                role_rejection=RoleDecisionRejection(error.kind, f"role_{error.kind}_forbidden"),
+                role_rejection=RoleDecisionRejection.for_kind(error.kind),
             )
         except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)

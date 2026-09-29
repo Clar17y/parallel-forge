@@ -255,6 +255,18 @@ class SubscriptionTaskQuery:
                     else []
                 )
             }
+            latest_attempt_id = await session.scalar(
+                select(SubscriptionAttempt.id)
+                .where(
+                    SubscriptionAttempt.run_id == run_id,
+                    SubscriptionAttempt.task_row_id == task_id,
+                )
+                .order_by(
+                    SubscriptionAttempt.attempt_number.desc(),
+                    SubscriptionAttempt.id.desc(),
+                )
+                .limit(1)
+            )
             recovery = PostgresSubscriptionRecoveryRepository(session)
             projected = []
             for row in rows[:limit]:
@@ -262,10 +274,13 @@ class SubscriptionTaskQuery:
                 diagnostic = diagnostics.get(row.id)
                 if diagnostic is not None:
                     eligible = []
-                    for action in RecoveryAction:
-                        snapshot = await recovery.preview(run_id, task_id, row.id, action)
-                        if snapshot.eligible:
-                            eligible.append(action.value)
+                    if row.id == latest_attempt_id:
+                        for action in RecoveryAction:
+                            snapshot = await recovery.preview(
+                                run_id, task_id, row.id, action, lock_run=False
+                            )
+                            if snapshot.eligible:
+                                eligible.append(action.value)
                     item["recovery"] = {
                         "classification": diagnostic.classification,
                         "reason_code": diagnostic.reason_code,
