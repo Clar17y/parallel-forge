@@ -9,6 +9,7 @@ from forge.application.services.delivery_preparation import DeliveryPreparationS
 from forge.application.services.subscription_plan_gate import SubscriptionPlanGateService
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
+from forge.domain.subscription import LogicalTaskContract, decode_subscription_record
 from forge.persistence.models import Run, RunCommand
 from forge.persistence.models.scheduling import SubscriptionScheduledTask
 from forge.persistence.models.subscription import SubscriptionTask
@@ -18,9 +19,38 @@ from test_scheduler_acceptance import _remove_disposable_subscription_rows  # no
 from test_subscription_plan_gate import approve_proposal, proposal_case
 
 
-async def preparation_case(session_factory, tmp_path, *, primary_budget=None, plan_scope=None, review_route=None):
+@pytest.mark.integration
+@pytest.mark.parametrize("count", [32, 33, 100])
+async def test_preparation_retains_all_approved_checks(session_factory, tmp_path, count):
+    checks = tuple(f"check_{index:03d}" for index in range(count))
+    factory, evidence, command, service, _ = await preparation_case(
+        session_factory, tmp_path, plan_checks=checks
+    )
+    async with factory() as work:
+        await service.execute(command, work)
+    async with factory() as work:
+        task = await work.session.get(SubscriptionTask, evidence.producer.task_id)
+        assert task is not None
+        contract = decode_subscription_record(task.payload)
+        assert isinstance(contract, LogicalTaskContract)
+        assert contract.named_checks == checks
+        assert tuple(
+            check for criterion in contract.typed_acceptance
+            for check in criterion.required_check_names
+        ) == checks
+        assert all(len(criterion.required_check_names) <= 32 for criterion in contract.typed_acceptance)
+
+
+async def preparation_case(
+    session_factory, tmp_path, *, primary_budget=None, plan_scope=None, plan_checks=("unit",), review_route=None
+):
     factory, store, evidence, _, validator = await proposal_case(
-        session_factory, tmp_path, primary_budget=primary_budget, plan_scope=plan_scope, review_route=review_route
+        session_factory,
+        tmp_path,
+        primary_budget=primary_budget,
+        plan_scope=plan_scope,
+        plan_checks=plan_checks,
+        review_route=review_route,
     )
     outcome = await SubscriptionPlanGateService(store, factory).request_settled(
         evidence.producer.attempt_id
@@ -124,6 +154,11 @@ async def test_prepared_subscription_queues_primary_without_legacy_implementatio
         )
         assert run.state is RunState.IMPLEMENTING
         assert task.state == scheduled.state == "queued"
+        contract = decode_subscription_record(task.payload)
+        assert isinstance(contract, LogicalTaskContract)
+        assert contract.typed_acceptance[0].criterion_id == "approved-implementation"
+        assert contract.typed_acceptance[0].required_check_names == contract.named_checks
+        assert all(item.criterion_id != "approved-plan" for item in contract.typed_acceptance)
         assert (
             scheduled.worktree_id
             == WorktreeIdentity.for_run(
@@ -155,6 +190,34 @@ async def test_prepared_subscription_queues_primary_without_legacy_implementatio
         )
         assert renewed.expires_at > admission.lease.expires_at
         await work.commit()
+
+
+@pytest.mark.integration
+async def test_approved_primary_context_refuses_route_and_contract_drift(session_factory, tmp_path):
+    from dataclasses import replace
+
+    from forge.application.ports.subscription_plan_gate import SubscriptionPlanGateError
+    from forge.domain.subscription import RouteSpec
+
+    factory, evidence, command, service, _ = await preparation_case(session_factory, tmp_path)
+    async with factory() as work:
+        await service.execute(command, work)
+    async with factory() as work:
+        task = await work.session.get(SubscriptionTask, evidence.producer.task_id)
+        contract = decode_subscription_record(task.payload)
+        assert isinstance(contract, LogicalTaskContract)
+        context = await work.subscription_plan_gate.implementation_context(task.id, contract)
+        assert context is not None and context["source_attempt_id"] == str(evidence.producer.attempt_id)
+        alternate = RouteSpec(provider="anthropic", client="claude_code", model="claude-opus-5-5")
+        changed_route = replace(contract, route=replace(
+            contract.route, requested=alternate, effective=alternate
+        ))
+        with pytest.raises(SubscriptionPlanGateError):
+            await work.subscription_plan_gate.implementation_context(task.id, changed_route)
+        with pytest.raises(SubscriptionPlanGateError):
+            await work.subscription_plan_gate.implementation_context(
+                task.id, replace(contract, max_repairs=contract.max_repairs + 1)
+            )
 
 
 @pytest.mark.integration

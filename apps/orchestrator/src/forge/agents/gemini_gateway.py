@@ -28,9 +28,10 @@ from forge.agents.client_process import (
 from forge.agents.codex_gateway import ToolBroker
 from forge.agents.gemini_configuration import GeminiLaunchDirectory
 from forge.agents.gemini_session import GeminiResponseFailure, GeminiSession
-from forge.agents.subscription_protocol import ProtocolError
+from forge.agents.subscription_protocol import ProtocolError, RoleDecisionError
 from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
+    RoleDecisionRejection,
     SubscriptionFailure,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
@@ -264,6 +265,11 @@ class GeminiGateway:
             )
         except CapabilityEvidenceSourceError:
             result = failed(SubscriptionFailure.UNAVAILABLE)
+        except RoleDecisionError as error:
+            result = replace(
+                failed(SubscriptionFailure.PROTOCOL),
+                role_rejection=RoleDecisionRejection.for_kind(error.kind),
+            )
         except ClientProcessError, ProtocolError, ValueError, TypeError, KeyError:
             result = failed(SubscriptionFailure.PROTOCOL)
         except Exception:  # noqa: BLE001 - verifier/client errors never expose raw provider data

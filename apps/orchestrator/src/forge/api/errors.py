@@ -32,6 +32,7 @@ from forge.persistence.repositories.subscription import (
     SubscriptionConflict,
     SubscriptionProfileNotFound,
 )
+from forge.persistence.repositories.subscription_recovery import RecoveryConflict
 from forge.persistence.repositories.tasks import (
     TaskIdentityConflict,
     TaskNotFound,
@@ -59,6 +60,7 @@ _CONFLICT = (
     RunCommandValidationError,
     TaskControlConflict,
     TaskFeedbackConflict,
+    RecoveryConflict,
 )
 _UNPROCESSABLE = (RepositoryInspectionError, RunCreationError)
 _UNAVAILABLE = (ProjectServiceError, TaskServiceError, RunServiceError, SQLAlchemyError)
@@ -70,9 +72,7 @@ def translate_error(error: BaseException) -> HTTPException:
     if isinstance(error, _NOT_FOUND):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="resource not found")
     if isinstance(error, StaleProjectPolicyConflict):
-        return HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="stale-project-policy"
-        )
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail="stale-project-policy")
     if isinstance(error, _CONFLICT):
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="request conflicts with current state"

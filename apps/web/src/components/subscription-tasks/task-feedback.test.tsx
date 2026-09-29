@@ -8,7 +8,7 @@ const task = {
   task_id: 'task-1', parent_task_id: 'primary-1', dependency_task_ids: [],
   purpose: 'routine_implementation', owned_paths: ['src/parser.ts'], state: 'leased',
   pause_requested: false, cancel_requested: false, version: 4, repairs: 0,
-  unsettled_effects: 0, control: null, feedback_receipts: [], fallback_selected: false,
+  unsettled_effects: 0, control: null, feedback_receipts: [], fallback_selected: false, recovery_attention: false,
 };
 
 const receipt = {

@@ -6,6 +6,8 @@ import { useApi } from '@/hooks/use-api';
 import { QuotaStatusCard, QuotaStatusList } from './quota-status';
 import { TaskControls, TaskControlSummary } from './task-controls';
 import { TaskFeedback } from './task-feedback';
+import { recoveryReason, TaskRecovery } from './task-recovery';
+import { RecoveryReceiptHistory } from './recovery-receipt-history';
 import type { components } from '@/lib/api/schema';
 
 type TaskPage = components['schemas']['SubscriptionTaskPage'];
@@ -33,6 +35,7 @@ export function TaskInspector({ runId }: { runId: string }) {
         <CapacityStatus capacity={tasks.value.capacity} />
         <p><Link href="/subscription-profiles#client-setup">Inspect worker registration and client setup</Link></p>
         <QuotaStatusList statuses={tasks.value.quota_statuses ?? []} />
+        {tasks.value.recovery_attention ? <p role="alert" className="rounded border border-amber-500 p-3 font-semibold">Recovery attention required: this workflow needs review.</p> : null}
         {tasks.value.tasks.length === 0 ? <p>No tasks on this page.</p> :
           <ul className="space-y-3">{tasks.value.tasks.map(task => <li key={task.task_id} className="min-w-0 space-y-1 rounded border border-slate-300 p-3 [overflow-wrap:anywhere]">
             <button type="button" aria-expanded={selected === task.task_id}
@@ -44,6 +47,7 @@ export function TaskInspector({ runId }: { runId: string }) {
             <p className="text-sm">Task {task.task_id}</p>
             <p>{task.parent_task_id ? `Parent: ${task.parent_task_id}` : 'Root task'}</p>
             {task.dependency_task_ids.length > 0 ? <p>Depends on: {task.dependency_task_ids.join(', ')}</p> : null}
+            {task.recovery_attention ? <div className="rounded border border-amber-500 p-2"><p>{task.purpose === 'primary' ? 'Primary needs recovery' : 'Task needs recovery'}{task.recovery_reason_code ? ` · ${recoveryReason(task.recovery_reason_code)}` : ''}</p><button type="button" onClick={() => setSelected(task.task_id)}>{task.purpose === 'primary' ? 'Recover run' : 'Recover task'}</button></div> : null}
             <p>Owned paths: <span>{task.owned_paths.join(', ') || 'None'}</span></p>
             {selected !== task.task_id ? <TaskControlSummary task={task} /> : null}
             <p>{task.unsettled_effects} unsettled effect(s)</p>
@@ -58,7 +62,9 @@ export function TaskInspector({ runId }: { runId: string }) {
                 runVersion={tasks.value!.run_version ?? -1} runAllowsExecution={tasks.value!.run_allows_execution ?? false}
                 runIsTerminal={tasks.value!.run_is_terminal ?? false} task={task}
                 projectionToken={tasks.token} onRefresh={tasks.refresh} />
-              <Attempts key={task.task_id} runId={runId} taskId={task.task_id} />
+              <Attempts key={task.task_id} runId={runId} task={task} runVersion={tasks.value!.run_version ?? -1}
+                runAllowsExecution={tasks.value!.run_allows_execution ?? false} runIsTerminal={tasks.value!.run_is_terminal ?? false}
+                onRefresh={tasks.refresh} />
             </> : null}
           </li>)}</ul>}
         <nav aria-label="Task pages" className="flex flex-wrap gap-4">
@@ -80,16 +86,39 @@ function CapacityStatus({ capacity }: { capacity: TaskPage['capacity'] }) {
   </div>;
 }
 
-function Attempts({ runId, taskId }: { runId: string; taskId: string }) {
+function Attempts({ runId, task, runVersion, runAllowsExecution, runIsTerminal, onRefresh }: {
+  runId: string; task: components['schemas']['SubscriptionTaskView']; runVersion: number; runAllowsExecution: boolean;
+  runIsTerminal: boolean; onRefresh: () => number;
+}) {
+  const taskId = task.task_id;
   const [offset, setOffset] = useState(0);
+  const [receiptGeneration, setReceiptGeneration] = useState<Record<string, number>>({});
   const attempts = useApi<AttemptPage>(`/runs/${runId}/subscription-tasks/${taskId}/attempts?offset=${offset}&limit=${pageSize}`, { refreshIntervalMs: 5000, keepPreviousOnRefresh: true });
   if (attempts.loading) return <p role="status">Loading attempts…</p>;
   if (!attempts.value) return <p role="alert">Attempts unavailable. <button onClick={attempts.refresh}>Retry attempts</button></p>;
   return <div className="space-y-3 border-t border-slate-300 pt-3">
     <button type="button" onClick={attempts.refresh}>Refresh attempts</button>
     {attempts.value.attempts.length === 0 ? <p>No attempts on this page.</p> :
-      attempts.value.attempts.map(attempt => <article key={attempt.attempt_id} className="space-y-2 rounded bg-[var(--surface-muted)] p-3">
+      attempts.value.attempts.map(attempt => {
+        const recovery = attempt.recovery;
+        const eligibleActions = recovery?.eligible_actions ?? [];
+        return <article key={attempt.attempt_id} className="space-y-2 rounded bg-[var(--surface-muted)] p-3">
         <h3 className="font-semibold">Attempt {attempt.attempt_number} · {attempt.state}</h3>
+        {recovery ? <div className="space-y-1"><p>Recovery reason: {recoveryReason(recovery.reason_code)}</p>
+          <p>Result handling: {recovery.classification} · {recovery.resolution}</p>
+          <p>Failed applications: {recovery.failed_applications}</p>
+          {recovery.last_failure_at ? <p>Last failure: {recoveryReason(recovery.reason_code)} · {recovery.last_failure_at}</p> : null}
+          {recovery.next_retry_at ? <p>Next retry: {recovery.next_retry_at}</p> : null}
+          <p>The last completed tool is recorded activity and does not mean it is still executing.</p></div> : null}
+          <TaskRecovery runId={runId} taskId={taskId} attemptId={attempt.attempt_id} hasRecovery={!!recovery}
+            taskVersion={task.version} runVersion={runVersion} runAllowsExecution={runAllowsExecution && !runIsTerminal}
+            taskState={task.state} pauseRequested={task.pause_requested} cancelRequested={task.cancel_requested}
+            unsettledEffects={task.unsettled_effects} eligibleActions={eligibleActions}
+            authorityKey={`${runVersion}:${task.version}:${task.state}:${task.pause_requested}:${task.cancel_requested}:${task.unsettled_effects}:${attempt.state}:${recovery?.reason_code}:${recovery?.resolution}:${recovery?.last_failure_at}:${eligibleActions.join(',')}`}
+            onRefresh={() => { const token = onRefresh(); attempts.refresh(); return token; }}
+            onReceipt={() => setReceiptGeneration(current => ({ ...current, [attempt.attempt_id]: (current[attempt.attempt_id] ?? 0) + 1 }))} />
+          <RecoveryReceiptHistory key={`${attempt.attempt_id}:${receiptGeneration[attempt.attempt_id] ?? 0}`}
+            runId={runId} taskId={taskId} attemptId={attempt.attempt_id} />
         <p>Requested: {routeLabel(attempt.requested_route)}</p>
         <p>Effective: {routeLabel(attempt.effective_route)}</p>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
@@ -102,7 +131,8 @@ function Attempts({ runId, taskId }: { runId: string; taskId: string }) {
           <div><dt>API estimate (minor units)</dt><dd>{unknown(attempt.estimated_api_cost_minor)}{attempt.currency ? ` ${attempt.currency}` : ''}</dd></div>
           <div><dt>Quota</dt><dd>{attempt.quota_status === 'unknown' ? 'Unknown' : attempt.quota_status}</dd></div>
         </dl>
-      </article>)}
+      </article>;
+      })}
     <nav aria-label="Attempt pages" className="flex flex-wrap gap-4">
       <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous attempts</button>
       <span>Page {Math.floor(offset / pageSize) + 1}</span>

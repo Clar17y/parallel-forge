@@ -55,6 +55,13 @@ from forge.persistence.models.subscription_quota import (
     SubscriptionQuotaObservation,
     SubscriptionQuotaPool,
 )
+from forge.persistence.models.subscription_recovery import (
+    SubscriptionApplicationDiagnostic,
+    SubscriptionContractRevision,
+    SubscriptionRecoveryReceipt,
+    SubscriptionRecoverySigningKey,
+    SubscriptionRecoveryWorker,
+)
 from forge.persistence.models.subscription_results import (
     SubscriptionAttemptResult,
     SubscriptionRepairDebit,
@@ -96,6 +103,7 @@ __all__ = [
     "RunCommand",
     "RunEvent",
     "Step",
+    "SubscriptionApplicationDiagnostic",
     "SubscriptionAttempt",
     "SubscriptionAttemptConsumption",
     "SubscriptionAttemptReservation",
@@ -103,6 +111,7 @@ __all__ = [
     "SubscriptionBudgetPool",
     "SubscriptionBudgetReservation",
     "SubscriptionClientLaunch",
+    "SubscriptionContractRevision",
     "SubscriptionDecisionRecord",
     "SubscriptionEnvelope",
     "SubscriptionHandoffFence",
@@ -112,6 +121,9 @@ __all__ = [
     "SubscriptionQuotaAdmission",
     "SubscriptionQuotaObservation",
     "SubscriptionQuotaPool",
+    "SubscriptionRecoveryReceipt",
+    "SubscriptionRecoverySigningKey",
+    "SubscriptionRecoveryWorker",
     "SubscriptionRepairDebit",
     "SubscriptionScheduledEffect",
     "SubscriptionScheduledTask",

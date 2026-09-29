@@ -13,6 +13,7 @@ from forge.domain.subscription_feedback import (
     SubscriptionTaskFeedbackRequest,
     TaskFeedbackStatus,
 )
+from forge.domain.subscription_recovery import RecoveryAction, RecoveryReceipt
 from forge.domain.subscription_task_controls import (
     SubscriptionTaskControlRequest,
     TaskControlAction,
@@ -80,6 +81,8 @@ class SubscriptionTaskView(ProjectionModel):
     version: int
     repairs: int | None
     unsettled_effects: int
+    recovery_attention: bool = False
+    recovery_reason_code: str | None = None
     control: SubscriptionTaskControlView | None = None
     feedback_receipts: list[SubscriptionTaskFeedbackView] = Field(
         default_factory=list, max_length=MAX_FEEDBACK_PER_TASK
@@ -121,6 +124,7 @@ class SubscriptionTaskPage(ProjectionModel):
     candidate_state: str | None = None
     tasks: list[SubscriptionTaskView] = Field(max_length=100)
     has_more: bool
+    recovery_attention: bool = False
     quota_statuses: list[QuotaStatusResponse] = Field(default_factory=list, max_length=100)
     capacity: SubscriptionCapacityView | None = None
 
@@ -140,10 +144,30 @@ class SubscriptionAttemptView(ProjectionModel):
     estimated_api_cost_minor: int | None
     currency: str | None
     quota_status: str
+    recovery: SubscriptionAttemptRecoveryView | None = None
+
+
+class SubscriptionAttemptRecoveryView(ProjectionModel):
+    classification: str
+    reason_code: str
+    resolution: str
+    failed_applications: int = Field(ge=0)
+    first_failure_at: datetime
+    last_failure_at: datetime
+    next_retry_at: datetime | None = None
+    eligible_actions: list[RecoveryAction] = Field(default_factory=list, max_length=3)
 
 
 class SubscriptionAttemptPage(ProjectionModel):
     run_id: UUID
     task_id: UUID
     attempts: list[SubscriptionAttemptView] = Field(max_length=100)
+    has_more: bool
+
+
+class RecoveryReceiptPage(ProjectionModel):
+    run_id: UUID
+    task_id: UUID
+    attempt_id: UUID
+    receipts: list[RecoveryReceipt] = Field(max_length=100)
     has_more: bool

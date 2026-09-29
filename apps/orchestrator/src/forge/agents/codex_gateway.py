@@ -37,6 +37,7 @@ from forge.agents.client_process import (
 from forge.agents.subscription_protocol import (
     ProtocolError,
     ProviderToolCall,
+    RoleDecisionError,
     decode_final,
     decode_tool_call,
     freeze_context,
@@ -48,6 +49,7 @@ from forge.agents.subscription_protocol import (
 )
 from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
+    RoleDecisionRejection,
     SubscriptionFailure,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
@@ -645,6 +647,11 @@ class CodexGateway:
             result = replace(
                 failed(SubscriptionFailure.AUTHENTICATION),
                 failure_detail="Codex account update invalidated the authenticated binding",
+            )
+        except RoleDecisionError as error:
+            result = replace(
+                failed(SubscriptionFailure.PROTOCOL),
+                role_rejection=RoleDecisionRejection.for_kind(error.kind),
             )
         except ProtocolError as error:
             # ProtocolError messages are Forge-owned constants, never provider payloads.

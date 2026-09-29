@@ -1,16 +1,25 @@
 """Restart recovery discovers both pending and durably prepared selections."""
 
 from dataclasses import replace
+from uuid import uuid4
 
 import pytest
 from forge.application.ports.worktrees import GitWorkingTreeSnapshot
+from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.subscription_candidate import (
     SubscriptionCandidateApplication,
     SubscriptionCandidateInspection,
 )
 from forge.application.services.subscription_decision_recovery import SubscriptionDecisionRecovery
 from forge.application.services.subscription_decisions import SubscriptionDecisionApplication
+from forge.application.services.subscription_recovery import SubscriptionRecoveryService
+from forge.domain.subscription_recovery import (
+    RecoveryAction,
+    RecoveryApplyRequest,
+    RecoveryPreviewRequest,
+)
 from forge.persistence.models.subscription import SubscriptionAttempt
+from forge.persistence.models.subscription_recovery import SubscriptionRecoveryWorker
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from sqlalchemy import func, select
 from test_scheduler_acceptance import (
@@ -79,11 +88,86 @@ async def test_candidate_recovery_defers_failed_git_and_resumes_after_restart(se
     async def capture(proposal):
         return snapshot
 
+    from datetime import UTC, datetime, timedelta
+
+    from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
+
+    async with factory() as work:
+        diagnostic = await work.session.get(
+            SubscriptionApplicationDiagnostic, primary.attempt.attempt_id
+        )
+        diagnostic.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+        await work.commit()
+
     restarted = SubscriptionDecisionRecovery(
         factory, object(), candidates=SubscriptionCandidateApplication(factory, capture)
     )
     report = await restarted.reconcile_all()
     assert (report.applied, report.deferred, report.unsupported) == (1, 0, 0)
+
+
+@pytest.mark.integration
+async def test_prepared_candidate_exhaustion_retries_remaining_application_stage(
+    session_factory, tmp_path
+):
+    from datetime import UTC, datetime, timedelta
+
+    from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
+
+    snapshot = GitWorkingTreeSnapshot(head_sha="b" * 40, base_sha="a" * 40, files=(), changed_paths=())
+    factory, primary, _ = await selection_case(
+        session_factory, tmp_path, tree_digest=snapshot.candidate_tree_digest
+    )
+    async with factory() as work:
+        work.session.add(SubscriptionRecoveryWorker(
+            worker_id=f"candidate-{uuid4()}", contract_version=1, observed_at=datetime.now(UTC)
+        ))
+        await work.commit()
+    async def unavailable(proposal):
+        raise OSError("temporary snapshot failure")
+    recovery = SubscriptionDecisionRecovery(
+        factory, object(), candidates=SubscriptionCandidateApplication(factory, unavailable)
+    )
+    for index in range(4):
+        assert (await recovery.reconcile_all()).deferred == 1
+        if index < 3:
+            async with factory() as work:
+                diagnostic = await work.session.get(
+                    SubscriptionApplicationDiagnostic, primary.attempt.attempt_id
+                )
+                diagnostic.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+                await work.commit()
+    async with factory() as work:
+        result = await work.session.get(SubscriptionAttemptResult, primary.attempt.attempt_id)
+        diagnostic = await work.session.get(
+            SubscriptionApplicationDiagnostic, primary.attempt.attempt_id
+        )
+        assert result.disposition == "candidate_prepared" and diagnostic.resolution == "attention"
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    service = SubscriptionRecoveryService(factory)
+    preview = await service.preview(
+        run_id=primary.attempt.run_id, task_id=primary.attempt.task_id,
+        attempt_id=primary.attempt.attempt_id, actor=actor,
+        request=RecoveryPreviewRequest(action=RecoveryAction.RETRY_APPLICATION),
+    )
+    assert preview.eligible, preview.reason_code
+    await service.apply(
+        run_id=primary.attempt.run_id, task_id=primary.attempt.task_id,
+        attempt_id=primary.attempt.attempt_id, actor=actor, idempotency_key="candidate-stage",
+        request=RecoveryApplyRequest(
+            action=preview.action, preview_token=preview.preview_token,
+            reason="Snapshot service recovered",
+        ),
+    )
+    async def capture(proposal):
+        return snapshot
+    resumed = SubscriptionDecisionRecovery(
+        factory, object(), candidates=SubscriptionCandidateApplication(factory, capture)
+    )
+    assert (await resumed.reconcile_all()).applied == 1
+    async with factory() as work:
+        result = await work.session.get(SubscriptionAttemptResult, primary.attempt.attempt_id)
+        assert result.disposition == "review_selected"
 
 
 @pytest.mark.integration

@@ -37,6 +37,16 @@ test('recovery hold explains uncertainty while preserving the server-provided ca
   expect(screen.queryByRole('button', { name: 'Resume run' })).not.toBeInTheDocument();
 });
 
+test('saved workflow result attention stays visible on Overview and opens task recovery', async () => {
+  const initial = projection();
+  Object.assign(initial, { subscription_recovery_attention: true });
+  render(<RunCockpit initial={initial} tasks={<section aria-label="Task recovery details">Primary recovery</section>} />);
+  expect(screen.getByRole('alert', { name: 'Workflow recovery attention' })).toHaveTextContent('workflow needs recovery review');
+  expect(screen.getByRole('alert')).toHaveTextContent('does not mean it is still executing');
+  await userEvent.click(screen.getByRole('button', { name: 'Review recovery' }));
+  expect(screen.getByRole('region', { name: 'Task recovery details' })).toBeVisible();
+});
+
 test('cockpit exposes checks and review without inferring release authority', async () => {
   vi.mocked(api).mockResolvedValue({ items: [], truncated: false });
   render(<RunCockpit initial={projection()} />);

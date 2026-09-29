@@ -3,14 +3,23 @@
 # Typer defaults describe the CLI; errors never echo request or connection values.
 # ruff: noqa: B008, BLE001
 import asyncio
+from collections.abc import Callable
 from enum import StrEnum
+from typing import cast
 from uuid import UUID
 
 import typer
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.subscription_profiles import LocalOperatorProfileActor
+from forge.application.services.subscription_recovery import SubscriptionRecoveryService
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
+from forge.domain.subscription_recovery import (
+    RecoveryAction,
+    RecoveryApplyRequest,
+    RecoveryPreviewRequest,
+)
 from forge.domain.subscription_task_controls import (
     SubscriptionTaskControlRequest,
     TaskControlConflict,
@@ -18,6 +27,7 @@ from forge.domain.subscription_task_controls import (
 )
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.repositories.mutations import MutationConflict
+from forge.persistence.repositories.subscription_recovery import RecoveryConflict
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.settings import Settings
 
@@ -88,3 +98,104 @@ def control_task(
 
 
 __all__ = ["task_app"]
+
+
+async def _recovery_execute(
+    run_id: UUID,
+    task_id: UUID,
+    attempt_id: UUID,
+    action: RecoveryAction,
+    *,
+    preview_token: str | None = None,
+    reason: str | None = None,
+    idempotency_key: str | None = None,
+) -> str:
+    settings = Settings(process_role="cli")
+    engine = create_engine(settings.database_url)
+    sessions = create_session_factory(engine)
+    service = SubscriptionRecoveryService(
+        cast(
+            Callable[[], UnitOfWork],
+            lambda: PostgresUnitOfWork(sessions, quota_policy=settings.subscription_quota_policy),
+        )
+    )
+    try:
+        if preview_token is None:
+            preview_response = await service.preview(
+                run_id=run_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                actor=LocalOperatorProfileActor(),
+                request=RecoveryPreviewRequest(action=action),
+            )
+            return preview_response.model_dump_json()
+        else:
+            if reason is None or idempotency_key is None:
+                raise ValueError("recovery reason and key are required")
+            receipt_response = await service.apply(
+                run_id=run_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                actor=LocalOperatorProfileActor(),
+                idempotency_key=idempotency_key,
+                request=RecoveryApplyRequest(
+                    action=action,
+                    preview_token=preview_token,
+                    reason=reason,
+                ),
+            )
+            return receipt_response.model_dump_json()
+    finally:
+        await engine.dispose()
+
+
+@task_app.command("recovery-preview")
+def recovery_preview(
+    action: RecoveryAction = typer.Option(..., "--action"),
+    run_id: UUID = typer.Option(..., "--run-id"),
+    task_id: UUID = typer.Option(..., "--task-id"),
+    attempt_id: UUID = typer.Option(..., "--attempt-id"),
+) -> None:
+    """Inspect a bounded recovery action without changing workflow state."""
+    try:
+        typer.echo(asyncio.run(_recovery_execute(run_id, task_id, attempt_id, action)))
+    except Exception:
+        typer.echo(
+            "Error: recovery preview unavailable; inspect the task before retrying", err=True
+        )
+        raise typer.Exit(code=1) from None
+
+
+@task_app.command("recover")
+def recover(
+    action: RecoveryAction = typer.Option(..., "--action"),
+    run_id: UUID = typer.Option(..., "--run-id"),
+    task_id: UUID = typer.Option(..., "--task-id"),
+    attempt_id: UUID = typer.Option(..., "--attempt-id"),
+    preview_token: str = typer.Option(..., "--preview-token"),
+    reason: str = typer.Option(..., "--reason"),
+    idempotency_key: str = typer.Option(..., "--idempotency-key"),
+) -> None:
+    """Apply a reviewed preview exactly once under current authority."""
+    try:
+        typer.echo(
+            asyncio.run(
+                _recovery_execute(
+                    run_id,
+                    task_id,
+                    attempt_id,
+                    action,
+                    preview_token=preview_token,
+                    reason=reason,
+                    idempotency_key=idempotency_key,
+                )
+            )
+        )
+    except RecoveryConflict:
+        typer.echo(
+            "Error: recovery conflicts with current state; request a fresh preview", err=True
+        )
+        raise typer.Exit(code=1) from None
+    except Exception:
+        typer.echo("Error: recovery outcome unconfirmed; retry the same request and key", err=True)
+        raise typer.Exit(code=1) from None

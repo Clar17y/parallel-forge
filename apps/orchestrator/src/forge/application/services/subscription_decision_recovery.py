@@ -3,8 +3,14 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sqlalchemy.exc import DBAPIError, DisconnectionError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+
 from forge.application.ports.artifacts import ArtifactStore
-from forge.application.ports.subscription_decisions import PendingDecisionKind
+from forge.application.ports.subscription_decisions import (
+    PendingDecisionKind,
+    SubscriptionDecisionError,
+)
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.subscription_acceptance_dispatch import (
     SubscriptionAcceptanceDispatch,
@@ -16,6 +22,17 @@ from forge.application.services.subscription_handoff_application import (
 )
 from forge.application.services.subscription_plan_gate import SubscriptionPlanGateService
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
+from forge.domain.run import RunState
+
+
+def is_transient_recovery_error(error: Exception) -> bool:
+    """Recognize infrastructure outages without hiding unclassified DB defects."""
+    if isinstance(error, (OSError, OperationalError, DisconnectionError, PoolTimeoutError)):
+        return True
+    return isinstance(error, DBAPIError) and (
+        error.connection_invalidated
+        or getattr(error.orig, "sqlstate", None) in {"40001", "40P01", "55P03"}
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +85,24 @@ class SubscriptionDecisionRecovery:
                     deferred_stops=controls.deferred if controls else 0,
                 )
             for candidate in candidates:
+                async with self._factory() as work:
+                    due = await work.subscription_recovery.due(candidate.attempt_id)
+                    violation = (
+                        await work.subscription_recovery.role_violation(candidate.attempt_id)
+                        if due
+                        else None
+                    )
+                    await work.rollback()
+                if not due:
+                    continue
+                if violation is not None:
+                    async with self._factory() as work:
+                        await work.subscription_recovery.reject_role_violation(
+                            candidate.attempt_id, violation
+                        )
+                        await work.commit()
+                    deferred += 1
+                    continue
                 try:
                     if candidate.kind is PendingDecisionKind.PLAN:
                         await self._plans.request_settled(candidate.attempt_id)
@@ -102,10 +137,36 @@ class SubscriptionDecisionRecovery:
                     else:
                         unsupported += 1
                         continue
-                except Exception:  # noqa: BLE001 - defer this source and continue other runs
-                    # No untrusted provider text or exception details enter the
-                    # report. Cancellation propagates; source guards stay intact.
+                except Exception as error:
+                    if isinstance(error, DBAPIError) and not is_transient_recovery_error(error):
+                        raise
+                    async with self._factory() as work:
+                        run_id = await work.subscription_recovery.attempt_run_id(
+                            candidate.attempt_id
+                        )
+                        run = await work.runs.get(run_id)
+                        if run.state in {RunState.PAUSED, RunState.CANCELLED}:
+                            classification, reason = "prerequisite", "run_controlled"
+                        elif isinstance(error, SubscriptionDecisionError) and str(error) == "acceptance receipt verification is unavailable":
+                            classification, reason = "prerequisite", "acceptance_receipt_unavailable"
+                        elif isinstance(error, SubscriptionDecisionError) and str(error) == "handoff evidence or observation is no longer current":
+                            classification, reason = "prerequisite", "handoff_observation_changed"
+                        elif isinstance(error, ValueError) and str(error) == "prepared candidate observation is required":
+                            classification, reason = "prerequisite", "candidate_observation_missing"
+                        elif is_transient_recovery_error(error):
+                            classification, reason = "temporary", "application_infrastructure"
+                        else:
+                            classification, reason = "unsupported", "application_invariant"
+                        await work.subscription_recovery.record_failure(
+                            candidate.attempt_id,
+                            classification=classification,
+                            reason_code=reason,
+                        )
+                        await work.commit()
                     deferred += 1
                 else:
+                    async with self._factory() as work:
+                        await work.subscription_recovery.record_success(candidate.attempt_id)
+                        await work.commit()
                     applied += 1
             cursor = candidates[-1].attempt_id

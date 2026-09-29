@@ -102,6 +102,98 @@ async def pause_and_resume(factory, session_factory, run_id, store, *, source=No
 
 
 @pytest.mark.integration
+async def test_stopped_plan_settled_during_real_pause_reconciles_after_handler_resume(
+    session_factory, tmp_path
+):
+    from forge.application.services.subscription_decision_recovery import (
+        SubscriptionDecisionRecovery,
+    )
+    from forge.artifacts.filesystem import FilesystemArtifactStore
+    from forge.persistence.models.subscription import SubscriptionAttempt
+    from forge.persistence.models.subscription_plan_gate import SubscriptionPlanGate
+    from forge.persistence.models.subscription_results import (
+        SubscriptionAttemptResult,
+        SubscriptionRepairDebit,
+    )
+    from sqlalchemy import func, select
+    from test_subscription_plan_gate import proposal_case
+
+    pause_state = {}
+
+    async def pause_during_invocation(factory, run_id):
+        pause_state["commands"], pause_state["resume"] = await pause_for_resume(
+            factory, session_factory, run_id
+        )
+
+    factory, admission = await proposal_case(
+        session_factory, tmp_path, pause_callback=pause_during_invocation
+    )
+    commands, resume = pause_state["commands"], pause_state["resume"]
+    store = FilesystemArtifactStore(tmp_path / "artifacts")
+    async with factory() as work:
+        result = await work.session.get(SubscriptionAttemptResult, admission.attempt.attempt_id)
+        original_payload, original_digest = result.result_payload, result.result_digest
+        assert result.disposition == "stale" and result.result_payload["effective_failure"] is None
+    for _ in range(2):
+        async with factory() as work:
+            await ResumeRunHandler(artifact_store=store)(resume, work)
+    await commands.complete(resume.id, worker_id=resume.lease_owner)
+    assert (await SubscriptionDecisionRecovery(factory, store).reconcile_all()).applied == 1
+    async with factory() as work:
+        run = await work.runs.get(admission.attempt.run_id)
+        result = await work.session.get(SubscriptionAttemptResult, admission.attempt.attempt_id)
+        assert run.state is RunState.AWAITING_PLAN_APPROVAL
+        assert result.result_payload == original_payload and result.result_digest == original_digest
+        assert result.disposition == "plan_approval" and result.accepted
+        assert await work.session.get(SubscriptionRepairDebit, admission.attempt.attempt_id) is None
+        assert (await work.subscription_budget.usage(run.id)).consumed.provider_attempts == 1
+        assert await work.session.scalar(select(func.count()).select_from(SubscriptionAttempt)) == 1
+        assert await work.session.scalar(select(func.count()).select_from(SubscriptionPlanGate)) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("drift", ["task_version", "candidate_epoch"])
+async def test_paused_plan_retention_refuses_changed_source(session_factory, tmp_path, drift):
+    from forge.application.ports.commands import CommandRecoveryRequired
+    from forge.artifacts.filesystem import FilesystemArtifactStore
+    from forge.persistence.models.subscription import SubscriptionTask
+    from forge.persistence.models.subscription_results import (
+        SubscriptionAttemptResult,
+        SubscriptionRepairDebit,
+    )
+    from test_subscription_plan_gate import proposal_case
+
+    pause_state = {}
+
+    async def pause_during_invocation(factory, run_id):
+        pause_state["commands"], pause_state["resume"] = await pause_for_resume(
+            factory, session_factory, run_id
+        )
+
+    factory, admission = await proposal_case(
+        session_factory, tmp_path, pause_callback=pause_during_invocation
+    )
+    resume = pause_state["resume"]
+    async with factory() as work:
+        if drift == "task_version":
+            task = await work.session.get(SubscriptionTask, admission.task.task_id)
+            task.version += 1
+        else:
+            scheduler = await work.session.get(SubscriptionSchedulerRun, admission.attempt.run_id)
+            scheduler.candidate_epoch += 1
+        await work.commit()
+    with pytest.raises(CommandRecoveryRequired):
+        async with factory() as work:
+            await ResumeRunHandler(artifact_store=FilesystemArtifactStore(tmp_path / "artifacts"))(
+                resume, work
+            )
+    async with factory() as work:
+        result = await work.session.get(SubscriptionAttemptResult, admission.attempt.attempt_id)
+        assert result.disposition == "stale"
+        assert await work.session.get(SubscriptionRepairDebit, admission.attempt.attempt_id) is None
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "stage", ["before_reopen", "failed_before_reopen", "after_reopen", "after_ack"]
 )

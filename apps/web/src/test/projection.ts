@@ -2,7 +2,7 @@ import type { components } from '@/lib/api/schema';
 
 export function projection(overrides: Partial<components['schemas']['RunProjection']> = {}): components['schemas']['RunProjection'] {
   return {
-    recovery_hold: false, remote_observation: null,
+    recovery_hold: false, subscription_recovery_attention: false, remote_observation: null,
     run: { id: 'run-1', project_id: 'project-1', task_id: 'task-1', state: 'AWAITING_PLAN_APPROVAL', version: 7,
       suspended_state: null, suspension_kind: null, local_remediation_count: 0, remote_remediation_count: 0,
       policy_version: 2, base_ref: 'main', base_sha: 'a'.repeat(40), branch_name: null },

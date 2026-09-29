@@ -219,6 +219,7 @@ class AvailableCommand(ProjectionModel):
 
 class RunProjection(ProjectionModel):
     recovery_hold: bool
+    subscription_recovery_attention: bool = False
     run: RunResponse
     task: TaskSection
     project: ProjectSection

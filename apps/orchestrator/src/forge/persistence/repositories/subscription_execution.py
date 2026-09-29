@@ -36,6 +36,11 @@ from forge.domain.subscription import (
     is_read_only,
     subscription_record_fingerprint,
 )
+from forge.domain.subscription_decision_policy import (
+    decision_allowed,
+    decision_kind,
+    is_approved_plan_primary_contract,
+)
 from forge.domain.subscription_execution import run_allows_subscription_attempt
 from forge.observability.redaction import Redactor
 from forge.persistence.models.scheduling import (
@@ -65,6 +70,9 @@ from forge.persistence.repositories.subscription_launch import launches_confirme
 from forge.persistence.repositories.subscription_quota import (
     PostgresSubscriptionQuotaRepository,
     exhaustion_payload,
+)
+from forge.persistence.repositories.subscription_recovery import (
+    PostgresSubscriptionRecoveryRepository,
 )
 
 
@@ -340,8 +348,33 @@ class PostgresSubscriptionExecutionRepository:
         )
         if attempt is None or not _matches_admission(attempt, admission):
             raise SubscriptionConflict("result admission binding differs")
+        prior = await self._session.get(
+            SubscriptionAttemptResult, identity.attempt_id, with_for_update=True
+        )
         decision = result.decision
         failure = result.failure
+        logical_phase = (
+            run.suspended_state
+            if run.state is RunState.PAUSED and run.suspended_state is not None
+            else run.state
+        )
+        role_violation = result.role_rejection is not None or (
+            prior is None
+            and decision is not None
+            and run.state not in {RunState.CANCELLED, RunState.FAILED, RunState.COMPLETED}
+            and not decision_allowed(
+                decision_kind(decision) or "unknown", admission.task.purpose, logical_phase
+            )
+        )
+        if role_violation:
+            # Preserve the typed original below. The effective failure is a
+            # separate settlement fact; an impossible decision is never applied.
+            failure = SubscriptionFailure.PROTOCOL
+        elif prior is not None and prior.result_payload.get("effective_failure") is not None:
+            # Replay is compared with the original immutable settlement. The
+            # run may have advanced phases after approval, so current-phase
+            # legality must not rewrite the earlier response's effective fact.
+            failure = SubscriptionFailure(str(prior.result_payload["effective_failure"]))
         decision_payload: dict[str, object] | None
         if decision is None:
             decision_payload = None
@@ -382,7 +415,7 @@ class PostgresSubscriptionExecutionRepository:
                 for reason in result.telemetry.unknown_telemetry_reasons
             ),
         )
-        raw_payload = {
+        raw_payload: dict[str, object] = {
             "schema_version": 4,
             "launch_proof": None
             if result.launch_proof is None
@@ -406,6 +439,23 @@ class PostgresSubscriptionExecutionRepository:
                 "task_version": admission.task_version,
             },
         }
+        rejection_kind = (
+            result.role_rejection.kind
+            if result.role_rejection is not None
+            else decision_kind(decision)
+        )
+        rejection_reason = (
+            result.role_rejection.reason_code
+            if result.role_rejection is not None
+            else f"role_{rejection_kind}_forbidden"
+        )
+        if prior is not None and "role_rejection" in prior.result_payload:
+            raw_payload["role_rejection"] = prior.result_payload["role_rejection"]
+        elif role_violation:
+            raw_payload["role_rejection"] = {
+                "kind": rejection_kind,
+                "reason_code": rejection_reason,
+            }
         if result.quota_exhaustion is not None:
             raw_payload["quota_exhaustion"] = exhaustion_payload(result.quota_exhaustion)
         payload = _safe_metadata(
@@ -426,9 +476,6 @@ class PostgresSubscriptionExecutionRepository:
         digest = hashlib.sha256(
             json.dumps(raw_payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        prior = await self._session.get(
-            SubscriptionAttemptResult, identity.attempt_id, with_for_update=True
-        )
         if prior is not None:
             if prior.result_payload.get("schema_version") == 1:
                 legacy = dict(raw_payload)
@@ -582,8 +629,58 @@ class PostgresSubscriptionExecutionRepository:
             task.version += 1
             disposition = "quota_deferred"
             accepted = True
-        elif decision is not None and not (
-            isinstance(decision, TaskHandoff) and decision.status is not HandoffStatus.COMPLETED
+        elif role_violation:
+            stale_plan = (
+                is_approved_plan_primary_contract(admission.task)
+                and logical_phase is RunState.IMPLEMENTING
+            )
+            previous_violation = await self._session.scalar(
+                select(SubscriptionAttemptResult.attempt_id)
+                .join(SubscriptionAttempt)
+                .where(
+                    SubscriptionAttempt.task_row_id == identity.task_id,
+                    SubscriptionAttempt.task_digest == attempt.task_digest,
+                    SubscriptionAttemptResult.disposition == "role_correction_queued",
+                )
+                .limit(1)
+            )
+            repair = (
+                not stale_plan
+                and previous_violation is None
+                and scheduled.repairs < scheduled.max_repairs
+                and await budget.try_debit_repair(
+                    identity.run_id, identity.task_id, identity.attempt_id
+                )
+            )
+            await PostgresSchedulingRepository(self._session).finish(
+                lease, successful=False, allow_repair=repair
+            )
+            attempt.status = "terminal"
+            task.state = "queued" if repair else "blocked"
+            task.version += 1
+            disposition = "role_correction_queued" if repair else "role_rejected"
+            recovery = PostgresSubscriptionRecoveryRepository(self._session)
+            await recovery.record_settlement_role_violation(
+                identity.attempt_id,
+                reason_code="approved_plan_contract_stale" if stale_plan else rejection_reason,
+                automatic=repair,
+            )
+            await PostgresSubscriptionRepository(self._session).record_decision(
+                TaskHandoff(
+                    run_id=identity.run_id,
+                    task_id=identity.task_id,
+                    attempt_id=identity.attempt_id,
+                    status=HandoffStatus.FAILED if repair else HandoffStatus.BLOCKED,
+                    summary="Decision is not permitted for this role or phase.",
+                ),
+                idempotency_key=f"role-rejection:{identity.attempt_id}",
+            )
+        elif (
+            decision is not None
+            and not role_violation
+            and not (
+                isinstance(decision, TaskHandoff) and decision.status is not HandoffStatus.COMPLETED
+            )
         ):
             # Retain the exact result for the typed decision dispatcher. Merely
             # recording a provider decision must never claim it was applied.

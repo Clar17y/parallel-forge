@@ -67,24 +67,24 @@ class PostgresSubscriptionBudgetRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def _lock_run(self, run_id: UUID) -> None:
-        if await self._session.get(Run, run_id, with_for_update=True) is None:
+    async def _lock_run(self, run_id: UUID, *, locked: bool = True) -> None:
+        if await self._session.get(Run, run_id, with_for_update=locked) is None:
             raise SubscriptionBudgetConflict("run does not exist")
 
     async def _contracts(
-        self, run_id: UUID, task_id: UUID, attempt_id: UUID
+        self, run_id: UUID, task_id: UUID, attempt_id: UUID, *, locked: bool = True
     ) -> tuple[LogicalTaskContract, LogicalTaskContract, SubscriptionTask, SubscriptionAttempt]:
-        contract, primary, task = await self._task_contracts(run_id, task_id)
-        attempt = await self._session.get(SubscriptionAttempt, attempt_id, with_for_update=True)
+        contract, primary, task = await self._task_contracts(run_id, task_id, locked=locked)
+        attempt = await self._session.get(SubscriptionAttempt, attempt_id, with_for_update=locked)
         if attempt is None or attempt.run_id != run_id or attempt.task_row_id != task_id:
             raise SubscriptionBudgetConflict("attempt budget lineage conflicts")
         return contract, primary, task, attempt
 
     async def _task_contracts(
-        self, run_id: UUID, task_id: UUID
+        self, run_id: UUID, task_id: UUID, *, locked: bool = True
     ) -> tuple[LogicalTaskContract, LogicalTaskContract, SubscriptionTask]:
-        await self._lock_run(run_id)
-        task = await self._session.get(SubscriptionTask, task_id, with_for_update=True)
+        await self._lock_run(run_id, locked=locked)
+        task = await self._session.get(SubscriptionTask, task_id, with_for_update=locked)
         if task is None or task.run_id != run_id:
             raise SubscriptionBudgetConflict("task budget lineage conflicts")
         contract = _decode(task.payload, LogicalTaskContract)
@@ -459,7 +459,32 @@ class PostgresSubscriptionBudgetRepository:
         )
 
     async def try_debit_repair(self, run_id: UUID, task_id: UUID, attempt_id: UUID) -> bool:
-        contract, primary, _, _ = await self._contracts(run_id, task_id, attempt_id)
+        if not await self.can_debit_repair(run_id, task_id, attempt_id):
+            return False
+        if await self._session.get(SubscriptionRepairDebit, attempt_id) is not None:
+            return True
+        self._session.add(SubscriptionRepairDebit(attempt_id=attempt_id))
+        await self._session.flush()
+        # A repair reserves its next provider attempt immediately. Reconcile any
+        # accepted, unbound feedback under the same run lock so that consuming
+        # the final cumulative slot cannot leave a receipt pending forever.
+        from forge.persistence.repositories.subscription_feedback import (
+            PostgresSubscriptionFeedbackRepository,
+        )
+
+        await PostgresSubscriptionFeedbackRepository(self._session).close_exhausted(run_id)
+        return True
+
+    async def can_debit_repair(
+        self, run_id: UUID, task_id: UUID, attempt_id: UUID, *, locked: bool = True
+    ) -> bool:
+        """Check every frozen budget; unlocked reads are advisory snapshots only.
+
+        Debiting always calls the default locked path and rechecks current usage.
+        """
+        contract, primary, _, _ = await self._contracts(
+            run_id, task_id, attempt_id, locked=locked
+        )
         if await self._session.get(SubscriptionRepairDebit, attempt_id) is not None:
             return True
         if await self._session.get(SubscriptionAttemptConsumption, attempt_id) is None:
@@ -480,14 +505,4 @@ class PostgresSubscriptionBudgetRepository:
                 ).fits_within(budget)
             ):
                 return False
-        self._session.add(SubscriptionRepairDebit(attempt_id=attempt_id))
-        await self._session.flush()
-        # A repair reserves its next provider attempt immediately. Reconcile any
-        # accepted, unbound feedback under the same run lock so that consuming
-        # the final cumulative slot cannot leave a receipt pending forever.
-        from forge.persistence.repositories.subscription_feedback import (
-            PostgresSubscriptionFeedbackRepository,
-        )
-
-        await PostgresSubscriptionFeedbackRepository(self._session).close_exhausted(run_id)
         return True
