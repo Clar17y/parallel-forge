@@ -1,13 +1,24 @@
-"""Periodic decision retries are sequential, stoppable, and fail visibly."""
+"""Decision retries contain outages, retain cleanup ownership, and expose defects."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
+from forge.application.ports.subscription_decisions import (
+    PendingDecisionKind,
+    PendingSubscriptionDecision,
+)
 from forge.application.services.subscription_decision_recovery import (
+    SubscriptionDecisionRecovery,
     SubscriptionDecisionRecoveryReport,
 )
+from forge.domain.run import RunState
 from forge.worker import main
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 
 async def test_decision_poll_retries_deferred_source_without_overlap():
@@ -52,6 +63,128 @@ async def test_decision_scan_failure_propagates():
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         await main._poll_decisions(SimpleNamespace(reconcile_all=fail), asyncio.Event(), 0.001)
+
+
+@pytest.mark.parametrize("error", [
+    OSError("private connection details"),
+    TimeoutError("private connection details"),
+    DBAPIError("private statement", {}, OSError("private connection details")),
+    PoolTimeoutError("private connection details"),
+])
+async def test_decision_poll_retries_database_and_io_failures(error, caplog):
+    stop = asyncio.Event()
+    calls = 0
+
+    async def reconcile():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise error
+        stop.set()
+        return SubscriptionDecisionRecoveryReport()
+
+    await asyncio.wait_for(
+        main._poll_decisions(SimpleNamespace(reconcile_all=reconcile), stop, 0.001), 1
+    )
+    assert calls == 2
+    assert "Subscription decision retry unavailable; will retry" in caplog.text
+    assert "private" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.parametrize("failure_stage", [
+    "pending_applications", "due", "role_violation", "diagnostic_open",
+    "attempt_run_id", "run", "record_failure", "commit", "record_success",
+])
+async def test_decision_poll_contains_recovery_database_failure_and_retries_source(failure_stage):
+    stop = asyncio.Event()
+    attempt_id = uuid4()
+    candidate = PendingSubscriptionDecision(attempt_id, PendingDecisionKind.WAIT)
+    scans, active, closed, peer_ticks = 0, 0, 0, 0
+    applying = False
+
+    def fail_at(stage):
+        if scans == 1 and failure_stage == stage:
+            raise OperationalError("private statement", {}, OSError("database unavailable"))
+
+    def operation(stage, result=None):
+        async def call(*_args, **_kwargs):
+            fail_at(stage)
+            return result
+        return AsyncMock(side_effect=call)
+
+    async def pending(cursor, _page_size):
+        fail_at("pending_applications")
+        return (candidate,) if cursor is None else ()
+
+    diagnostics = SimpleNamespace(
+        due=operation("due", True), role_violation=operation("role_violation"),
+        attempt_run_id=operation("attempt_run_id", uuid4()),
+        record_failure=operation("record_failure"), record_success=operation("record_success"),
+    )
+
+    @asynccontextmanager
+    async def factory():
+        nonlocal closed
+        if applying:
+            fail_at("diagnostic_open")
+        try:
+            yield SimpleNamespace(
+                subscription_decisions=SimpleNamespace(pending_applications=pending),
+                subscription_recovery=diagnostics,
+                runs=SimpleNamespace(get=operation("run", SimpleNamespace(state=RunState.IMPLEMENTING))),
+                rollback=AsyncMock(), commit=operation("commit"),
+            )
+        finally:
+            closed += 1
+
+    recovery = SubscriptionDecisionRecovery(factory, object())
+
+    async def apply(_attempt_id):
+        nonlocal applying
+        applying = True
+        if scans == 1 and failure_stage != "record_success":
+            raise OSError("initial application outage")
+
+    application = AsyncMock(side_effect=apply)
+    recovery._decisions.apply_wait = application
+
+    async def reconcile():
+        nonlocal scans, active, applying
+        scans += 1
+        applying = False
+        active += 1
+        assert active == 1
+        try:
+            report = await recovery.reconcile_all()
+            assert report.applied == 1
+            stop.set()
+            return report
+        finally:
+            active -= 1
+
+    async def peer():
+        nonlocal peer_ticks
+        while not stop.is_set():
+            peer_ticks += 1
+            await asyncio.sleep(0)
+
+    polling = asyncio.create_task(
+        main._poll_decisions(SimpleNamespace(reconcile_all=reconcile), stop, 0.001)
+    )
+    peer_polling = asyncio.create_task(peer())
+    try:
+        await asyncio.wait_for(asyncio.gather(polling, peer_polling), 1)
+    finally:
+        stop.set()
+        polling.cancel()
+        peer_polling.cancel()
+        await asyncio.gather(polling, peer_polling, return_exceptions=True)
+    assert scans == 2 and active == 0 and closed >= 4 and peer_ticks > 1
+    expected_applications = 1 if failure_stage in {"pending_applications", "due", "role_violation"} else 2
+    assert application.await_count == expected_applications
+    assert all(call.args == (attempt_id,) for call in application.await_args_list)
+    assert diagnostics.record_success.await_args.args == (attempt_id,)
 
 
 async def test_decision_poll_cancellation_awaits_scan_cleanup():

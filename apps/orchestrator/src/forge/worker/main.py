@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
@@ -394,6 +396,11 @@ async def _poll_decisions(
             if scan not in done:
                 return
             report = await scan
+        except (DBAPIError, PoolTimeoutError, OSError, TimeoutError):
+            # Scans and their diagnostics can share an outage. Leave retained
+            # sources for the next scan without stopping unrelated pollers.
+            logger.warning("Subscription decision retry unavailable; will retry")
+            continue
         finally:
             # Keep resources alive until an interrupted scan has closed its UoW
             # or artifact operation. A settled source remains replayable.
