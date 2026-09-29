@@ -17,6 +17,7 @@ from forge.application.ports.repository import (
     FileWrite,
     InstructionDocument,
     RepositoryEntry,
+    RepositoryLimitExceeded,
     SearchMatch,
 )
 from forge.application.ports.tools import (
@@ -754,6 +755,24 @@ async def test_adapter_exception_returns_authorized_failed_without_leaking_error
     assert event.payload["error_code"] == "adapter_error"
     assert event.payload["authorized"] is True
     assert event.payload["resource_id"] == repository_resource_identity(PROJECT_ID)
+
+
+async def test_repository_limit_failure_gives_safe_narrower_path_guidance(
+    tmp_path: Path,
+) -> None:
+    service, work, reader = _service(tmp_path)
+    reader.error = RepositoryLimitExceeded("generated paths and internal details")
+    request = ToolRequest(name=ToolName.REPOSITORY_LIST_FILES, arguments={})
+
+    result = await service.invoke(_context(), request)
+
+    assert result.status is ToolCallStatus.FAILED
+    assert result.error is not None
+    assert result.error.code is ToolErrorCode.ADAPTER_ERROR
+    assert result.error.message == "repository listing or search exceeded its limit; narrow the path"
+    assert "generated paths" not in str(result)
+    assert work.tool_calls.records[0].result_metadata is not None
+    assert work.tool_calls.records[0].result_metadata["error"]["message"] == result.error.message
 
 
 # ---------------------------------------------------------------------------

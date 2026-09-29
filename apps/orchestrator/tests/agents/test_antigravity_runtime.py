@@ -13,6 +13,7 @@ from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
     SubscriptionInterrupted,
 )
+from forge.domain.subscription import SpecialistPurpose
 from forge.domain.tool import ToolName
 from test_codex_gateway import _Broker
 from test_gemini_gateway import _google_request, _Lifecycle
@@ -35,6 +36,16 @@ def request():
             ),
         ),
     )
+
+
+def test_role_guidance_keeps_handoffs_for_workers_only():
+    from forge.agents.antigravity_runtime import _decision_guidance
+
+    primary = _decision_guidance(SpecialistPurpose.PRIMARY)
+    worker = _decision_guidance(SpecialistPurpose.ROUTINE_IMPLEMENTATION)
+    assert "do not return a task handoff" in primary
+    assert "For a completed handoff" not in primary
+    assert "For a completed handoff" in worker
 
 
 def gateway(tmp_path, scenario, *, broker=None, duration=5):
