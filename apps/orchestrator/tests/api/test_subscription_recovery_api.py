@@ -100,3 +100,41 @@ async def test_recovery_routes_bind_identity_auth_and_csrf(
         json={"action": "retry_application"},
     )
     assert anonymous.status_code == 401 and len(fake.previews) == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_receipt_history_requires_auth_but_not_csrf(
+    task10_client, task10_route_context, route_headers
+):
+    run_id, task_id, attempt_id = uuid4(), uuid4(), uuid4()
+    receipt = RecoveryReceipt(
+        receipt_id=uuid4(), run_id=run_id, task_id=task_id, attempt_id=attempt_id,
+        action="repair_approved_plan_contract", status="applied",
+        observed_at=datetime.now(UTC), reason_code="applied",
+    )
+
+    class FakeQuery:
+        def __init__(self):
+            self.calls = []
+
+        async def receipts(self, actual_run, actual_task, actual_attempt, *, offset, limit):
+            self.calls.append((actual_run, actual_task, actual_attempt, offset, limit))
+            if actual_task != task_id:
+                return None
+            return {
+                "run_id": run_id, "task_id": task_id, "attempt_id": attempt_id,
+                "receipts": [receipt], "has_more": False,
+            }
+
+    query = FakeQuery()
+    task10_route_context.app.state.subscription_task_query = query
+    url = f"/api/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery/receipts"
+    headers = {key: value for key, value in route_headers.items() if key.lower() != "x-csrf-token"}
+    response = await task10_client.get(url + "?offset=2&limit=3", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["receipts"] == [receipt.model_dump(mode="json")]
+    assert query.calls == [(run_id, task_id, attempt_id, 2, 3)]
+    assert (await task10_client.get(url.replace(str(task_id), str(uuid4())), headers=headers)).status_code == 404
+    assert (await task10_client.get(url + "?limit=101", headers=headers)).status_code == 422
+    task10_client.cookies.clear()
+    assert (await task10_client.get(url)).status_code == 401

@@ -28,6 +28,7 @@ type Props = {
   runId: string; taskId: string; attemptId: string; taskVersion: number; runVersion: number;
   runAllowsExecution: boolean; taskState: string; pauseRequested: boolean; cancelRequested: boolean;
   unsettledEffects: number; eligibleActions: Action[]; authorityKey: string; onRefresh: () => number;
+  onReceipt?: () => void;
   hasRecovery?: boolean;
 };
 
@@ -36,7 +37,7 @@ export function TaskRecovery(props: Props) {
   return <TaskRecoveryInstance key={`${actorId}:${props.runId}:${props.taskId}:${props.attemptId}`} {...props} actorId={actorId} />;
 }
 
-function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, runVersion, runAllowsExecution, taskState, pauseRequested, cancelRequested, unsettledEffects, eligibleActions, authorityKey, onRefresh, hasRecovery = true }: Props & { actorId: string | null }) {
+function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, runVersion, runAllowsExecution, taskState, pauseRequested, cancelRequested, unsettledEffects, eligibleActions, authorityKey, onRefresh, onReceipt, hasRecovery = true }: Props & { actorId: string | null }) {
   const identity = { actorId: actorId ?? '', runId, taskId, attemptId };
   const identityKey = bindingStorageKey(identity.actorId, runId, taskId, attemptId);
   const reasonId = useId();
@@ -129,9 +130,9 @@ function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, 
       return;
     }
     setBinding(selected);
-    await apply(selected, true);
+    await apply(selected);
   }
-  async function apply(selected = binding, firstSend = false) {
+  async function apply(selected = binding) {
     if (!selected || busy.current || !lifecycle.current || currentIdentity.current !== identityKey) return;
     if (!matchesStoredBinding(selected)) {
       const latest = readBinding(selected);
@@ -151,19 +152,21 @@ function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, 
         const latest = readBinding(selected);
         if (latest.binding && !sameBinding(latest.binding, selected)) return;
         setBinding(latest.binding); setStorageError(latest.error); setReceipt({ value: result, binding: selected }); setPreview(null); setReason('');
-        setMessage(removed ? 'Recovery applied. The receipt is authoritative; refreshing task state.' : 'Recovery applied. The receipt is authoritative, but the saved request could not be cleared.'); onRefresh();
+        setMessage(removed ? 'Recovery applied. The receipt is authoritative; refreshing task state.' : 'Recovery applied. The receipt is authoritative, but the saved request could not be cleared.'); onReceipt?.(); onRefresh();
       }
     } catch (error) {
       if (signal.aborted || currentIdentity.current !== identityKey) return;
-      if (firstSend && error instanceof ApiError && [403, 409, 422].includes(error.status)) {
+      if (error instanceof ApiError && [409, 422].includes(error.status)) {
         const removed = await removeMatchingBinding(selected, signal);
         if (signal.aborted || currentIdentity.current !== identityKey) return;
         const latest = readBinding(selected);
         if (latest.binding && !sameBinding(latest.binding, selected)) return;
         setBinding(latest.binding); setStorageError(latest.error); setPreview(null);
-        setMessage(!removed ? 'The request was rejected, but the saved request could not be cleared. Review it before retrying.' : error.status === 409 ? 'The preview is stale or expired. Review refreshed task state and request a new preview.' : 'The request was rejected. Check your operator session and request before trying again.'); onRefresh();
+        setMessage(!removed ? 'The request was rejected, but the saved request could not be cleared. Review it before retrying.' : error.status === 409 ? 'The preview is stale or expired. Review refreshed task state and request a new preview.' : 'The request was rejected. Review the request and refreshed task state before trying again.'); onRefresh();
       } else if (error instanceof ApiError && error.status === 401) {
-        setMessage('Sign-in expired. After signing in again as the same operator, retry the saved request.');
+        setMessage('Sign-in expired. Use a fresh sign-in link and inspect recorded receipts. A new session cannot retry this saved request.');
+      } else if (error instanceof ApiError && error.status === 403) {
+        setMessage('The request was not authorized. The saved request remains pending; inspect recorded receipts after restoring access.');
       } else setMessage('The result could not be confirmed. Retry the same request to retrieve its durable receipt.');
     } finally { busy.current = false; if (!signal.aborted) setPending(false); }
   }

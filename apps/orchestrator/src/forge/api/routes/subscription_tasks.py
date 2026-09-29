@@ -13,6 +13,7 @@ from forge.api.dependencies import (
 )
 from forge.api.errors import translate_error
 from forge.api.schemas.subscription_tasks import (
+    RecoveryReceiptPage,
     SubscriptionAttemptPage,
     SubscriptionTaskPage,
     TaskControlRequest,
@@ -40,6 +41,27 @@ from forge.domain.subscription_task_controls import (
 
 def router_for() -> APIRouter:
     router = APIRouter()
+
+    @router.get(
+        "/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery/receipts",
+        response_model=RecoveryReceiptPage,
+    )
+    async def recovery_receipts(
+        run_id: UUID,
+        task_id: UUID,
+        attempt_id: UUID,
+        request: Request,
+        offset: int = Query(default=0, ge=0, le=1_000_000),
+        limit: int = Query(default=25, ge=1, le=100),
+        _actor: AuthenticatedActor = Depends(require_operator),
+    ) -> RecoveryReceiptPage:
+        query = request.app.state.subscription_task_query
+        if query is None:
+            raise HTTPException(503, "subscription inspection unavailable")
+        result = await query.receipts(run_id, task_id, attempt_id, offset=offset, limit=limit)
+        if result is None:
+            raise HTTPException(404, "attempt not found")
+        return RecoveryReceiptPage.model_validate(result)
 
     @router.post(
         "/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery/preview",

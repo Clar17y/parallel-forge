@@ -656,6 +656,25 @@ class PostgresSubscriptionRecoveryRepository:
         )
         return None if row is None else RecoveryReceiptRecord(_receipt(row), row.request_digest)
 
+    async def receipt_history(
+        self, run_id: UUID, task_id: UUID, attempt_id: UUID, *, offset: int, limit: int
+    ) -> tuple[list[RecoveryReceipt], bool]:
+        rows = list((await self._session.scalars(
+            select(SubscriptionRecoveryReceipt)
+            .where(
+                SubscriptionRecoveryReceipt.run_id == run_id,
+                SubscriptionRecoveryReceipt.task_id == task_id,
+                SubscriptionRecoveryReceipt.attempt_id == attempt_id,
+            )
+            .order_by(
+                SubscriptionRecoveryReceipt.created_at.desc(),
+                SubscriptionRecoveryReceipt.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit + 1)
+        )).all())
+        return [_receipt(row) for row in rows[:limit]], len(rows) > limit
+
     async def preview(
         self,
         run_id: UUID,
@@ -1073,6 +1092,7 @@ class PostgresSubscriptionRecoveryRepository:
         idempotency_key: str,
         request_digest: str,
         binding: str,
+        expires_at: datetime,
         reason: str,
     ) -> RecoveryReceipt:
         await self._session.get(Run, run_id, with_for_update=True)
@@ -1081,6 +1101,8 @@ class PostgresSubscriptionRecoveryRepository:
             if prior.request_digest != request_digest:
                 raise RecoveryConflict("recovery idempotency key conflicts")
             return prior.receipt
+        if expires_at.tzinfo is None or expires_at <= datetime.now(UTC):
+            raise RecoveryConflict("recovery preview expired")
         snapshot = await self.preview(run_id, task_id, attempt_id, action, locked=True)
         if not snapshot.eligible or snapshot.binding != binding:
             raise RecoveryConflict("recovery source differs from preview")

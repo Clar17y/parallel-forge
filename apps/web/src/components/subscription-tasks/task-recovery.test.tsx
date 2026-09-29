@@ -5,6 +5,7 @@ import { TaskRecovery } from './task-recovery';
 import { SessionIdentity } from '@/components/auth/session-identity';
 import type { ReactElement } from 'react';
 import { bindingStorageKey, removeMatchingBinding, reserveBinding } from './recovery-binding';
+import { RecoveryReceiptHistory } from './recovery-receipt-history';
 
 const renderRecovery = (element: ReactElement, actorId = 'actor-1') => render(<SessionIdentity.Provider value={actorId}>{element}</SessionIdentity.Provider>);
 const recoveryProps = { runId: 'run-1', taskId: 'task-1', attemptId: 'attempt-1', taskVersion: 2, runVersion: 3, runAllowsExecution: false, taskState: 'running', pauseRequested: false, cancelRequested: false, unsettledEffects: 1, eligibleActions: [] as Array<'retry_application'>, authorityKey: 'changed', onRefresh: vi.fn() };
@@ -146,7 +147,7 @@ test('a replaced saved request is not erased by a late receipt from the old requ
   expect(screen.queryByText(/old-receipt/)).not.toBeInTheDocument();
 });
 
-test('authentication expiry leaves the saved request for the same operator after a renewed session', async () => {
+test('authentication failure preserves an exact saved request across remounts with the same actor', async () => {
   const binding = stored();
   const key = bindingStorageKey(binding.actorId, binding.runId, binding.taskId, binding.attemptId)!;
   localStorage.setItem(key, JSON.stringify(binding));
@@ -165,6 +166,44 @@ test('authentication expiry leaves the saved request for the same operator after
   await screen.findByText(/Recovery receipt renewed-receipt/);
   expect(fetcher).toHaveBeenCalledTimes(2);
   expect(localStorage.getItem(key)).toBeNull();
+});
+
+test.each([409, 422])('a restored request rejected with %s clears only its matching slot', async status => {
+  const binding = stored();
+  const key = bindingStorageKey(binding.actorId, binding.runId, binding.taskId, binding.attemptId)!;
+  localStorage.setItem(key, JSON.stringify(binding));
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status }));
+  renderRecovery(<TaskRecovery {...recoveryProps} />);
+  await userEvent.click(await screen.findByRole('button', { name: 'Retry same request' }));
+  expect(await screen.findByText(/preview is stale or expired|request was rejected/i)).toBeInTheDocument();
+  expect(localStorage.getItem(key)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Retry same request' })).not.toBeInTheDocument();
+});
+
+test('a restored request rejected by authorization remains saved', async () => {
+  const binding = stored();
+  const key = bindingStorageKey(binding.actorId, binding.runId, binding.taskId, binding.attemptId)!;
+  localStorage.setItem(key, JSON.stringify(binding));
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 403 }));
+  renderRecovery(<TaskRecovery {...recoveryProps} />);
+  await userEvent.click(await screen.findByRole('button', { name: 'Retry same request' }));
+  expect(await screen.findByText(/not authorized/i)).toBeInTheDocument();
+  expect(localStorage.getItem(key)).toBe(JSON.stringify(binding));
+});
+
+test('a new actor sees durable history without the old actor slot, while history never hides its own pending request', async () => {
+  const old = stored('old-actor');
+  localStorage.setItem(bindingStorageKey(old.actorId, old.runId, old.taskId, old.attemptId)!, JSON.stringify(old));
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ run_id: 'run-1', task_id: 'task-1', attempt_id: 'attempt-1', receipts: [{ receipt_id: 'old-receipt', run_id: 'run-1', task_id: 'task-1', attempt_id: 'attempt-1', action: 'retry_application', status: 'applied', observed_at: '2026-09-29T12:00:00Z', reason_code: 'applied' }], has_more: false })));
+  const view = renderRecovery(<><TaskRecovery {...recoveryProps} hasRecovery={false} /><RecoveryReceiptHistory runId="run-1" taskId="task-1" attemptId="attempt-1" /></>, 'new-actor');
+  expect(await screen.findByText(/Recovery receipt old-receipt/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Retry same request' })).not.toBeInTheDocument();
+  view.unmount();
+  const pending = stored('new-actor');
+  localStorage.setItem(bindingStorageKey(pending.actorId, pending.runId, pending.taskId, pending.attemptId)!, JSON.stringify(pending));
+  renderRecovery(<><TaskRecovery {...recoveryProps} hasRecovery={false} /><RecoveryReceiptHistory runId="run-1" taskId="task-1" attemptId="attempt-1" /></>, 'new-actor');
+  expect(await screen.findByRole('button', { name: 'Retry same request' })).toBeEnabled();
+  expect(await screen.findByText(/Recovery receipt old-receipt/)).toBeInTheDocument();
 });
 
 test('receipt still appears when another tab already cleared the matching request', async () => {

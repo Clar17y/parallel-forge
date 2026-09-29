@@ -8,7 +8,7 @@ import os
 import shutil
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 import pytest
 from forge.evaluations.credentials import assert_credential_free
+from forge.persistence.models.auth import OperatorSession
 from forge.persistence.models.subscription import SubscriptionAttempt
 from forge.persistence.models.subscription_recovery import (
     SubscriptionContractRevision,
@@ -93,6 +94,12 @@ async def test_primary_recovery_survives_lost_response_stale_tab_and_api_restart
     run_id = _case_id(case, "run_id")
     task_id = _case_id(case, "task_id")
     attempt_id = _case_id(case, "attempt_id")
+    renewal_root = tmp_path / "session-renewal"
+    renewal_root.mkdir()
+    renewal_case = await recovery_case(session_factory, renewal_root, defer_settlement=True)
+    renewal_run_id = _case_id(renewal_case, "run_id")
+    renewal_task_id = _case_id(renewal_case, "task_id")
+    renewal_attempt_id = _case_id(renewal_case, "attempt_id")
 
     async def advertise_fixture_worker() -> None:
         # Keep only the fixture's simulated compatibility heartbeat current.
@@ -103,15 +110,33 @@ async def test_primary_recovery_survives_lost_response_stale_tab_and_api_restart
                 .values(observed_at=datetime.now(UTC))
             )
 
-    async def snapshot() -> dict[str, object]:
+    async def expire_operator_session() -> str:
+        async with session_factory() as session, session.begin():
+            actors = (
+                await session.scalars(
+                    select(OperatorSession.actor_id).where(
+                        OperatorSession.credential_kind == "session",
+                        OperatorSession.revoked_at.is_(None),
+                    )
+                )
+            ).all()
+            assert len(actors) == 1 and actors[0] is not None
+            await session.execute(
+                update(OperatorSession)
+                .where(OperatorSession.credential_kind == "session", OperatorSession.actor_id == actors[0])
+                .values(idle_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+            return str(actors[0])
+
+    async def snapshot(run: Any, task: Any, attempt: Any) -> dict[str, object]:
         async with session_factory() as session:
-            result = await session.get(SubscriptionAttemptResult, attempt_id)
+            result = await session.get(SubscriptionAttemptResult, attempt)
             assert result is not None, "fixture must retain its original provider result"
             receipts = int(
                 await session.scalar(
                     select(func.count()).select_from(SubscriptionRecoveryReceipt).where(
-                        SubscriptionRecoveryReceipt.run_id == run_id,
-                        SubscriptionRecoveryReceipt.task_id == task_id,
+                        SubscriptionRecoveryReceipt.run_id == run,
+                        SubscriptionRecoveryReceipt.task_id == task,
                     )
                 )
                 or 0
@@ -119,8 +144,8 @@ async def test_primary_recovery_survives_lost_response_stale_tab_and_api_restart
             revisions = int(
                 await session.scalar(
                     select(func.count()).select_from(SubscriptionContractRevision).where(
-                        SubscriptionContractRevision.run_id == run_id,
-                        SubscriptionContractRevision.task_id == task_id,
+                        SubscriptionContractRevision.run_id == run,
+                        SubscriptionContractRevision.task_id == task,
                     )
                 )
                 or 0
@@ -130,15 +155,15 @@ async def test_primary_recovery_survives_lost_response_stale_tab_and_api_restart
                     select(func.count())
                     .select_from(SubscriptionRepairDebit)
                     .join(SubscriptionAttempt, SubscriptionAttempt.id == SubscriptionRepairDebit.attempt_id)
-                    .where(SubscriptionAttempt.run_id == run_id, SubscriptionAttempt.task_row_id == task_id)
+                    .where(SubscriptionAttempt.run_id == run, SubscriptionAttempt.task_row_id == task)
                 )
                 or 0
             )
             attempts = int(
                 await session.scalar(
                     select(func.count()).select_from(SubscriptionAttempt).where(
-                        SubscriptionAttempt.run_id == run_id,
-                        SubscriptionAttempt.task_row_id == task_id,
+                        SubscriptionAttempt.run_id == run,
+                        SubscriptionAttempt.task_row_id == task,
                     )
                 )
                 or 0
@@ -146,7 +171,7 @@ async def test_primary_recovery_survives_lost_response_stale_tab_and_api_restart
             result_digest = result.result_digest
             result_payload = result.result_payload
         async with PostgresUnitOfWork(session_factory) as work:
-            usage = await work.subscription_budget.usage(run_id, task_id)
+            usage = await work.subscription_budget.usage(run, task)
         return {
             "receipt_count": receipts,
             "contract_revision_count": revisions,
@@ -195,9 +220,14 @@ async def test_primary_recovery_survives_lost_response_stale_tab_and_api_restart
                         "run_id": str(run_id),
                         "task_id": str(task_id),
                         "attempt_id": str(attempt_id),
+                        "renewal_run_id": str(renewal_run_id),
+                        "renewal_task_id": str(renewal_task_id),
+                        "renewal_attempt_id": str(renewal_attempt_id),
                     })
                 elif self.path == "/snapshot":
-                    self.reply(on_loop(snapshot()))
+                    self.reply(on_loop(snapshot(run_id, task_id, attempt_id)))
+                elif self.path == "/snapshot-renewal":
+                    self.reply(on_loop(snapshot(renewal_run_id, renewal_task_id, renewal_attempt_id)))
                 else:
                     self.reply({}, status=404)
 
@@ -207,6 +237,13 @@ async def test_primary_recovery_survives_lost_response_stale_tab_and_api_restart
                 elif self.path == "/diagnostic/settle":
                     settlement = on_loop(_case_id(case, "settle")())
                     self.reply({"disposition": settlement.disposition})
+                elif self.path == "/diagnostic/settle-renewal":
+                    settlement = on_loop(_case_id(renewal_case, "settle")())
+                    self.reply({"disposition": settlement.disposition})
+                elif self.path == "/auth/expire":
+                    self.reply({"actor_id": on_loop(expire_operator_session())})
+                elif self.path == "/auth/bootstrap":
+                    self.reply({"bootstrap": harness.bootstrap_token()})
                 elif self.path == "/worker/heartbeat":
                     on_loop(advertise_fixture_worker())
                     self.reply({"ok": True})
@@ -262,9 +299,15 @@ async def test_primary_recovery_survives_lost_response_stale_tab_and_api_restart
         assert result.returncode == 0, result.stderr[-6000:]
         evidence = json.loads(result.stdout)
         assert evidence["provider_calls"] is False
-        durable = await snapshot()
+        assert evidence["renewal_old_actor"] != evidence["renewal_new_actor"]
+        assert evidence["renewal_post_count"] == 1
+        durable = await snapshot(run_id, task_id, attempt_id)
         assert evidence["after"] == {
             key: value for key, value in durable.items() if key != "result_payload"
+        }
+        renewal_durable = await snapshot(renewal_run_id, renewal_task_id, renewal_attempt_id)
+        assert evidence["renewal_after"] == {
+            key: value for key, value in renewal_durable.items() if key != "result_payload"
         }
     except BaseException as error:
         main_error = error

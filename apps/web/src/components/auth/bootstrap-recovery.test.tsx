@@ -3,8 +3,24 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { BootstrapGate } from './bootstrap-gate';
 import { csrf } from '@/lib/api/csrf';
+import { useSessionIdentity } from './session-identity';
 
 afterEach(() => { cleanup(); csrf.clear(); window.history.replaceState(null, '', '/'); vi.restoreAllMocks(); });
+
+test('a new authenticated session replaces the actor identity exposed to recovery controls', async () => {
+  const Identity = () => <p>Actor {useSessionIdentity()}</p>;
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"actor_id":"first-actor","actor_class":"operator"}'))
+    .mockResolvedValueOnce(new Response('{"csrf_token":"first-csrf"}'))
+    .mockResolvedValueOnce(new Response('{"actor_id":"second-actor","actor_class":"operator"}'))
+    .mockResolvedValueOnce(new Response('{"csrf_token":"second-csrf"}'));
+  const first = render(<BootstrapGate><Identity /></BootstrapGate>);
+  expect(await screen.findByText('Actor first-actor')).toBeInTheDocument();
+  first.unmount();
+  render(<BootstrapGate><Identity /></BootstrapGate>);
+  expect(await screen.findByText('Actor second-actor')).toBeInTheDocument();
+  expect(fetcher).toHaveBeenCalledTimes(4);
+});
 
 test('StrictMode exchanges once, strips fragment before completion and recovers memory CSRF', async () => {
   window.location.hash = '#bootstrap=one-time';

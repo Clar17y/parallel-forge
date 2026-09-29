@@ -36,6 +36,7 @@ try {
   const configuration = await bridge('/configuration');
   secrets.push(configuration.bootstrap);
   const { run_id: runId, task_id: taskId, attempt_id: attemptId } = configuration;
+  const { renewal_run_id: renewalRunId, renewal_task_id: renewalTaskId, renewal_attempt_id: renewalAttemptId } = configuration;
   const path = `**/api/runs/${runId}/subscription-tasks/${taskId}/attempts/${attemptId}/recovery`;
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
@@ -66,6 +67,8 @@ try {
   await first.goto(new URL(`/subscription-profiles#bootstrap=${encodeURIComponent(configuration.bootstrap)}`, web).href);
   await expect(first.getByRole('heading', { name: 'Subscription profiles' })).toBeVisible();
   expect(new URL(first.url()).hash).toBe('');
+  const oldActor = await first.evaluate(async () => (await (await fetch('/api/auth/session', { credentials: 'same-origin' })).json()).actor_id);
+  expect(oldActor).toBeTruthy();
   const initialProjectionResponse = first.waitForResponse(response => isProjection(response.request())
     && response.status() === 200);
   await first.goto(new URL(`/runs/${runId}`, web).href);
@@ -194,6 +197,54 @@ try {
   const durable = await bridge('/snapshot');
   expect(durable).toEqual(after);
 
+  const renewalDiagnostic = await bridge('/diagnostic/settle-renewal', 'POST');
+  expect(renewalDiagnostic.disposition).toBe('role_rejected');
+  await bridge('/worker/heartbeat', 'POST');
+  const renewalView = await openRecovery(first, renewalRunId, renewalTaskId);
+  await renewalView.recovery.getByRole('button', { name: 'Repair approved-plan instructions' }).click();
+  const renewalPreview = renewalView.recovery.locator('[aria-label="Recovery preview"]');
+  await expect(renewalPreview).toBeVisible();
+  await renewalPreview.getByLabel('Recovery reason').fill('Inspect committed recovery after session expiry');
+  const renewalBefore = await bridge('/snapshot-renewal');
+  expect(renewalBefore.receipt_count).toBe(0);
+  const renewalPath = `**/api/runs/${renewalRunId}/subscription-tasks/${renewalTaskId}/attempts/${renewalAttemptId}/recovery`;
+  const renewalLost = loseFirstResponse(first, renewalPath);
+  await renewalLost.install();
+  await bridge('/worker/heartbeat', 'POST');
+  await renewalPreview.getByRole('button', { name: 'Apply recovery' }).click();
+  await expect(renewalView.recovery.getByRole('button', { name: 'Retry same request' })).toBeVisible();
+  await expect.poll(async () => (await bridge('/snapshot-renewal')).receipt_count).toBe(1);
+  expect(renewalLost.requests).toHaveLength(1);
+  const expired = await bridge('/auth/expire', 'POST');
+  expect(expired.actor_id).toBe(oldActor);
+  expect(await first.evaluate(async () => (await fetch('/api/auth/session', { credentials: 'same-origin' })).status)).toBe(401);
+  const fresh = await bridge('/auth/bootstrap', 'POST');
+  secrets.push(fresh.bootstrap);
+  await first.goto(new URL(`/subscription-profiles#bootstrap=${encodeURIComponent(fresh.bootstrap)}`, web).href);
+  await expect(first.getByRole('heading', { name: 'Subscription profiles' })).toBeVisible();
+  const newActor = await first.evaluate(async () => (await (await fetch('/api/auth/session', { credentials: 'same-origin' })).json()).actor_id);
+  expect(newActor).toBeTruthy();
+  expect(newActor).not.toBe(oldActor);
+  await first.goto(new URL(`/runs/${renewalRunId}`, web).href);
+  await waitForRunHeader(first, 'IMPLEMENTING');
+  await first.getByRole('button', { name: 'Tasks', exact: true }).click();
+  const renewedInspector = first.getByRole('region', { name: 'Subscription tasks' });
+  await renewedInspector.getByRole('button', { name: `Inspect primary task ${renewalTaskId}` }).click();
+  const history = renewedInspector.getByRole('region', { name: 'Recovery history' })
+    .filter({ hasText: `Recovery receipt ${renewalLost.replies[0].receipt_id}` });
+  await expect(history).toBeVisible();
+  await expect(first.getByRole('button', { name: 'Retry same request' })).toHaveCount(0);
+  expect(renewalLost.requests).toHaveLength(1);
+  const renewalAfter = await bridge('/snapshot-renewal');
+  expect(renewalAfter.result_digest).toBe(renewalBefore.result_digest);
+  expect(renewalAfter.result_payload).toEqual(renewalBefore.result_payload);
+  expect(renewalAfter.receipt_count).toBe(1);
+  expect(renewalAfter.contract_revision_count).toBe(renewalBefore.contract_revision_count + 1);
+  expect(renewalAfter.repair_debits).toBe(renewalBefore.repair_debits + 1);
+  expect(renewalAfter.attempt_count).toBe(renewalBefore.attempt_count);
+  expect(renewalAfter.provider_attempts_consumed).toBe(renewalBefore.provider_attempts_consumed);
+  await renewalLost.remove();
+
   const summary = ({ result_payload, ...counts }) => counts;
 
   await context.close();
@@ -209,6 +260,10 @@ try {
     event_requests_before_restart: initialEventRequests,
     navigations_before_restart: initialNavigations,
     before: summary(before), after: summary(durable), browser_closed: true,
+    renewal_old_actor: oldActor, renewal_new_actor: newActor,
+    renewal_receipt_id: renewalLost.replies[0].receipt_id,
+    renewal_post_count: renewalLost.requests.length,
+    renewal_before: summary(renewalBefore), renewal_after: summary(renewalAfter),
   }));
 } catch (error) {
   let message = String(error?.stack ?? error);

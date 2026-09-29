@@ -1,5 +1,6 @@
 """Persistence boundary for one recovery preview and locked transition."""
 
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -48,5 +49,6 @@ class SubscriptionRecoveryRepository(Protocol):
         idempotency_key: str,
         request_digest: str,
         binding: str,
+        expires_at: datetime,
         reason: str,
     ) -> RecoveryReceipt: ...

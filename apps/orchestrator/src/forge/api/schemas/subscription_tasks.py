@@ -13,7 +13,7 @@ from forge.domain.subscription_feedback import (
     SubscriptionTaskFeedbackRequest,
     TaskFeedbackStatus,
 )
-from forge.domain.subscription_recovery import RecoveryAction
+from forge.domain.subscription_recovery import RecoveryAction, RecoveryReceipt
 from forge.domain.subscription_task_controls import (
     SubscriptionTaskControlRequest,
     TaskControlAction,
@@ -162,4 +162,12 @@ class SubscriptionAttemptPage(ProjectionModel):
     run_id: UUID
     task_id: UUID
     attempts: list[SubscriptionAttemptView] = Field(max_length=100)
+    has_more: bool
+
+
+class RecoveryReceiptPage(ProjectionModel):
+    run_id: UUID
+    task_id: UUID
+    attempt_id: UUID
+    receipts: list[RecoveryReceipt] = Field(max_length=100)
     has_more: bool

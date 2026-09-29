@@ -690,6 +690,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recovery Receipts */
+        get: operations["recovery_receipts_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_receipts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/subscription-tasks/{task_id}/controls": {
         parameters: {
             query?: never;
@@ -2432,6 +2449,28 @@ export interface components {
             run_id: string;
             /** Status */
             status: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+        };
+        /** RecoveryReceiptPage */
+        RecoveryReceiptPage: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Has More */
+            has_more: boolean;
+            /** Receipts */
+            receipts: components["schemas"]["RecoveryReceipt"][];
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
             /**
              * Task Id
              * Format: uuid
@@ -4963,6 +5002,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RecoveryPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recovery_receipts_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_receipts_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+                task_id: string;
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryReceiptPage"];
                 };
             };
             /** @description Validation Error */

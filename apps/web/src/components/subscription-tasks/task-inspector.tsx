@@ -7,6 +7,7 @@ import { QuotaStatusCard, QuotaStatusList } from './quota-status';
 import { TaskControls, TaskControlSummary } from './task-controls';
 import { TaskFeedback } from './task-feedback';
 import { recoveryReason, TaskRecovery } from './task-recovery';
+import { RecoveryReceiptHistory } from './recovery-receipt-history';
 import type { components } from '@/lib/api/schema';
 
 type TaskPage = components['schemas']['SubscriptionTaskPage'];
@@ -91,6 +92,7 @@ function Attempts({ runId, task, runVersion, runAllowsExecution, runIsTerminal, 
 }) {
   const taskId = task.task_id;
   const [offset, setOffset] = useState(0);
+  const [receiptGeneration, setReceiptGeneration] = useState<Record<string, number>>({});
   const attempts = useApi<AttemptPage>(`/runs/${runId}/subscription-tasks/${taskId}/attempts?offset=${offset}&limit=${pageSize}`, { refreshIntervalMs: 5000, keepPreviousOnRefresh: true });
   if (attempts.loading) return <p role="status">Loading attempts…</p>;
   if (!attempts.value) return <p role="alert">Attempts unavailable. <button onClick={attempts.refresh}>Retry attempts</button></p>;
@@ -113,7 +115,10 @@ function Attempts({ runId, task, runVersion, runAllowsExecution, runIsTerminal, 
             taskState={task.state} pauseRequested={task.pause_requested} cancelRequested={task.cancel_requested}
             unsettledEffects={task.unsettled_effects} eligibleActions={eligibleActions}
             authorityKey={`${runVersion}:${task.version}:${task.state}:${task.pause_requested}:${task.cancel_requested}:${task.unsettled_effects}:${attempt.state}:${recovery?.reason_code}:${recovery?.resolution}:${recovery?.last_failure_at}:${eligibleActions.join(',')}`}
-            onRefresh={() => { const token = onRefresh(); attempts.refresh(); return token; }} />
+            onRefresh={() => { const token = onRefresh(); attempts.refresh(); return token; }}
+            onReceipt={() => setReceiptGeneration(current => ({ ...current, [attempt.attempt_id]: (current[attempt.attempt_id] ?? 0) + 1 }))} />
+          <RecoveryReceiptHistory key={`${attempt.attempt_id}:${receiptGeneration[attempt.attempt_id] ?? 0}`}
+            runId={runId} taskId={taskId} attemptId={attempt.attempt_id} />
         <p>Requested: {routeLabel(attempt.requested_route)}</p>
         <p>Effective: {routeLabel(attempt.effective_route)}</p>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">

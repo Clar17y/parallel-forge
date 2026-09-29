@@ -4077,6 +4077,47 @@
         "title": "RecoveryReceipt",
         "type": "object"
       },
+      "RecoveryReceiptPage": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/components/schemas/RecoveryReceipt"
+            },
+            "maxItems": 100,
+            "title": "Receipts",
+            "type": "array"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "task_id",
+          "attempt_id",
+          "receipts",
+          "has_more"
+        ],
+        "title": "RecoveryReceiptPage",
+        "type": "object"
+      },
       "RemoteCheckItem": {
         "additionalProperties": false,
         "properties": {
@@ -9854,6 +9895,95 @@
           }
         ],
         "summary": "Recovery Preview"
+      }
+    },
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery/receipts": {
+      "get": {
+        "operationId": "recovery_receipts_api_runs__run_id__subscription_tasks__task_id__attempts__attempt_id__recovery_receipts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Attempt Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryReceiptPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Recovery Receipts"
       }
     },
     "/api/runs/{run_id}/subscription-tasks/{task_id}/controls": {

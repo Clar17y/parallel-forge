@@ -1105,6 +1105,151 @@ async def test_repair_preview_is_read_only_and_apply_is_idempotent(session_facto
 
 
 @pytest.mark.integration
+async def test_bootstrap_rotation_exposes_committed_receipt_without_old_actor_replay(
+    session_factory, tmp_path
+):
+    from forge.application.services.auth import AuthenticationError, AuthService
+    from forge.application.services.subscription_recovery import _signed, _verified
+    from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
+
+    case = await recovery_case(session_factory, tmp_path)
+    auth = AuthService(case["factory"])
+    first = await auth.exchange_bootstrap(await auth.issue_bootstrap())
+    first_actor = await auth.require_session(first.session_token)
+    service = SubscriptionRecoveryService(case["factory"])
+    preview = await service.preview(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=first_actor,
+        request=RecoveryPreviewRequest(action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT),
+    )
+    async with case["factory"]() as work:
+        key = await work.subscription_recovery.signing_key()
+        await work.rollback()
+    claims = _verified(preview.preview_token, key)
+    expires = datetime.now(UTC) + timedelta(seconds=2)
+    claims["expires_at"] = expires.isoformat()
+    request = RecoveryApplyRequest(
+        action=preview.action, preview_token=_signed(claims, key),
+        reason="Keep the original operator reason private",
+    )
+    receipt = await service.apply(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=first_actor, idempotency_key="secret-old-key", request=request,
+    )
+    await asyncio.sleep(max(0, (expires - datetime.now(UTC)).total_seconds()) + 0.05)
+    assert await service.apply(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=first_actor, idempotency_key="secret-old-key", request=request,
+    ) == receipt
+    second = await auth.exchange_bootstrap(await auth.rotate())
+    assert second.actor_id != first.actor_id
+    with pytest.raises(AuthenticationError):
+        await auth.require_session(first.session_token)
+    second_actor = await auth.require_session(second.session_token)
+    with pytest.raises(RecoveryConflict):
+        await service.apply(
+            run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+            actor=second_actor, idempotency_key="secret-old-key", request=request,
+        )
+    page = await SubscriptionTaskQuery(session_factory).receipts(
+        case["run_id"], case["task_id"], case["attempt_id"]
+    )
+    assert page is not None
+    assert page["receipts"] == [receipt]
+    assert page["has_more"] is False
+    assert "secret-old-key" not in repr(page)
+    assert request.reason not in repr(page)
+
+
+@pytest.mark.integration
+async def test_receipt_history_pages_latest_first_and_rejects_mismatched_parent(
+    session_factory, tmp_path
+):
+    from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
+
+    case = await recovery_case(session_factory, tmp_path)
+    now = datetime.now(UTC)
+    async with case["factory"]() as work:
+        for number, created_at in (
+            (1, now - timedelta(days=1)), (2, now), (3, now),
+        ):
+            work.session.add(SubscriptionRecoveryReceipt(
+                id=UUID(int=number), run_id=case["run_id"], task_id=case["task_id"],
+                attempt_id=case["attempt_id"], actor_id=str(uuid4()),
+                idempotency_key=f"private-{number}", request_digest="a" * 64,
+                action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT.value,
+                reason_code="applied", status="applied", reason=f"private reason {number}",
+                created_at=created_at,
+            ))
+        await work.commit()
+    query = SubscriptionTaskQuery(session_factory)
+    first = await query.receipts(case["run_id"], case["task_id"], case["attempt_id"], limit=2)
+    second = await query.receipts(
+        case["run_id"], case["task_id"], case["attempt_id"], offset=2, limit=2
+    )
+    assert [receipt.receipt_id for receipt in first["receipts"]] == [UUID(int=3), UUID(int=2)]
+    assert [receipt.receipt_id for receipt in second["receipts"]] == [UUID(int=1)]
+    assert first["has_more"] is True and second["has_more"] is False
+    assert "private" not in repr(first)
+    for identity in (
+        (uuid4(), case["task_id"], case["attempt_id"]),
+        (case["run_id"], uuid4(), case["attempt_id"]),
+        (case["run_id"], case["task_id"], uuid4()),
+    ):
+        assert await query.receipts(*identity) is None
+    with pytest.raises(ValueError):
+        await query.receipts(case["run_id"], case["task_id"], case["attempt_id"], limit=101)
+
+
+@pytest.mark.integration
+async def test_expiry_is_checked_after_waiting_for_run_lock(session_factory, tmp_path, monkeypatch):
+    from forge.application.services.subscription_recovery import _signed, _verified
+    from forge.persistence.repositories.subscription_recovery import (
+        PostgresSubscriptionRecoveryRepository,
+    )
+
+    case = await recovery_case(session_factory, tmp_path)
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    service = SubscriptionRecoveryService(case["factory"])
+    preview = await service.preview(
+        run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+        actor=actor,
+        request=RecoveryPreviewRequest(action=RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT),
+    )
+    async with case["factory"]() as work:
+        key = await work.subscription_recovery.signing_key()
+        await work.rollback()
+    claims = _verified(preview.preview_token, key)
+    expires = datetime.now(UTC) + timedelta(seconds=2)
+    claims["expires_at"] = expires.isoformat()
+    request = RecoveryApplyRequest(
+        action=preview.action, preview_token=_signed(claims, key), reason="Wait for the lock",
+    )
+    entered = asyncio.Event()
+    original_apply = PostgresSubscriptionRecoveryRepository.apply
+
+    async def observed_apply(self, *args, **kwargs):
+        entered.set()
+        return await original_apply(self, *args, **kwargs)
+
+    monkeypatch.setattr(PostgresSubscriptionRecoveryRepository, "apply", observed_apply)
+    async with case["factory"]() as work:
+        await work.runs.get_for_update(case["run_id"])
+        pending = asyncio.create_task(service.apply(
+            run_id=case["run_id"], task_id=case["task_id"], attempt_id=case["attempt_id"],
+            actor=actor, idempotency_key="expiring-under-lock", request=request,
+        ))
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.sleep(max(0, (expires - datetime.now(UTC)).total_seconds()) + 0.05)
+        await work.rollback()
+    with pytest.raises(RecoveryConflict, match="expired"):
+        await asyncio.wait_for(pending, 3)
+    async with case["factory"]() as work:
+        assert await work.session.scalar(select(SubscriptionRecoveryReceipt.id)) is None
+        assert await work.session.get(SubscriptionRepairDebit, case["attempt_id"]) is None
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("kind", ["plan", "handoff"])
 async def test_modern_gateway_role_rejection_repairs_stale_approved_contract(
     session_factory, tmp_path, kind

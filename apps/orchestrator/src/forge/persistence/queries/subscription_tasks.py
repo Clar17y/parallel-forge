@@ -299,6 +299,34 @@ class SubscriptionTaskQuery:
                 "has_more": len(rows) > limit,
             }
 
+    async def receipts(
+        self, run_id: UUID, task_id: UUID, attempt_id: UUID, *, offset: int = 0, limit: int = 25
+    ) -> dict[str, object] | None:
+        _bounds(offset, limit)
+        async with self._factory() as session:
+            source = await session.scalar(
+                select(SubscriptionAttempt.id)
+                .join(SubscriptionTask, SubscriptionTask.id == SubscriptionAttempt.task_row_id)
+                .where(
+                    SubscriptionTask.run_id == run_id,
+                    SubscriptionTask.id == task_id,
+                    SubscriptionAttempt.run_id == run_id,
+                    SubscriptionAttempt.id == attempt_id,
+                )
+            )
+            if source is None:
+                return None
+            receipts, has_more = await PostgresSubscriptionRecoveryRepository(
+                session
+            ).receipt_history(run_id, task_id, attempt_id, offset=offset, limit=limit)
+            return {
+                "run_id": run_id,
+                "task_id": task_id,
+                "attempt_id": attempt_id,
+                "receipts": receipts,
+                "has_more": has_more,
+            }
+
 
 def _bounds(offset: int, limit: int) -> None:
     if (

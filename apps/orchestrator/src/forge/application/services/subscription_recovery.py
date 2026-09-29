@@ -131,7 +131,7 @@ class SubscriptionRecoveryService:
                 expires = datetime.fromisoformat(str(claims["expires_at"]))
             except KeyError, TypeError, ValueError:
                 raise RecoveryConflict("recovery preview expiry is invalid") from None
-            if expires.tzinfo is None or expires <= datetime.now(UTC):
+            if expires.tzinfo is None:
                 raise RecoveryConflict("recovery preview expired")
             binding = claims.get("binding")
             if not isinstance(binding, str) or len(binding) != 64:
@@ -145,6 +145,7 @@ class SubscriptionRecoveryService:
                 idempotency_key=idempotency_key,
                 request_digest=request_digest,
                 binding=binding,
+                expires_at=expires,
                 reason=request.reason,
             )
             await work.commit()
