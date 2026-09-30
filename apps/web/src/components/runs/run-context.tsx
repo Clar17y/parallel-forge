@@ -6,6 +6,10 @@ import { AutonomyBanner } from './autonomy-banner';
 import { nextGateMessage, readableLabel } from './run-presentation';
 
 export function RunContext({ projection: p, onTasks }: { projection: components['schemas']['RunProjection']; onTasks?: () => void }) {
+  const profile = p.run.subscription_profile;
+  const profileSource = profile?.selection_source === 'project_default'
+    ? 'Project default'
+    : profile?.selection_source === 'run_override' ? 'Chosen for this run' : 'Source unknown';
   return <aside className="run-context" aria-label="Run context">
     <Panel title="Next gate">
       <p>{nextGateMessage(p)}</p>
@@ -18,6 +22,9 @@ export function RunContext({ projection: p, onTasks }: { projection: components[
     <Panel title="Run details">
       <dl className="key-values">
         <div><dt>State</dt><dd>{readableLabel(p.run.state)}</dd></div>
+        <div><dt>Subscription profile</dt><dd>{profile
+          ? <><code>{profile.profile_id}</code> · version {profile.profile_version} · {profileSource}</>
+          : 'No subscription profile frozen for this run'}</dd></div>
         <div><dt>Local attempts left</dt><dd>{p.budgets.local_remediation_remaining} / {p.budgets.local_remediation_limit}</dd></div>
         <div><dt>Remote attempts left</dt><dd>{p.budgets.remote_remediation_remaining} / {p.budgets.remote_remediation_limit}</dd></div>
         <div><dt>Runner</dt><dd>{p.security.runner_mode === 'trusted_host' ? 'Trusted host · unsandboxed' : p.security.runner_mode}</dd></div>

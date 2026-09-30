@@ -4739,6 +4739,30 @@
         "additionalProperties": false,
         "description": "Closed run creation body.",
         "properties": {
+          "profile_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
           "task_id": {
             "format": "uuid",
             "title": "Task Id",
@@ -4986,6 +5010,43 @@
         "title": "RunListPullRequest",
         "type": "object"
       },
+      "RunProfileSelection": {
+        "additionalProperties": false,
+        "description": "Frozen profile identity; provenance can be unknown on retained history.",
+        "properties": {
+          "profile_id": {
+            "format": "uuid",
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "profile_version": {
+            "title": "Profile Version",
+            "type": "integer"
+          },
+          "selection_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "project_default",
+                  "run_override"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selection Source"
+          }
+        },
+        "required": [
+          "profile_id",
+          "profile_version",
+          "selection_source"
+        ],
+        "title": "RunProfileSelection",
+        "type": "object"
+      },
       "RunProjection": {
         "additionalProperties": false,
         "properties": {
@@ -5184,6 +5245,16 @@
           },
           "state": {
             "$ref": "#/components/schemas/RunState"
+          },
+          "subscription_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunProfileSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "suspended_state": {
             "anyOf": [

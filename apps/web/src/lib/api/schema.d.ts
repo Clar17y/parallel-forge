@@ -2705,6 +2705,10 @@ export interface components {
          * @description Closed run creation body.
          */
         RunCreateRequest: {
+            /** Profile Id */
+            profile_id?: string | null;
+            /** Profile Version */
+            profile_version?: number | null;
             /**
              * Task Id
              * Format: uuid
@@ -2799,6 +2803,21 @@ export interface components {
             /** Repository */
             repository: string;
         };
+        /**
+         * RunProfileSelection
+         * @description Frozen profile identity; provenance can be unknown on retained history.
+         */
+        RunProfileSelection: {
+            /**
+             * Profile Id
+             * Format: uuid
+             */
+            profile_id: string;
+            /** Profile Version */
+            profile_version: number;
+            /** Selection Source */
+            selection_source: ("project_default" | "run_override") | null;
+        };
         /** RunProjection */
         RunProjection: {
             /** Agents */
@@ -2861,6 +2880,7 @@ export interface components {
             /** Remote Remediation Count */
             remote_remediation_count: number;
             state: components["schemas"]["RunState"];
+            subscription_profile?: components["schemas"]["RunProfileSelection"] | null;
             suspended_state: components["schemas"]["RunState"] | null;
             suspension_kind: components["schemas"]["SuspensionKind"] | null;
             /**

@@ -17,6 +17,7 @@ from forge.api.security import parse_web_origin
 from forge.application.services.auth import AuthService, AuthUnitOfWork
 from forge.cli.evaluations import eval_app
 from forge.cli.jev import jev_app
+from forge.cli.runs import run_app
 from forge.cli.search_ranking import ranking_app
 from forge.cli.subscription_capabilities import capability_app
 from forge.cli.subscription_profiles import profile_app
@@ -34,6 +35,7 @@ app.add_typer(operator_app, name="operator")
 app.add_typer(worktree_app, name="worktree")
 app.add_typer(eval_app, name="eval")
 app.add_typer(profile_app, name="profile")
+app.add_typer(run_app, name="run")
 app.add_typer(quota_app, name="subscription-quota")
 app.add_typer(runtime_app, name="subscription-runtime")
 app.add_typer(task_app, name="subscription-tasks")

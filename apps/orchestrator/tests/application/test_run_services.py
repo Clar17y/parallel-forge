@@ -400,6 +400,70 @@ async def test_create_run_snapshots_policy_base_and_enqueues_planning_once(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_explicit_run_profile_is_frozen_and_part_of_idempotency(tmp_path: Path) -> None:
+    from forge.application.services.runs import RunService
+    from forge.domain.subscription import (
+        OperatorProfile,
+        RolePreference,
+        RouteSpec,
+        SpecialistPurpose,
+    )
+
+    work, _, task_id = _uow()
+    profile_id = uuid4()
+    profile = OperatorProfile(
+        profile_id=profile_id, version=1,
+        preferences=(RolePreference(
+            purpose=SpecialistPurpose.PRIMARY,
+            preferred_route=RouteSpec(provider="openai", client="codex", model="gpt-test"),
+        ),),
+    )
+
+    class Profiles(NoSubscriptionProfile):
+        async def profile(self, selected_id, version):
+            assert selected_id == profile_id and version == 1
+            return profile
+        async def freeze_envelope(self, envelope):
+            self.envelope = envelope
+            return envelope
+
+    work.subscription = Profiles()
+    service = RunService(lambda: work, repository_inspector=FakeInspector(tmp_path / "repo"), data_root=tmp_path)
+    run = await service.create_run(actor=ACTOR, idempotency_key="override-1", task_id=task_id,
+                                   profile_id=profile_id, profile_version=1)
+
+    assert work.subscription.envelope.profile_id == profile_id
+    assert work.events.records[0].payload["subscription_profile_selection_source"] == "run_override"
+    replay = await service.create_run(actor=ACTOR, idempotency_key="override-1", task_id=task_id,
+                                      profile_id=profile_id, profile_version=1)
+    assert replay.id == run.id
+    with pytest.raises(MutationConflict):
+        await service.create_run(actor=ACTOR, idempotency_key="override-1", task_id=task_id)
+    with pytest.raises(MutationConflict):
+        await service.create_run(actor=ACTOR, idempotency_key="override-1", task_id=task_id,
+                                 profile_id=profile_id, profile_version=2)
+
+
+@pytest.mark.asyncio
+async def test_task_only_run_receipt_fingerprint_remains_compatible(tmp_path: Path) -> None:
+    import hashlib
+    import json
+
+    from forge.application.services.runs import RunService
+
+    work, _project_id, task_id = _uow()
+    service = RunService(
+        lambda: work, repository_inspector=FakeInspector(tmp_path / "repo"), data_root=tmp_path
+    )
+    await service.create_run(actor=ACTOR, idempotency_key="legacy-fingerprint", task_id=task_id)
+    receipt = next(iter(work.mutations.receipts.values()))
+    old_request = json.dumps(
+        {"task_id": str(task_id)}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    assert receipt.request_digest == hashlib.sha256(old_request.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.asyncio
 async def test_run_queries_return_safe_snapshots() -> None:
     from forge.application.services.runs import RunService
 

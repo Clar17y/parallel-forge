@@ -127,10 +127,19 @@ class FakeRunService:
         self.get_calls: list[UUID] = []
 
     async def create_run(
-        self, *, actor: object, idempotency_key: str, task_id: UUID
+        self, *, actor: object, idempotency_key: str, task_id: UUID,
+        profile_id: UUID | None = None, profile_version: int | None = None,
     ) -> RunSnapshot:
         self.create_calls.append((actor, idempotency_key, task_id))
         return self.run
+
+    async def profile_selection(self, run_id: UUID) -> None:
+        assert run_id == self.run.id
+        return None
+
+    async def list_with_profile_selections(self, *, project_id=None, task_id=None):
+        records = await self.list(project_id=project_id, task_id=task_id)
+        return records, {}
 
     async def list(
         self, *, project_id: UUID | None = None, task_id: UUID | None = None

@@ -179,14 +179,17 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
                 client, "PUT", selection_path, {"profile_id": profile_id, "profile_version": 1}
             )
 
-            def create_run(title):
+            def create_run(title, *, override=None):
                 task = _mutation(
                     client,
                     "POST",
                     "/api/tasks",
                     {"project_id": project["id"], "title": title, "body": "Profile freeze fixture"},
                 )
-                created = _mutation(client, "POST", "/api/runs", {"task_id": task["id"]})
+                body = {"task_id": task["id"]}
+                if override is not None:
+                    body.update(profile_id=override["profile_id"], profile_version=override["version"])
+                created = _mutation(client, "POST", "/api/runs", body)
                 return _wait_run(client, harness, created["id"], "PLANNING")
 
             original = create_run("Frozen Astra primary")
@@ -247,6 +250,10 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
                 },
             )
             assert selected == appended
+            luna_profile = _mutation(
+                client, "POST", "/api/subscription-profiles",
+                _profile(ASTRA, worker=LUNA, fallback=TERRA),
+            )
             stale = client.post(
                 f"/api/subscription-profiles/{profile_id}/versions",
                 json=_profile(ASTRA) | {"expected_current_version": 1},
@@ -268,6 +275,30 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
             assert before_restart["envelopes"][future_id]["fallbacks"][
                 "routine_implementation"
             ] == [TERRA]
+            luna_run = create_run("One-run Luna override", override=luna_profile)
+            luna_id = luna_run["id"]
+            assert luna_run["subscription_profile"] == {
+                "profile_id": luna_profile["profile_id"],
+                "profile_version": luna_profile["version"],
+                "selection_source": "run_override",
+            }
+            luna_frozen = asyncio.run(_stored(test_database_url))["envelopes"][luna_id]
+            assert luna_frozen["routes"]["routine_implementation"] == LUNA
+            assert luna_frozen["fallbacks"]["routine_implementation"] == [TERRA]
+            assert client.get(selection_path).json() == appended
+            cli_task = _mutation(
+                client, "POST", "/api/tasks",
+                {"project_id": project["id"], "title": "CLI Luna override", "body": "CLI fixture"},
+            )
+            cli_run = json.loads(harness.run_cli([
+                "run", "create", "--task-id", cli_task["id"], "--idempotency-key", str(uuid4()),
+                "--profile-id", luna_profile["profile_id"], "--profile-version", str(luna_profile["version"]),
+            ]))
+            cli_run_id = cli_run["id"]
+            assert cli_run["subscription_profile"]["selection_source"] == "run_override"
+            assert json.loads(harness.run_cli(["run", "show", "--run-id", cli_run_id]))["subscription_profile"]["profile_id"] == luna_profile["profile_id"]
+            _wait_run(client, harness, cli_run_id, "PLANNING")
+            before_restart = asyncio.run(_stored(test_database_url))
 
             harness.stop_worker()
             resume_key = str(uuid4())
@@ -307,9 +338,10 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
             settled = asyncio.run(_stored(test_database_url))
             assert settled["envelopes"] == before_restart["envelopes"]
             assert {row["profile_version"] for row in settled["envelopes"].values()} == {1, 2}
+            assert client.get(selection_path).json() == appended
             assert all(value == 0 for value in settled["execution_counts"].values())
             assert settled["run_controls"][original_id] == {"run.paused": 1, "run.resumed": 1}
-            assert settled["profile_versions"] == 2
+            assert settled["profile_versions"] == 3
             assert (
                 _mutation(
                     client, "POST", f"/api/runs/{original_id}/commands", resume_body, key=resume_key
@@ -324,6 +356,8 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
                 "profile_id": profile_id,
                 "original_run": original_id,
                 "future_run": future_id,
+                "luna_override_run": luna_id,
+                "luna_cli_run": cli_run_id,
                 "pause_command": pause["id"],
                 "resume_command": resume["id"],
                 "before_restart": before_restart,

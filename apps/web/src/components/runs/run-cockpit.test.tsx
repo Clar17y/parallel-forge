@@ -26,6 +26,16 @@ test('a disabled database is not a missing resource and terminal runs have no in
   expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument();
 });
 
+test('run details show the frozen profile identity and source', () => {
+  const initial = projection();
+  initial.run.subscription_profile = {
+    profile_id: 'profile-1', profile_version: 4, selection_source: 'run_override',
+  };
+  render(<RunCockpit initial={initial} />);
+  expect(screen.getByText('profile-1')).toBeInTheDocument();
+  expect(screen.getByText(/version 4.*Chosen for this run/)).toBeInTheDocument();
+});
+
 test('recovery hold explains uncertainty while preserving the server-provided cancel control', () => {
   const initial = projection({ recovery_hold: true });
   initial.run.state = 'PAUSED';

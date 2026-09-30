@@ -18,6 +18,7 @@ async def test_runs_list_create_and_get_use_injected_services(
     listed = await task10_client.get("/api/runs", headers=host_headers)
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == str(task10_route_context.run.id)
+    assert listed.json()[0]["subscription_profile"] is None
 
     created = await task10_client.post(
         "/api/runs",
@@ -26,6 +27,7 @@ async def test_runs_list_create_and_get_use_injected_services(
     )
     assert created.status_code == 201
     assert created.json()["state"] == "CREATED"
+    assert created.json()["subscription_profile"] is None
     assert task10_route_context.runs.create_calls[0][1] == "run-create-1"
 
     fetched = await task10_client.get(
@@ -33,6 +35,7 @@ async def test_runs_list_create_and_get_use_injected_services(
     )
     assert fetched.status_code == 200
     assert fetched.json()["base_ref"] == "refs/heads/main"
+    assert fetched.json()["subscription_profile"] is None
 
 
 @pytest.mark.asyncio
@@ -48,6 +51,19 @@ async def test_run_command_route_enqueues_closed_command_without_transition(
     assert response.json()["command_type"] == "pause"
     assert response.json()["status"] == "pending"
     assert task10_route_context.commands.calls[0][2] == "run-command-1"
+
+
+@pytest.mark.asyncio
+async def test_run_create_requires_profile_identity_pair_without_creating_run(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    response = await task10_client.post(
+        "/api/runs",
+        headers={**route_headers, "Idempotency-Key": "run-incomplete-profile"},
+        json={"task_id": str(task10_route_context.task.id), "profile_id": "00000000-0000-0000-0000-000000000001"},
+    )
+    assert response.status_code == 422
+    assert task10_route_context.runs.create_calls == []
 
 
 @pytest.mark.asyncio
@@ -139,15 +155,38 @@ async def test_postgres_operator_client_registers_task_and_created_run(
             json={"project_id": project_id, "title": "Exact title", "body": "Exact body"},
         )
         assert task_response.status_code == 201
+        run_service = app.state.run_service
+
+        class FailFirstSelection:
+            failed = False
+
+            def __getattr__(self, name):
+                return getattr(run_service, name)
+
+            async def profile_selection(self, run_id):
+                if not self.failed:
+                    from sqlalchemy.exc import SQLAlchemyError
+
+                    self.failed = True
+                    raise SQLAlchemyError("simulated post-commit read outage")
+                return await run_service.profile_selection(run_id)
+
+        app.state.run_service = FailFirstSelection()
         run_response = await client.post(
             "/api/runs",
             headers={**secure_headers, "Idempotency-Key": "operator-run-1"},
             json={"task_id": task_response.json()["id"]},
         )
+        assert run_response.status_code == 503
+        retry_response = await client.post(
+            "/api/runs",
+            headers={**secure_headers, "Idempotency-Key": "operator-run-1"},
+            json={"task_id": task_response.json()["id"]},
+        )
 
-    assert run_response.status_code == 201
-    assert run_response.json()["state"] == "CREATED"
-    assert run_response.json()["base_ref"] == "refs/heads/main"
+        assert retry_response.status_code == 201, retry_response.json()
+    assert retry_response.json()["state"] == "CREATED"
+    assert retry_response.json()["base_ref"] == "refs/heads/main"
 
 
 async def _git(repository, *arguments: str) -> None:

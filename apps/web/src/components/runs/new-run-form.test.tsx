@@ -1,14 +1,15 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { NewRunForm } from './new-run-form';
-import { mutate } from '@/lib/api/client';
+import { api, ApiError, mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
 
 vi.mock('@/lib/api/client', async importOriginal => ({
-  ...await importOriginal<typeof import('@/lib/api/client')>(), mutate: vi.fn(),
+  ...await importOriginal<typeof import('@/lib/api/client')>(), mutate: vi.fn(), api: vi.fn(),
 }));
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.mocked(api).mockReset(); vi.mocked(mutate).mockReset(); });
+beforeEach(() => { vi.mocked(api).mockResolvedValue([]); });
 const project: components['schemas']['ProjectResponse'] = {
   id: 'project-1', name: 'Parallel', repository_path: 'C:/code/parallel',
   canonical_path_key: 'c:/code/parallel', github_repository: 'owner/repo', default_branch: 'main',
@@ -45,10 +46,49 @@ test('retries an uncertain run response using the same task and run key', async 
   const user = await fill();
   await user.click(screen.getByRole('button', { name: 'Create run' }));
   expect(await screen.findByRole('alert')).not.toHaveTextContent('private network detail');
+  expect(screen.getByLabelText('Subscription profile')).toBeDisabled();
   await user.click(screen.getByRole('button', { name: 'Retry creation' }));
   await waitFor(() => expect(mutate).toHaveBeenCalledTimes(3));
   expect(vi.mocked(mutate).mock.calls[2]).toEqual(vi.mocked(mutate).mock.calls[1]);
   expect(screen.getByLabelText('Task title')).toHaveValue('Build feature');
+});
+
+test('captures a chosen immutable profile in the run request and permits correction after definitive rejection', async () => {
+  vi.mocked(api).mockResolvedValueOnce([{
+    profile_id: 'profile-1', version: 3, preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', model: 'gpt-test' } }],
+    approved_mappings: [], default_billing_mode: 'allowance_only', jev: null,
+  }]);
+  vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' })
+    .mockRejectedValueOnce(new ApiError(422, 'request-failed'))
+    .mockRejectedValueOnce(new Error('lost corrected response'))
+    .mockResolvedValueOnce({ id: 'run-1' });
+  render(<NewRunForm projects={[{ ...project, issue_import_available: true }, { ...project, id: 'project-2', name: 'Second' }]} onCreated={vi.fn()} />);
+  await screen.findByRole('option', { name: /profile-1/ });
+  const user = await fill();
+  await user.selectOptions(screen.getByLabelText('Task source'), 'text');
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'profile-1:3');
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await screen.findByRole('alert');
+  expect(screen.getByLabelText('Project')).toBeDisabled();
+  expect(screen.getByLabelText('Task source')).toBeDisabled();
+  expect(screen.getByLabelText('Task title')).toHaveAttribute('readonly');
+  expect(screen.getByLabelText('Task description')).toHaveAttribute('readonly');
+  expect(screen.getByLabelText('Subscription profile')).toBeEnabled();
+  expect(screen.getByLabelText('Project')).toHaveValue('project-1');
+  expect(screen.getByLabelText('Task title')).toHaveValue('Build feature');
+  expect(screen.getByLabelText('Task description')).toHaveValue('A concrete change');
+  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-1', profile_id: 'profile-1', profile_version: 3 });
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'default');
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(3));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Creation could not be confirmed');
+  expect(screen.getByLabelText('Subscription profile')).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(4));
+  expect(vi.mocked(mutate).mock.calls[2][1]).toEqual({ task_id: 'task-1' });
+  expect(vi.mocked(mutate).mock.calls[3]).toEqual(vi.mocked(mutate).mock.calls[2]);
+  expect(vi.mocked(mutate).mock.calls[2][2].idempotencyKey).not.toBe(vi.mocked(mutate).mock.calls[1][2].idempotencyKey);
+  expect(vi.mocked(mutate).mock.calls.filter(call => call[0] === '/tasks')).toHaveLength(1);
 });
 
 test('an uncertain task response retains its request key and prevents duplicate clicks', async () => {
@@ -64,6 +104,57 @@ test('an uncertain task response retains its request key and prevents duplicate 
   await user.click(screen.getByRole('button', { name: 'Retry creation' }));
   await waitFor(() => expect(mutate).toHaveBeenCalledTimes(3));
   expect(vi.mocked(mutate).mock.calls[1]).toEqual(vi.mocked(mutate).mock.calls[0]);
+});
+
+test.each([404, 409, 500])('a definitive-looking HTTP %i run failure stays frozen and retries the identical default request', async status => {
+  vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' })
+    .mockRejectedValueOnce(new ApiError(status, 'request-failed'))
+    .mockResolvedValueOnce({ id: 'run-1' });
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  const user = await fill();
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await screen.findByRole('alert');
+  expect(screen.getByLabelText('Subscription profile')).toBeDisabled();
+  expect(screen.getByLabelText('Project')).toBeDisabled();
+  expect(screen.getByLabelText('Task title')).toHaveAttribute('readonly');
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(mutate).mock.calls[2]).toEqual(vi.mocked(mutate).mock.calls[1]);
+});
+
+test('choosing a profile then changing projects resets to the new project default', async () => {
+  vi.mocked(api).mockResolvedValueOnce([{
+    profile_id: 'profile-1', version: 3, preferences: [], approved_mappings: [], default_billing_mode: 'allowance_only', jev: null,
+  }]);
+  vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-2' }).mockResolvedValueOnce({ id: 'run-2' });
+  const second = { ...project, id: 'project-2', name: 'Second' };
+  render(<NewRunForm projects={[project, second]} onCreated={vi.fn()} />);
+  await screen.findByRole('option', { name: /profile-1/ });
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'profile-1:3');
+  await user.selectOptions(screen.getByLabelText('Project'), 'project-2');
+  expect(screen.getByLabelText('Subscription profile')).toHaveValue('default');
+  await user.type(screen.getByLabelText('Task title'), 'Second project task');
+  await user.type(screen.getByLabelText('Task description'), 'Second project body');
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(mutate).mock.calls[0][1]).toMatchObject({ project_id: 'project-2' });
+  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-2' });
+});
+
+test('submitting while profile options are loading captures project default for uncertain retry', async () => {
+  vi.mocked(api).mockImplementationOnce(() => new Promise(() => {}));
+  vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' })
+    .mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce({ id: 'run-1' });
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  const user = await fill();
+  expect(screen.getByLabelText('Subscription profile')).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await screen.findByRole('alert');
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-1' });
+  expect(vi.mocked(mutate).mock.calls[2]).toEqual(vi.mocked(mutate).mock.calls[1]);
 });
 
 test('server capability exposes mutually exclusive issue import with no browser repository override', async () => {

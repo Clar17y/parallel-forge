@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from forge.application.services.runs import RunCommandRequest as ServiceRunCommandRequest
 from forge.domain.command import CommandEnvelope
@@ -17,6 +18,14 @@ class RunCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: UUID
+    profile_id: UUID | None = None
+    profile_version: StrictInt | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def complete_profile_identity(self) -> RunCreateRequest:
+        if (self.profile_id is None) != (self.profile_version is None):
+            raise ValueError("profile_id and profile_version must be supplied together")
+        return self
 
 
 class RunCommandRequest(ServiceRunCommandRequest):
@@ -45,9 +54,14 @@ class RunResponse(BaseModel):
     base_ref: str | None
     base_sha: str | None
     branch_name: str | None
+    subscription_profile: RunProfileSelection | None = None
 
     @classmethod
-    def from_snapshot(cls, run: RunSnapshot) -> RunResponse:
+    def from_snapshot(
+        cls, run: RunSnapshot, subscription_profile: RunProfileSelection | dict[str, object] | None = None
+    ) -> RunResponse:
+        if isinstance(subscription_profile, dict):
+            subscription_profile = RunProfileSelection.model_validate(subscription_profile)
         return cls(
             id=run.id,
             project_id=run.project_id,
@@ -62,7 +76,18 @@ class RunResponse(BaseModel):
             base_ref=run.base_ref,
             base_sha=run.base_sha,
             branch_name=run.branch_name,
+            subscription_profile=subscription_profile,
         )
+
+
+class RunProfileSelection(BaseModel):
+    """Frozen profile identity; provenance can be unknown on retained history."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: UUID
+    profile_version: int
+    selection_source: Literal["project_default", "run_override"] | None
 
 
 class RunCommandResponse(BaseModel):
