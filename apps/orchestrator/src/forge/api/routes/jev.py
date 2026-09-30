@@ -21,7 +21,10 @@ def router_for() -> APIRouter:
         service = getattr(request.app.state, "jev_reporting_service", None)
         if service is None:
             raise HTTPException(503, "Jev report unavailable")
-        value = await service.report(run_id)
+        try:
+            value = await service.report(run_id)
+        except ValueError:
+            raise HTTPException(503, "Jev report unavailable for the current run policy") from None
         if value is None:
             raise HTTPException(404, "run not found")
         return JevReportResponse.from_report(value)

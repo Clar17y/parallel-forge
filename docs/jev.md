@@ -1,6 +1,15 @@
 # Jev advisory search and review
 
-Jev is an optional, per-project advisory service for semantic search and review focus. Its policy is stored in each immutable project policy version, and each run report uses the policy version bound to that run. A project with no `jev` policy keeps the legacy global search-ranking behavior; editing an unrelated field must not add an explicit Jev policy.
+Jev is an optional advisory service for semantic search and review focus. A subscription profile can supply a reusable default for all projects using it. Explicit project Jev settings, including `off`, override the profile default. Each run uses its immutable project policy and bound profile version; changing a profile or project selection does not change an existing run. When neither supplies a Jev setting, legacy global search-ranking behavior remains unchanged.
+
+## Enable once in a subscription profile
+
+1. Supply `TYPESAFE_API_KEY` to the Forge worker process and restart that worker. The API process only reads the persisted report.
+2. Open **Subscription profiles**, create or edit a profile, and select **Configure Jev default**.
+3. Choose **On** (or **Shadow** for measurement), allow remote processing, and save the profile version.
+4. Select that profile version for the projects that should share its defaults. Leave **Configure Jev for this project** unset to inherit the profile setting. Start a new run to use the saved configuration.
+
+The profile default includes the Jev model alias and limits. Existing project overrides remain in force, so a project explicitly set to Off stays off. Clear **Configure Jev for this project** and save a new policy version to return to inheritance. Runs without a bound subscription profile do not inherit a project's currently selected profile retroactively.
 
 ## Enable for a project
 
@@ -9,6 +18,8 @@ Jev is an optional, per-project advisory service for semantic search and review 
 3. Save the policy and start a new run. Inspect **Usage → Jev advisory usage**, or run `forge jev report RUN_ID --json`.
 
 To disable an existing configuration, save a policy with Jev mode `off`. Existing runs retain their bound policy version. Unconfigured legacy search-ranking activity continues to use the separate legacy ranking telemetry.
+
+Profile and project defaults apply to future runs. The worker needs `TYPESAFE_API_KEY`, and remote processing requires explicit `allow_remote` consent in the effective configuration. Existing run policies and reports remain bound to their saved versions.
 
 ## Modes and source consent
 

@@ -5,17 +5,19 @@ import { api } from '@/lib/api/client';
 type RefreshOptions = {
   refreshIntervalMs?: number;
   keepPreviousOnRefresh?: boolean;
+  keepPreviousOnError?: boolean;
   refreshStorageKey?: string;
 };
 
 export function useApi<T>(path: string | null, {
   refreshIntervalMs,
   keepPreviousOnRefresh = false,
+  keepPreviousOnError = false,
   refreshStorageKey,
 }: RefreshOptions = {}) {
   const requestToken = useRef(0);
   const [activeToken, setActiveToken] = useState(0);
-  const [result, setResult] = useState<{ key: string; path: string; value?: T; failed: boolean; token: number }>();
+  const [result, setResult] = useState<{ key: string; path: string; value?: T; failed: boolean; token: number; valueToken: number }>();
   const key = `${path}:${activeToken}`;
   useEffect(() => {
     if (!path) return;
@@ -23,16 +25,20 @@ export function useApi<T>(path: string | null, {
     api<T>(path, { signal: controller.signal, cache: 'no-store' }).then(value => {
       if (!controller.signal.aborted) {
         if (value !== undefined) {
-          setResult({ key, path, value, failed: false, token: activeToken });
+          setResult({ key, path, value, failed: false, token: activeToken, valueToken: activeToken });
         } else {
-          setResult({ key, path, failed: true, token: activeToken });
+          setResult(previous => ({ key, path, failed: true, token: activeToken,
+            value: keepPreviousOnError && previous?.path === path ? previous.value : undefined,
+            valueToken: previous?.path === path ? previous.valueToken : activeToken }));
         }
       }
     }, () => {
-      if (!controller.signal.aborted) setResult({ key, path, failed: true, token: activeToken });
+      if (!controller.signal.aborted) setResult(previous => ({ key, path, failed: true, token: activeToken,
+        value: keepPreviousOnError && previous?.path === path ? previous.value : undefined,
+        valueToken: previous?.path === path ? previous.valueToken : activeToken }));
     });
     return () => controller.abort();
-  }, [activeToken, path, key]);
+  }, [activeToken, path, key, keepPreviousOnError]);
   const refreshLocal = useCallback(() => {
     const token = ++requestToken.current;
     setActiveToken(token);
@@ -69,7 +75,7 @@ export function useApi<T>(path: string | null, {
   const shown = current ?? (keepPreviousOnRefresh && result?.path === path ? result : undefined);
   return {
     value: shown?.value,
-    token: shown?.token ?? 0,
+    token: shown?.valueToken ?? 0,
     failed: current?.failed ?? false,
     loading: path !== null && !current && shown?.value === undefined,
     refreshing: path !== null && !current,

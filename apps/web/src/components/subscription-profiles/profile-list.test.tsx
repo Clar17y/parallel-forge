@@ -7,7 +7,12 @@ const mockedClient = vi.hoisted(() => {
   class MockApiError extends Error { constructor(public status: number, code: string) { super(code); } }
   return { MockApiError, api: vi.fn() };
 });
-mockedClient.api.mockRejectedValue(new mockedClient.MockApiError(409, 'stale-projection'));
+mockedClient.api.mockImplementation(async (path: string) => {
+  if (path === '/subscription-models') {
+    return { observed_at: '2026-09-29T20:00:00Z', catalogs: [] };
+  }
+  throw new mockedClient.MockApiError(409, 'stale-projection');
+});
 vi.mock('@/lib/api/client', () => ({ ApiError: mockedClient.MockApiError, api: mockedClient.api }));
 
 afterEach(cleanup);
@@ -31,6 +36,8 @@ test('offers an explicit reload after a stale append response', async () => {
   await userEvent.type(screen.getByLabelText('Preferred route provider'), 'ignored');
   await userEvent.click(screen.getByRole('button', { name: 'Append version 2' }));
   expect(await screen.findByText(/changed in another tab/)).toBeInTheDocument();
+  expect(screen.getByLabelText('Preferred route provider')).toHaveValue('openaiignored');
+  expect(screen.getByRole('button', { name: 'Append version 2' })).toBeDisabled();
   await userEvent.click(screen.getByRole('button', { name: 'Reload profile history' }));
   expect(refresh).toHaveBeenCalled();
 });
@@ -56,7 +63,12 @@ test('puts the current profile first and keeps historical role details expandabl
 test.each(['success', 'failure'])('keeps the editor attached while a profile append is pending (%s)', async outcome => {
   let resolve!: (value: unknown) => void;
   let reject!: (error: Error) => void;
-  mockedClient.api.mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+  mockedClient.api.mockImplementation((path: string) => {
+    if (path === '/subscription-models') {
+      return Promise.resolve({ observed_at: '2026-09-29T20:00:00Z', catalogs: [] });
+    }
+    return new Promise((done, fail) => { resolve = done; reject = fail; });
+  });
   const refresh = vi.fn();
   render(<ProfileList profiles={[profile(1)]} refresh={refresh} />);
   await userEvent.click(screen.getByRole('button', { name: 'Append from latest version 1' }));
@@ -73,4 +85,57 @@ test.each(['success', 'failure'])('keeps the editor attached while a profile app
     await userEvent.click(screen.getByRole('button', { name: 'Cancel editing' }));
     expect(screen.getByRole('form', { name: 'Create subscription profile' })).toBeInTheDocument();
   }
+});
+
+test('a confirmed create clears its draft even while history refresh is pending; a failed create keeps a retry key', async () => {
+  let saves = 0;
+  const keys: string[] = [];
+  mockedClient.api.mockImplementation(async (path: string, options?: RequestInit) => {
+    if (path === '/subscription-models') return { observed_at: '2026-09-29T20:00:00Z', catalogs: [] };
+    keys.push(String((options?.headers as Record<string, string>)['Idempotency-Key']));
+    if (++saves === 1) throw new Error('temporary failure');
+    return profile(1);
+  });
+  const refresh = vi.fn();
+  render(<ProfileList profiles={[]} refresh={refresh} />);
+  await userEvent.type(screen.getByLabelText('Preferred route provider'), 'openai');
+  await userEvent.type(screen.getByLabelText('Preferred route client'), 'codex_app_server');
+  await userEvent.type(screen.getByLabelText('Preferred route model'), 'gpt-6-astra');
+  const draft = screen.getByLabelText('Preferred route model');
+  await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('temporary failure');
+  expect(draft).toHaveValue('gpt-6-astra');
+  await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
+  expect(refresh).toHaveBeenCalledOnce();
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+  expect(screen.getByLabelText('Preferred route model')).not.toBe(draft);
+  expect(screen.getByLabelText('Preferred route model')).toHaveValue('');
+});
+
+test('displays saved Jev default in profile version card details', () => {
+  const profileWithJev = {
+    ...profile(1),
+    jev: {
+      mode: 'on' as const,
+      allow_remote: true,
+      model: 'jev-latest',
+      semantic_search: true,
+      review_focus: true,
+      top_k: 15,
+      max_requests_per_run: 64,
+      max_input_units_per_run: 250000,
+      max_candidates: 96,
+      max_result_chars: 12000,
+      timeout_seconds: 15,
+      cache_ttl_seconds: 3600,
+    },
+  };
+  const profileWithoutJev = profile(2);
+
+  render(<ProfileList profiles={[profileWithJev, profileWithoutJev]} refresh={vi.fn()} />);
+
+  expect(screen.getByText('On (jev-latest)')).toBeInTheDocument();
+  expect(screen.getByText('Jev default: On · jev-latest · remote processing allowed')).toBeInTheDocument();
+  expect(screen.getByText('Jev default: None')).toBeInTheDocument();
 });

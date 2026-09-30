@@ -17,8 +17,9 @@ function keyFor(body: unknown) {
   return `subscription-profile:${JSON.stringify(body)}`;
 }
 
-export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refresh: () => void }) {
+export function ProfileList({ profiles, refresh, unverified = false }: { profiles: Profile[]; refresh: () => void; unverified?: boolean }) {
   const [selected, setSelected] = useState<Profile>();
+  const [newFormVersion, setNewFormVersion] = useState(0);
   const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
   const attempts = useRef(new Map<string, string>());
@@ -57,6 +58,8 @@ export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refres
         },
         body: JSON.stringify(body),
       });
+      attempts.current.delete(bodyKey);
+      if (!('expected_current_version' in body)) setNewFormVersion(version => version + 1);
       setSelected(undefined);
       refresh();
       return result;
@@ -110,6 +113,11 @@ export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refres
                   </h3>
                   <p className="meta" style={{ margin: '2px 0 0' }}>
                     Default billing: <strong>{profileLabel(profile.default_billing_mode)}</strong>
+                    {' · '}
+                    Jev default:{' '}
+                    <strong>
+                      {profile.jev ? `${profileLabel(profile.jev.mode)} (${profile.jev.model})` : 'None'}
+                    </strong>
                   </p>
                 </div>
                 <div>
@@ -196,6 +204,15 @@ export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refres
                   .join('; ') || 'none'}
               </p>
 
+              <p style={{ margin: '4px 0 0', fontSize: '0.8125rem' }}>
+                Jev default:{' '}
+                {profile.jev
+                  ? `${profileLabel(profile.jev.mode)} · ${profile.jev.model}${
+                      profile.jev.allow_remote ? ' · remote processing allowed' : ''
+                    }`
+                  : 'None'}
+              </p>
+
               <details>
                 <summary>View immutable configuration</summary>
                 <pre>{JSON.stringify(profile, null, 2)}</pre>
@@ -203,7 +220,7 @@ export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refres
 
               {latest && !stale && (
                 <div style={{ marginTop: '4px' }}>
-                  <Button type="button" disabled={saving} onClick={() => setSelected(profile)}>
+                  <Button type="button" disabled={saving || unverified} onClick={() => setSelected(profile)}>
                     Append from latest version {profile.version}
                   </Button>
                 </div>
@@ -214,7 +231,7 @@ export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refres
       </section>
 
       <section aria-label="Profile editor container">
-        {selected && !stale && (
+        {selected && (
           <div className="append-notice">
             <span>
               Appending version <strong>{selected.version + 1}</strong> based on Profile{' '}
@@ -228,14 +245,13 @@ export function ProfileList({ profiles, refresh }: { profiles: Profile[]; refres
 
         <h2>{selected ? `Append profile version ${selected.version + 1}` : 'Create profile'}</h2>
 
-        {!stale && (
-          <ProfileEditor
-            key={selected ? `${selected.profile_id}:${selected.version}` : 'new'}
-            initial={selected}
-            expectedVersion={selected?.version}
-            onSave={save}
-          />
-        )}
+        <ProfileEditor
+          key={selected ? `${selected.profile_id}:${selected.version}` : `new:${newFormVersion}`}
+          initial={selected}
+          expectedVersion={selected?.version}
+          onSave={save}
+          saveUnavailable={unverified || stale}
+        />
       </section>
     </div>
   );

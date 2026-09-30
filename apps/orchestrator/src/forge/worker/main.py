@@ -29,6 +29,7 @@ from forge.application.services.terminal_recovery import TerminalMergeRecovery
 from forge.application.services.worker import CommandHandler, Worker
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.local_cli import LocalCliTrust
+from forge.domain.subscription_installations import SubscriptionInstallationSpec
 from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPoolKey
 from forge.domain.subscription_readiness import SubscriptionRouteReadiness
 from forge.domain.subscription_recovery import RECOVERY_WORKER_FRESHNESS_SECONDS
@@ -53,6 +54,7 @@ from forge.worker.subscription_installations import (
     production_subscription_verifiers,
 )
 from forge.worker.subscription_invocation import SubscriptionInvocationWorker
+from forge.worker.subscription_model_catalog import SubscriptionModelCatalogRefresher
 from forge.worker.subscription_readiness import SubscriptionReadinessEnricher
 from forge.worker.subscription_status import SubscriptionRuntimeReporter
 
@@ -134,6 +136,7 @@ async def run_worker(
     status_reporter: SubscriptionRuntimeReporter | None = None
     subscription_readiness = None
     subscription_readiness_supplier = None
+    catalog_specs: tuple[SubscriptionInstallationSpec, ...] = ()
     polls: list[asyncio.Task[None]] = []
     try:
         if supplied_subscription_adapters is not None:
@@ -151,6 +154,7 @@ async def run_worker(
                 else SubscriptionVerifierDependencies(),
             )
             resolved_subscription_adapters = installation_load.adapters
+            catalog_specs = installation_load.specs
             subscription_readiness = installation_load.readiness
 
             async def quota_status(key: QuotaPoolKey) -> PoolQuotaStatus:
@@ -261,6 +265,14 @@ async def run_worker(
         ]
         if status_reporter is not None:
             polls.append(asyncio.create_task(status_reporter.run(stop_event)))
+            if catalog_specs:
+                polls.append(
+                    asyncio.create_task(
+                        SubscriptionModelCatalogRefresher(
+                            catalog_specs, status_reporter.store, status_reporter.instance_id
+                        ).run(stop_event)
+                    )
+                )
         if (
             isinstance(effective_handlers, WorkerHandlers)
             and effective_handlers.subscription_decision_recovery is not None

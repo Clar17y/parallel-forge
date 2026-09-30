@@ -117,10 +117,10 @@ class ClientLaunchSpec:
     stdout_max_bytes: int = 1024 * 1024
     stderr_max_bytes: int = 1024 * 1024
     frame_max_bytes: int = 256 * 1024
-    protocol: Literal["jsonl", "json_document"] = "jsonl"
+    protocol: Literal["jsonl", "json_document", "text_document"] = "jsonl"
 
     def __post_init__(self) -> None:
-        if self.protocol not in {"jsonl", "json_document"}:
+        if self.protocol not in {"jsonl", "json_document", "text_document"}:
             raise ValueError("invalid client protocol")
         argv = tuple(self.argv)
         if not argv or any(type(a) is not str or not a or "\0" in a for a in argv):
@@ -567,6 +567,8 @@ class ClientProcessSession:
         stdout_task = (
             asyncio.create_task(self._stdout_document())
             if self.spec.protocol == "json_document"
+            else asyncio.create_task(self._stdout_text_document())
+            if self.spec.protocol == "text_document"
             else asyncio.create_task(self._stdout())
         )
         self._tasks = [
@@ -662,6 +664,34 @@ class ClientProcessSession:
                 else ClientProtocolError("client output failed")
             )
             self._settle("protocol_error")
+        finally:
+            self._queue.put_nowait(None)
+
+    async def _stdout_text_document(self) -> None:
+        pending = bytearray()
+        try:
+            while chunk := await asyncio.to_thread(
+                self.process.stdout.read, min(4096, self.spec.stdout_max_bytes + 1)
+            ):
+                self._out_bytes += len(chunk)
+                if self._out_bytes > self.spec.stdout_max_bytes:
+                    raise ClientProtocolError("client total output exceeds limit")
+                pending.extend(chunk)
+            if not pending:
+                raise ClientProtocolError("client emitted empty document")
+            try:
+                text = pending.decode("utf-8")
+            except UnicodeDecodeError:
+                raise ClientProtocolError("client emitted non-UTF-8 document") from None
+            self._admit_decoded_frame({"text": text})
+        except (ClientProtocolError, OSError, ValueError) as error:
+            if not isinstance(self._failure, ClientProcessTimeout):
+                self._failure = (
+                    error
+                    if isinstance(error, ClientProtocolError)
+                    else ClientProtocolError("client output failed")
+                )
+                self._settle("protocol_error")
         finally:
             self._queue.put_nowait(None)
 
@@ -908,6 +938,22 @@ class ClientProcessSupervisor:
     ) -> ClientProcessResult:
         if spec.protocol != "json_document":
             raise ValueError("run_document requires a json_document launch spec")
+        return await self._run_document(spec, lifecycle=lifecycle)
+
+    async def run_text_document(self, spec: ClientLaunchSpec) -> str:
+        if spec.protocol != "text_document":
+            raise ValueError("run_text_document requires a text_document launch spec")
+        result = await self._run_document(spec)
+        if result.return_code != 0 or not result.stop_confirmed or len(result.frames) != 1:
+            raise ClientProcessError("client metadata command failed")
+        value = result.frames[0].get("text")
+        if not isinstance(value, str):
+            raise ClientProtocolError("client text document is unavailable")
+        return value
+
+    async def _run_document(
+        self, spec: ClientLaunchSpec, *, lifecycle: ClientProcessLifecycle | None = None
+    ) -> ClientProcessResult:
         session = await self.start(spec, lifecycle=lifecycle)
         try:
             await session.close_stdin()

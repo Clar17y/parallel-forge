@@ -261,7 +261,9 @@ class CodexInstallation:
         object.__setattr__(self, "client_home", str(Path(self.client_home).resolve(strict=True)))
 
 
-def codex_isolation_configuration(installation: CodexInstallation) -> dict[str, object]:
+def codex_isolation_configuration(
+    installation: CodexInstallation, *, sealed_catalog: bool = True
+) -> dict[str, object]:
     """Return a fresh set of pinned controls shared by runtime and conformance."""
 
     if not isinstance(installation, CodexInstallation):
@@ -269,7 +271,7 @@ def codex_isolation_configuration(installation: CodexInstallation) -> dict[str, 
     return {
         **copy.deepcopy(dict(_FIXED_ISOLATION_CONFIGURATION)),
         "model": installation.model,
-        "model_catalog_json": codex_model_catalog_path(),
+        **({"model_catalog_json": codex_model_catalog_path()} if sealed_catalog else {}),
         "model_reasoning_effort": installation.effort,
         **{f"features.{name}": False for name in _DISABLED_FEATURES},
         **{f"mcp_servers.{name}.enabled": False for name in installation.disabled_mcp_servers},
@@ -619,7 +621,11 @@ class CodexGateway:
                     environment={"CODEX_HOME": self._installation.client_home},
                     allowed_environment=frozenset({"CODEX_HOME"}),
                     executable_digest=self._installation.executable_digest,
-                    pinned_files=(codex_model_catalog_pin(),),
+                    pinned_files=(
+                        (codex_model_catalog_pin(),)
+                        if self._trust is LocalCliTrust.VERIFIED
+                        else ()
+                    ),
                     duration_seconds=duration,
                 )
                 async with asyncio.timeout(duration):
@@ -632,7 +638,9 @@ class CodexGateway:
                         usage,
                         started,
                         terminal_error,
-                        session.pinned_path(CODEX_MODEL_CATALOG_ARGUMENT),
+                        session.pinned_path(CODEX_MODEL_CATALOG_ARGUMENT)
+                        if self._trust is LocalCliTrust.VERIFIED
+                        else None,
                     )
         except asyncio.CancelledError:
             interrupted = True
@@ -707,7 +715,15 @@ class CodexGateway:
 
     def _configuration(self, model_catalog_path: str | None = None) -> dict[str, object]:
         """Published 0.153.4 controls; effective isolation still requires proof."""
-        configuration = codex_isolation_configuration(self._installation)
+        configuration = codex_isolation_configuration(
+            self._installation, sealed_catalog=self._trust is LocalCliTrust.VERIFIED
+        )
+        # Operator trust uses installed metadata; VERIFIED keeps the sealed pin.
+        if (
+            self._trust is LocalCliTrust.OPERATOR
+            and configuration["model_reasoning_effort"] == "maximum"
+        ):
+            configuration["model_reasoning_effort"] = "xhigh"
         if model_catalog_path is not None:
             configuration["model_catalog_json"] = model_catalog_path
         return configuration
@@ -726,7 +742,7 @@ class CodexGateway:
             config = response.get("config", {})
             expected = {
                 "model": self._installation.model,
-                "model_reasoning_effort": self._installation.effort,
+                "model_reasoning_effort": self._configuration()["model_reasoning_effort"],
                 "forced_login_method": "chatgpt",
             }
             return isinstance(config, Mapping) and all(
@@ -745,7 +761,7 @@ class CodexGateway:
         usage: _Usage,
         started: float,
         terminal_error: _TerminalError,
-        model_catalog_path: str,
+        model_catalog_path: str | None,
     ) -> SubscriptionInvocationResult:
         await self._rpc(
             session,
@@ -793,7 +809,7 @@ class CodexGateway:
         )
         if len(match) != 1 or not any(
             isinstance(effort, Mapping)
-            and effort.get("reasoningEffort") == self._installation.effort
+            and effort.get("reasoningEffort") == self._configuration()["model_reasoning_effort"]
             for effort in match[0].get("supportedReasoningEfforts", [])
         ):
             return SubscriptionInvocationResult(
@@ -867,7 +883,7 @@ class CodexGateway:
                     },
                 ],
                 "model": self._installation.model,
-                "effort": self._installation.effort,
+                "effort": self._configuration()["model_reasoning_effort"],
                 "environments": [],
                 "outputSchema": output_schema(request),
             },

@@ -11,6 +11,7 @@ from forge.application.services.subscription_profiles import (
     ProfileVersionRequest,
     ProjectProfileSelectionRequest,
 )
+from forge.domain.policy import JevPolicy
 from forge.domain.subscription import OperatorProfile, RouteSpec
 
 
@@ -33,6 +34,7 @@ class ProfileResponse(BaseModel):
     preferences: list[dict[str, object]]
     approved_mappings: list[dict[str, object]]
     default_billing_mode: str
+    jev: JevPolicy | None = None
 
     @classmethod
     def from_profile(cls, value: OperatorProfile) -> ProfileResponse:
@@ -58,6 +60,7 @@ class ProfileResponse(BaseModel):
                     for m in value.approved_mappings
                 ],
                 "default_billing_mode": value.default_billing_mode.value,
+                "jev": value.jev,
             }
         )
 

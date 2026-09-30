@@ -5,15 +5,10 @@ import { ApiError } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
 import { CommandEditor } from './command-editor';
 import { Field, lines } from './form-fields';
+import { JevSettings } from './jev-settings';
 import { defaultModel, ModelPolicy } from './model-policy';
 
 export type ProjectInput = components['schemas']['ProjectCreateRequest'];
-type JevInput = NonNullable<ProjectInput['jev']>;
-const defaultJev: JevInput = {
-  mode: 'off', allow_remote: false, model: 'jev-latest', semantic_search: true, review_focus: true,
-  top_k: 15, max_requests_per_run: 64, max_input_units_per_run: 250000, max_candidates: 96,
-  max_result_chars: 12000, timeout_seconds: 15, cache_ttl_seconds: 3600,
-};
 export const projectDefaults: ProjectInput = {
   name: '', repository_path: '', github_repository: '', default_branch: 'main',
   runner_mode: 'docker', trusted_project: false, local_remediation_limit: 3, remote_remediation_limit: 3,
@@ -83,25 +78,13 @@ export function ProjectForm({ onSave, initial, policyOnly = false }: {
       </label>)}</fieldset>
       <Field label="Local remediation limit" type="number" min={0} max={20} required value={value.local_remediation_limit} onChange={text => set('local_remediation_limit', Number(text))} error={errors.local_remediation_limit} />
       <Field label="Remote remediation limit" type="number" min={0} max={20} required value={value.remote_remediation_limit} onChange={text => set('remote_remediation_limit', Number(text))} error={errors.remote_remediation_limit} />
-      <fieldset><legend>Jev advisory search and review</legend>
-        <p>Jev can add remote semantic search and advisory review context. Source processing is remote only when explicitly allowed; legacy projects stay unconfigured until enabled.</p>
-        <label><input type="checkbox" checked={value.jev != null} disabled={policyOnly && initial?.jev != null} onChange={event => set('jev', event.target.checked ? { ...defaultJev } : undefined)} />Configure Jev for this project</label>
-        {policyOnly && initial?.jev != null && <p>Set Jev mode to Off to disable it for new runs.</p>}
-        {value.jev && <>
-          <label>Jev mode <select value={value.jev.mode} onChange={event => set('jev', { ...value.jev!, mode: event.target.value as JevInput['mode'] })}>
-            <option value="off">Off</option><option value="shadow">Shadow · measure without changing results</option><option value="on">On · apply advisory ranking</option>
-          </select></label>
-          <label><input type="checkbox" checked={value.jev.allow_remote} onChange={event => set('jev', { ...value.jev!, allow_remote: event.target.checked })} />Allow remote processing of bounded, redacted source excerpts</label>
-          <Field label="Jev model alias" required maxLength={128} value={value.jev.model} onChange={text => set('jev', { ...value.jev!, model: text })} error={errors['jev.model']} />
-          <label><input type="checkbox" checked={value.jev.semantic_search} onChange={event => set('jev', { ...value.jev!, semantic_search: event.target.checked })} />Enable semantic search</label>
-          <label><input type="checkbox" checked={value.jev.review_focus} onChange={event => set('jev', { ...value.jev!, review_focus: event.target.checked })} />Enable advisory review focus</label>
-          {([['top_k', 'Top results', 1, 100], ['max_requests_per_run', 'Maximum requests per run', 1, 1000],
-            ['max_input_units_per_run', 'Input allowance per run', 1, 10000000], ['max_candidates', 'Maximum candidates', 1, 100],
-            ['max_result_chars', 'Maximum result characters', 1, 100000], ['timeout_seconds', 'Request timeout seconds', 1, 60],
-            ['cache_ttl_seconds', 'Cache lifetime seconds', 0, 86400]] as const).map(([key, label, min, max]) =>
-            <Field key={key} label={label} type="number" min={min} max={max} required value={value.jev![key]} onChange={text => set('jev', { ...value.jev!, [key]: Number(text) })} error={errors[`jev.${key}`]} />)}
-        </>}
-      </fieldset>
+      <JevSettings
+        value={value.jev}
+        onChange={next => set('jev', next)}
+        errors={errors}
+        checkboxLabel="Configure Jev for this project"
+        policyNotice="Clear this setting to inherit the selected profile's Jev default. Set mode to Off to disable Jev for this project."
+      />
       {(['planner', 'developer', 'reviewer'] as const).map(role => <ModelPolicy key={role} role={role[0].toUpperCase() + role.slice(1)} value={value[`${role}_model`] ?? defaultModel} onChange={next => set(`${role}_model`, next)} errors={nested(`${role}_model`)} />)}
     </fieldset>
     {error && <p role="alert">{error}</p>}

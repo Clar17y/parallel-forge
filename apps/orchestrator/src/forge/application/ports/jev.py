@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
+from forge.domain.policy import JevPolicy
+
 JevKind = Literal["search_ranking", "semantic_search", "review_focus"]
 JevStatus = Literal[
     "off", "unavailable", "budget_exhausted", "ranked", "succeeded", "cached", "unknown"
@@ -90,6 +92,10 @@ class JevProvider(Protocol):
 
 
 class JevRepository(Protocol):
+    async def policy_for_run(
+        self, run_id: UUID, *, policy_version: int | None = None,
+    ) -> JevPolicy | None: ...
+
     async def observe_unavailable(
         self, request: JevRequest, *, request_digest: str, policy: Any,
         diagnostic: str | None = None,

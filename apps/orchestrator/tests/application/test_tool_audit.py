@@ -6,7 +6,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Self
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -193,6 +195,7 @@ class _UnitOfWork:
         self.tool_calls = _ToolCalls()
         self.events = _Events()
         self.artifacts = _Artifacts()
+        self.jev = SimpleNamespace(policy_for_run=AsyncMock(return_value=None))
         self.committed = False
         self.rolled_back = False
         self.commit_error: Exception | None = None

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Self
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -84,6 +86,7 @@ class _UnitOfWork:
         self.projects = _Projects(project)
         self.tool_calls = _ToolCalls()
         self.events = _Events()
+        self.jev = SimpleNamespace(policy_for_run=AsyncMock(return_value=None))
         self.committed = False
 
     async def __aenter__(self) -> Self:

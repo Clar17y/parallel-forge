@@ -58,6 +58,7 @@ from forge.application.services.control_settlement import (
     pending_current_control_stop,
 )
 from forge.application.services.jev import JevService
+from forge.application.services.jev_policy import run_jev_policy
 from forge.application.services.jev_review import (
     MAX_REVIEW_FOCUS_SOURCES,
     REVIEW_QUESTIONS,
@@ -90,7 +91,7 @@ from forge.domain.evidence import (
     encode_evidence_manifest,
 )
 from forge.domain.operation import canonical_digest
-from forge.domain.policy import ProjectPolicy
+from forge.domain.policy import JevPolicy, ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.tool import ToolName
@@ -186,9 +187,10 @@ class ReviewService:
             await self._fence(command, work)
             await work.commit()
             return evidence
+        jev = await run_jev_policy(work, approved.run, approved.policy.jev)
         await work.commit()
         context = await self._context(approved, worktree, candidate.diff.text, validation)
-        focus, focus_status = await self._review_focus(approved, worktree, candidate, git)
+        focus, focus_status = await self._review_focus(approved, worktree, candidate, git, jev=jev)
         if focus is not None or focus_status is not None:
             baseline = context.model_dump()
             try:
@@ -430,9 +432,9 @@ class ReviewService:
         )
 
     async def _review_focus(
-        self, approved: ApprovedPlan, tree: ManagedWorktree, candidate: GitCandidateDiff, git: ControlledGitPort
+        self, approved: ApprovedPlan, tree: ManagedWorktree, candidate: GitCandidateDiff,
+        git: ControlledGitPort, *, jev: JevPolicy | None,
     ) -> tuple[UntrustedContent | None, str | None]:
-        jev = approved.policy.jev
         if jev is None or jev.mode == "off" or not jev.review_focus:
             return None, None
         if self._jev_service is None:

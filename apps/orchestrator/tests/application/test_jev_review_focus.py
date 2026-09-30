@@ -113,7 +113,7 @@ async def test_api_review_focus_is_advisory_mode_and_candidate_bound(tmp_path, m
     service = ReviewService(None, None, None, None, None, lambda *_: reader, jev_service=jev)
     git = SimpleNamespace(candidate_diff=lambda _: _candidate(tmp_path))
 
-    focus, status = await service._review_focus(SimpleNamespace(run=run, policy=policy), tree, candidate, git)
+    focus, status = await service._review_focus(SimpleNamespace(run=run, policy=policy), tree, candidate, git, jev=policy.jev)
 
     assert len(jev.requests) == 1
     if mode == "shadow":
@@ -142,7 +142,7 @@ async def test_api_review_focus_fallback_preserves_shadow_and_never_attaches_unk
     service = ReviewService(None, None, None, None, None, lambda *_: reader, jev_service=jev)
     git = SimpleNamespace(candidate_diff=lambda _: candidate)
 
-    focus, status = await service._review_focus(SimpleNamespace(run=run, policy=policy), tree, candidate, git)
+    focus, status = await service._review_focus(SimpleNamespace(run=run, policy=policy), tree, candidate, git, jev=policy.jev)
 
     assert focus is None
     expected = {"missing_provider": "unavailable", "no_sources": "no_eligible_hunks", "unknown": "unknown"}
@@ -206,10 +206,10 @@ async def test_subscription_review_focus_rechecks_candidate_and_authority(tmp_pa
                                          snapshot=lambda *_: _snapshot(tmp_path), reader=lambda *_: reader)
     if change in {"lease", "source_and_lease"}:
         with pytest.raises(ValueError, match="lease revoked"):
-            await builder._with_review_focus(request, run, policy, selection, SimpleNamespace(candidate_epoch=3))
+            await builder._with_review_focus(request, run, policy, selection, SimpleNamespace(candidate_epoch=3), jev=policy.jev)
         assert len(jev.requests) == 1
         return
-    result = await builder._with_review_focus(request, run, policy, selection, SimpleNamespace(candidate_epoch=3))
+    result = await builder._with_review_focus(request, run, policy, selection, SimpleNamespace(candidate_epoch=3), jev=policy.jev)
 
     assert len(jev.requests) == 1
     assert request.untrusted_context == {"review_selection": selection}

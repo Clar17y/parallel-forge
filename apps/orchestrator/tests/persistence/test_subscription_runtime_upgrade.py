@@ -5,11 +5,8 @@ from uuid import uuid4
 
 import pytest
 from alembic import command
-from forge.persistence.database import create_engine, create_session_factory
-from forge.persistence.repositories.subscription_runtime_status import (
-    SubscriptionRuntimeStatusStore,
-)
-from sqlalchemy import inspect
+from forge.persistence.database import create_engine
+from sqlalchemy import inspect, text
 
 
 @pytest.mark.integration
@@ -29,9 +26,17 @@ def test_runtime_status_upgrade_and_downgrade_preserve_other_tables(
     async def retain_report():
         engine = create_engine(test_database_url)
         try:
-            store = SubscriptionRuntimeStatusStore(create_session_factory(engine))
-            assert await store.report(uuid4(), ())
-            assert len((await store.status())["workers"]) == 1
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "INSERT INTO subscription_worker_status (worker_instance_id, routes, last_seen_at) VALUES (:id, '[]', now())"
+                    ),
+                    {"id": uuid4()},
+                )
+                assert (
+                    await connection.scalar(text("SELECT count(*) FROM subscription_worker_status"))
+                    == 1
+                )
         finally:
             await engine.dispose()
 

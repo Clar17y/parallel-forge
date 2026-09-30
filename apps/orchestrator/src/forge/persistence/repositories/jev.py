@@ -14,9 +14,11 @@ from sqlalchemy.orm import defer, load_only
 
 from forge.application.ports.jev import JevRequest, JevResult
 from forge.domain.policy import JevPolicy
+from forge.domain.subscription import OperatorProfile, decode_subscription_record
 from forge.persistence.models.jev import JevEvaluation
 from forge.persistence.models.project import ProjectPolicyVersion
 from forge.persistence.models.run import Run
+from forge.persistence.models.subscription import SubscriptionEnvelope, SubscriptionProfileVersion
 
 
 def _digest(value: str) -> str:
@@ -35,19 +37,49 @@ class PostgresJevRepository:
 
     async def _authorize(self, request: JevRequest, policy: JevPolicy) -> Run:
         run = await self._lock_run(request.run_id)
-        if run.policy_version != request.policy_version:
+        stored_jev = await self.policy_for_run(request.run_id, policy_version=request.policy_version)
+        if stored_jev != policy or policy.mode == "off":
+            raise ValueError("Jev policy does not authorize this run")
+        return run
+
+    async def policy_for_run(
+        self, run_id: UUID, *, policy_version: int | None = None,
+    ) -> JevPolicy | None:
+        """Resolve only immutable run bindings; explicit project Off also wins."""
+        run = await self._session.get(Run, run_id)
+        if run is None:
+            raise ValueError("Jev run is unavailable")
+        if policy_version is not None and run.policy_version != policy_version:
             raise ValueError("Jev policy version does not match the run")
+        if run.policy_version is None:
+            return None
         policy_row = await self._session.get(
             ProjectPolicyVersion, (run.project_id, run.policy_version)
         )
-        stored_jev = None if policy_row is None else policy_row.document.get("jev")
+        if policy_row is None:
+            raise ValueError("Jev project policy is unavailable")
+        stored_jev = policy_row.document.get("jev")
+        if stored_jev is not None:
+            return JevPolicy.model_validate(stored_jev)
+        envelope = await self._session.get(SubscriptionEnvelope, run_id)
+        if envelope is None:
+            return None
+        if envelope.safety_policy_version != run.policy_version:
+            raise ValueError("Jev profile policy version does not match the run")
+        row = await self._session.scalar(select(SubscriptionProfileVersion).where(
+            SubscriptionProfileVersion.profile_id == envelope.profile_id,
+            SubscriptionProfileVersion.version == envelope.profile_version,
+        ))
+        if row is None:
+            raise ValueError("Jev profile is unavailable")
+        profile = decode_subscription_record(row.payload)
         if (
-            not isinstance(stored_jev, dict)
-            or JevPolicy.model_validate(stored_jev) != policy
-            or policy.mode == "off"
+            not isinstance(profile, OperatorProfile)
+            or profile.profile_id != envelope.profile_id
+            or profile.version != envelope.profile_version
         ):
-            raise ValueError("Jev policy does not authorize this run")
-        return run
+            raise ValueError("Jev profile identity differs")
+        return profile.jev
 
     @staticmethod
     def _same_identity(

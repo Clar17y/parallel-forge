@@ -758,6 +758,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/subscription-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Subscription Models */
+        get: operations["subscription_models_api_subscription_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subscription-profiles": {
         parameters: {
             query?: never;
@@ -2014,6 +2031,7 @@ export interface components {
             default_billing_mode: components["schemas"]["BillingMode"];
             /** Expected Current Version */
             expected_current_version: number;
+            jev?: components["schemas"]["JevPolicy"] | null;
             /** Preferences */
             preferences: components["schemas"]["PreferenceInput"][];
         };
@@ -2026,6 +2044,7 @@ export interface components {
             approved_mappings: components["schemas"]["MappingInput"][];
             /** @default allowance_only */
             default_billing_mode: components["schemas"]["BillingMode"];
+            jev?: components["schemas"]["JevPolicy"] | null;
             /** Preferences */
             preferences: components["schemas"]["PreferenceInput"][];
         };
@@ -2037,6 +2056,7 @@ export interface components {
             }[];
             /** Default Billing Mode */
             default_billing_mode: string;
+            jev?: components["schemas"]["JevPolicy"] | null;
             /** Preferences */
             preferences: {
                 [key: string]: unknown;
@@ -3039,6 +3059,50 @@ export interface components {
              */
             queue_order: "least_recently_served_run_then_oldest_task";
             run: components["schemas"]["CapacityLimitView"];
+        };
+        /** SubscriptionModelCatalogPage */
+        SubscriptionModelCatalogPage: {
+            /** Catalogs */
+            catalogs: components["schemas"]["SubscriptionModelCatalogView"][];
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+        };
+        /** SubscriptionModelCatalogView */
+        SubscriptionModelCatalogView: {
+            /** Client */
+            client: string;
+            /** Message */
+            message: string;
+            /** Models */
+            models: components["schemas"]["SubscriptionModelOption"][];
+            /** Observed At */
+            observed_at: string | null;
+            /** Provider */
+            provider: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "provider" | "configured";
+            /** Stale */
+            stale: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "available" | "unavailable";
+        };
+        /** SubscriptionModelOption */
+        SubscriptionModelOption: {
+            /** Efforts */
+            efforts: components["schemas"]["ReasoningEffort"][];
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
         };
         /** SubscriptionRuntimeRouteView */
         SubscriptionRuntimeRouteView: {
@@ -5157,6 +5221,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    subscription_models_api_subscription_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionModelCatalogPage"];
                 };
             };
         };
