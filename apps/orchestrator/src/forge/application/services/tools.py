@@ -39,6 +39,7 @@ from forge.application.ports.repository import (
     FileWrite,
     InstructionDocument,
     RepositoryEntry,
+    RepositoryLimitExceeded,
     RepositoryReader,
     RepositoryWriter,
     SearchMatch,
@@ -2892,6 +2893,15 @@ class ControlledToolService:
             raise
         except ToolInvocationError:
             raise
+        except RepositoryLimitExceeded:
+            return self._result(
+                name,
+                ToolCallStatus.FAILED,
+                ToolError(
+                    code=ToolErrorCode.ADAPTER_ERROR,
+                    message="repository listing or search exceeded its limit; narrow the path",
+                ),
+            )
         except Exception:  # noqa: BLE001 - adapters cross one safe public category
             return self._result(
                 name,

@@ -30,6 +30,10 @@ class RepositoryAccessDenied(RepositoryError):
     """The requested repository resource is unavailable or not permitted."""
 
 
+class RepositoryLimitExceeded(RepositoryAccessDenied):
+    """A repository listing or search exceeded its configured resource bound."""
+
+
 class PathEscape(RepositoryAccessDenied):
     """A repository-relative path failed the containment boundary."""
 
@@ -212,6 +216,7 @@ __all__ = [
     "RepositoryEncodingError",
     "RepositoryEntry",
     "RepositoryError",
+    "RepositoryLimitExceeded",
     "RepositoryReader",
     "RepositoryRoot",
     "RepositoryWriter",

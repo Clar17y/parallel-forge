@@ -50,6 +50,7 @@ from forge.domain.subscription import (
     BillingMode,
     ReasoningEffort,
     RouteSpec,
+    SpecialistPurpose,
 )
 from pydantic import TypeAdapter
 
@@ -69,6 +70,16 @@ evidence_receipt_ids contains the named-check operation IDs, the final snapshot
 operation ID, and a git.commit operation ID only if you actually committed.
 Do not include read, write, status or textual-diff operation IDs in that list.
 """
+
+_PRIMARY_DECISION_GUIDANCE = """
+The primary coordinates the run: do not return a task handoff. In planning,
+return the plan; in work phases, choose a primary decision permitted by the
+supplied schema. A plan for future implementation is not completed work.
+"""
+
+
+def _decision_guidance(purpose: SpecialistPurpose) -> str:
+    return _PRIMARY_DECISION_GUIDANCE if purpose is SpecialistPurpose.PRIMARY else _HANDOFF_GUIDANCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +141,7 @@ class _AttemptHome:
             ".gemini/antigravity-cli/hooks.json": "{}",
             ".gemini/GEMINI.md": (
                 self.mcp.request.trusted_system_prompt
-                + _HANDOFF_GUIDANCE
+                + _decision_guidance(self.mcp.request.task.purpose)
                 + f"\nUse only the Forge MCP server {self.mcp.name} for task operations."
                 + "\nRead task files with repository.read_file through that server."
                 + " Do not use native filesystem, shell, search, editing or subagent tools.\n"

@@ -14,10 +14,12 @@ from forge.application.ports.repository import (
     BinaryRepositoryFile,
     FileRead,
     InstructionDocument,
+    ProcessExecutionError,
     ProcessRunner,
     RepositoryAccessDenied,
     RepositoryEncodingError,
     RepositoryEntry,
+    RepositoryLimitExceeded,
     SearchMatch,
     is_hidden_search_path,
 )
@@ -30,6 +32,8 @@ _DEFAULT_MAX_LIST_ENTRIES = 10_000
 _DEFAULT_MAX_SEARCH_MATCHES = 100
 _DEFAULT_MAX_SEARCH_BYTES = 8 * 1024 * 1024
 _DEFAULT_RG_STREAM_BYTES = 1024 * 1024
+_DEFAULT_GIT_DISCOVERY_BYTES = 8 * 1024 * 1024
+_GIT_DISCOVERY_STDERR_BYTES = 64 * 1024
 _RG_ARG_MAX_BYTES = 32 * 1024
 
 
@@ -109,6 +113,9 @@ class RepositoryReader:
 
         normalized = self._root.normalize(path, allow_root=True)
         self._ensure_allowed(normalized, direct=True)
+        git_entries = self._list_git_files(normalized)
+        if git_entries is not None:
+            return git_entries
         pending = [normalized]
         entries: list[RepositoryEntry] = []
         visited_entries = 0
@@ -121,7 +128,7 @@ class RepositoryReader:
             for name, metadata in sorted(children, key=lambda item: _entry_sort_key(item[0])):
                 visited_entries += 1
                 if visited_entries > self._max_list_entries:
-                    raise RepositoryAccessDenied("repository listing exceeded its bound")
+                    raise RepositoryLimitExceeded("repository listing exceeded its bound")
                 child = name if current == "." else f"{current}/{name}"
                 if _is_link_or_reparse(metadata):
                     continue
@@ -141,6 +148,197 @@ class RepositoryReader:
                 )
 
         return tuple(sorted(entries, key=lambda entry: _entry_sort_key(entry.path)))
+
+    def _list_git_files(self, normalized: str) -> tuple[RepositoryEntry, ...] | None:
+        """Use Git's bounded index/untracked listing when this root is a worktree."""
+
+        root_children = self._root.list_directory(".")
+        git_metadata = next((metadata for name, metadata in root_children if name == ".git"), None)
+        if git_metadata is None or _is_link_or_reparse(git_metadata):
+            return None
+        if stat.S_ISDIR(git_metadata.st_mode):
+            metadata_children = self._root.list_directory(".git")
+            has_head = any(
+                name == "HEAD"
+                and stat.S_ISREG(metadata.st_mode)
+                and not _is_link_or_reparse(metadata)
+                for name, metadata in metadata_children
+            )
+            if not has_head:
+                return None
+        elif not stat.S_ISREG(git_metadata.st_mode):
+            return None
+        executable = shutil.which("git")
+        if not executable or not Path(executable).is_absolute():
+            raise RepositoryAccessDenied("Git repository discovery is unavailable")
+
+        output_limit = min(
+            _DEFAULT_GIT_DISCOVERY_BYTES,
+            max(64 * 1024, self._max_list_entries * 4096),
+        )
+        runner = self._process_runner or LocalProcessRunner(
+            self._root,
+            stdout_max_bytes=output_limit,
+            stderr_max_bytes=_GIT_DISCOVERY_STDERR_BYTES,
+        )
+        exclude_flags: list[str] = []
+        for component in sorted(_FIXED_DIRECTORY_EXCLUSIONS, key=_entry_sort_key):
+            exclude_flags.extend((f"--exclude={component}/", f"--exclude={component}"))
+        for path in sorted(
+            (*self._managed_worktree_paths, *self._artifact_paths), key=_entry_sort_key
+        ):
+            pattern = "".join("\\" + char if char in "*?[] " else char for char in path)
+            exclude_flags.extend((f"--exclude=/{pattern}/", f"--exclude=/{pattern}"))
+        magic = ":(literal,icase)" if os.name == "nt" else ":(literal)"
+        pathspec = magic + ("" if normalized == "." else normalized)
+        argv = (
+            executable,
+            "--no-pager",
+            "--git-dir=.git",
+            "--work-tree=.",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            "core.hooksPath=" + os.devnull,
+            "-c",
+            "core.worktree=",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.interactive=false",
+            "-c",
+            "diff.external=",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            *exclude_flags,
+            "--full-name",
+            "-z",
+            "--",
+            pathspec,
+        )
+        environment = {
+            "LC_ALL": "C",
+            "LANG": "C",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": "",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "",
+            "GIT_EDITOR": "",
+        }
+        if self._root.path.parent != self._root.path:
+            environment["GIT_CEILING_DIRECTORIES"] = str(self._root.path.parent)
+        if os.name == "nt" and os.environ.get("SystemRoot"):
+            environment["SystemRoot"] = os.environ["SystemRoot"]
+        try:
+            result = runner.run_argv(argv, cwd=".", environment=environment)
+        except ProcessExecutionError, OSError, ValueError, TypeError:
+            raise RepositoryAccessDenied("Git repository discovery failed") from None
+        if (
+            (result.stdout_truncated or result.stdout_original_byte_count > output_limit)
+            and not result.timed_out
+            and result.return_code == 0
+        ):
+            raise RepositoryLimitExceeded("repository listing exceeded its process output bound")
+        if (
+            result.return_code != 0
+            or result.timed_out
+            or result.stderr_truncated
+            or result.stderr_original_byte_count > _GIT_DISCOVERY_STDERR_BYTES
+            or not isinstance(result.stdout, str)
+            or not isinstance(result.stderr, str)
+        ):
+            raise RepositoryAccessDenied("Git repository discovery failed")
+        if "\ufffd" in result.stdout:
+            raise RepositoryAccessDenied("Git repository discovery output is invalid")
+        encoded_output = result.stdout.encode("utf-8", errors="strict")
+        if not encoded_output.endswith(b"\0") and encoded_output:
+            raise RepositoryAccessDenied("Git repository discovery output is incomplete")
+
+        entries: list[RepositoryEntry] = []
+        seen_paths: set[str] = set()
+        directory_cache: dict[str, dict[str, tuple[str, os.stat_result]] | None] = {}
+        for raw_path in result.stdout.split("\0"):
+            if not raw_path:
+                continue
+            is_directory = raw_path.endswith("/")
+            candidate_path = raw_path[:-1] if is_directory else raw_path
+            try:
+                child = self._root.normalize(candidate_path)
+            except RepositoryAccessDenied, ValueError, OSError:
+                raise RepositoryAccessDenied(
+                    "Git repository discovery returned an invalid path"
+                ) from None
+            if normalized != "." and not self._root.matches(child, normalized):
+                raise RepositoryAccessDenied(
+                    "Git repository discovery returned an out-of-scope path"
+                )
+            if is_directory:
+                continue
+            key = _path_key(child)
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            if self._is_excluded(child):
+                continue
+            metadata = self._git_file_metadata(child, directory_cache)
+            if metadata is None:
+                continue
+            entries.append(
+                RepositoryEntry(path=child, kind="file", byte_count=int(metadata.st_size))
+            )
+            if len(entries) > self._max_list_entries:
+                raise RepositoryLimitExceeded("repository listing exceeded its bound")
+        return tuple(sorted(entries, key=lambda entry: _entry_sort_key(entry.path)))
+
+    def _git_file_metadata(
+        self,
+        normalized: str,
+        directory_cache: dict[str, dict[str, tuple[str, os.stat_result]] | None],
+    ) -> os.stat_result | None:
+        """Safely resolve a Git path while skipping stale or replaced index entries."""
+
+        parts = normalized.split("/")
+        current_parent = "."
+        for index, part in enumerate(parts):
+            cache_key = _path_key(current_parent)
+            if cache_key not in directory_cache:
+                try:
+                    children = self._root.list_directory(current_parent)
+                except RepositoryAccessDenied:
+                    directory_cache[cache_key] = None
+                else:
+                    directory_cache[cache_key] = (
+                        None
+                        if current_parent != "." and _contains_pyvenv_cfg(children)
+                        else {_path_key(item[0]): item for item in children}
+                    )
+            by_name = directory_cache[cache_key]
+            if by_name is None:
+                return None
+            entry = by_name.get(_path_key(part))
+            if entry is None:
+                return None
+            actual_name, item = entry
+            if _is_link_or_reparse(item):
+                return None
+            if index < len(parts) - 1:
+                if not stat.S_ISDIR(item.st_mode):
+                    return None
+                current_parent = (
+                    actual_name if current_parent == "." else f"{current_parent}/{actual_name}"
+                )
+            elif stat.S_ISREG(item.st_mode):
+                return item
+            else:
+                return None
+        return None
 
     def read_file(self, path: str | os.PathLike[str]) -> FileRead:
         """Read a bounded regular UTF-8 file without normalizing its text."""
@@ -266,7 +464,7 @@ class RepositoryReader:
         for entry in entries:
             candidate_bytes = min(entry.byte_count, self._max_file_bytes)
             if inspected_bytes + candidate_bytes > self._max_search_bytes:
-                raise RepositoryAccessDenied("repository search exceeded its byte bound")
+                raise RepositoryLimitExceeded("repository search exceeded its byte bound")
             inspected_bytes += candidate_bytes
         return entries
 
@@ -658,6 +856,7 @@ __all__ = [
     "RepositoryAccessDenied",
     "RepositoryEncodingError",
     "RepositoryEntry",
+    "RepositoryLimitExceeded",
     "RepositoryReader",
     "SearchMatch",
 ]
