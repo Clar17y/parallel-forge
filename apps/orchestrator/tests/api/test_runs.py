@@ -18,6 +18,7 @@ async def test_runs_list_create_and_get_use_injected_services(
     listed = await task10_client.get("/api/runs", headers=host_headers)
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == str(task10_route_context.run.id)
+    assert listed.json()[0]["subscription_profile"] is None
 
     created = await task10_client.post(
         "/api/runs",
@@ -26,6 +27,7 @@ async def test_runs_list_create_and_get_use_injected_services(
     )
     assert created.status_code == 201
     assert created.json()["state"] == "CREATED"
+    assert created.json()["subscription_profile"] is None
     assert task10_route_context.runs.create_calls[0][1] == "run-create-1"
 
     fetched = await task10_client.get(
@@ -33,6 +35,7 @@ async def test_runs_list_create_and_get_use_injected_services(
     )
     assert fetched.status_code == 200
     assert fetched.json()["base_ref"] == "refs/heads/main"
+    assert fetched.json()["subscription_profile"] is None
 
 
 @pytest.mark.asyncio
@@ -48,6 +51,19 @@ async def test_run_command_route_enqueues_closed_command_without_transition(
     assert response.json()["command_type"] == "pause"
     assert response.json()["status"] == "pending"
     assert task10_route_context.commands.calls[0][2] == "run-command-1"
+
+
+@pytest.mark.asyncio
+async def test_run_create_requires_profile_identity_pair_without_creating_run(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    response = await task10_client.post(
+        "/api/runs",
+        headers={**route_headers, "Idempotency-Key": "run-incomplete-profile"},
+        json={"task_id": str(task10_route_context.task.id), "profile_id": "00000000-0000-0000-0000-000000000001"},
+    )
+    assert response.status_code == 422
+    assert task10_route_context.runs.create_calls == []
 
 
 @pytest.mark.asyncio
@@ -81,6 +97,88 @@ async def test_run_command_stale_policy_conflict_returns_409_with_safe_code(
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "stale-project-policy"
+
+
+@pytest.mark.asyncio
+async def test_run_create_profile_selection_error_translates_to_safe_detail(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    from forge.application.services.runs import RunProfileSelectionError
+
+    async def raise_profile_error(*_args, **_kwargs):
+        raise RunProfileSelectionError("requested subscription profile is invalid")
+
+    task10_route_context.runs.create_run = raise_profile_error
+
+    response = await task10_client.post(
+        "/api/runs",
+        headers={**route_headers, "Idempotency-Key": "profile-error-key"},
+        json={
+            "task_id": str(task10_route_context.task.id),
+            "profile_id": "00000000-0000-0000-0000-000000000001",
+            "profile_version": 1,
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid-run-profile"
+
+
+@pytest.mark.asyncio
+async def test_run_create_generic_policy_or_repository_error_translates_to_generic_detail(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    from forge.application.adapters.git import RepositoryInspectionError
+    from forge.persistence.repositories.runs import RunCreationError
+
+    async def raise_generic_creation(*_args, **_kwargs):
+        raise RunCreationError("project has no current policy")
+
+    task10_route_context.runs.create_run = raise_generic_creation
+
+    response = await task10_client.post(
+        "/api/runs",
+        headers={**route_headers, "Idempotency-Key": "generic-policy-key"},
+        json={"task_id": str(task10_route_context.task.id)},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "request cannot be processed"
+
+    async def raise_inspection(*_args, **_kwargs):
+        raise RepositoryInspectionError()
+
+    task10_route_context.runs.create_run = raise_inspection
+
+    response = await task10_client.post(
+        "/api/runs",
+        headers={**route_headers, "Idempotency-Key": "generic-inspection-key"},
+        json={"task_id": str(task10_route_context.task.id)},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "request cannot be processed"
+
+
+def test_translate_error_discriminates_profile_vs_generic_errors() -> None:
+    from forge.api.errors import translate_error
+    from forge.application.adapters.git import RepositoryInspectionError
+    from forge.application.services.runs import RunProfileSelectionError
+    from forge.persistence.repositories.runs import RunCreationError
+
+    profile_exc = translate_error(RunProfileSelectionError("profile invalid"))
+    assert profile_exc.status_code == 422
+    assert profile_exc.detail == "invalid-run-profile"
+
+    policy_exc = translate_error(RunCreationError("project has no current policy"))
+    assert policy_exc.status_code == 422
+    assert policy_exc.detail == "request cannot be processed"
+
+    repo_exc = translate_error(RepositoryInspectionError())
+    assert repo_exc.status_code == 422
+    assert repo_exc.detail == "request cannot be processed"
+
+    val_exc = translate_error(ValueError("bad value"))
+    assert val_exc.status_code == 422
+    assert val_exc.detail == "request cannot be processed"
+
 
 
 
@@ -139,15 +237,38 @@ async def test_postgres_operator_client_registers_task_and_created_run(
             json={"project_id": project_id, "title": "Exact title", "body": "Exact body"},
         )
         assert task_response.status_code == 201
+        run_service = app.state.run_service
+
+        class FailFirstSelection:
+            failed = False
+
+            def __getattr__(self, name):
+                return getattr(run_service, name)
+
+            async def profile_selection(self, run_id):
+                if not self.failed:
+                    from sqlalchemy.exc import SQLAlchemyError
+
+                    self.failed = True
+                    raise SQLAlchemyError("simulated post-commit read outage")
+                return await run_service.profile_selection(run_id)
+
+        app.state.run_service = FailFirstSelection()
         run_response = await client.post(
             "/api/runs",
             headers={**secure_headers, "Idempotency-Key": "operator-run-1"},
             json={"task_id": task_response.json()["id"]},
         )
+        assert run_response.status_code == 503
+        retry_response = await client.post(
+            "/api/runs",
+            headers={**secure_headers, "Idempotency-Key": "operator-run-1"},
+            json={"task_id": task_response.json()["id"]},
+        )
 
-    assert run_response.status_code == 201
-    assert run_response.json()["state"] == "CREATED"
-    assert run_response.json()["base_ref"] == "refs/heads/main"
+        assert retry_response.status_code == 201, retry_response.json()
+    assert retry_response.json()["state"] == "CREATED"
+    assert retry_response.json()["base_ref"] == "refs/heads/main"
 
 
 async def _git(repository, *arguments: str) -> None:

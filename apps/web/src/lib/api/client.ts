@@ -43,8 +43,7 @@ async function conflictCode(response: Response): Promise<string> {
   return 'stale-projection';
 }
 
-async function validationFields(response: Response): Promise<Record<string, string>> {
-  const payload = await readBoundedPayload(response);
+function extractValidationFields(payload: unknown): Record<string, string> {
   if (!payload || typeof payload !== 'object' || !('detail' in payload) || !Array.isArray(payload.detail)) return {};
   const fields: Record<string, string> = {};
   for (const item of payload.detail.slice(0, 32)) {
@@ -56,6 +55,14 @@ async function validationFields(response: Response): Promise<Record<string, stri
     fields[parts.join('.')] = 'Invalid value.';
   }
   return fields;
+}
+
+async function unprocessableError(response: Response): Promise<ApiError> {
+  const payload = await readBoundedPayload(response);
+  if (payload && typeof payload === 'object' && 'detail' in payload && payload.detail === 'invalid-run-profile') {
+    return new ApiError(422, 'invalid-run-profile');
+  }
+  return new ApiError(422, 'request-failed', extractValidationFields(payload));
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T | undefined> {
@@ -70,7 +77,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T | 
   if (!response.ok) {
     if (response.status === 401) { csrf.clear(); throw new ApiError(401, 'bootstrap-required'); }
     if (response.status === 409) throw new ApiError(409, await conflictCode(response));
-    throw new ApiError(response.status, 'request-failed', response.status === 422 ? await validationFields(response) : {});
+    if (response.status === 422) throw await unprocessableError(response);
+    throw new ApiError(response.status, 'request-failed');
   }
   if (response.status === 204 || method === 'HEAD') return undefined;
   return response.json() as Promise<T>;

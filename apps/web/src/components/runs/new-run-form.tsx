@@ -3,13 +3,15 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { ApiError, mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
+import { useApi } from '@/hooks/use-api';
 import { Button } from '@/components/ui/button';
 import { ProviderBadge, getProviderCue } from '@/components/ui/provider-badge';
 
 type Project = components['schemas']['ProjectResponse'];
 type TaskInput = components['schemas']['TaskCreateRequest'];
 type IssueInput = { project_id: string; issue_number: number };
-type Attempt = { endpoint: '/tasks' | '/tasks/import-github'; payload: TaskInput | IssueInput; taskKey: string; runKey: string; taskId?: string };
+type Profile = components['schemas']['ProfileResponse'];
+type Attempt = { endpoint: '/tasks' | '/tasks/import-github'; payload: TaskInput | IssueInput; taskKey: string; runKey: string; taskId?: string; profileId?: string; profileVersion?: number; correctionAllowed?: boolean };
 
 export function NewRunForm({ projects, onCreated }: {
   projects: Project[];
@@ -24,9 +26,15 @@ export function NewRunForm({ projects, onCreated }: {
   const [locked, setLocked] = useState(false);
   const [error, setError] = useState('');
   const [fields, setFields] = useState<Record<string, string>>({});
+  const profileList = useApi<Profile[]>('/subscription-profiles');
+  const profiles = profileList.value ?? [];
+  const [profileChoice, setProfileChoice] = useState('default');
+  const profilesLoading = profileList.loading;
+  const [correctionAllowed, setCorrectionAllowed] = useState(false);
   const attempt = useRef<Attempt | null>(null);
   const busy = useRef(false);
   const project = projects.find(item => item.id === projectId);
+  const choice = profiles.find(item => `${item.profile_id}:${item.version}` === profileChoice);
   const importing = source === 'github' && project?.issue_import_available === true;
   const validSource = importing
     ? /^[1-9][0-9]*$/.test(issueNumber) && Number.isSafeInteger(Number(issueNumber))
@@ -44,8 +52,16 @@ export function NewRunForm({ projects, onCreated }: {
       endpoint: importing ? '/tasks/import-github' : '/tasks',
       payload: importing ? { project_id: projectId, issue_number: Number(issueNumber) } : { project_id: projectId, title, body },
       taskKey: crypto.randomUUID(), runKey: crypto.randomUUID(),
+      ...(choice ? { profileId: choice.profile_id, profileVersion: choice.version } : {}),
     };
     const current = attempt.current;
+    if (current.correctionAllowed) {
+      setCorrectionAllowed(false);
+      current.runKey = crypto.randomUUID();
+      current.profileId = choice?.profile_id;
+      current.profileVersion = choice?.version;
+      current.correctionAllowed = false;
+    }
     try {
       if (!current.taskId) {
         const task = await mutate<components['schemas']['TaskResponse']>(current.endpoint, current.payload,
@@ -53,7 +69,10 @@ export function NewRunForm({ projects, onCreated }: {
         if (!task?.id) throw new Error('Task response unavailable');
         current.taskId = task.id;
       }
-      const run = await mutate<components['schemas']['RunResponse']>('/runs', { task_id: current.taskId },
+      const run = await mutate<components['schemas']['RunResponse']>('/runs', {
+        task_id: current.taskId,
+        ...(current.profileId ? { profile_id: current.profileId, profile_version: current.profileVersion } : {}),
+      },
         { idempotencyKey: current.runKey });
       if (!run?.id) throw new Error('Run response unavailable');
       onCreated(run.id);
@@ -63,6 +82,14 @@ export function NewRunForm({ projects, onCreated }: {
         attempt.current = null;
         setLocked(false);
         setError('Check the task fields and try again.');
+      } else if (failure instanceof ApiError && failure.status === 422 && failure.code === 'invalid-run-profile' && current.taskId) {
+        current.correctionAllowed = true;
+        setCorrectionAllowed(true);
+        setError(current.profileId
+          ? 'The run was rejected. Choose another profile or use the project default, then retry.'
+          : 'The run was rejected. You can choose a profile override and retry.');
+      } else if (failure instanceof ApiError && failure.status === 422 && current.taskId) {
+        setError('The project policy or repository setup cannot run this task. Verify configuration and retry.');
       } else {
         setError('Creation could not be confirmed. Retry to recover the same task and run.');
       }
@@ -91,12 +118,29 @@ export function NewRunForm({ projects, onCreated }: {
                 onChange={event => {
                   setProjectId(event.target.value);
                   setSource('text');
+                  setProfileChoice('default');
                 }}
               >
                 {projects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>
               {fields.project_id && <p id="project-error" className="field-error">{fields.project_id}</p>}
               <span className="field-hint">Target repository and project policy enforcing run constraints.</span>
+            </div>
+
+            <div className="form-field">
+              <label htmlFor="run-profile">Subscription profile</label>
+              <select id="run-profile" value={profileChoice} disabled={pending || profilesLoading || (locked && !correctionAllowed)}
+                onChange={event => setProfileChoice(event.target.value)}>
+                <option value="default">Project default</option>
+                {profiles.map(profile => <option key={`${profile.profile_id}:${profile.version}`} value={`${profile.profile_id}:${profile.version}`}>
+                  Version {profile.version} · {profile.profile_id}
+                </option>)}
+              </select>
+              <span className="field-hint">
+                {profilesLoading ? 'Loading immutable profile versions…' : choice
+                  ? `Override: ${choice.preferences.map(profilePreferenceLabel).join(', ')}`
+                  : 'Uses the project default profile.'}
+              </span>
             </div>
 
             {project?.issue_import_available === true && (
@@ -182,7 +226,7 @@ export function NewRunForm({ projects, onCreated }: {
                 variant="primary"
                 disabled={pending || !project || (!locked && !validSource)}
               >
-                {pending ? 'Creating…' : locked && error ? 'Retry creation' : 'Create run'}
+                {pending ? 'Creating…' : (locked && error) || correctionAllowed ? 'Retry creation' : 'Create run'}
               </Button>
             </div>
           </section>
@@ -194,6 +238,16 @@ export function NewRunForm({ projects, onCreated }: {
       </div>
     </form>
   );
+}
+
+function profilePreferenceLabel(value: Record<string, unknown>): string {
+  const route = value.preferred_route;
+  const purpose = typeof value.purpose === 'string' ? value.purpose : 'role';
+  if (!route || typeof route !== 'object') return purpose;
+  const details = route as Record<string, unknown>;
+  const provider = typeof details.provider === 'string' ? details.provider : 'provider unknown';
+  const model = typeof details.model === 'string' ? details.model : 'model unknown';
+  return `${purpose} ${provider}/${model}`;
 }
 
 function ProjectRunSummary({ project }: { project: Project }) {

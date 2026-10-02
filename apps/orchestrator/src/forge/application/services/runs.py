@@ -27,7 +27,7 @@ from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.operation import canonical_digest
 from forge.domain.run import RunSnapshot, RunState
-from forge.domain.subscription import encode_subscription_record
+from forge.domain.subscription import OperatorProfile, encode_subscription_record
 from forge.domain.subscription_envelope import freeze_profile
 from forge.domain.teardown import TEARDOWN_STATES, has_removable_resources, teardown_confirmation
 from forge.persistence.repositories.commands import IdempotencyConflict
@@ -49,6 +49,18 @@ _STALE_POLICY_PREPARATION_RESUME_REFUSAL = (
 
 class RunServiceError(RuntimeError):
     """A bounded run application failure."""
+
+
+class RunProfileSelectionError(RunCreationError):
+    """A profile selection or profile validation failure during run creation."""
+
+
+class RunActor(Protocol):
+    @property
+    def actor_id(self) -> UUID: ...
+
+    @property
+    def actor_class(self) -> str: ...
 
 
 class RunCommandValidationError(ValueError):
@@ -201,13 +213,25 @@ class RunService:
     async def create_run(
         self,
         *,
-        actor: AuthenticatedActor,
+        actor: RunActor,
         idempotency_key: str,
         task_id: UUID,
+        profile_id: UUID | None = None,
+        profile_version: int | None = None,
     ) -> RunSnapshot:
         """Atomically create a CREATED run, event, planning command, and receipt."""
 
-        request_digest = _digest({"task_id": str(task_id)})
+        if (profile_id is None) != (profile_version is None):
+            raise RunProfileSelectionError("subscription profile identity is incomplete")
+        if profile_id is not None and not isinstance(profile_id, UUID):
+            raise RunProfileSelectionError("subscription profile identity is invalid")
+        if profile_version is not None and (type(profile_version) is not int or profile_version < 1):
+            raise RunProfileSelectionError("subscription profile version is invalid")
+        request: dict[str, object] = {"task_id": str(task_id)}
+        if profile_id is not None:
+            request["profile_id"] = str(profile_id)
+            request["profile_version"] = profile_version
+        request_digest = _digest(request)
         async with self._unit_of_work_factory() as work:
             receipt = await work.mutations.reserve(
                 actor_id=actor.actor_id,
@@ -247,7 +271,19 @@ class RunService:
                 base_sha=inspection.base_sha,
             )
             await work.runs.create(run)
-            profile = await work.subscription.project_profile(project.id)
+            selection_source = "run_override" if profile_id is not None else "project_default"
+            profile: OperatorProfile | None
+            if profile_id is not None and profile_version is not None:
+                try:
+                    profile = await work.subscription.profile(profile_id, profile_version)
+                except (TypeError, ValueError):
+                    raise RunProfileSelectionError("requested subscription profile is invalid") from None
+                if profile is None or profile.profile_id != profile_id:
+                    raise RunProfileSelectionError("requested subscription profile identity is invalid")
+                if profile.version != profile_version:
+                    raise RunProfileSelectionError("requested subscription profile version is invalid")
+            else:
+                profile = await work.subscription.project_profile(project.id)
             routing: dict[str, object] = {}
             if profile is not None:
                 try:
@@ -256,12 +292,13 @@ class RunService:
                         run_id=run.id,
                         safety_policy_version=project.current_policy_version,
                     )
-                except TypeError, ValueError:
-                    raise RunCreationError("selected subscription profile is invalid") from None
+                except (TypeError, ValueError):
+                    raise RunProfileSelectionError("selected subscription profile is invalid") from None
                 await work.subscription.freeze_envelope(envelope)
                 routing = {
                     "subscription_profile_id": str(envelope.profile_id),
                     "subscription_profile_version": envelope.profile_version,
+                    "subscription_profile_selection_source": selection_source,
                     "subscription_envelope_digest": canonical_digest(
                         encode_subscription_record(envelope)
                     ),
@@ -302,6 +339,34 @@ class RunService:
             )
             await work.commit()
             return run
+
+    async def profile_selection(self, run_id: UUID) -> dict[str, object] | None:
+        """Read the frozen profile identity and immutable creation provenance."""
+        selections = await self.profile_selections((run_id,))
+        return selections.get(run_id)
+
+    async def profile_selections(
+        self, run_ids: tuple[UUID, ...]
+    ) -> dict[UUID, dict[str, object]]:
+        """Read profile selections in one bounded repository query."""
+        if not run_ids:
+            return {}
+        async with self._unit_of_work_factory() as work:
+            selections = await work.subscription.run_profile_selections(run_ids)
+            await work.commit()
+            return selections
+
+    async def list_with_profile_selections(
+        self, *, project_id: UUID | None = None, task_id: UUID | None = None
+    ) -> tuple[Sequence[RunSnapshot], dict[UUID, dict[str, object]]]:
+        """List runs and their frozen profile choices in one unit of work."""
+        async with self._unit_of_work_factory() as work:
+            runs = await work.runs.list(project_id=project_id, task_id=task_id)
+            selections = await work.subscription.run_profile_selections(
+                tuple(run.id for run in runs)
+            )
+            await work.commit()
+            return runs, selections
 
     async def get(self, run_id: UUID) -> RunSnapshot:
         async with self._unit_of_work_factory() as work:
@@ -578,6 +643,7 @@ __all__ = [
     "RunCommandType",
     "RunCommandValidationError",
     "RunCreationService",
+    "RunProfileSelectionError",
     "RunService",
     "RunServiceError",
     "StaleProjectPolicyConflict",

@@ -36,10 +36,15 @@ def router_for() -> APIRouter:
     ) -> list[RunResponse]:
         service = _service(request, "run_service")
         try:
-            records = await service.list(project_id=project_id, task_id=task_id)
+            records, selections = await service.list_with_profile_selections(
+                project_id=project_id, task_id=task_id
+            )
+            return [
+                RunResponse.from_snapshot(record, selections.get(record.id))
+                for record in records
+            ]
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
             raise translate_error(error) from None
-        return [RunResponse.from_snapshot(record) for record in records]
 
     @router.post("/runs", response_model=RunResponse, status_code=status.HTTP_201_CREATED)
     async def create_run(
@@ -54,10 +59,12 @@ def router_for() -> APIRouter:
                 actor=actor,
                 idempotency_key=idempotency_key,
                 task_id=body.task_id,
+                profile_id=body.profile_id,
+                profile_version=body.profile_version,
             )
+            return RunResponse.from_snapshot(run, await _selection(service, run.id))
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
             raise translate_error(error) from None
-        return RunResponse.from_snapshot(run)
 
     @router.get("/runs/{run_id}", response_model=RunResponse)
     async def get_run(
@@ -68,9 +75,9 @@ def router_for() -> APIRouter:
         service = _service(request, "run_service")
         try:
             run = await service.get(run_id)
+            return RunResponse.from_snapshot(run, await _selection(service, run.id))
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
             raise translate_error(error) from None
-        return RunResponse.from_snapshot(run)
 
     @router.post(
         "/runs/{run_id}/commands",
@@ -104,6 +111,11 @@ def _service(request: Request, name: str) -> Any:
     if service is None:
         raise HTTPException(status_code=500, detail="API service is not configured")
     return service
+
+
+async def _selection(service: Any, run_id: UUID) -> Any:
+    lookup = getattr(service, "profile_selection", None)
+    return None if lookup is None else await lookup(run_id)
 
 
 __all__ = ["router_for"]

@@ -400,6 +400,150 @@ async def test_create_run_snapshots_policy_base_and_enqueues_planning_once(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_explicit_run_profile_is_frozen_and_part_of_idempotency(tmp_path: Path) -> None:
+    from forge.application.services.runs import RunService
+    from forge.domain.subscription import (
+        OperatorProfile,
+        RolePreference,
+        RouteSpec,
+        SpecialistPurpose,
+    )
+
+    work, _, task_id = _uow()
+    profile_id = uuid4()
+    profile = OperatorProfile(
+        profile_id=profile_id, version=1,
+        preferences=(RolePreference(
+            purpose=SpecialistPurpose.PRIMARY,
+            preferred_route=RouteSpec(provider="openai", client="codex", model="gpt-test"),
+        ),),
+    )
+
+    class Profiles(NoSubscriptionProfile):
+        async def profile(self, selected_id, version):
+            assert selected_id == profile_id and version == 1
+            return profile
+        async def freeze_envelope(self, envelope):
+            self.envelope = envelope
+            return envelope
+
+    work.subscription = Profiles()
+    service = RunService(lambda: work, repository_inspector=FakeInspector(tmp_path / "repo"), data_root=tmp_path)
+    run = await service.create_run(actor=ACTOR, idempotency_key="override-1", task_id=task_id,
+                                   profile_id=profile_id, profile_version=1)
+
+    assert work.subscription.envelope.profile_id == profile_id
+    assert work.events.records[0].payload["subscription_profile_selection_source"] == "run_override"
+    replay = await service.create_run(actor=ACTOR, idempotency_key="override-1", task_id=task_id,
+                                      profile_id=profile_id, profile_version=1)
+    assert replay.id == run.id
+    with pytest.raises(MutationConflict):
+        await service.create_run(actor=ACTOR, idempotency_key="override-1", task_id=task_id)
+    with pytest.raises(MutationConflict):
+        await service.create_run(actor=ACTOR, idempotency_key="override-1", task_id=task_id,
+                                 profile_id=profile_id, profile_version=2)
+
+
+@pytest.mark.asyncio
+async def test_run_creation_profile_errors_use_run_profile_selection_error(tmp_path: Path) -> None:
+    from forge.application.services.runs import (
+        RunCreationError,
+        RunProfileSelectionError,
+        RunService,
+    )
+    from forge.domain.subscription import OperatorProfile
+
+    work, _project_id, task_id = _uow()
+    service = RunService(lambda: work, repository_inspector=FakeInspector(tmp_path / "repo"), data_root=tmp_path)
+
+    # 1. Incomplete identity pair
+    with pytest.raises(RunProfileSelectionError) as exc_info:
+        await service.create_run(actor=ACTOR, idempotency_key="pair-1", task_id=task_id, profile_id=uuid4())
+    assert isinstance(exc_info.value, RunCreationError)
+    assert str(exc_info.value) == "subscription profile identity is incomplete"
+
+    # 2. Invalid profile version
+    with pytest.raises(RunProfileSelectionError) as exc_info:
+        await service.create_run(actor=ACTOR, idempotency_key="ver-1", task_id=task_id, profile_id=uuid4(), profile_version=0)
+    assert isinstance(exc_info.value, RunCreationError)
+    assert str(exc_info.value) == "subscription profile version is invalid"
+
+    # 3. Explicit lookup fails
+    class FailingProfiles(NoSubscriptionProfile):
+        async def profile(self, selected_id, version):
+            raise ValueError("profile decode failure")
+
+    work.subscription = FailingProfiles()
+    with pytest.raises(RunProfileSelectionError) as exc_info:
+        await service.create_run(actor=ACTOR, idempotency_key="lookup-fail", task_id=task_id, profile_id=uuid4(), profile_version=1)
+    assert isinstance(exc_info.value, RunCreationError)
+    assert str(exc_info.value) == "requested subscription profile is invalid"
+
+    # 4. Identity mismatch
+    target_id = uuid4()
+    class MismatchedIdProfiles(NoSubscriptionProfile):
+        async def profile(self, selected_id, version):
+            return OperatorProfile(profile_id=uuid4(), version=1, preferences=())
+
+    work.subscription = MismatchedIdProfiles()
+    with pytest.raises(RunProfileSelectionError) as exc_info:
+        await service.create_run(actor=ACTOR, idempotency_key="id-mismatch", task_id=task_id, profile_id=target_id, profile_version=1)
+    assert str(exc_info.value) == "requested subscription profile identity is invalid"
+
+    # 5. Version mismatch
+    class MismatchedVerProfiles(NoSubscriptionProfile):
+        async def profile(self, selected_id, version):
+            return OperatorProfile(profile_id=target_id, version=2, preferences=())
+
+    work.subscription = MismatchedVerProfiles()
+    with pytest.raises(RunProfileSelectionError) as exc_info:
+        await service.create_run(actor=ACTOR, idempotency_key="ver-mismatch", task_id=task_id, profile_id=target_id, profile_version=1)
+    assert str(exc_info.value) == "requested subscription profile version is invalid"
+
+    # 6. Invalid default profile failing freeze_profile
+    class InvalidDefaultProfiles(NoSubscriptionProfile):
+        async def project_profile(self, pid):
+            return OperatorProfile(profile_id=uuid4(), version=1, preferences=())
+
+    work.subscription = InvalidDefaultProfiles()
+    with pytest.raises(RunProfileSelectionError) as exc_info:
+        await service.create_run(actor=ACTOR, idempotency_key="freeze-fail", task_id=task_id)
+    assert isinstance(exc_info.value, RunCreationError)
+    assert str(exc_info.value) == "selected subscription profile is invalid"
+
+    # 7. Generic RunCreationError for missing policy is NOT RunProfileSelectionError
+    work_no_policy, project_id_no_policy, task_id_no_policy = _uow()
+    work_no_policy.projects.records[project_id_no_policy] = replace(
+        work_no_policy.projects.records[project_id_no_policy], policy=None, current_policy_version=None
+    )
+    service_no_policy = RunService(lambda: work_no_policy, repository_inspector=FakeInspector(tmp_path / "repo"), data_root=tmp_path)
+    with pytest.raises(RunCreationError) as exc_info:
+        await service_no_policy.create_run(actor=ACTOR, idempotency_key="no-policy", task_id=task_id_no_policy)
+    assert not isinstance(exc_info.value, RunProfileSelectionError)
+    assert str(exc_info.value) == "project has no current policy"
+
+
+
+@pytest.mark.asyncio
+async def test_task_only_run_receipt_fingerprint_remains_compatible(tmp_path: Path) -> None:
+    import hashlib
+    import json
+
+    from forge.application.services.runs import RunService
+
+    work, _project_id, task_id = _uow()
+    service = RunService(
+        lambda: work, repository_inspector=FakeInspector(tmp_path / "repo"), data_root=tmp_path
+    )
+    await service.create_run(actor=ACTOR, idempotency_key="legacy-fingerprint", task_id=task_id)
+    receipt = next(iter(work.mutations.receipts.values()))
+    old_request = json.dumps(
+        {"task_id": str(task_id)}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    assert receipt.request_digest == hashlib.sha256(old_request.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.asyncio
 async def test_run_queries_return_safe_snapshots() -> None:
     from forge.application.services.runs import RunService
 

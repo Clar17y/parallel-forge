@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import TypeVar
 from uuid import UUID
 
-from sqlalchemy import Text, case, cast, func, select
+from sqlalchemy import Text, and_, case, cast, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +58,7 @@ from forge.domain.tool import (
     ToolResult,
 )
 from forge.persistence.models.execution import OperationIntent, ToolCall
+from forge.persistence.models.execution import RunEvent as RunEventRecord
 from forge.persistence.models.project import Project
 from forge.persistence.models.run import Run
 from forge.persistence.models.scheduling import (
@@ -750,6 +751,41 @@ class PostgresSubscriptionRepository:
     async def envelope_for_run(self, run_id: UUID) -> ExecutionEnvelope | None:
         row = await self._session.get(SubscriptionEnvelope, run_id)
         return None if row is None else self._decode(row.payload, ExecutionEnvelope)
+
+    async def run_profile_selections(
+        self, run_ids: tuple[UUID, ...]
+    ) -> dict[UUID, dict[str, object]]:
+        """Read frozen header identity plus only each run's creation marker."""
+        if not run_ids:
+            return {}
+        rows = await self._session.execute(
+            select(
+                SubscriptionEnvelope.run_id,
+                SubscriptionEnvelope.profile_id,
+                SubscriptionEnvelope.profile_version,
+                RunEventRecord.payload,
+            )
+            .outerjoin(
+                RunEventRecord,
+                and_(
+                    RunEventRecord.run_id == SubscriptionEnvelope.run_id,
+                    RunEventRecord.sequence == 1,
+                    RunEventRecord.event_type == "run.created",
+                ),
+            )
+            .where(SubscriptionEnvelope.run_id.in_(run_ids))
+        )
+        result: dict[UUID, dict[str, object]] = {}
+        for run_id, profile_id, profile_version, payload in rows:
+            source = payload.get("subscription_profile_selection_source") if isinstance(payload, Mapping) else None
+            result[run_id] = {
+                "profile_id": profile_id,
+                "profile_version": profile_version,
+                "selection_source": source if type(source) is str and source in {
+                    "project_default", "run_override"
+                } else None,
+            }
+        return result
 
     async def create_task(
         self, contract: LogicalTaskContract, *, idempotency_key: str

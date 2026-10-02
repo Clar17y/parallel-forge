@@ -37,6 +37,11 @@ def router_for() -> APIRouter:
             value = await _service(request).run_projection(run_id, _actor)
             if value is None:
                 raise HTTPException(404, "run not found")
+            run_service = getattr(request.app.state, "run_service", None)
+            lookup = getattr(run_service, "profile_selection", None)
+            run = value.get("run")
+            if lookup is not None and isinstance(run, dict):
+                run["subscription_profile"] = await lookup(run_id)
             return RunProjection.model_validate(value)
         except ValueError, PersistenceDataError:
             raise HTTPException(503, "run projection unavailable") from None

@@ -52,6 +52,22 @@ test('oversized structured errors are canceled without retaining server detail',
     cancel() { canceled = true; },
   });
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 422 }));
-  await expect(api('/projects')).rejects.toMatchObject({ fields: {} });
+  await expect(api('/projects')).rejects.toMatchObject({ status: 422, code: 'request-failed', fields: {} });
   expect(canceled).toBe(true);
+});
+
+test('422 recognition maps exact invalid-run-profile detail and keeps other 422s as request-failed', async () => {
+  vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'invalid-run-profile' }), { status: 422 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'request cannot be processed' }), { status: 422 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'invalid-run-profile' }), { status: 422 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ detail: { code: 'invalid-run-profile' } }), { status: 422 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'INVALID-RUN-PROFILE' }), { status: 422 }))
+    .mockResolvedValueOnce(new Response('not-valid-json', { status: 422 }));
+  await expect(api('/runs')).rejects.toMatchObject({ status: 422, code: 'invalid-run-profile', fields: {} });
+  await expect(api('/runs')).rejects.toMatchObject({ status: 422, code: 'request-failed', fields: {} });
+  await expect(api('/runs')).rejects.toMatchObject({ status: 422, code: 'request-failed', fields: {} });
+  await expect(api('/runs')).rejects.toMatchObject({ status: 422, code: 'request-failed', fields: {} });
+  await expect(api('/runs')).rejects.toMatchObject({ status: 422, code: 'request-failed', fields: {} });
+  await expect(api('/runs')).rejects.toMatchObject({ status: 422, code: 'request-failed', fields: {} });
 });
