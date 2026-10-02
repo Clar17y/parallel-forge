@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ApiError, api, mutate } from '@/lib/api/client';
+import { useRef, useState, type FormEvent } from 'react';
+import { ApiError, mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
+import { useApi } from '@/hooks/use-api';
 import { Button } from '@/components/ui/button';
 import { ProviderBadge, getProviderCue } from '@/components/ui/provider-badge';
 
@@ -25,23 +26,15 @@ export function NewRunForm({ projects, onCreated }: {
   const [locked, setLocked] = useState(false);
   const [error, setError] = useState('');
   const [fields, setFields] = useState<Record<string, string>>({});
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const profileList = useApi<Profile[]>('/subscription-profiles');
+  const profiles = profileList.value ?? [];
   const [profileChoice, setProfileChoice] = useState('default');
-  const [profilesLoading, setProfilesLoading] = useState(true);
+  const profilesLoading = profileList.loading;
   const [correctionAllowed, setCorrectionAllowed] = useState(false);
   const attempt = useRef<Attempt | null>(null);
   const busy = useRef(false);
   const project = projects.find(item => item.id === projectId);
   const choice = profiles.find(item => `${item.profile_id}:${item.version}` === profileChoice);
-  useEffect(() => {
-    let active = true;
-    void api<Profile[]>('/subscription-profiles').then(values => {
-      if (active) setProfiles(values ?? []);
-    }).catch(() => {
-      if (active) setProfiles([]);
-    }).finally(() => { if (active) setProfilesLoading(false); });
-    return () => { active = false; };
-  }, []);
   const importing = source === 'github' && project?.issue_import_available === true;
   const validSource = importing
     ? /^[1-9][0-9]*$/.test(issueNumber) && Number.isSafeInteger(Number(issueNumber))

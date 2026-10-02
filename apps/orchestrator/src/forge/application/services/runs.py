@@ -274,14 +274,14 @@ class RunService:
                     profile = await work.subscription.profile(profile_id, profile_version)
                 except (TypeError, ValueError):
                     raise RunCreationError("requested subscription profile is invalid") from None
+                if profile.profile_id != profile_id:
+                    raise RunCreationError("requested subscription profile identity is invalid")
+                if profile.version != profile_version:
+                    raise RunCreationError("requested subscription profile version is invalid")
             else:
                 profile = await work.subscription.project_profile(project.id)
             routing: dict[str, object] = {}
             if profile is not None:
-                if profile_id is not None and profile.profile_id != profile_id:
-                    raise RunCreationError("requested subscription profile identity is invalid")
-                if profile_id is not None and profile.version != profile_version:
-                    raise RunCreationError("requested subscription profile version is invalid")
                 try:
                     envelope = freeze_profile(
                         profile,
