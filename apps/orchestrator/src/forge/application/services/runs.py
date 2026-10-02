@@ -51,6 +51,10 @@ class RunServiceError(RuntimeError):
     """A bounded run application failure."""
 
 
+class RunProfileSelectionError(RunCreationError):
+    """A profile selection or profile validation failure during run creation."""
+
+
 class RunActor(Protocol):
     @property
     def actor_id(self) -> UUID: ...
@@ -218,11 +222,11 @@ class RunService:
         """Atomically create a CREATED run, event, planning command, and receipt."""
 
         if (profile_id is None) != (profile_version is None):
-            raise RunCreationError("subscription profile identity is incomplete")
+            raise RunProfileSelectionError("subscription profile identity is incomplete")
         if profile_id is not None and not isinstance(profile_id, UUID):
-            raise RunCreationError("subscription profile identity is invalid")
+            raise RunProfileSelectionError("subscription profile identity is invalid")
         if profile_version is not None and (type(profile_version) is not int or profile_version < 1):
-            raise RunCreationError("subscription profile version is invalid")
+            raise RunProfileSelectionError("subscription profile version is invalid")
         request: dict[str, object] = {"task_id": str(task_id)}
         if profile_id is not None:
             request["profile_id"] = str(profile_id)
@@ -273,11 +277,11 @@ class RunService:
                 try:
                     profile = await work.subscription.profile(profile_id, profile_version)
                 except (TypeError, ValueError):
-                    raise RunCreationError("requested subscription profile is invalid") from None
-                if profile.profile_id != profile_id:
-                    raise RunCreationError("requested subscription profile identity is invalid")
+                    raise RunProfileSelectionError("requested subscription profile is invalid") from None
+                if profile is None or profile.profile_id != profile_id:
+                    raise RunProfileSelectionError("requested subscription profile identity is invalid")
                 if profile.version != profile_version:
-                    raise RunCreationError("requested subscription profile version is invalid")
+                    raise RunProfileSelectionError("requested subscription profile version is invalid")
             else:
                 profile = await work.subscription.project_profile(project.id)
             routing: dict[str, object] = {}
@@ -288,8 +292,8 @@ class RunService:
                         run_id=run.id,
                         safety_policy_version=project.current_policy_version,
                     )
-                except TypeError, ValueError:
-                    raise RunCreationError("selected subscription profile is invalid") from None
+                except (TypeError, ValueError):
+                    raise RunProfileSelectionError("selected subscription profile is invalid") from None
                 await work.subscription.freeze_envelope(envelope)
                 routing = {
                     "subscription_profile_id": str(envelope.profile_id),
@@ -639,6 +643,7 @@ __all__ = [
     "RunCommandType",
     "RunCommandValidationError",
     "RunCreationService",
+    "RunProfileSelectionError",
     "RunService",
     "RunServiceError",
     "StaleProjectPolicyConflict",

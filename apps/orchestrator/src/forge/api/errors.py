@@ -9,6 +9,7 @@ from forge.application.adapters.git import RepositoryInspectionError
 from forge.application.services.projects import ProjectServiceError
 from forge.application.services.runs import (
     RunCommandValidationError,
+    RunProfileSelectionError,
     RunServiceError,
     StaleProjectPolicyConflict,
 )
@@ -76,6 +77,10 @@ def translate_error(error: BaseException) -> HTTPException:
     if isinstance(error, _CONFLICT):
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="request conflicts with current state"
+        )
+    if isinstance(error, RunProfileSelectionError):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid-run-profile"
         )
     if isinstance(error, _UNPROCESSABLE + (TypeError, ValueError)):
         return HTTPException(

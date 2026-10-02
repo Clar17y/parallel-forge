@@ -32,8 +32,11 @@ async def test_invalid_selected_profile_rolls_back_run_command_and_receipt(
         repository_inspector=StableInspector(tmp_path / "repo"),
         data_root=tmp_path / "data",
     )
-    with pytest.raises(RunCreationError, match="profile"):
+    from forge.application.services.runs import RunProfileSelectionError
+
+    with pytest.raises(RunCreationError, match="profile") as exc_info:
         await service.create_run(actor=actor, idempotency_key="invalid-profile", task_id=task_id)
+    assert isinstance(exc_info.value, RunProfileSelectionError)
     async with factory() as work:
         assert (
             await work.session.scalar(
@@ -65,11 +68,14 @@ async def test_missing_explicit_profile_rolls_back_run_command_and_receipt(sessi
         repository_inspector=StableInspector(tmp_path / "repo"),
         data_root=tmp_path / "data",
     )
-    with pytest.raises(RunCreationError):
+    from forge.application.services.runs import RunProfileSelectionError
+
+    with pytest.raises(RunCreationError) as exc_info:
         await service.create_run(
             actor=actor, idempotency_key="missing-override", task_id=task_id,
             profile_id=uuid4(), profile_version=1,
         )
+    assert isinstance(exc_info.value, RunProfileSelectionError)
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(Run)) == 0
         assert await session.scalar(select(func.count()).select_from(RunCommand)) == 0
@@ -122,11 +128,14 @@ async def test_corrupt_explicit_profile_rolls_back_every_run_creation_record(
         lambda: PostgresUnitOfWork(session_factory),
         repository_inspector=StableInspector(tmp_path / "repo"), data_root=tmp_path / "data",
     )
-    with pytest.raises(RunCreationError):
+    from forge.application.services.runs import RunProfileSelectionError
+
+    with pytest.raises(RunCreationError) as exc_info:
         await service.create_run(
             actor=actor, idempotency_key="corrupt-override", task_id=task_id,
             profile_id=profile.profile_id, profile_version=1,
         )
+    assert isinstance(exc_info.value, RunProfileSelectionError)
     async with session_factory() as session:
         for model in (Run, RunCommand, RunEventRecord, SubscriptionEnvelope):
             assert await session.scalar(select(func.count()).select_from(model)) == 0

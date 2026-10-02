@@ -59,7 +59,7 @@ test('captures a chosen immutable profile in the run request and permits correct
     approved_mappings: [], default_billing_mode: 'allowance_only', jev: null,
   }]);
   vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' })
-    .mockRejectedValueOnce(new ApiError(422, 'request-failed'))
+    .mockRejectedValueOnce(new ApiError(422, 'invalid-run-profile'))
     .mockRejectedValueOnce(new Error('lost corrected response'))
     .mockResolvedValueOnce({ id: 'run-1' });
   render(<NewRunForm projects={[{ ...project, issue_import_available: true }, { ...project, id: 'project-2', name: 'Second' }]} onCreated={vi.fn()} />);
@@ -89,6 +89,60 @@ test('captures a chosen immutable profile in the run request and permits correct
   expect(vi.mocked(mutate).mock.calls[3]).toEqual(vi.mocked(mutate).mock.calls[2]);
   expect(vi.mocked(mutate).mock.calls[2][2].idempotencyKey).not.toBe(vi.mocked(mutate).mock.calls[1][2].idempotencyKey);
   expect(vi.mocked(mutate).mock.calls.filter(call => call[0] === '/tasks')).toHaveLength(1);
+});
+
+test('a generic post-task 422 keeps profile locked and retries the identical run request without rotating keys or creating duplicate tasks', async () => {
+  vi.mocked(api).mockResolvedValueOnce([{
+    profile_id: 'profile-1', version: 3, preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', model: 'gpt-test' } }],
+    approved_mappings: [], default_billing_mode: 'allowance_only', jev: null,
+  }]);
+  vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' })
+    .mockRejectedValueOnce(new ApiError(422, 'request-failed'))
+    .mockResolvedValueOnce({ id: 'run-1' });
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  await screen.findByRole('option', { name: /profile-1/ });
+  const user = await fill();
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'profile-1:3');
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/project policy|repository|setup/i);
+  expect(screen.getByLabelText('Subscription profile')).toBeDisabled();
+  expect(screen.getByLabelText('Project')).toBeDisabled();
+  expect(screen.getByLabelText('Task title')).toHaveAttribute('readonly');
+  expect(screen.getByLabelText('Task description')).toHaveAttribute('readonly');
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(mutate).mock.calls[2]).toEqual(vi.mocked(mutate).mock.calls[1]);
+  expect(vi.mocked(mutate).mock.calls.filter(call => call[0] === '/tasks')).toHaveLength(1);
+});
+
+test('generic or uncertain failure after a profile correction keeps the corrected key and prevents stale rotation', async () => {
+  vi.mocked(api).mockResolvedValueOnce([{
+    profile_id: 'profile-1', version: 3, preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', model: 'gpt-test' } }],
+    approved_mappings: [], default_billing_mode: 'allowance_only', jev: null,
+  }]);
+  vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' })
+    .mockRejectedValueOnce(new ApiError(422, 'invalid-run-profile'))
+    .mockRejectedValueOnce(new ApiError(422, 'request-failed'))
+    .mockResolvedValueOnce({ id: 'run-1' });
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  await screen.findByRole('option', { name: /profile-1/ });
+  const user = await fill();
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'profile-1:3');
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await screen.findByRole('alert');
+  expect(screen.getByLabelText('Subscription profile')).toBeEnabled();
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'default');
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(3));
+  expect(screen.getByLabelText('Subscription profile')).toBeDisabled();
+  const correctedKey = vi.mocked(mutate).mock.calls[2][2].idempotencyKey;
+  expect(correctedKey).not.toBe(vi.mocked(mutate).mock.calls[1][2].idempotencyKey);
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(4));
+  expect(vi.mocked(mutate).mock.calls[3]).toEqual(vi.mocked(mutate).mock.calls[2]);
+  expect(vi.mocked(mutate).mock.calls[3][2].idempotencyKey).toBe(correctedKey);
+  expect(screen.getByLabelText('Subscription profile')).toBeDisabled();
 });
 
 test('an uncertain task response retains its request key and prevents duplicate clicks', async () => {

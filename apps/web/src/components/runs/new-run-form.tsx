@@ -82,12 +82,14 @@ export function NewRunForm({ projects, onCreated }: {
         attempt.current = null;
         setLocked(false);
         setError('Check the task fields and try again.');
-      } else if (failure instanceof ApiError && failure.status === 422 && current.taskId) {
+      } else if (failure instanceof ApiError && failure.status === 422 && failure.code === 'invalid-run-profile' && current.taskId) {
         current.correctionAllowed = true;
         setCorrectionAllowed(true);
         setError(current.profileId
           ? 'The run was rejected. Choose another profile or use the project default, then retry.'
           : 'The run was rejected. You can choose a profile override and retry.');
+      } else if (failure instanceof ApiError && failure.status === 422 && current.taskId) {
+        setError('The project policy or repository setup cannot run this task. Verify configuration and retry.');
       } else {
         setError('Creation could not be confirmed. Retry to recover the same task and run.');
       }

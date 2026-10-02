@@ -99,6 +99,88 @@ async def test_run_command_stale_policy_conflict_returns_409_with_safe_code(
     assert response.json()["detail"] == "stale-project-policy"
 
 
+@pytest.mark.asyncio
+async def test_run_create_profile_selection_error_translates_to_safe_detail(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    from forge.application.services.runs import RunProfileSelectionError
+
+    async def raise_profile_error(*_args, **_kwargs):
+        raise RunProfileSelectionError("requested subscription profile is invalid")
+
+    task10_route_context.runs.create_run = raise_profile_error
+
+    response = await task10_client.post(
+        "/api/runs",
+        headers={**route_headers, "Idempotency-Key": "profile-error-key"},
+        json={
+            "task_id": str(task10_route_context.task.id),
+            "profile_id": "00000000-0000-0000-0000-000000000001",
+            "profile_version": 1,
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid-run-profile"
+
+
+@pytest.mark.asyncio
+async def test_run_create_generic_policy_or_repository_error_translates_to_generic_detail(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    from forge.application.adapters.git import RepositoryInspectionError
+    from forge.persistence.repositories.runs import RunCreationError
+
+    async def raise_generic_creation(*_args, **_kwargs):
+        raise RunCreationError("project has no current policy")
+
+    task10_route_context.runs.create_run = raise_generic_creation
+
+    response = await task10_client.post(
+        "/api/runs",
+        headers={**route_headers, "Idempotency-Key": "generic-policy-key"},
+        json={"task_id": str(task10_route_context.task.id)},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "request cannot be processed"
+
+    async def raise_inspection(*_args, **_kwargs):
+        raise RepositoryInspectionError()
+
+    task10_route_context.runs.create_run = raise_inspection
+
+    response = await task10_client.post(
+        "/api/runs",
+        headers={**route_headers, "Idempotency-Key": "generic-inspection-key"},
+        json={"task_id": str(task10_route_context.task.id)},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "request cannot be processed"
+
+
+def test_translate_error_discriminates_profile_vs_generic_errors() -> None:
+    from forge.api.errors import translate_error
+    from forge.application.adapters.git import RepositoryInspectionError
+    from forge.application.services.runs import RunProfileSelectionError
+    from forge.persistence.repositories.runs import RunCreationError
+
+    profile_exc = translate_error(RunProfileSelectionError("profile invalid"))
+    assert profile_exc.status_code == 422
+    assert profile_exc.detail == "invalid-run-profile"
+
+    policy_exc = translate_error(RunCreationError("project has no current policy"))
+    assert policy_exc.status_code == 422
+    assert policy_exc.detail == "request cannot be processed"
+
+    repo_exc = translate_error(RepositoryInspectionError())
+    assert repo_exc.status_code == 422
+    assert repo_exc.detail == "request cannot be processed"
+
+    val_exc = translate_error(ValueError("bad value"))
+    assert val_exc.status_code == 422
+    assert val_exc.detail == "request cannot be processed"
+
+
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
