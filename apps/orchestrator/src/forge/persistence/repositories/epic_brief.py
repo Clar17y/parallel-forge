@@ -87,14 +87,15 @@ class PostgresEpicBriefRepository:
                 )
             )
         ).scalar_one() + 1
+        content_json = content.model_dump(mode="json")
         row.version += 1
-        row.draft = content.model_dump(mode="json")
+        row.draft = content_json
         revision = EpicBriefRevision(
             id=uuid4(),
             epic_id=epic_id,
             revision_number=number,
             epic_version=row.version,
-            content=content.model_dump(mode="json"),
+            content=content_json,
             content_digest=content_digest,
         )
         self._session.add(revision)

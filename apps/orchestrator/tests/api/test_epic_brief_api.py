@@ -8,12 +8,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
-import forge.api.errors as api_errors
 import pytest
-from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from forge.api.routes.epic_brief import router_for
+from forge.api.app import create_app
 from forge.api.schemas.epic_brief import (
     AcceptedBriefResponse,
     BriefAdoption,
@@ -93,7 +89,9 @@ class FakeEpicBriefService:
         self.revision = revision
         self.accepted_record = accepted
         self.create_calls: list[tuple[AuthenticatedActor, str, EpicCreateRequest]] = []
-        self.update_draft_calls: list[tuple[AuthenticatedActor, UUID, str, EpicDraftUpdateRequest]] = []
+        self.update_draft_calls: list[
+            tuple[AuthenticatedActor, UUID, str, EpicDraftUpdateRequest]
+        ] = []
         self.save_revision_calls: list[
             tuple[AuthenticatedActor, UUID, str, BriefRevisionCreateRequest]
         ] = []
@@ -176,9 +174,7 @@ class FakeEpicBriefService:
         self.list_revisions_calls.append(epic_id)
         return [self.revision]
 
-    async def get_revision(
-        self, epic_id: UUID, brief_revision_id: UUID
-    ) -> BriefRevisionRecord:
+    async def get_revision(self, epic_id: UUID, brief_revision_id: UUID) -> BriefRevisionRecord:
         if self.error:
             raise self.error
         self.get_revision_calls.append((epic_id, brief_revision_id))
@@ -189,24 +185,6 @@ class FakeEpicBriefService:
             raise self.error
         self.accepted_calls.append(epic_id)
         return self.accepted_record
-
-
-@pytest.fixture(autouse=True)
-def _patch_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure safe category translation mappings exist for epic exceptions."""
-    if EpicNotFound not in api_errors._NOT_FOUND:
-        monkeypatch.setattr(
-            api_errors,
-            "_NOT_FOUND",
-            api_errors._NOT_FOUND + (EpicNotFound, BriefRevisionNotFound),
-        )
-    if EpicVersionConflict not in api_errors._CONFLICT:
-        monkeypatch.setattr(
-            api_errors,
-            "_CONFLICT",
-            api_errors._CONFLICT
-            + (EpicVersionConflict, BriefBindingConflict, BriefNotAccepted),
-        )
 
 
 @pytest.fixture
@@ -277,37 +255,18 @@ def epic_route_context() -> SimpleNamespace:
     service = FakeEpicBriefService(epic=epic, revision=revision, accepted=accepted)
     settings = Settings(web_origin="http://127.0.0.1:3000")
 
-    try:
-        from forge.api.app import create_app
-
-        app = create_app(
-            settings,
-            unit_of_work_factory=lambda: object(),
-            auth_service=auth,
-            approval_challenge_service=object(),
-            approval_authorization_service=object(),
-            project_service=object(),
-            task_service=object(),
-            epic_brief_service=service,
-            run_service=object(),
-            run_command_service=object(),
-        )
-    except Exception:  # noqa: BLE001
-        app = FastAPI()
-        app.state.settings = settings
-        app.state.auth_service = auth
-        app.state.epic_brief_service = service
-        app.include_router(router_for(), prefix="/api")
-
-        @app.exception_handler(RequestValidationError)
-        async def request_validation_error(
-            _request: Request, _error: RequestValidationError
-        ) -> JSONResponse:
-            return JSONResponse(
-                status_code=422,
-                content={"detail": "invalid request"},
-            )
-
+    app = create_app(
+        settings,
+        unit_of_work_factory=lambda: object(),
+        auth_service=auth,
+        approval_challenge_service=object(),
+        approval_authorization_service=object(),
+        project_service=object(),
+        task_service=object(),
+        epic_brief_service=service,
+        run_service=object(),
+        run_command_service=object(),
+    )
 
     return SimpleNamespace(
         app=app,

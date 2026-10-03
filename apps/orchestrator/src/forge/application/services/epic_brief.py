@@ -237,21 +237,24 @@ class EpicBriefService:
         status: int,
         result: EpicRecord | BriefRevisionRecord,
     ) -> None:
-        evidence: dict[str, object] = {
-            "epic_id": str(epic_id),
-            "epic_version": result.version
-            if isinstance(result, EpicRecord)
-            else result.epic_version,
-        }
+        evidence: dict[str, object] = {"epic_id": str(epic_id)}
         if isinstance(result, BriefRevisionRecord):
             evidence.update(
-                brief_revision_id=str(result.brief_revision_id), brief_digest=result.content_digest
+                epic_version=result.epic_version,
+                brief_revision_id=str(result.brief_revision_id),
+                brief_digest=result.content_digest,
             )
-        elif result.accepted_brief_revision_id is not None:
-            evidence.update(
-                brief_revision_id=str(result.accepted_brief_revision_id),
-                brief_digest=result.accepted_brief_digest,
-            )
+            resource_kind = "epic_brief_revision"
+            resource_id = result.brief_revision_id
+        else:
+            evidence["epic_version"] = result.version
+            resource_kind = "epic"
+            resource_id = epic_id
+            if result.accepted_brief_revision_id is not None:
+                evidence.update(
+                    brief_revision_id=str(result.accepted_brief_revision_id),
+                    brief_digest=result.accepted_brief_digest,
+                )
         await work.audit.append(
             actor_id=actor.actor_id,
             event_type=event,
@@ -264,10 +267,6 @@ class EpicBriefService:
             receipt.id,
             response_status=status,
             response_payload=result.model_dump(mode="json"),
-            resource_kind="epic_brief_revision"
-            if isinstance(result, BriefRevisionRecord)
-            else "epic",
-            resource_id=result.brief_revision_id
-            if isinstance(result, BriefRevisionRecord)
-            else epic_id,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
         )
