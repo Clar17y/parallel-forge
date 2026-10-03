@@ -1647,7 +1647,7 @@ export interface components {
              */
             schema_version: 1;
             /** Source Job Id */
-            source_job_id?: string | null;
+            source_job_id: string | null;
         };
         /** BudgetSection */
         BudgetSection: {
@@ -1877,13 +1877,13 @@ export interface components {
          */
         EpicResponse: {
             /** Accepted Brief Digest */
-            accepted_brief_digest?: string | null;
+            accepted_brief_digest: string | null;
             /** Accepted Brief Revision Id */
-            accepted_brief_revision_id?: string | null;
+            accepted_brief_revision_id: string | null;
             /** Accepted Graph Digest */
-            accepted_graph_digest?: string | null;
+            accepted_graph_digest: string | null;
             /** Accepted Graph Revision Id */
-            accepted_graph_revision_id?: string | null;
+            accepted_graph_revision_id: string | null;
             /**
              * Created At
              * Format: date-time

@@ -9,6 +9,24 @@ def test_api_docs_and_openapi_live_under_api_prefix():
     assert app.docs_url == "/api/docs"
 
 
+def test_epic_response_nullable_keys_are_required_in_openapi():
+    schemas = create_app().openapi()["components"]["schemas"]
+    nullable_fields = {
+        "EpicResponse": {
+            "accepted_brief_revision_id",
+            "accepted_brief_digest",
+            "accepted_graph_revision_id",
+            "accepted_graph_digest",
+        },
+        "BriefRevisionResponse": {"source_job_id"},
+    }
+    for name, fields in nullable_fields.items():
+        schema = schemas[name]
+        assert fields <= set(schema["required"]), name
+        for field in fields:
+            assert {"type": "null"} in schema["properties"][field]["anyOf"]
+
+
 def test_mutations_declare_session_and_csrf_with_explicit_bootstrap_exception():
     schema = create_app().openapi()
     for path, methods in schema["paths"].items():

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from uuid import UUID
-
 from forge.domain.epic_brief import (
     AcceptedBrief,
     BriefContent,
@@ -50,11 +48,6 @@ BriefAdoption = BriefAdoptionRequest
 class EpicResponse(EpicRecord):
     """Authoritative epic snapshot with explicit nullable keys."""
 
-    accepted_brief_revision_id: UUID | None = None
-    accepted_brief_digest: str | None = None
-    accepted_graph_revision_id: UUID | None = None
-    accepted_graph_digest: str | None = None
-
     @classmethod
     def from_record(cls, record: EpicRecord) -> EpicResponse:
         return cls(**dict(record))
@@ -62,8 +55,6 @@ class EpicResponse(EpicRecord):
 
 class BriefRevisionResponse(BriefRevisionRecord):
     """Immutable brief revision snapshot with explicit nullable keys."""
-
-    source_job_id: UUID | None = None
 
     @classmethod
     def from_record(cls, record: BriefRevisionRecord) -> BriefRevisionResponse:

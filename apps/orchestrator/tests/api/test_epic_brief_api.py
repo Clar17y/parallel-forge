@@ -481,7 +481,7 @@ async def test_adopt_brief_revision_success(
     epic_route_context: SimpleNamespace,
     route_headers: dict[str, str],
 ) -> None:
-    headers = {**route_headers, "Idempotency-Key": "brief-adopt-key-1"}
+    headers = {**route_headers, "Idempotency-Key": "adopt"}
     payload = {
         "expected_epic_version": 1,
         "brief_revision_id": str(epic_route_context.revision_id),
@@ -500,7 +500,7 @@ async def test_adopt_brief_revision_success(
     actor, epic_id, key, req = epic_route_context.service.adopt_revision_calls[0]
     assert actor.actor_id == epic_route_context.auth.actor.actor_id
     assert epic_id == epic_route_context.epic_id
-    assert key == "brief-adopt-key-1"
+    assert key == "adopt"
     assert req.expected_epic_version == 1
     assert req.brief_revision_id == epic_route_context.revision_id
     assert req.brief_digest == "a" * 64
