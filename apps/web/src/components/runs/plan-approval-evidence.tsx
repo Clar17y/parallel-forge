@@ -9,7 +9,7 @@ export function PlanApprovalEvidence({
 }: {
   evidence: PlanEvidence;
   plan: Plan;
-  rawEvidence?: string;
+  rawEvidence: string;
 }): ReactNode {
   return (
     <section aria-label="Plan proposal">
@@ -81,7 +81,7 @@ export function PlanApprovalEvidence({
           )}
         </dl>
         <h4>Raw evidence</h4>
-        <pre className="policy-document">{rawEvidence ?? JSON.stringify(evidence, null, 2)}</pre>
+        <pre className="policy-document">{rawEvidence}</pre>
       </details>
     </section>
   );

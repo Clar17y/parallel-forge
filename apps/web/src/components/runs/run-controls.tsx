@@ -20,9 +20,8 @@ export class InvalidEvidenceError extends Error {
 type Projection = components['schemas']['RunProjection'];
 type Command = components['schemas']['AvailableCommand'];
 type Binding = { returnFocus: HTMLButtonElement; resource?: Projection['resource']; command: Command; key: string; evidence?: Record<string, unknown>;
-  evidenceText?: string;
   merge?: MergeEvidence; protection?: components['schemas']['ProtectionSnapshotResponse']; pr?: PrEvidence; body?: string;
-  planEvidence?: PlanEvidence; plan?: Plan;
+  plan?: { evidence: PlanEvidence; proposal: Plan; text: string };
   challenge?: components['schemas']['ApprovalChallengeResponse']; payload?: Record<string, unknown> };
 const branchName = (ref: string) => ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
 const labels: Record<string, string> = { teardown_run_resources: 'Remove run resources', pause: 'Pause', resume: 'Resume', cancel: 'Cancel run',
@@ -79,20 +78,20 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
         }
         if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) throw new InvalidEvidenceError();
         next.evidence = evidence as Record<string, unknown>;
-        next.evidenceText = artifact.text;
         if (name === 'approve_plan') {
+          let planEvidence: PlanEvidence;
           try {
-            next.planEvidence = parsePlanEvidence(next.evidence);
+            planEvidence = parsePlanEvidence(next.evidence);
           } catch {
             throw new InvalidEvidenceError();
           }
-          if (!matchesPlanEvidence(next.planEvidence, fresh, command)) throw new ApiError(409, 'plan-evidence-mismatch');
-          const planArtifact = await api<components['schemas']['ArtifactTextResponse']>(`/artifacts/${next.planEvidence.plan_digest}/text`, { signal });
+          if (!matchesPlanEvidence(planEvidence, fresh, command)) throw new ApiError(409, 'plan-evidence-mismatch');
+          const planArtifact = await api<components['schemas']['ArtifactTextResponse']>(`/artifacts/${planEvidence.plan_digest}/text`, { signal });
           if (!planArtifact || typeof planArtifact.text !== 'string') throw new InvalidEvidenceError();
-          if (planArtifact.digest !== next.planEvidence.plan_digest) throw new ApiError(409, 'plan-artifact-mismatch');
-          const parsed = parsePlan(planArtifact.text);
-          if (!parsed) throw new InvalidEvidenceError();
-          next.plan = parsed;
+          if (planArtifact.digest !== planEvidence.plan_digest) throw new ApiError(409, 'plan-artifact-mismatch');
+          const proposal = parsePlan(planArtifact.text);
+          if (!proposal) throw new InvalidEvidenceError();
+          next.plan = { evidence: planEvidence, proposal, text: artifact.text };
         }
         if (name === 'approve_pr') {
           next.pr = parsePrEvidence(next.evidence);
@@ -186,7 +185,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
         <p>Policy version {binding.command.policy_version}</p>
         {binding.merge && binding.protection ? <MergeApprovalEvidence evidence={binding.merge} protection={binding.protection} />
           : binding.pr ? <PrPublicationEvidence evidence={binding.pr} body={binding.body ?? ''} />
-          : binding.planEvidence && binding.plan ? <PlanApprovalEvidence evidence={binding.planEvidence} plan={binding.plan} rawEvidence={binding.evidenceText} />
+          : binding.plan ? <PlanApprovalEvidence evidence={binding.plan.evidence} plan={binding.plan.proposal} rawEvidence={binding.plan.text} />
           : <pre className="policy-document">{JSON.stringify(binding.evidence, null, 2)}</pre>}
         <p>Challenge expires {binding.challenge?.expires_at}</p></>}
       {binding.command.requires_feedback && <label>Revision feedback<textarea required maxLength={8000} rows={5}

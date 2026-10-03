@@ -186,7 +186,7 @@ describe('matchesPlanEvidence', () => {
     const proj = projection();
     proj.run.id = '22222222-2222-2222-2222-222222222222';
     proj.plan.output_artifact_digest = '2'.repeat(64);
-    const cmd = { ...proj.available_commands[0], policy_version: 2 };
+    const cmd = proj.available_commands[0];
     expect(matchesPlanEvidence(subscriptionEvidence, proj, cmd)).toBe(true);
   });
 
@@ -194,7 +194,7 @@ describe('matchesPlanEvidence', () => {
     const proj = projection();
     proj.run.id = '99999999-9999-9999-9999-999999999999';
     proj.plan.output_artifact_digest = '2'.repeat(64);
-    const cmd = { ...proj.available_commands[0], policy_version: 2 };
+    const cmd = proj.available_commands[0];
     expect(matchesPlanEvidence(subscriptionEvidence, proj, cmd)).toBe(false);
   });
 });

@@ -65,7 +65,7 @@ describe('PlanApprovalEvidence', () => {
   };
 
   test('renders readable plan proposal sections and honest execution limits', () => {
-    render(<PlanApprovalEvidence evidence={legacyEvidence} plan={plan} />);
+    render(<PlanApprovalEvidence evidence={legacyEvidence} plan={plan} rawEvidence={JSON.stringify(legacyEvidence, null, 2)} />);
 
     expect(screen.getByText('Refactor database client')).toBeInTheDocument();
     expect(screen.getByText('Add pooling')).toBeInTheDocument();
@@ -90,7 +90,7 @@ describe('PlanApprovalEvidence', () => {
   });
 
   test('renders trusted host runner and subscription producer details', () => {
-    render(<PlanApprovalEvidence evidence={subscriptionEvidence} plan={plan} />);
+    render(<PlanApprovalEvidence evidence={subscriptionEvidence} plan={plan} rawEvidence={JSON.stringify(subscriptionEvidence, null, 2)} />);
 
     expect(screen.getByText('Trusted host · unsandboxed')).toBeInTheDocument();
     expect(screen.getByText('3'.repeat(64))).toBeInTheDocument(); // result digest
@@ -104,7 +104,7 @@ describe('PlanApprovalEvidence', () => {
       token_budget: 0,
       cost_budget_minor: 0,
     };
-    render(<PlanApprovalEvidence evidence={zeroBudgets} plan={plan} />);
+    render(<PlanApprovalEvidence evidence={zeroBudgets} plan={plan} rawEvidence={JSON.stringify(zeroBudgets, null, 2)} />);
 
     expect(screen.getByText('0 attempts')).toBeInTheDocument();
     expect(screen.getByText('0 tokens')).toBeInTheDocument();
@@ -117,7 +117,7 @@ describe('PlanApprovalEvidence', () => {
       ...plan,
       owned_paths: undefined,
     };
-    render(<PlanApprovalEvidence evidence={legacyEvidence} plan={legacyPlan} />);
+    render(<PlanApprovalEvidence evidence={legacyEvidence} plan={legacyPlan} rawEvidence={JSON.stringify(legacyEvidence, null, 2)} />);
 
     expect(screen.queryByRole('heading', { name: 'Writable paths' })).toBeNull();
     expect(screen.queryByText('No writable paths.')).toBeNull();

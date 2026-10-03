@@ -420,16 +420,7 @@ test('approval dialog returns focus to its invoking button after async evidence 
 });
 
 test('plan approval renders readable bound plan proposal and execution limits', async () => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   const planProposal = {
     summary: 'Implement secure endpoint',
     assumptions: ['Database online'],
@@ -474,16 +465,7 @@ test('plan approval renders readable bound plan proposal and execution limits', 
 });
 
 test('subscription plan approval renders producer identity and settled result digest', async () => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   value.run.id = '87654321-4321-4321-4321-cba987654321';
   const planProposal = {
     summary: 'Subscription scoped proposal',
@@ -548,16 +530,7 @@ test.each([
   { scenario: 'mismatched plan artifact digest', planDigest: '9'.repeat(64), planText: JSON.stringify(planArtifact), expectedAlert: 'The run or evidence changed.' },
   { scenario: 'base sha mismatch with projection', planDigest: 'c'.repeat(64), planText: JSON.stringify(planArtifact), evidenceOverride: { base_sha: 'b'.repeat(40) }, expectedAlert: 'The run or evidence changed.' },
 ])('plan approval fails when $scenario', async ({ planDigest, planText, evidenceOverride, expectedAlert }) => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   const currentEvidence = { ...evidence, ...evidenceOverride };
   const refresh = vi.fn().mockResolvedValue(value);
   vi.mocked(api)
@@ -579,16 +552,7 @@ test.each([
   { scenario: 'malformed plan artifact text', evidenceText: JSON.stringify(evidence), planText: 'invalid { json' },
   { scenario: 'non-string plan artifact text', evidenceText: JSON.stringify(evidence), planText: null },
 ])('plan approval fails with permanent error when $scenario', async ({ evidenceText, planText }) => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: evidenceText });
   if (planText !== undefined) {
     vi.mocked(api).mockResolvedValueOnce({ digest: 'c'.repeat(64), text: planText as string });
@@ -605,16 +569,7 @@ test.each([
 });
 
 test('plan approval fails when subscription producer run_id does not match projection run_id', async () => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   value.run.id = '11111111-1111-1111-1111-111111111111';
   const foreignEvidence = {
     ...evidence,
@@ -646,16 +601,7 @@ test('plan approval fails when subscription producer run_id does not match proje
 });
 
 test('plan approval fails when projection plan output_artifact_digest is absent', async () => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   value.plan.output_artifact_digest = null;
   vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) });
 
@@ -668,16 +614,7 @@ test('plan approval fails when projection plan output_artifact_digest is absent'
 });
 
 test('plan approval preserves exact legacy raw evidence artifact bytes omitting plan_attempt', async () => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   const { plan_attempt: _omitted, ...legacyNoAttempt } = evidence;
   const rawLegacyText = JSON.stringify(legacyNoAttempt);
 
@@ -699,16 +636,7 @@ test('plan approval preserves exact legacy raw evidence artifact bytes omitting 
 });
 
 test('plan approval handles projection becoming stale while plan fetch is in flight', async () => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   let resolvePlan!: (result: unknown) => void;
   const planPromise = new Promise(resolve => {
     resolvePlan = resolve;
@@ -740,16 +668,7 @@ test('plan approval handles projection becoming stale while plan fetch is in fli
 });
 
 test('plan approval handles unavailable plan artifact', async () => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   vi.mocked(api)
     .mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
     .mockRejectedValueOnce(new Error('Artifact not found'));
@@ -762,16 +681,7 @@ test('plan approval handles unavailable plan artifact', async () => {
 });
 
 test('plan approval safely renders escaped untrusted text', async () => {
-  const value = projection({
-    available_commands: [{
-      name: 'approve_plan',
-      expected_run_version: 7,
-      requires_feedback: false,
-      gate: 'plan',
-      evidence_digest: 'd'.repeat(64),
-      policy_version: 2,
-    }],
-  });
+  const value = projection();
   const untrustedPlan = {
     summary: 'Plan with <script>evil()</script>',
     assumptions: ['<img src="x" onerror="alert(1)">'],
