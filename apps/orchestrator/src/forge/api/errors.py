@@ -21,6 +21,7 @@ from forge.domain.epic_brief import (
     EpicNotFound,
     EpicVersionConflict,
 )
+from forge.domain.epic_items import GraphBindingConflict, GraphNotAccepted, GraphRevisionNotFound
 from forge.domain.subscription_feedback import TaskFeedbackConflict
 from forge.domain.subscription_task_controls import TaskControlConflict
 from forge.persistence.repositories.commands import IdempotencyConflict
@@ -50,6 +51,7 @@ from forge.persistence.repositories.tasks import (
 _NOT_FOUND = (
     EpicNotFound,
     BriefRevisionNotFound,
+    GraphRevisionNotFound,
     ProjectNotFound,
     PolicyNotFound,
     TaskNotFound,
@@ -62,6 +64,8 @@ _CONFLICT = (
     EpicVersionConflict,
     BriefBindingConflict,
     BriefNotAccepted,
+    GraphBindingConflict,
+    GraphNotAccepted,
     ProjectIdentityConflict,
     TaskIdentityConflict,
     PolicyVersionConflict,

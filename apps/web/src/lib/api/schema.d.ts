@@ -349,6 +349,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/epics/{epic_id}/accepted-graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Accepted Graph */
+        get: operations["get_accepted_graph_api_epics__epic_id__accepted_graph_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/epics/{epic_id}/brief-adoptions": {
         parameters: {
             query?: never;
@@ -393,6 +410,58 @@ export interface paths {
         };
         /** Get Brief Revision */
         get: operations["get_brief_revision_api_epics__epic_id__brief_revisions__brief_revision_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/graph-adoptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adopt Graph Revision */
+        post: operations["adopt_graph_revision_api_epics__epic_id__graph_adoptions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/graph-revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Graph Revisions */
+        get: operations["list_graph_revisions_api_epics__epic_id__graph_revisions_get"];
+        put?: never;
+        /** Create Graph Revision */
+        post: operations["create_graph_revision_api_epics__epic_id__graph_revisions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/graph-revisions/{graph_revision_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Graph Revision */
+        get: operations["get_graph_revision_api_epics__epic_id__graph_revisions__graph_revision_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1139,6 +1208,41 @@ export interface components {
             schema_version: 1;
             /** Scope */
             scope?: string[];
+        };
+        /**
+         * AcceptedGraphResponse
+         * @description Immutable accepted graph projection with deterministic readiness projections.
+         */
+        AcceptedGraphResponse: {
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /** Graph Digest */
+            graph_digest: string;
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+            /** Items */
+            items: components["schemas"]["ItemSnapshot"][];
+            /** Readiness */
+            readiness?: components["schemas"]["ItemReadiness"][];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
         };
         /** AgentItem */
         AgentItem: {
@@ -2048,6 +2152,94 @@ export interface components {
              */
             project_id: string;
         };
+        /**
+         * GraphAdoptionRequest
+         * @description Closed graph adoption request body.
+         */
+        GraphAdoptionRequest: {
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /** Graph Digest */
+            graph_digest: string;
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /**
+         * GraphRevisionCreateRequest
+         * @description Closed graph revision creation request body.
+         */
+        GraphRevisionCreateRequest: {
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /** Items */
+            items: components["schemas"]["ItemInput"][];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /**
+         * GraphRevisionResponse
+         * @description Immutable graph revision snapshot with deterministic readiness projections.
+         */
+        GraphRevisionResponse: {
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /** Epic Version */
+            epic_version: number;
+            /** Graph Digest */
+            graph_digest: string;
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+            /** Items */
+            items: components["schemas"]["ItemSnapshot"][];
+            /** Readiness */
+            readiness?: components["schemas"]["ItemReadiness"][];
+            /** Revision Number */
+            revision_number: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2059,6 +2251,80 @@ export interface components {
             role: string;
             /** Status */
             status: string;
+        };
+        /** ItemInput */
+        ItemInput: {
+            /** Acceptance Criteria */
+            acceptance_criteria: string[];
+            /** Dependency Item Ids */
+            dependency_item_ids?: string[];
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "required" | "deferred";
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Ordinal */
+            ordinal: number;
+            /** Outcome */
+            outcome: string;
+            /** Source Requirement Ids */
+            source_requirement_ids: string[];
+            /** Title */
+            title: string;
+        };
+        /** ItemReadiness */
+        ItemReadiness: {
+            /** Dependency Item Ids */
+            dependency_item_ids: string[];
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "blocked" | "deferred";
+        };
+        /** ItemSnapshot */
+        ItemSnapshot: {
+            /** Acceptance Criteria */
+            acceptance_criteria: string[];
+            /** Dependency Item Ids */
+            dependency_item_ids?: string[];
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "required" | "deferred";
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+            /** Item Digest */
+            item_digest: string;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Ordinal */
+            ordinal: number;
+            /** Outcome */
+            outcome: string;
+            /** Source Requirement Ids */
+            source_requirement_ids: string[];
+            /** Title */
+            title: string;
         };
         /**
          * JevPolicy
@@ -4755,6 +5021,37 @@ export interface operations {
             };
         };
     };
+    get_accepted_graph_api_epics__epic_id__accepted_graph_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcceptedGraphResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     adopt_brief_revision_api_epics__epic_id__brief_adoptions_post: {
         parameters: {
             query?: never;
@@ -4879,6 +5176,143 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BriefRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adopt_graph_revision_api_epics__epic_id__graph_adoptions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GraphAdoptionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_graph_revisions_api_epics__epic_id__graph_revisions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphRevisionResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_graph_revision_api_epics__epic_id__graph_revisions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GraphRevisionCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_graph_revision_api_epics__epic_id__graph_revisions__graph_revision_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+                graph_revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphRevisionResponse"];
                 };
             };
             /** @description Validation Error */

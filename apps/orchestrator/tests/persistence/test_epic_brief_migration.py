@@ -211,7 +211,7 @@ def test_downgrade_refuses_to_discard_saved_epic_records(
                 )
                 assert (
                     await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "20261003_0031"
+                    == "20261003_0032"
                 )
         finally:
             await engine.dispose()
