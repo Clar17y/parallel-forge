@@ -296,6 +296,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/epics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Epics */
+        get: operations["list_epics_api_epics_get"];
+        put?: never;
+        /** Create Epic */
+        post: operations["create_epic_api_epics_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Epic */
+        get: operations["get_epic_api_epics__epic_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Epic Draft */
+        patch: operations["update_epic_draft_api_epics__epic_id__patch"];
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/accepted-brief": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Accepted Brief */
+        get: operations["get_accepted_brief_api_epics__epic_id__accepted_brief_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brief-adoptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adopt Brief Revision */
+        post: operations["adopt_brief_revision_api_epics__epic_id__brief_adoptions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brief-revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Brief Revisions */
+        get: operations["list_brief_revisions_api_epics__epic_id__brief_revisions_get"];
+        put?: never;
+        /** Create Brief Revision */
+        post: operations["create_brief_revision_api_epics__epic_id__brief_revisions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brief-revisions/{brief_revision_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Brief Revision */
+        get: operations["get_brief_revision_api_epics__epic_id__brief_revisions__brief_revision_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/evaluations": {
         parameters: {
             query?: never;
@@ -985,6 +1090,56 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AcceptedBriefResponse
+         * @description Immutable accepted brief projection.
+         */
+        AcceptedBriefResponse: {
+            /** Assumptions */
+            assumptions?: string[];
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /** Decisions */
+            decisions?: string[];
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /** Epic Version */
+            epic_version: number;
+            /** Exclusions */
+            exclusions?: string[];
+            /** Open Questions */
+            open_questions?: string[];
+            /** Outcomes */
+            outcomes?: string[];
+            /**
+             * Problem
+             * @default
+             */
+            problem: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Requirements */
+            requirements?: components["schemas"]["BriefRequirement"][];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Scope */
+            scope?: string[];
+        };
         /** AgentItem */
         AgentItem: {
             /**
@@ -1382,6 +1537,118 @@ export interface components {
             /** Idle Expires At */
             idle_expires_at: string;
         };
+        /**
+         * BriefAdoptionRequest
+         * @description Closed brief adoption request body.
+         */
+        BriefAdoptionRequest: {
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** BriefContent */
+        BriefContent: {
+            /** Assumptions */
+            assumptions?: string[];
+            /** Decisions */
+            decisions?: string[];
+            /** Exclusions */
+            exclusions?: string[];
+            /** Open Questions */
+            open_questions?: string[];
+            /** Outcomes */
+            outcomes?: string[];
+            /**
+             * Problem
+             * @default
+             */
+            problem: string;
+            /** Requirements */
+            requirements?: components["schemas"]["BriefRequirement"][];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Scope */
+            scope?: string[];
+        };
+        /** BriefRequirement */
+        BriefRequirement: {
+            /** Acceptance Criteria */
+            acceptance_criteria?: string[];
+            /**
+             * Requirement Id
+             * Format: uuid
+             */
+            requirement_id: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * BriefRevisionCreateRequest
+         * @description Closed brief revision creation request body.
+         */
+        BriefRevisionCreateRequest: {
+            content: components["schemas"]["BriefContent"];
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /**
+         * BriefRevisionResponse
+         * @description Immutable brief revision snapshot with explicit nullable keys.
+         */
+        BriefRevisionResponse: {
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            content: components["schemas"]["BriefContent"];
+            /** Content Digest */
+            content_digest: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /** Epic Version */
+            epic_version: number;
+            /** Revision Number */
+            revision_number: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Source Job Id */
+            source_job_id: string | null;
+        };
         /** BudgetSection */
         BudgetSection: {
             /** Cost Limit Minor */
@@ -1566,6 +1833,88 @@ export interface components {
              * @default DATABASE_URL
              */
             injected_environment_key: string;
+        };
+        /**
+         * EpicCreateRequest
+         * @description Closed epic creation request body.
+         */
+        EpicCreateRequest: {
+            draft?: components["schemas"]["BriefContent"];
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Title */
+            title: string;
+        };
+        /**
+         * EpicDraftUpdateRequest
+         * @description Closed epic draft update request body.
+         */
+        EpicDraftUpdateRequest: {
+            draft: components["schemas"]["BriefContent"];
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Title */
+            title: string;
+        };
+        /**
+         * EpicResponse
+         * @description Authoritative epic snapshot with explicit nullable keys.
+         */
+        EpicResponse: {
+            /** Accepted Brief Digest */
+            accepted_brief_digest: string | null;
+            /** Accepted Brief Revision Id */
+            accepted_brief_revision_id: string | null;
+            /** Accepted Graph Digest */
+            accepted_graph_digest: string | null;
+            /** Accepted Graph Revision Id */
+            accepted_graph_revision_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            draft: components["schemas"]["BriefContent"];
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
         };
         /** EvaluationItem */
         EvaluationItem: {
@@ -4237,6 +4586,308 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DashboardSummary"];
+                };
+            };
+        };
+    };
+    list_epics_api_epics_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_epic_api_epics_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_epic_api_epics__epic_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_epic_draft_api_epics__epic_id__patch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicDraftUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_accepted_brief_api_epics__epic_id__accepted_brief_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcceptedBriefResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adopt_brief_revision_api_epics__epic_id__brief_adoptions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BriefAdoptionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_brief_revisions_api_epics__epic_id__brief_revisions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefRevisionResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_brief_revision_api_epics__epic_id__brief_revisions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BriefRevisionCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_brief_revision_api_epics__epic_id__brief_revisions__brief_revision_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+                brief_revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

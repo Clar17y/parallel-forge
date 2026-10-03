@@ -14,6 +14,13 @@ from forge.application.services.runs import (
     StaleProjectPolicyConflict,
 )
 from forge.application.services.tasks import TaskServiceError
+from forge.domain.epic_brief import (
+    BriefBindingConflict,
+    BriefNotAccepted,
+    BriefRevisionNotFound,
+    EpicNotFound,
+    EpicVersionConflict,
+)
 from forge.domain.subscription_feedback import TaskFeedbackConflict
 from forge.domain.subscription_task_controls import TaskControlConflict
 from forge.persistence.repositories.commands import IdempotencyConflict
@@ -41,6 +48,8 @@ from forge.persistence.repositories.tasks import (
 )
 
 _NOT_FOUND = (
+    EpicNotFound,
+    BriefRevisionNotFound,
     ProjectNotFound,
     PolicyNotFound,
     TaskNotFound,
@@ -50,6 +59,9 @@ _NOT_FOUND = (
     SubscriptionProfileNotFound,
 )
 _CONFLICT = (
+    EpicVersionConflict,
+    BriefBindingConflict,
+    BriefNotAccepted,
     ProjectIdentityConflict,
     TaskIdentityConflict,
     PolicyVersionConflict,

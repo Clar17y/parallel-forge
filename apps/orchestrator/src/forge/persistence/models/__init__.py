@@ -5,6 +5,7 @@ from forge.persistence.models.auth import ApprovalChallenge, OperatorSession
 from forge.persistence.models.base import Base
 from forge.persistence.models.capability_evidence import CapabilityEvidence
 from forge.persistence.models.capability_probe_diagnostics import CapabilityProbeDiagnosticRecord
+from forge.persistence.models.epic_brief import Epic, EpicBriefRevision
 from forge.persistence.models.evaluation import EvaluationCase, EvaluationSuite
 from forge.persistence.models.execution import (
     AgentExecution,
@@ -85,6 +86,8 @@ __all__ = [
     "Base",
     "CapabilityEvidence",
     "CapabilityProbeDiagnosticRecord",
+    "Epic",
+    "EpicBriefRevision",
     "EvaluationCase",
     "EvaluationSuite",
     "EvidenceSet",

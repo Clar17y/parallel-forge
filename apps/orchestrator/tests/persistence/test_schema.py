@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-CURRENT_REVISION = "20260929_0030"
+CURRENT_REVISION = "20261003_0031"
 V01_TABLES = {
     "recovery_barrier",
     "api_mutations",
@@ -58,6 +58,8 @@ V01_TABLES = {
     "evaluation_baselines",
 }
 EXPECTED_TABLES = V01_TABLES | {
+    "epics",
+    "epic_brief_revisions",
     "jev_evaluations",
     "capability_evidence",
     "capability_probe_diagnostics",
@@ -675,6 +677,8 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES
 
     expected_json_versions = {
+        ("epics", "draft"): "draft_schema_version",
+        ("epic_brief_revisions", "content"): "document_schema_version",
         ("project_policy_versions", "document"): "document_schema_version",
         ("runs", "suspension_context"): "suspension_context_schema_version",
         ("run_commands", "payload"): "payload_schema_version",
