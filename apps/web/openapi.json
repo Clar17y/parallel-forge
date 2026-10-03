@@ -1,6 +1,112 @@
 {
   "components": {
     "schemas": {
+      "AcceptedBriefResponse": {
+        "additionalProperties": false,
+        "description": "Immutable accepted brief projection.",
+        "properties": {
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "brief_digest": {
+            "title": "Brief Digest",
+            "type": "string"
+          },
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "decisions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Decisions",
+            "type": "array"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "epic_version": {
+            "minimum": 1.0,
+            "title": "Epic Version",
+            "type": "integer"
+          },
+          "exclusions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Exclusions",
+            "type": "array"
+          },
+          "open_questions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Open Questions",
+            "type": "array"
+          },
+          "outcomes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "problem": {
+            "default": "",
+            "title": "Problem",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/BriefRequirement"
+            },
+            "maxItems": 64,
+            "title": "Requirements",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "scope": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Scope",
+            "type": "array"
+          }
+        },
+        "required": [
+          "epic_id",
+          "project_id",
+          "epic_version",
+          "brief_revision_id",
+          "brief_digest"
+        ],
+        "title": "AcceptedBriefResponse",
+        "type": "object"
+      },
       "AgentItem": {
         "additionalProperties": false,
         "properties": {
@@ -1049,6 +1155,234 @@
         "title": "BootstrapResponse",
         "type": "object"
       },
+      "BriefAdoptionRequest": {
+        "additionalProperties": false,
+        "description": "Closed brief adoption request body.",
+        "properties": {
+          "brief_digest": {
+            "title": "Brief Digest",
+            "type": "string"
+          },
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_epic_version",
+          "brief_revision_id",
+          "brief_digest"
+        ],
+        "title": "BriefAdoptionRequest",
+        "type": "object"
+      },
+      "BriefContent": {
+        "additionalProperties": false,
+        "properties": {
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "decisions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Decisions",
+            "type": "array"
+          },
+          "exclusions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Exclusions",
+            "type": "array"
+          },
+          "open_questions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Open Questions",
+            "type": "array"
+          },
+          "outcomes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "problem": {
+            "default": "",
+            "title": "Problem",
+            "type": "string"
+          },
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/BriefRequirement"
+            },
+            "maxItems": 64,
+            "title": "Requirements",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "scope": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Scope",
+            "type": "array"
+          }
+        },
+        "title": "BriefContent",
+        "type": "object"
+      },
+      "BriefRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Acceptance Criteria",
+            "type": "array"
+          },
+          "requirement_id": {
+            "format": "uuid",
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "text"
+        ],
+        "title": "BriefRequirement",
+        "type": "object"
+      },
+      "BriefRevisionCreateRequest": {
+        "additionalProperties": false,
+        "description": "Closed brief revision creation request body.",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/BriefContent"
+          },
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_epic_version",
+          "content"
+        ],
+        "title": "BriefRevisionCreateRequest",
+        "type": "object"
+      },
+      "BriefRevisionResponse": {
+        "additionalProperties": false,
+        "description": "Immutable brief revision snapshot with explicit nullable keys.",
+        "properties": {
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "content": {
+            "$ref": "#/components/schemas/BriefContent"
+          },
+          "content_digest": {
+            "title": "Content Digest",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "epic_version": {
+            "minimum": 1.0,
+            "title": "Epic Version",
+            "type": "integer"
+          },
+          "revision_number": {
+            "minimum": 1.0,
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_job_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Job Id"
+          }
+        },
+        "required": [
+          "brief_revision_id",
+          "epic_id",
+          "revision_number",
+          "epic_version",
+          "content_digest",
+          "content",
+          "created_at"
+        ],
+        "title": "BriefRevisionResponse",
+        "type": "object"
+      },
       "BudgetSection": {
         "additionalProperties": false,
         "properties": {
@@ -1590,6 +1924,168 @@
           }
         },
         "title": "DatabaseProvisioningPolicy",
+        "type": "object"
+      },
+      "EpicCreateRequest": {
+        "additionalProperties": false,
+        "description": "Closed epic creation request body.",
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/BriefContent"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "title"
+        ],
+        "title": "EpicCreateRequest",
+        "type": "object"
+      },
+      "EpicDraftUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Closed epic draft update request body.",
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/BriefContent"
+          },
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_epic_version",
+          "title",
+          "draft"
+        ],
+        "title": "EpicDraftUpdateRequest",
+        "type": "object"
+      },
+      "EpicResponse": {
+        "additionalProperties": false,
+        "description": "Authoritative epic snapshot with explicit nullable keys.",
+        "properties": {
+          "accepted_brief_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Brief Digest"
+          },
+          "accepted_brief_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Brief Revision Id"
+          },
+          "accepted_graph_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Graph Digest"
+          },
+          "accepted_graph_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Graph Revision Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "draft": {
+            "$ref": "#/components/schemas/BriefContent"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epic_id",
+          "project_id",
+          "version",
+          "title",
+          "draft",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "EpicResponse",
         "type": "object"
       },
       "EvaluationItem": {
@@ -8552,6 +9048,497 @@
           }
         ],
         "summary": "Summary"
+      }
+    },
+    "/api/epics": {
+      "get": {
+        "operationId": "list_epics_api_epics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EpicResponse"
+                  },
+                  "title": "Response List Epics Api Epics Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Epics"
+      },
+      "post": {
+        "operationId": "create_epic_api_epics_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Create Epic"
+      }
+    },
+    "/api/epics/{epic_id}": {
+      "get": {
+        "operationId": "get_epic_api_epics__epic_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Epic"
+      },
+      "patch": {
+        "operationId": "update_epic_draft_api_epics__epic_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicDraftUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Update Epic Draft"
+      }
+    },
+    "/api/epics/{epic_id}/accepted-brief": {
+      "get": {
+        "operationId": "get_accepted_brief_api_epics__epic_id__accepted_brief_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedBriefResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Accepted Brief"
+      }
+    },
+    "/api/epics/{epic_id}/brief-adoptions": {
+      "post": {
+        "operationId": "adopt_brief_revision_api_epics__epic_id__brief_adoptions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BriefAdoptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Adopt Brief Revision"
+      }
+    },
+    "/api/epics/{epic_id}/brief-revisions": {
+      "get": {
+        "operationId": "list_brief_revisions_api_epics__epic_id__brief_revisions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BriefRevisionResponse"
+                  },
+                  "title": "Response List Brief Revisions Api Epics  Epic Id  Brief Revisions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Brief Revisions"
+      },
+      "post": {
+        "operationId": "create_brief_revision_api_epics__epic_id__brief_revisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BriefRevisionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefRevisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Create Brief Revision"
+      }
+    },
+    "/api/epics/{epic_id}/brief-revisions/{brief_revision_id}": {
+      "get": {
+        "operationId": "get_brief_revision_api_epics__epic_id__brief_revisions__brief_revision_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "brief_revision_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Brief Revision Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefRevisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Brief Revision"
       }
     },
     "/api/evaluations": {

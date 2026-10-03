@@ -20,6 +20,7 @@ from forge.api.routes.approvals import router_for as approval_router_for
 from forge.api.routes.artifacts import router_for as artifact_router_for
 from forge.api.routes.auth import router_for as auth_router_for
 from forge.api.routes.dashboard import router_for as dashboard_router_for
+from forge.api.routes.epic_brief import router_for as epic_brief_router_for
 from forge.api.routes.events import router_for as event_router_for
 from forge.api.routes.health import router_for as health_router_for
 from forge.api.routes.jev import router_for as jev_router_for
@@ -43,6 +44,7 @@ from forge.application.services.approvals import (
 )
 from forge.application.services.artifact_reads import ArtifactReadService
 from forge.application.services.auth import AuthService
+from forge.application.services.epic_brief import EpicBriefService
 from forge.application.services.github_issue_import import GitHubIssueImportService
 from forge.application.services.jev_reporting import JevReportingService
 from forge.application.services.plan_evidence import PlanEvidenceValidator
@@ -85,6 +87,7 @@ def create_app(
     approval_authorization_service: ApprovalAuthorizationService | Any | None = None,
     project_service: Any | None = None,
     task_service: Any | None = None,
+    epic_brief_service: Any | None = None,
     run_service: Any | None = None,
     run_command_service: Any | None = None,
     projection_service: Any | None = None,
@@ -135,6 +138,7 @@ def create_app(
         resolved_uow_factory, settings=resolved_settings
     )
     resolved_task_service = task_service or TaskService(resolved_uow_factory)
+    resolved_epic_brief_service = epic_brief_service or EpicBriefService(resolved_uow_factory)
     resolved_subscription_profile_service = (
         subscription_profile_service or SubscriptionProfileService(resolved_uow_factory)
     )
@@ -209,6 +213,7 @@ def create_app(
     app.state.approval_authorization_service = resolved_authorization_service
     app.state.project_service = resolved_project_service
     app.state.task_service = resolved_task_service
+    app.state.epic_brief_service = resolved_epic_brief_service
     app.state.subscription_profile_service = resolved_subscription_profile_service
     app.state.subscription_quota_service = resolved_subscription_quota_service
     app.state.subscription_task_control_service = resolved_task_control_service
@@ -265,6 +270,7 @@ def create_app(
     app.include_router(subscription_runtime_router_for(), prefix="/api")
     app.include_router(prompt_router_for(), prefix="/api")
     app.include_router(task_router_for(), prefix="/api")
+    app.include_router(epic_brief_router_for(), prefix="/api")
     app.include_router(run_router_for(), prefix="/api")
     app.include_router(jev_router_for(), prefix="/api")
     app.include_router(dashboard_router_for(), prefix="/api")
