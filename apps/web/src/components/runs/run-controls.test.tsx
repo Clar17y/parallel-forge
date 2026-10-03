@@ -12,7 +12,17 @@ beforeAll(() => {
   HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
 });
 afterEach(() => { cleanup(); vi.mocked(api).mockReset(); vi.mocked(mutate).mockReset(); });
-const evidence = { base_sha: 'a'.repeat(40), plan_digest: 'c'.repeat(64), policy_version: 2, token_budget: 116000 };
+const evidence = {
+  task_version: 1, plan_attempt: 1, task_digest: '1'.repeat(64), plan_digest: 'c'.repeat(64),
+  repository: 'owner/repo', base_ref: 'main', base_sha: 'a'.repeat(40), policy_version: 2,
+  dependency_changes: [], required_checks: { test: 'planned' }, runner_mode: 'docker' as const,
+  local_remediation_limit: 3, token_budget: 116000, cost_budget_minor: 1000, duration_budget_seconds: 1800,
+};
+const planArtifact = {
+  summary: 'Implement approved feature', assumptions: [], affected_components: ['API'],
+  steps: ['Implement changes'], required_checks: ['test'], risks: ['None'],
+  security_considerations: [], dependency_changes: [],
+};
 
 test.each((['pr', 'merge'] as const).flatMap(gate =>
   ['success', 'acceptance mismatch', 'contents mismatch'].map(scenario => ({ gate, scenario })),
@@ -155,6 +165,7 @@ test('renders only commands supplied by the server, regardless of the state labe
 test('refreshes and binds challenge and approval to exact displayed evidence', async () => {
   const value = projection(); const refresh = vi.fn().mockResolvedValue(value);
   vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+    .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
     .mockResolvedValueOnce({ token: 'one-time-challenge', expires_at: '2099-01-01T00:00:00Z' })
     .mockResolvedValueOnce({ approval_id: 'approved-1' });
   render(<RunControls projection={value} onRefresh={refresh} />);
@@ -162,11 +173,11 @@ test('refreshes and binds challenge and approval to exact displayed evidence', a
   await screen.findByRole('dialog');
   expect(screen.getByRole('dialog')).toHaveTextContent('116000');
   expect(refresh).toHaveBeenCalledTimes(1);
-  const challenge = JSON.parse(vi.mocked(api).mock.calls[1][1]!.body as string);
+  const challenge = JSON.parse(vi.mocked(api).mock.calls[2][1]!.body as string);
   expect(challenge).toEqual({ gate: 'plan', run_version: 7, evidence_digest: 'd'.repeat(64), policy_version: 2 });
   await userEvent.click(screen.getByRole('button', { name: 'Confirm approve plan' }));
-  await waitFor(() => expect(api).toHaveBeenCalledTimes(3));
-  expect(JSON.parse(vi.mocked(api).mock.calls[2][1]!.body as string)).toEqual({
+  await waitFor(() => expect(api).toHaveBeenCalledTimes(4));
+  expect(JSON.parse(vi.mocked(api).mock.calls[3][1]!.body as string)).toEqual({
     gate: 'plan', run_version: 7, evidence_digest: 'd'.repeat(64), challenge_token: 'one-time-challenge',
   });
 });
@@ -174,6 +185,7 @@ test('refreshes and binds challenge and approval to exact displayed evidence', a
 test('409 closes the stale approval and requests authoritative evidence again', async () => {
   const value = projection(); const refresh = vi.fn().mockResolvedValue(value);
   vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+    .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
     .mockResolvedValueOnce({ token: 'challenge', expires_at: '2099-01-01T00:00:00Z' })
     .mockRejectedValueOnce(new ApiError(409, 'stale-projection'));
   render(<RunControls projection={value} onRefresh={refresh} />);
@@ -246,6 +258,7 @@ test('revision requires feedback and retries an uncertain response with the same
 test('changed evidence invalidates an open approval before any submission', async () => {
   const value = projection();
   vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+    .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
     .mockResolvedValueOnce({ token: 'challenge', expires_at: '2099-01-01T00:00:00Z' });
   const refresh = vi.fn().mockResolvedValue(value);
   const view = render(<RunControls projection={value} onRefresh={refresh} />);
@@ -255,7 +268,7 @@ test('changed evidence invalidates an open approval before any submission', asyn
   view.rerender(<RunControls projection={changed} onRefresh={refresh} />);
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   expect(screen.getByRole('alert')).toHaveTextContent('changed');
-  expect(api).toHaveBeenCalledTimes(2);
+  expect(api).toHaveBeenCalledTimes(3);
 });
 
 
@@ -379,6 +392,7 @@ test('approval dialog survives a queued native close event during StrictMode rep
     const value = projection({ available_commands: [{ name: 'approve_plan', expected_run_version: 7,
       requires_feedback: false, gate: 'plan', evidence_digest: 'd'.repeat(64), policy_version: 2 }] });
     vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+      .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
       .mockResolvedValueOnce({ token: 'challenge', expires_at: '2099-01-01T00:00:00Z' });
     render(<StrictMode><RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} /></StrictMode>);
     await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
@@ -396,10 +410,388 @@ test('approval dialog returns focus to its invoking button after async evidence 
     // Focus may move while the invoking button awaits its evidence request.
     screen.getByRole('button', { name: 'Other control' }).focus();
     return { digest: 'd'.repeat(64), text: JSON.stringify(evidence) };
-  }).mockResolvedValueOnce({ token: 'challenge', expires_at: '2099-01-01T00:00:00Z' });
+  }).mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
+    .mockResolvedValueOnce({ token: 'challenge', expires_at: '2099-01-01T00:00:00Z' });
   render(<StrictMode><button>Other control</button><RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} /></StrictMode>);
   const trigger = screen.getByRole('button', { name: 'Approve plan' });
   await userEvent.click(trigger);
   await userEvent.click(await screen.findByRole('button', { name: 'Back' }));
   expect(trigger).toHaveFocus();
+});
+
+test('plan approval renders readable bound plan proposal and execution limits', async () => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  const planProposal = {
+    summary: 'Implement secure endpoint',
+    assumptions: ['Database online'],
+    affected_components: ['API routing'],
+    steps: ['Create router', 'Add authentication check'],
+    required_checks: ['typecheck', 'test'],
+    risks: ['Migration lock timeout'],
+    security_considerations: ['Enforce tenant isolation'],
+    dependency_changes: ['None'],
+    owned_paths: ['src/routes/api.ts'],
+  };
+  const planEvidence = {
+    task_version: 1,
+    plan_attempt: 1,
+    task_digest: '1'.repeat(64),
+    plan_digest: 'c'.repeat(64),
+    repository: 'owner/repo',
+    base_ref: 'main',
+    base_sha: 'a'.repeat(40),
+    policy_version: 2,
+    dependency_changes: ['None'],
+    required_checks: { typecheck: 'planned', test: 'planned' },
+    runner_mode: 'docker',
+    local_remediation_limit: 3,
+    token_budget: 116000,
+    cost_budget_minor: 1000,
+    duration_budget_seconds: 1800,
+  };
+  vi.mocked(api)
+    .mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(planEvidence) })
+    .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planProposal) })
+    .mockResolvedValueOnce({ token: 'plan-challenge', expires_at: '2099-01-01T00:00:00Z' });
+
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'Approve plan' });
+  expect(dialog).toHaveTextContent('Implement secure endpoint');
+  expect(dialog).toHaveTextContent('src/routes/api.ts');
+  expect(dialog).toHaveTextContent('Create router');
+  expect(dialog).toHaveTextContent('116000 tokens');
+});
+
+test('subscription plan approval renders producer identity and settled result digest', async () => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  value.run.id = '87654321-4321-4321-4321-cba987654321';
+  const planProposal = {
+    summary: 'Subscription scoped proposal',
+    assumptions: ['Cloud agent initialized'],
+    affected_components: ['worker'],
+    steps: ['Execute task'],
+    required_checks: ['integration'],
+    risks: ['Quota limit'],
+    security_considerations: ['Enforce sandboxing'],
+    dependency_changes: [],
+    owned_paths: ['apps/worker/src'],
+  };
+  const subscriptionEvidence = {
+    task_version: 1,
+    plan_attempt: 1,
+    task_digest: '1'.repeat(64),
+    plan_digest: 'c'.repeat(64),
+    repository: 'owner/repo',
+    base_ref: 'main',
+    base_sha: 'a'.repeat(40),
+    policy_version: 2,
+    dependency_changes: [],
+    required_checks: { integration: 'planned' },
+    runner_mode: 'docker' as const,
+    local_remediation_limit: 2,
+    token_budget: 95000,
+    cost_budget_minor: 500,
+    duration_budget_seconds: 1200,
+    schema_version: 2,
+    result_digest: '8'.repeat(64),
+    producer: {
+      schema_version: 1,
+      producer_kind: 'subscription_plan',
+      attempt_id: '12345678-1234-1234-1234-123456789abc',
+      run_id: '87654321-4321-4321-4321-cba987654321',
+      task_id: 'abcdef12-3456-789a-bcde-f0123456789a',
+      plan_attempt: 1,
+      plan_digest: 'c'.repeat(64),
+      task_digest: '7'.repeat(64),
+      envelope_digest: '4'.repeat(64),
+      budget_digest: '5'.repeat(64),
+      route_digest: '6'.repeat(64),
+      telemetry: { input_tokens: 500, output_tokens: 250, duration_ms: 1500 },
+    },
+  };
+  vi.mocked(api)
+    .mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(subscriptionEvidence) })
+    .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planProposal) })
+    .mockResolvedValueOnce({ token: 'plan-challenge', expires_at: '2099-01-01T00:00:00Z' });
+
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'Approve plan' });
+  expect(dialog).toHaveTextContent('Subscription scoped proposal');
+  expect(dialog).toHaveTextContent('apps/worker/src');
+  expect(dialog).toHaveTextContent('8'.repeat(64)); // result digest
+  expect(dialog).toHaveTextContent('12345678-1234-1234-1234-123456789abc'); // producer attempt_id
+});
+
+test.each([
+  { scenario: 'mismatched plan artifact digest', planDigest: '9'.repeat(64), planText: JSON.stringify(planArtifact), expectedAlert: 'The run or evidence changed.' },
+  { scenario: 'base sha mismatch with projection', planDigest: 'c'.repeat(64), planText: JSON.stringify(planArtifact), evidenceOverride: { base_sha: 'b'.repeat(40) }, expectedAlert: 'The run or evidence changed.' },
+])('plan approval fails when $scenario', async ({ planDigest, planText, evidenceOverride, expectedAlert }) => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  const currentEvidence = { ...evidence, ...evidenceOverride };
+  const refresh = vi.fn().mockResolvedValue(value);
+  vi.mocked(api)
+    .mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(currentEvidence) })
+    .mockResolvedValueOnce({ digest: planDigest, text: planText });
+
+  render(<RunControls projection={value} onRefresh={refresh} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(expectedAlert);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(refresh).toHaveBeenCalledTimes(2);
+  expect(api).not.toHaveBeenCalledWith(expect.stringContaining('/approval-challenges'), expect.anything());
+});
+
+test.each([
+  { scenario: 'malformed evidence json', evidenceText: 'invalid { json', planText: JSON.stringify(planArtifact) },
+  { scenario: 'unsupported schema version', evidenceText: JSON.stringify({ ...evidence, schema_version: 99 }), planText: JSON.stringify(planArtifact) },
+  { scenario: 'malformed plan artifact text', evidenceText: JSON.stringify(evidence), planText: 'invalid { json' },
+  { scenario: 'non-string plan artifact text', evidenceText: JSON.stringify(evidence), planText: null },
+])('plan approval fails with permanent error when $scenario', async ({ evidenceText, planText }) => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: evidenceText });
+  if (planText !== undefined) {
+    vi.mocked(api).mockResolvedValueOnce({ digest: 'c'.repeat(64), text: planText as string });
+  }
+
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'The approval evidence or plan is invalid. Review the run records before proceeding.',
+  );
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api).not.toHaveBeenCalledWith(expect.stringContaining('/approval-challenges'), expect.anything());
+});
+
+test('plan approval fails when subscription producer run_id does not match projection run_id', async () => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  value.run.id = '11111111-1111-1111-1111-111111111111';
+  const foreignEvidence = {
+    ...evidence,
+    schema_version: 2,
+    result_digest: '8'.repeat(64),
+    producer: {
+      schema_version: 1,
+      producer_kind: 'subscription_plan',
+      attempt_id: '12345678-1234-1234-1234-123456789abc',
+      run_id: '99999999-9999-9999-9999-999999999999',
+      task_id: 'abcdef12-3456-789a-bcde-f0123456789a',
+      plan_attempt: 1,
+      plan_digest: 'c'.repeat(64),
+      task_digest: '7'.repeat(64),
+      envelope_digest: '4'.repeat(64),
+      budget_digest: '5'.repeat(64),
+      route_digest: '6'.repeat(64),
+      telemetry: { input_tokens: 100, output_tokens: 50, duration_ms: 500 },
+    },
+  };
+  vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(foreignEvidence) });
+
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('The run or evidence changed.');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api).not.toHaveBeenCalledWith(expect.stringContaining('/approval-challenges'), expect.anything());
+});
+
+test('plan approval fails when projection plan output_artifact_digest is absent', async () => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  value.plan.output_artifact_digest = null;
+  vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) });
+
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('The run or evidence changed.');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api).not.toHaveBeenCalledWith(expect.stringContaining('/approval-challenges'), expect.anything());
+});
+
+test('plan approval preserves exact legacy raw evidence artifact bytes omitting plan_attempt', async () => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  const { plan_attempt: _omitted, ...legacyNoAttempt } = evidence;
+  const rawLegacyText = JSON.stringify(legacyNoAttempt);
+
+  vi.mocked(api)
+    .mockResolvedValueOnce({ digest: 'd'.repeat(64), text: rawLegacyText })
+    .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
+    .mockResolvedValueOnce({ token: 'plan-challenge', expires_at: '2099-01-01T00:00:00Z' });
+
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'Approve plan' });
+  expect(dialog).toHaveTextContent('Implement approved feature');
+
+  const rawElement = document.querySelector('pre.policy-document');
+  expect(rawElement).not.toBeNull();
+  expect(rawElement?.textContent).toBe(rawLegacyText);
+  expect(rawElement?.textContent).not.toContain('"plan_attempt"');
+});
+
+test('plan approval handles projection becoming stale while plan fetch is in flight', async () => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  let resolvePlan!: (result: unknown) => void;
+  const planPromise = new Promise(resolve => {
+    resolvePlan = resolve;
+  });
+  vi.mocked(api)
+    .mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+    .mockReturnValueOnce(planPromise as any)
+    .mockResolvedValueOnce({ token: 'plan-challenge', expires_at: '2099-01-01T00:00:00Z' });
+
+  const { rerender } = render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith(
+    `/artifacts/${evidence.plan_digest}/text`,
+    expect.objectContaining({ signal: expect.anything() }),
+  ));
+
+  const staleProjection = {
+    ...value,
+    run: { ...value.run, version: 8 },
+    available_commands: [{ ...value.available_commands[0], expected_run_version: 8 }],
+  };
+  rerender(<RunControls projection={staleProjection} onRefresh={vi.fn().mockResolvedValue(staleProjection)} />);
+
+  resolvePlan({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) });
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('The run changed. Open the action again to review current evidence.');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(mutate).not.toHaveBeenCalled();
+});
+
+test('plan approval handles unavailable plan artifact', async () => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  vi.mocked(api)
+    .mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+    .mockRejectedValueOnce(new Error('Artifact not found'));
+
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('The request could not be confirmed. Retry after checking the connection.');
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('plan approval safely renders escaped untrusted text', async () => {
+  const value = projection({
+    available_commands: [{
+      name: 'approve_plan',
+      expected_run_version: 7,
+      requires_feedback: false,
+      gate: 'plan',
+      evidence_digest: 'd'.repeat(64),
+      policy_version: 2,
+    }],
+  });
+  const untrustedPlan = {
+    summary: 'Plan with <script>evil()</script>',
+    assumptions: ['<img src="x" onerror="alert(1)">'],
+    affected_components: ['API'],
+    steps: ['Safe step'],
+    required_checks: ['lint'],
+    risks: ['None'],
+    security_considerations: [],
+    dependency_changes: [],
+  };
+  vi.mocked(api)
+    .mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+    .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(untrustedPlan) })
+    .mockResolvedValueOnce({ token: 'challenge', expires_at: '2099-01-01T00:00:00Z' });
+
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'Approve plan' });
+  expect(dialog).toHaveTextContent('Plan with <script>evil()</script>');
+  expect(dialog).toHaveTextContent('<img src="x" onerror="alert(1)">');
+  expect(document.querySelector('script:not([data-testid])')).toBeNull();
 });

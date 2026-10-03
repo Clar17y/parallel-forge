@@ -6,11 +6,24 @@ import { ResourceTeardown } from './resource-teardown';
 import { parseMergeEvidence, MergeApprovalEvidence, type MergeEvidence } from './merge-approval-evidence';
 import { parsePrEvidence, PrPublicationEvidence, type PrEvidence } from './pr-publication-evidence';
 import { matchesPublicationDecision } from './publication-decision-evidence';
+import { parsePlan, type Plan } from './plan-content';
+import { parsePlanEvidence, matchesPlanEvidence, type PlanEvidence } from './plan-evidence';
+import { PlanApprovalEvidence } from './plan-approval-evidence';
+
+export class InvalidEvidenceError extends Error {
+  constructor(message = 'The approval evidence or plan is invalid. Review the run records before proceeding.') {
+    super(message);
+    this.name = 'InvalidEvidenceError';
+  }
+}
 
 type Projection = components['schemas']['RunProjection'];
 type Command = components['schemas']['AvailableCommand'];
 type Binding = { returnFocus: HTMLButtonElement; resource?: Projection['resource']; command: Command; key: string; evidence?: Record<string, unknown>;
-  merge?: MergeEvidence; protection?: components['schemas']['ProtectionSnapshotResponse']; pr?: PrEvidence; body?: string; challenge?: components['schemas']['ApprovalChallengeResponse']; payload?: Record<string, unknown> };
+  evidenceText?: string;
+  merge?: MergeEvidence; protection?: components['schemas']['ProtectionSnapshotResponse']; pr?: PrEvidence; body?: string;
+  planEvidence?: PlanEvidence; plan?: Plan;
+  challenge?: components['schemas']['ApprovalChallengeResponse']; payload?: Record<string, unknown> };
 const branchName = (ref: string) => ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
 const labels: Record<string, string> = { teardown_run_resources: 'Remove run resources', pause: 'Pause', resume: 'Resume', cancel: 'Cancel run',
   request_plan_revision: 'Request revision', approve_plan: 'Approve plan', approve_pr: 'Approve PR publication', approve_merge: 'Approve merge' };
@@ -38,6 +51,9 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
         setMessage('The run or evidence changed. Review the refreshed state before acting.');
       }
       await onRefresh().catch(() => {});
+    } else if (error instanceof InvalidEvidenceError) {
+      setBinding(null);
+      setMessage(error.message);
     } else setMessage('The request could not be confirmed. Retry after checking the connection.');
   }
 
@@ -54,10 +70,30 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
       if (name === 'approve_plan' || name === 'approve_pr' || name === 'approve_merge') {
         if (command.gate !== name.slice('approve_'.length) || !command.evidence_digest || !command.policy_version) throw new ApiError(409, 'stale-projection');
         const artifact = await api<components['schemas']['ArtifactTextResponse']>(`/artifacts/${command.evidence_digest}/text`, { signal });
-        if (!artifact || artifact.digest !== command.evidence_digest) throw new Error('Evidence unavailable');
-        const evidence: unknown = JSON.parse(artifact.text);
-        if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) throw new Error('Evidence unavailable');
+        if (!artifact || artifact.digest !== command.evidence_digest) throw new ApiError(409, 'stale-projection');
+        let evidence: unknown;
+        try {
+          evidence = JSON.parse(artifact.text);
+        } catch {
+          throw new InvalidEvidenceError();
+        }
+        if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) throw new InvalidEvidenceError();
         next.evidence = evidence as Record<string, unknown>;
+        next.evidenceText = artifact.text;
+        if (name === 'approve_plan') {
+          try {
+            next.planEvidence = parsePlanEvidence(next.evidence);
+          } catch {
+            throw new InvalidEvidenceError();
+          }
+          if (!matchesPlanEvidence(next.planEvidence, fresh, command)) throw new ApiError(409, 'plan-evidence-mismatch');
+          const planArtifact = await api<components['schemas']['ArtifactTextResponse']>(`/artifacts/${next.planEvidence.plan_digest}/text`, { signal });
+          if (!planArtifact || typeof planArtifact.text !== 'string') throw new InvalidEvidenceError();
+          if (planArtifact.digest !== next.planEvidence.plan_digest) throw new ApiError(409, 'plan-artifact-mismatch');
+          const parsed = parsePlan(planArtifact.text);
+          if (!parsed) throw new InvalidEvidenceError();
+          next.plan = parsed;
+        }
         if (name === 'approve_pr') {
           next.pr = parsePrEvidence(next.evidence);
           if (next.pr.candidate_commit !== fresh.candidate.commit || next.pr.repository !== fresh.project.github_repository
@@ -148,7 +184,10 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
       {binding.command.name === 'resume' && <p>Resume within the run’s retained policy and remaining budgets.</p>}
       {binding.evidence && <><p>Evidence digest: <code>{binding.command.evidence_digest}</code></p>
         <p>Policy version {binding.command.policy_version}</p>
-        {binding.merge && binding.protection ? <MergeApprovalEvidence evidence={binding.merge} protection={binding.protection} /> : binding.pr ? <PrPublicationEvidence evidence={binding.pr} body={binding.body ?? ''} /> : <pre className="policy-document">{JSON.stringify(binding.evidence, null, 2)}</pre>}
+        {binding.merge && binding.protection ? <MergeApprovalEvidence evidence={binding.merge} protection={binding.protection} />
+          : binding.pr ? <PrPublicationEvidence evidence={binding.pr} body={binding.body ?? ''} />
+          : binding.planEvidence && binding.plan ? <PlanApprovalEvidence evidence={binding.planEvidence} plan={binding.plan} rawEvidence={binding.evidenceText} />
+          : <pre className="policy-document">{JSON.stringify(binding.evidence, null, 2)}</pre>}
         <p>Challenge expires {binding.challenge?.expires_at}</p></>}
       {binding.command.requires_feedback && <label>Revision feedback<textarea required maxLength={8000} rows={5}
         value={feedback} readOnly={!!binding.payload} onChange={event => setFeedback(event.target.value)} /></label>}
