@@ -21,12 +21,13 @@ export function parsePlan(text: string): Plan | null {
   try {
     const value = JSON.parse(text);
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    if (typeof value.summary !== 'string' || !value.summary.trim() || value.summary.length > 10000) return null;
+    // Python's authoritative validator counts Unicode code points, not UTF-16 units.
+    if (typeof value.summary !== 'string' || !value.summary.trim() || Array.from(value.summary).length > 10000) return null;
     for (const [key] of PLAN_SECTIONS) {
       if (
         !Array.isArray(value[key]) ||
         value[key].length > 100 ||
-        !value[key].every((item: unknown) => typeof item === 'string' && item.length <= 5000)
+        !value[key].every((item: unknown) => typeof item === 'string' && Array.from(item).length <= 5000)
       ) {
         return null;
       }
@@ -35,7 +36,7 @@ export function parsePlan(text: string): Plan | null {
       'owned_paths' in value &&
       (!Array.isArray(value.owned_paths) ||
         value.owned_paths.length > 64 ||
-        !value.owned_paths.every((item: unknown) => typeof item === 'string' && item.length > 0 && item.length <= 5000))
+        !value.owned_paths.every((item: unknown) => typeof item === 'string' && item.length > 0))
     ) {
       return null;
     }

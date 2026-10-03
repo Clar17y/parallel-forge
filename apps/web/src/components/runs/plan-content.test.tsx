@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, test } from 'vitest';
-import { parsePlan, PlanContent, type Plan } from './plan-content';
+import { parsePlan, PlanContent, PLAN_SECTIONS, type Plan } from './plan-content';
 
 afterEach(() => {
   cleanup();
@@ -29,6 +29,46 @@ describe('parsePlan', () => {
     expect(result).toEqual(scoped);
   });
 
+  test('accepts astral Unicode at backend text limits', () => {
+    const unicodePlan = {
+      ...validPlan,
+      summary: '😀'.repeat(10000),
+      ...Object.fromEntries(PLAN_SECTIONS.map(([key]) => [key, ['😀'.repeat(5000)]])),
+    };
+
+    expect(parsePlan(JSON.stringify(unicodePlan))).not.toBeNull();
+  });
+
+  test('accepts a summary mixing BMP and astral text at the code-point limit', () => {
+    const summary = `${'a'.repeat(9999)}😀`;
+    expect(parsePlan(JSON.stringify({ ...validPlan, summary }))).not.toBeNull();
+  });
+
+  test.each(['😀'.repeat(10001), `${'a'.repeat(10000)}😀`])(
+    'rejects summaries beyond the code-point limit (%#)',
+    (summary) => {
+      expect(parsePlan(JSON.stringify({ ...validPlan, summary }))).toBeNull();
+    },
+  );
+
+  test.each(PLAN_SECTIONS.map(([key]) => key))(
+    'uses the backend code-point limit for %s items',
+    (key) => {
+      const atLimit = `${'😀'.repeat(4999)}é`;
+      const beyondLimit = `${'😀'.repeat(5000)}é`;
+      expect(parsePlan(JSON.stringify({ ...validPlan, [key]: [atLimit] }))).not.toBeNull();
+      expect(parsePlan(JSON.stringify({ ...validPlan, [key]: [beyondLimit] }))).toBeNull();
+    },
+  );
+
+  test.each(['a'.repeat(5001), '😀'.repeat(5001)])(
+    'accepts writable paths without a frontend-only text limit (%#)',
+    (path) => {
+      const scoped = { ...validPlan, owned_paths: [path] };
+      expect(parsePlan(JSON.stringify(scoped))).toEqual(scoped);
+    },
+  );
+
   test('rejects non-json or malformed structures', () => {
     expect(parsePlan('not json')).toBeNull();
     expect(parsePlan('123')).toBeNull();
@@ -52,7 +92,6 @@ describe('parsePlan', () => {
   test('rejects malformed owned_paths', () => {
     expect(parsePlan(JSON.stringify({ ...validPlan, owned_paths: 'not-array' }))).toBeNull();
     expect(parsePlan(JSON.stringify({ ...validPlan, owned_paths: [''] }))).toBeNull();
-    expect(parsePlan(JSON.stringify({ ...validPlan, owned_paths: ['a'.repeat(5001)] }))).toBeNull();
     expect(parsePlan(JSON.stringify({ ...validPlan, owned_paths: Array(65).fill('path') }))).toBeNull();
   });
 });
