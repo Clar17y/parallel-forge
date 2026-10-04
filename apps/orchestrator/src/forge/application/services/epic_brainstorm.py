@@ -22,6 +22,7 @@ from forge.domain.epic_brainstorm import (
     BrainstormThread,
     BrainstormTurn,
     FrozenBriefContent,
+    validate_brainstorm_budget,
     validate_invocation_context,
 )
 from forge.domain.operation import canonical_digest
@@ -246,6 +247,7 @@ class EpicBrainstormService:
                     cast(RouteBinding, self.route), self.budget, None, None
                 )
             )
+            validate_brainstorm_budget(selection.budget)
             job_id = expected_snapshot.job_id if expected_snapshot else uuid4()
             snapshot = AuthoringJobSnapshot(
                 job_id=job_id,

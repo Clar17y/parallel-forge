@@ -17,9 +17,39 @@ from forge.application.ports.repository import (
 )
 from forge.domain.payload import redact_durable_text
 
-_OPEN_PRIVATE_KEY = re.compile(r"(?is)-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----.*\Z")
-_BEGIN_PRIVATE_KEY = re.compile(r"(?i)-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----")
-_END_PRIVATE_KEY = re.compile(r"(?i)-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----")
+_PRIVATE_KEY_MARKER = re.compile(
+    r"(?i)-{4,5} ?(?P<action>BEGIN|END) "
+    r"(?P<kind>(?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?) ?-{4,5}"
+)
+_AMBIGUOUS_LINE_SEPARATOR = re.compile(r"[\v\f\x1c-\x1e\x85\u2028\u2029]|\r(?!\n)")
+
+
+def _advance_private_key(active_kinds: list[str], marker: re.Match[str]) -> None:
+    kind = marker.group("kind").upper()
+    if marker.group("action").upper() == "BEGIN":
+        active_kinds.append(kind)
+    elif active_kinds and active_kinds[-1] == kind:
+        active_kinds.pop()
+
+
+def _redact_private_keys(value: str) -> str:
+    pieces: list[str] = []
+    start: int | None = None
+    active_kinds: list[str] = []
+    copied = 0
+    for marker in _PRIVATE_KEY_MARKER.finditer(value):
+        if not active_kinds and marker.group("action").upper() == "BEGIN":
+            start = marker.start()
+        _advance_private_key(active_kinds, marker)
+        if start is not None and not active_kinds:
+            pieces.extend((value[copied:start], "[REDACTED]"))
+            copied = marker.end()
+            start = None
+    if start is not None:
+        pieces.extend((value[copied:start], "[REDACTED]"))
+    else:
+        pieces.append(value[copied:])
+    return "".join(pieces)
 
 
 def _safe_path(value: str) -> None:
@@ -57,7 +87,7 @@ class BrainstormReadOnlyTools:
     def _bound_text(self, value: str, *, source_truncated: bool = False) -> tuple[str, bool]:
         # The controlled reader can already have cut a PEM block before its END marker.
         # Redact complete source first, then fail closed on an unmatched BEGIN.
-        redacted = _OPEN_PRIVATE_KEY.sub("[REDACTED]", redact_durable_text(value))
+        redacted = redact_durable_text(_redact_private_keys(value))
         try:
             encoded = redacted.encode("utf-8")
         except UnicodeError:
@@ -102,27 +132,37 @@ class BrainstormReadOnlyTools:
             raise ValueError("search literal is invalid")
         await self._check()
         results: list[SearchMatch] = []
-        protected_by_path: dict[str, tuple[set[int], int]] = {}
+        protected_by_path: dict[str, tuple[set[int], list[str], bool]] = {}
         for item in self._reader.search(literal, path):
             if not self._allowed(item.path):
                 continue
             if item.path not in protected_by_path:
                 source = self._reader.read_file(item.path)
                 protected: set[int] = set()
-                active = False
+                active_kinds: list[str] = []
                 lines = source.content.splitlines()
                 for number, line in enumerate(lines, 1):
-                    if _BEGIN_PRIVATE_KEY.search(line):
-                        active = True
-                    if active:
+                    hidden = bool(active_kinds)
+                    for marker in _PRIVATE_KEY_MARKER.finditer(line):
+                        hidden = True
+                        _advance_private_key(active_kinds, marker)
+                    if hidden:
                         protected.add(number)
-                    if _END_PRIVATE_KEY.search(line):
-                        active = False
                 if source.truncated:
                     protected.add(len(lines))
-                protected_by_path[item.path] = protected, len(lines)
-            protected, lines_count = protected_by_path[item.path]
-            hidden = item.line_number > lines_count or item.line_number in protected
+                protected_by_path[item.path] = (
+                    protected,
+                    lines,
+                    bool(_AMBIGUOUS_LINE_SEPARATOR.search(source.content)),
+                )
+            protected, lines, ambiguous = protected_by_path[item.path]
+            hidden = (
+                ambiguous
+                or item.line_number < 1
+                or item.line_number > len(lines)
+                or item.line_number in protected
+                or item.line_text != lines[item.line_number - 1]
+            )
             results.append(
                 SearchMatch(
                     path=item.path,

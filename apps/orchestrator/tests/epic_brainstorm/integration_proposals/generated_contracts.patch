@@ -1,7 +1,7 @@
 diff --git a/apps/web/openapi.json b/apps/web/openapi.json
 --- a/apps/web/openapi.json
 +++ b/apps/web/openapi.json
-@@ -1031,6 +1031,204 @@
+@@ -1090,6 +1090,204 @@
          "title": "AuthMode",
          "type": "string"
        },
@@ -206,7 +206,7 @@ diff --git a/apps/web/openapi.json b/apps/web/openapi.json
        "AvailableCommand": {
          "additionalProperties": false,
          "properties": {
-@@ -1153,6 +1351,557 @@
+@@ -1212,6 +1410,557 @@
            "absolute_expires_at"
          ],
          "title": "BootstrapResponse",
@@ -764,7 +764,7 @@ diff --git a/apps/web/openapi.json b/apps/web/openapi.json
          "type": "object"
        },
        "BriefAdoptionRequest": {
-@@ -1837,6 +2586,34 @@
+@@ -1896,6 +2645,34 @@
            "timeout_seconds"
          ],
          "title": "CommandSpec",
@@ -799,7 +799,7 @@ diff --git a/apps/web/openapi.json b/apps/web/openapi.json
          "type": "object"
        },
        "CsrfResponse": {
-@@ -2794,6 +3571,72 @@
+@@ -3196,6 +3973,72 @@
          "title": "JevReportResponse",
          "type": "object"
        },
@@ -872,7 +872,7 @@ diff --git a/apps/web/openapi.json b/apps/web/openapi.json
        "ListPage_AgentItem_": {
          "additionalProperties": false,
          "properties": {
-@@ -4054,6 +4897,45 @@
+@@ -4456,6 +5299,45 @@
            "digest"
          ],
          "title": "PromptMetadata",
@@ -918,7 +918,7 @@ diff --git a/apps/web/openapi.json b/apps/web/openapi.json
          "type": "object"
        },
        "ProtectionSnapshotResponse": {
-@@ -8109,6 +8991,45 @@
+@@ -8511,6 +9393,45 @@
          "title": "TaskSection",
          "type": "object"
        },
@@ -964,8 +964,8 @@ diff --git a/apps/web/openapi.json b/apps/web/openapi.json
        "UsageItem": {
          "additionalProperties": false,
          "properties": {
-@@ -9312,6 +10233,662 @@
-         "summary": "Get Accepted Brief"
+@@ -9759,6 +10680,662 @@
+         "summary": "Get Accepted Graph"
        }
      },
 +    "/api/epics/{epic_id}/brainstorm-conversations": {
@@ -1630,8 +1630,8 @@ diff --git a/apps/web/openapi.json b/apps/web/openapi.json
 diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
 --- a/apps/web/src/lib/api/schema.d.ts
 +++ b/apps/web/src/lib/api/schema.d.ts
-@@ -343,6 +343,127 @@
-         get: operations["get_accepted_brief_api_epics__epic_id__accepted_brief_get"];
+@@ -360,6 +360,127 @@
+         get: operations["get_accepted_graph_api_epics__epic_id__accepted_graph_get"];
          put?: never;
          post?: never;
 +        delete?: never;
@@ -1758,7 +1758,7 @@ diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
          delete?: never;
          options?: never;
          head?: never;
-@@ -1496,6 +1617,76 @@
+@@ -1600,6 +1721,76 @@
           * @enum {string}
           */
          AuthMode: "subscription" | "api_key";
@@ -1835,7 +1835,7 @@ diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
          /** AvailableCommand */
          AvailableCommand: {
              /** Evidence Digest */
-@@ -1536,6 +1727,240 @@
+@@ -1640,6 +1831,240 @@
              expires_at: string;
              /** Idle Expires At */
              idle_expires_at: string;
@@ -2076,7 +2076,7 @@ diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
          };
          /**
           * BriefAdoptionRequest
-@@ -1792,6 +2217,22 @@
+@@ -1896,6 +2321,22 @@
              required: boolean;
              /** Timeout Seconds */
              timeout_seconds: number;
@@ -2099,7 +2099,7 @@ diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
          };
          /** CsrfResponse */
          CsrfResponse: {
-@@ -2193,6 +2634,45 @@
+@@ -2459,6 +2900,45 @@
              /** Unknown */
              unknown: number;
          };
@@ -2145,7 +2145,7 @@ diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
          /** ListPage[AgentItem] */
          ListPage_AgentItem_: {
              /** Items */
-@@ -2632,6 +3112,26 @@
+@@ -2898,6 +3378,26 @@
              /** Version */
              version: string;
          };
@@ -2172,7 +2172,7 @@ diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
          /** ProtectionSnapshotResponse */
          ProtectionSnapshotResponse: {
              /** Actor Can Bypass */
-@@ -4040,6 +4540,29 @@
+@@ -4306,6 +4806,29 @@
              /** Untrusted External Content */
              untrusted_external_content: boolean;
          };
@@ -2202,7 +2202,7 @@ diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
          /** UsageItem */
          UsageItem: {
              /** Currency */
-@@ -4755,6 +5278,340 @@
+@@ -5052,6 +5575,340 @@
              };
          };
      };

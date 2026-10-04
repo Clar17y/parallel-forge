@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "base": "b7e5f0bca4a1ca6943b7d66bc068ce470934f234",
+  "base": "1e444af79bf654b78e2f805ff01723cdeb937352",
   "application_order": [
     "epic_brief_source.patch",
     "registration.patch",
@@ -17,8 +17,8 @@
       ]
     },
     "registration.patch": {
-      "sha256": "0a9309bd3cc96a881a4a97de968486e936780ded28a5ab2e92f7f158440fd803",
-      "byte_length": 10370,
+      "sha256": "4e197efd8c413f7b8c91bff2a1fd2e9ce679dd37f125fc8cbf68cb7e8b687611",
+      "byte_length": 10402,
       "target_paths": [
         "apps/orchestrator/src/forge/persistence/models/__init__.py",
         "apps/orchestrator/src/forge/api/app.py",
@@ -26,14 +26,14 @@
       ]
     },
     "epic_brainstorm_migration.patch": {
-      "sha256": "3c68907c0b84fb6de4e8f212c3ef05dffcfa3bc4b7826fef6a44dbf656d192a0",
-      "byte_length": 6618,
+      "sha256": "5baf047007b24026f1d2502be9d83d7176a8c4cd70330a3226266d9fa0780c4c",
+      "byte_length": 6626,
       "target_paths": [
-        "apps/orchestrator/migrations/versions/20261004_0032_epic_brainstorm.py"
+        "apps/orchestrator/migrations/versions/20261004_0033_epic_brainstorm.py"
       ]
     },
     "generated_contracts.patch": {
-      "sha256": "764823f7c38560b7469c2e9e5903fee98c774570d093f48c3514fe73e5693956",
+      "sha256": "5631b00b752335fc9409f1e20cf2f6b1114aa53501e8ef48ce80c1fcb4ea3f7e",
       "byte_length": 72390,
       "target_paths": [
         "apps/web/openapi.json",
@@ -41,12 +41,12 @@
       ]
     }
   },
-  "migration_renumber_note": "The proposed migration 20261004_0032_epic_brainstorm.py must be reviewed and renumbered by the primary/integration owner to follow whichever migration sequence is active at merge time on main.",
+  "migration_renumber_note": "Proposed 20261004_0033 follows landed #70 revision 20261003_0032. The integration owner must recheck the active Alembic head at merge time.",
   "required_api_budget": "create_app(epic_brainstorm_budget=TaskBudget(...)) enables the proposed API service with an explicit bounded discovery budget.",
   "worker_gateway_and_reader_factory_bindings": "run_worker(brainstorm_gateway_factory=..., brainstorm_reader_factory=...) requires both subject-specific factories together and uses settings.subscription_quota_policy. The gateway implements execute(snapshot, persisted_turns, controlled_reader, cancelled=..., lifecycle=...).",
   "genuine_supervised_receipts": "Genuine supervised subprocess receipts (ClientProcessReceipt) under ClientProcessSupervisor with fail-closed authority, no fake delivery run, and no paid provider fallback.",
   "integration_limits": {
-    "actual_producer_vs_fixture": "Actual #69 brief producer tests run against disposable generation-overlay; shared production files remain unchanged until integration owner applies proposals.",
+    "actual_producer_vs_fixture": "Tests use actual landed #69 producer code in disposable overlays, including main after #70. Shared production files remain integration-owned.",
     "live_integration": "Providerless peer tests run in-process or via supervisor subprocess; live CLI/broker gateway and production repository reader factories remain integration-owned.",
     "proposal_policy": "Publish proposals only as data artifacts; never apply them to shared production source."
   }

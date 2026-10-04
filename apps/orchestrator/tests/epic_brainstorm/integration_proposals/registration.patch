@@ -1,7 +1,7 @@
 diff --git a/apps/orchestrator/src/forge/persistence/models/__init__.py b/apps/orchestrator/src/forge/persistence/models/__init__.py
 --- a/apps/orchestrator/src/forge/persistence/models/__init__.py
 +++ b/apps/orchestrator/src/forge/persistence/models/__init__.py
-@@ -5,6 +5,30 @@
+@@ -7,6 +7,30 @@
  from forge.persistence.models.base import Base
  from forge.persistence.models.capability_evidence import CapabilityEvidence
  from forge.persistence.models.capability_probe_diagnostics import CapabilityProbeDiagnosticRecord
@@ -30,8 +30,8 @@ diff --git a/apps/orchestrator/src/forge/persistence/models/__init__.py b/apps/o
 +    BrainstormTurnRow as BrainstormTurnRow,
 +)
  from forge.persistence.models.epic_brief import Epic, EpicBriefRevision
+ from forge.persistence.models.epic_items import EpicGraphRevision
  from forge.persistence.models.evaluation import EvaluationCase, EvaluationSuite
- from forge.persistence.models.execution import (
 diff --git a/apps/orchestrator/src/forge/api/app.py b/apps/orchestrator/src/forge/api/app.py
 --- a/apps/orchestrator/src/forge/api/app.py
 +++ b/apps/orchestrator/src/forge/api/app.py
@@ -41,9 +41,9 @@ diff --git a/apps/orchestrator/src/forge/api/app.py b/apps/orchestrator/src/forg
  from forge.api.routes.dashboard import router_for as dashboard_router_for
 +from forge.api.routes.epic_brainstorm import router_for as epic_brainstorm_router_for
  from forge.api.routes.epic_brief import router_for as epic_brief_router_for
+ from forge.api.routes.epic_items import router_for as epic_items_router_for
  from forge.api.routes.events import router_for as event_router_for
- from forge.api.routes.health import router_for as health_router_for
-@@ -44,6 +45,10 @@
+@@ -45,6 +46,10 @@
  )
  from forge.application.services.artifact_reads import ArtifactReadService
  from forge.application.services.auth import AuthService
@@ -52,9 +52,9 @@ diff --git a/apps/orchestrator/src/forge/api/app.py b/apps/orchestrator/src/forg
 +    EpicBriefBrainstormAdapter,
 +)
  from forge.application.services.epic_brief import EpicBriefService
+ from forge.application.services.epic_items import EpicItemsService
  from forge.application.services.github_issue_import import GitHubIssueImportService
- from forge.application.services.jev_reporting import JevReportingService
-@@ -58,6 +63,7 @@
+@@ -60,6 +65,7 @@
  from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
  from forge.application.services.tasks import TaskService
  from forge.artifacts.filesystem import FilesystemArtifactStore
@@ -62,18 +62,18 @@ diff --git a/apps/orchestrator/src/forge/api/app.py b/apps/orchestrator/src/forg
  from forge.persistence.database import create_engine, create_session_factory
  from forge.persistence.queries.artifacts import PostgresArtifactReadQuery
  from forge.persistence.queries.dashboard import DashboardQuery
-@@ -88,6 +94,7 @@
-     project_service: Any | None = None,
+@@ -91,6 +97,7 @@
      task_service: Any | None = None,
      epic_brief_service: Any | None = None,
+     epic_items_service: Any | None = None,
 +    epic_brainstorm_budget: TaskBudget | None = None,
      run_service: Any | None = None,
      run_command_service: Any | None = None,
      projection_service: Any | None = None,
-@@ -214,6 +221,13 @@
-     app.state.project_service = resolved_project_service
+@@ -219,6 +226,13 @@
      app.state.task_service = resolved_task_service
      app.state.epic_brief_service = resolved_epic_brief_service
+     app.state.epic_items_service = resolved_epic_items_service
 +    app.state.epic_brainstorm_service = (
 +        EpicBrainstormService(
 +            session_factory, EpicBriefBrainstormAdapter, budget=epic_brainstorm_budget
@@ -84,10 +84,10 @@ diff --git a/apps/orchestrator/src/forge/api/app.py b/apps/orchestrator/src/forg
      app.state.subscription_profile_service = resolved_subscription_profile_service
      app.state.subscription_quota_service = resolved_subscription_quota_service
      app.state.subscription_task_control_service = resolved_task_control_service
-@@ -271,6 +285,7 @@
-     app.include_router(prompt_router_for(), prefix="/api")
+@@ -277,6 +291,7 @@
      app.include_router(task_router_for(), prefix="/api")
      app.include_router(epic_brief_router_for(), prefix="/api")
+     app.include_router(epic_items_router_for(), prefix="/api")
 +    app.include_router(epic_brainstorm_router_for(), prefix="/api")
      app.include_router(run_router_for(), prefix="/api")
      app.include_router(jev_router_for(), prefix="/api")

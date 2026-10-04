@@ -302,6 +302,19 @@ type BrainstormFailure = Literal[
 _MAX_USAGE = 2**63 - 1
 
 
+def validate_brainstorm_budget(budget: TaskBudget) -> None:
+    """Reject limits that cannot be represented in the frozen usage record."""
+    limits = (
+        budget.max_duration_seconds * 1000,
+        budget.max_tool_calls,
+        budget.max_input_tokens,
+        budget.max_output_tokens,
+        budget.max_cost_minor,
+    )
+    if any(value is not None and value > _MAX_USAGE for value in limits):
+        raise BrainstormConflict("brainstorm budget exceeds supported usage range")
+
+
 class BrainstormMeasuredUsage(_Closed):
     schema_version: Literal[1] = 1
     duration_ms: int | None = Field(default=None, ge=0, le=_MAX_USAGE, strict=True)
@@ -357,7 +370,7 @@ def duration_floor(usage: Mapping[str, object] | None) -> int:
                 usage.get("duration_ms"),
                 usage.get("duration_lower_bound_ms"),
             )
-            if type(candidate) is int and candidate >= 0
+            if type(candidate) is int and 0 <= candidate <= _MAX_USAGE
         ),
         default=0,
     )
@@ -422,5 +435,6 @@ __all__ = [
     "FrozenBriefContent",
     "FrozenRequirement",
     "duration_floor",
+    "validate_brainstorm_budget",
     "validate_invocation_context",
 ]

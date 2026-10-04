@@ -27,6 +27,7 @@ from forge.agents.client_process import (
 from forge.application.ports.epic_brainstorm import BrainstormGateway, BrainstormGatewayResult
 from forge.application.ports.repository import RepositoryReader
 from forge.domain.epic_brainstorm import (
+    _MAX_USAGE,
     AuthoringJobSnapshot,
     BrainstormConflict,
     BrainstormTurn,
@@ -207,10 +208,11 @@ class EpicBrainstormWorker:
     ) -> dict[str, object]:
         previous = attempt.usage or {}
         lower = duration_floor(previous)
-        duration = None if recovery else max(cls._host_duration_ms(attempt), lower)
+        observed = max(cls._host_duration_ms(attempt), lower)
+        duration = None if recovery or observed > _MAX_USAGE else observed
         return {
             "duration_ms": duration,
-            "duration_lower_bound_ms": lower if recovery else max(lower, cast(int, duration)),
+            "duration_lower_bound_ms": lower if recovery else min(observed, _MAX_USAGE),
             "tool_call_count": attempt.tool_calls_used,
             "input_tokens": None if launched else 0,
             "output_tokens": None if launched else 0,
@@ -566,7 +568,7 @@ class EpicBrainstormWorker:
                 return
             attempt.process_settled = True
             attempt.usage = self._host_usage(attempt, launched=False)
-            attempt.usage_known = True
+            attempt.usage_known = attempt.usage["duration_ms"] is not None
             attempt.state, attempt.failure = "settled", failure
             row.state, row.failure = (
                 ("cancelled", "cancelled")
@@ -609,8 +611,8 @@ class EpicBrainstormWorker:
             reset_at = self._quota_reset(result)
             if not attempt.launch_intent:
                 attempt.process_settled = True
-                attempt.usage_known = True
                 attempt.usage = self._host_usage(attempt, launched=False)
+                attempt.usage_known = attempt.usage["duration_ms"] is not None
             elif not attempt.process_settled:
                 # Lease expiry, timeout, task cancellation, or gateway return is not
                 # proof that an external process stopped. Keep the reservation.
@@ -639,6 +641,18 @@ class EpicBrainstormWorker:
             telemetry_valid = True
             safe_currency = None
             if telemetry is not None:
+                unsafe_measurement = any(
+                    value is not None and value > _MAX_USAGE
+                    for value in (
+                        telemetry.input_tokens,
+                        telemetry.output_tokens,
+                        telemetry.tool_call_count,
+                        telemetry.duration_ms,
+                        telemetry.estimated_api_cost_minor,
+                    )
+                )
+                if unsafe_measurement:
+                    telemetry_valid = False
                 currency = telemetry.currency
                 if currency is not None:
                     if (
@@ -671,23 +685,53 @@ class EpicBrainstormWorker:
                 attempt.usage = self._host_usage(attempt, launched=True)
             elif telemetry is not None:
                 measured_duration = max(telemetry.duration_ms, self._host_duration_ms(attempt))
+                duration_known = measured_duration <= _MAX_USAGE
+                if not duration_known:
+                    telemetry_valid = False
+                prior_lower = duration_floor(attempt.usage)
+                safe_input = (
+                    telemetry.input_tokens
+                    if telemetry.input_tokens is None or telemetry.input_tokens <= _MAX_USAGE
+                    else None
+                )
+                safe_output = (
+                    telemetry.output_tokens
+                    if telemetry.output_tokens is None or telemetry.output_tokens <= _MAX_USAGE
+                    else None
+                )
+                safe_cost = (
+                    telemetry.estimated_api_cost_minor
+                    if telemetry.estimated_api_cost_minor is None
+                    or telemetry.estimated_api_cost_minor <= _MAX_USAGE
+                    else None
+                )
+                tool_unknown = telemetry.tool_call_count > _MAX_USAGE
                 attempt.usage_known = (
                     telemetry_valid
-                    and (telemetry.estimated_api_cost_minor is None or safe_currency is not None)
-                    and telemetry.input_tokens is not None
-                    and telemetry.output_tokens is not None
+                    and duration_known
+                    and (safe_cost is None or safe_currency is not None)
+                    and safe_input is not None
+                    and safe_output is not None
                     and (
                         attempt.reservation["estimated_api_cost_minor"] is None
-                        or telemetry.estimated_api_cost_minor is not None
+                        or safe_cost is not None
                     )
                 )
                 attempt.usage = {
-                    "input_tokens": telemetry.input_tokens,
-                    "output_tokens": telemetry.output_tokens,
-                    "tool_call_count": max(telemetry.tool_call_count, attempt.tool_calls_used),
-                    "duration_ms": measured_duration,
-                    "duration_lower_bound_ms": measured_duration,
-                    "estimated_api_cost_minor": telemetry.estimated_api_cost_minor,
+                    "input_tokens": safe_input,
+                    "output_tokens": safe_output,
+                    "tool_call_count": max(
+                        0 if tool_unknown else telemetry.tool_call_count,
+                        attempt.tool_calls_used,
+                    ),
+                    "tool_call_count_unknown": tool_unknown,
+                    "duration_ms": measured_duration if duration_known else None,
+                    "duration_lower_bound_ms": (
+                        min(max(self._host_duration_ms(attempt), prior_lower), _MAX_USAGE)
+                        if not duration_known
+                        else measured_duration
+                    ),
+                    "estimated_api_cost_minor": safe_cost,
                     "currency": safe_currency,
                 }
             over_budget = telemetry is not None and (
@@ -767,10 +811,10 @@ class EpicBrainstormWorker:
                     "quota_exhausted",
                 }
                 safe_failure = (
-                    "budget_exhausted"
-                    if over_budget
-                    else "invalid_output"
+                    "invalid_output"
                     if not telemetry_valid
+                    else "budget_exhausted"
+                    if over_budget
                     else result.failure
                     if result
                     and isinstance(result.failure, str)

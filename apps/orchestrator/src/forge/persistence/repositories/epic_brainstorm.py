@@ -8,11 +8,13 @@ from hashlib import sha256
 from typing import cast
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.domain.epic_brainstorm import (
+    _MAX_USAGE,
     AuthoringJobSnapshot,
     AuthoringOutcome,
     AuthoringReceipt,
@@ -26,6 +28,7 @@ from forge.domain.epic_brainstorm import (
     BrainstormThread,
     BrainstormTurn,
     duration_floor,
+    validate_brainstorm_budget,
     validate_invocation_context,
 )
 from forge.domain.operation import canonical_digest
@@ -205,6 +208,25 @@ class PostgresBrainstormRepository:
         )
 
     @staticmethod
+    def _bounded_measurement(value: object) -> int | None:
+        return value if type(value) is int and 0 <= value <= _MAX_USAGE else None
+
+    @staticmethod
+    def _unsafe_usage(usage: Mapping[str, object]) -> bool:
+        return bool(usage.get("tool_call_count_unknown")) or any(
+            PostgresBrainstormRepository._bounded_measurement(value) is None
+            for name in (
+                "duration_ms",
+                "duration_lower_bound_ms",
+                "tool_call_count",
+                "input_tokens",
+                "output_tokens",
+                "estimated_api_cost_minor",
+            )
+            if (value := usage.get(name)) is not None
+        )
+
+    @staticmethod
     def _charges(
         attempts: list[BrainstormAttemptRow],
     ) -> tuple[dict[str, int], dict[str, int], int]:
@@ -221,12 +243,14 @@ class PostgresBrainstormRepository:
         held = dict.fromkeys(charged, 0)
         unknown = 0
         for attempt in attempts:
-            if attempt.usage_known is False:
-                unknown += 1
             usage = attempt.usage or {}
             reservation = attempt.reservation or {}
+            if attempt.usage_known is False or PostgresBrainstormRepository._unsafe_usage(usage):
+                unknown += 1
             for key in charged:
-                value = usage.get(key) if attempt.process_settled else None
+                value = PostgresBrainstormRepository._bounded_measurement(
+                    usage.get(key) if attempt.process_settled else None
+                )
                 reserve = reservation.get(key)
                 if key == "duration_ms":
                     lower = duration_floor(usage)
@@ -243,6 +267,7 @@ class PostgresBrainstormRepository:
                     charged[key] += value
                     if (
                         not attempt.process_settled
+                        or (key == "tool_call_count" and usage.get("tool_call_count_unknown"))
                         or (key == "estimated_api_cost_minor" and usage.get("currency") is None)
                     ) and type(reserve) is int:
                         held[key] += max(reserve - value, 0)
@@ -253,6 +278,7 @@ class PostgresBrainstormRepository:
     async def _reservation(
         self, row: BrainstormJobRow, snapshot: AuthoringJobSnapshot
     ) -> tuple[dict[str, int | None] | None, bool]:
+        validate_brainstorm_budget(snapshot.budget)
         ceiling = encode_subscription_record(snapshot.budget)
         await self.session.execute(
             insert(BrainstormBudgetLedger)
@@ -478,7 +504,19 @@ class PostgresBrainstormRepository:
             if row.current_attempt_id
             else None
         )
-        charged, held, unknown = self._charges(await self._epic_attempts(row.epic_id))
+        attempts = await self._epic_attempts(row.epic_id)
+        charged, held, unknown = self._charges(attempts)
+        unknown_dimensions = {
+            key
+            for recorded in attempts
+            for key in charged
+            if not recorded.process_settled
+            or self._bounded_measurement((recorded.usage or {}).get(key)) is None
+            or (key == "tool_call_count" and (recorded.usage or {}).get("tool_call_count_unknown"))
+            or (
+                key == "estimated_api_cost_minor" and (recorded.usage or {}).get("currency") is None
+            )
+        }
         raw_usage = attempt.usage if attempt else None
         usage = None
         if raw_usage is not None and attempt is not None:
@@ -489,15 +527,18 @@ class PostgresBrainstormRepository:
                 "duration_ms": recorded_duration
                 if type(recorded_duration) is int
                 and recorded_duration >= lower
+                and recorded_duration <= _MAX_USAGE
                 and (attempt.process_settled or not attempt.launch_intent)
                 else None,
                 "duration_lower_bound_ms": lower,
-                "tool_call_count": max(attempt.tool_calls_used, recorded_tools)
-                if type(recorded_tools) is int
-                else attempt.tool_calls_used,
-                "input_tokens": raw_usage.get("input_tokens"),
-                "output_tokens": raw_usage.get("output_tokens"),
-                "estimated_api_cost_minor": raw_usage.get("estimated_api_cost_minor"),
+                "tool_call_count": max(
+                    attempt.tool_calls_used, self._bounded_measurement(recorded_tools) or 0
+                ),
+                "input_tokens": self._bounded_measurement(raw_usage.get("input_tokens")),
+                "output_tokens": self._bounded_measurement(raw_usage.get("output_tokens")),
+                "estimated_api_cost_minor": self._bounded_measurement(
+                    raw_usage.get("estimated_api_cost_minor")
+                ),
             }
             missing = tuple(
                 key
@@ -520,6 +561,13 @@ class PostgresBrainstormRepository:
             and currency.isalpha()
             else None
         )
+        reservation = None
+        if attempt is not None:
+            try:
+                reservation = BrainstormReservation.model_validate(attempt.reservation)
+            except ValidationError:
+                pass
+        overflow = {key for key in charged if charged[key] > _MAX_USAGE or held[key] > _MAX_USAGE}
         return AuthoringOutcome.model_validate(
             {
                 "job_id": row.id,
@@ -531,19 +579,29 @@ class PostgresBrainstormRepository:
                 else None,
                 "adopted_revision_id": row.adopted_revision_id,
                 "failure": row.failure,
-                "usage_known": attempt.usage_known if attempt else None,
-                "process_settled": attempt.process_settled if attempt else False,
-                "usage": usage,
-                "reservation": BrainstormReservation.model_validate(attempt.reservation)
+                "usage_known": attempt.usage_known and not self._unsafe_usage(raw_usage or {})
                 if attempt
                 else None,
-                "cumulative_usage": BrainstormAmounts.model_validate(charged),
-                "held_reservations": BrainstormAmounts.model_validate(held),
+                "process_settled": attempt.process_settled if attempt else False,
+                "usage": usage,
+                "reservation": reservation,
+                # A saturated public amount is a lower bound, never used for admission.
+                # held_reasons marks its dimension unknown; raw arithmetic stays exact.
+                "cumulative_usage": BrainstormAmounts.model_validate(
+                    {key: min(value, _MAX_USAGE) for key, value in charged.items()}
+                ),
+                "held_reservations": BrainstormAmounts.model_validate(
+                    {key: min(value, _MAX_USAGE) for key, value in held.items()}
+                ),
                 "uncertain_attempts": unknown,
                 "currency": safe_currency,
                 "unknown_usage_fields": usage.unknown_fields if usage else (),
                 "held_reasons": BrainstormHeldReasons.model_validate(
-                    {key: "unsettled_or_unknown" for key, value in held.items() if value}
+                    {
+                        key: "unsettled_or_unknown"
+                        for key, value in held.items()
+                        if value or key in overflow or key in unknown_dimensions
+                    }
                 ),
             }
         )
@@ -638,6 +696,7 @@ class PostgresBrainstormRepository:
                 continue
             try:
                 snapshot = self.decode_snapshot(row)
+                validate_brainstorm_budget(snapshot.budget)
                 await self.frozen_history(snapshot, conversation_id=row.conversation_id)
                 key = self.quota_policy.key_for(snapshot.route.effective)
             except BrainstormConflict, ValueError:

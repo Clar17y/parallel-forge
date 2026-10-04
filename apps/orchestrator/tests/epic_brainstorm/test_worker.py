@@ -35,6 +35,7 @@ from forge.worker.epic_brainstorm import (
     EpicBrainstormWorker,
     worker_host_scope,
 )
+from sqlalchemy import delete
 
 
 class BriefFixture:
@@ -1531,6 +1532,241 @@ async def test_invalid_gateway_currency_keeps_numeric_charges_without_persisting
         assert attempt.usage["output_tokens"] == 8
         assert attempt.usage["currency"] is None
         assert "secret-provider-value" not in str(attempt.usage)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dimension",
+    ("input_tokens", "output_tokens", "tool_call_count", "duration_ms", "estimated_api_cost_minor"),
+)
+async def test_oversized_gateway_measurement_is_unknown_but_status_remains_readable(
+    brainstorm_session_factory,
+    dimension,
+):
+    limit = 2**63 - 1
+    service, epic_id, project_id, actor, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(
+            max_provider_attempts=2,
+            max_input_tokens=100,
+            max_output_tokens=100,
+            max_cost_minor=100,
+        ),
+    )
+
+    class OversizedGateway(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            result = await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            telemetry = replace(result.telemetry, **{dimension: limit + 1})
+            return replace(result, telemetry=telemetry)
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner=f"oversized-{dimension}",
+        gateway_factory=lambda _: OversizedGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "failed" and outcome.failure == "invalid_output"
+    assert outcome.process_settled and outcome.usage_known is False
+    assert outcome.usage is not None
+    if dimension == "tool_call_count":
+        assert outcome.usage.tool_call_count == 0
+        assert outcome.held_reservations.tool_call_count > 0
+    elif dimension == "duration_ms":
+        assert outcome.usage.duration_ms is None
+        assert outcome.usage.duration_lower_bound_ms > 0
+        assert outcome.held_reservations.duration_ms > 0
+    else:
+        assert getattr(outcome.usage, dimension) is None
+        assert getattr(outcome.held_reservations, dimension) > 0
+    async with brainstorm_session_factory() as session:
+        row = await session.get(BrainstormJobRow, receipt.job_id)
+        assert row is not None and row.current_attempt_id is not None
+        attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+        assert attempt is not None and str(limit + 1) not in str(attempt.usage)
+    if dimension == "input_tokens":
+        second = await submit_second_on_epic(
+            service, epic_id, project_id, actor, prefix="oversized-input"
+        )
+        assert await worker.run_once() is None
+        blocked = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=second.job_id
+        )
+        assert blocked.state == "failed" and blocked.failure == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_safe_individual_measurements_with_overflowing_sum_keep_status_readable(
+    brainstorm_session_factory,
+):
+    limit = 2**63 - 1
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_provider_attempts=2)
+    )
+    second = await submit_second_on_epic(
+        service, epic_id, project_id, actor, prefix="aggregate-overflow"
+    )
+    amounts = iter((limit - 1, 2))
+
+    class LargeButValidGateway(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            result = await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            return replace(result, telemetry=replace(result.telemetry, input_tokens=next(amounts)))
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="aggregate-worker",
+        gateway_factory=lambda _: LargeButValidGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert {await worker.run_once(), await worker.run_once()} == {first.job_id, second.job_id}
+    for job in (first, second):
+        outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=job.job_id)
+        assert outcome.cumulative_usage.input_tokens == limit
+        assert outcome.held_reasons.input_tokens == "unsettled_or_unknown"
+        assert outcome.state == "proposed"
+    async with brainstorm_session_factory() as session:
+        repository = PostgresBrainstormRepository(session)
+        charged, held, _unknown = repository._charges(await repository._epic_attempts(epic_id))
+        assert charged["input_tokens"] == limit + 1
+        assert held["input_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_maximum_representable_measurement_remains_exact(brainstorm_session_factory):
+    limit = 2**63 - 1
+    service, epic_id, project_id, _actor, receipt = await prepared(brainstorm_session_factory)
+
+    class MaximumGateway(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            result = await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            return replace(result, telemetry=replace(result.telemetry, input_tokens=limit))
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="maximum-worker",
+        gateway_factory=lambda _: MaximumGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "proposed"
+    assert outcome.usage.input_tokens == limit
+    assert outcome.cumulative_usage.input_tokens == limit
+    assert outcome.held_reasons.input_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_preexisting_malformed_usage_and_reservation_cannot_poison_epic_status(
+    brainstorm_session_factory,
+):
+    limit = 2**63 - 1
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(max_provider_attempts=2, max_input_tokens=100),
+    )
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="legacy-worker",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == first.job_id
+    async with brainstorm_session_factory() as session, session.begin():
+        row = await session.get(BrainstormJobRow, first.job_id)
+        assert row is not None and row.current_attempt_id is not None
+        attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+        assert attempt is not None
+        attempt.usage = {**attempt.usage, "input_tokens": limit + 1}
+        attempt.usage_known = True
+    second = await submit_second_on_epic(service, epic_id, project_id, actor, prefix="legacy")
+    for job in (first, second):
+        outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=job.job_id)
+        assert outcome.cumulative_usage.input_tokens == 0
+        assert outcome.held_reservations.input_tokens == 100
+        assert outcome.uncertain_attempts == 1
+    async with brainstorm_session_factory() as session, session.begin():
+        row = await session.get(BrainstormJobRow, first.job_id)
+        assert row is not None and row.current_attempt_id is not None
+        attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+        assert attempt is not None
+        attempt.reservation = {**attempt.reservation, "input_tokens": limit + 1}
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=first.job_id)
+    assert outcome.reservation is None
+    assert outcome.held_reservations.input_tokens == limit
+    assert outcome.held_reasons.input_tokens == "unsettled_or_unknown"
+    async with brainstorm_session_factory() as session:
+        repository = PostgresBrainstormRepository(session)
+        _charged, held, _unknown = repository._charges(await repository._epic_attempts(epic_id))
+        assert held["input_tokens"] == limit + 1
+
+
+@pytest.mark.asyncio
+async def test_oversized_telemetry_keeps_quota_wait_and_later_cancel_readable(
+    brainstorm_session_factory,
+):
+    service, epic_id, project_id, actor, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(max_provider_attempts=2, max_input_tokens=100),
+    )
+
+    class ExhaustedGateway(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            result = await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            return replace(
+                result,
+                proposal=None,
+                failure="quota_exhausted",
+                telemetry=replace(result.telemetry, input_tokens=2**63),
+            )
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="quota-overflow-worker",
+        gateway_factory=lambda _: ExhaustedGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "quota_wait" and outcome.failure == "quota_exhausted"
+    assert outcome.usage.input_tokens is None
+    assert outcome.held_reservations.input_tokens == 100
+    await service.cancel(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=outcome.job_version,
+        actor=actor,
+        key="cancel-bad-telemetry",
+    )
+    cancelled_outcome = await service.observe(
+        epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+    )
+    assert cancelled_outcome.state == "cancelled"
+    assert cancelled_outcome.usage.input_tokens is None
+    assert cancelled_outcome.cumulative_usage.input_tokens == 0
+    async with brainstorm_session_factory() as session, session.begin():
+        row = await session.get(BrainstormJobRow, receipt.job_id)
+        assert row is not None and row.current_attempt_id is not None
+        repository = PostgresBrainstormRepository(session)
+        pool = await repository.quota_pool(repository.decode_snapshot(row))
+        await session.execute(
+            delete(SubscriptionQuotaObservation).where(
+                SubscriptionQuotaObservation.source_attempt_id == row.current_attempt_id
+            )
+        )
+        pool.blocked = False
+        pool.probe_attempt_id = None
 
 
 async def submit_second_on_epic(service, epic_id, project_id, actor, *, prefix):
