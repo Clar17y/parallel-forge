@@ -113,6 +113,7 @@ class EpicBrainstormService:
         )
         async with self.sessions() as session, session.begin():
             repository = PostgresBrainstormRepository(session)
+            await repository.lock_command(epic_id, key)
             replay = await repository.replay(epic_id, key, digest)
             if replay:
                 return UUID(str(replay["conversation_id"])), int(str(replay["version"]))
@@ -169,10 +170,11 @@ class EpicBrainstormService:
         )
         async with self.sessions() as session, session.begin():
             repository = PostgresBrainstormRepository(session)
-            row = await repository.conversation(epic_id, project_id, conversation_id, lock=True)
+            await repository.lock_command(epic_id, key)
             replay = await repository.replay(epic_id, key, digest)
             if replay:
                 return int(str(replay["version"]))
+            row = await repository.conversation(epic_id, project_id, conversation_id, lock=True)
             if row.version != expected_version:
                 raise BrainstormConflict("conversation version is stale")
             version = await repository.append(row, turn)
@@ -217,12 +219,13 @@ class EpicBrainstormService:
         )
         async with self.sessions() as session, session.begin():
             repository = PostgresBrainstormRepository(session)
-            conversation = await repository.conversation(
-                epic_id, project_id, conversation_id, lock=True
-            )
+            await repository.lock_command(epic_id, key)
             replay = await repository.replay(epic_id, key, digest)
             if replay:
                 return AuthoringReceipt.model_validate(replay)
+            conversation = await repository.conversation(
+                epic_id, project_id, conversation_id, lock=True
+            )
             brief = await self.briefs(session).input(epic_id)
             if (
                 brief.project_id != project_id
@@ -334,10 +337,11 @@ class EpicBrainstormService:
         )
         async with self.sessions() as session, session.begin():
             repository = PostgresBrainstormRepository(session)
-            row = await repository.job(epic_id, project_id, job_id, lock=True)
+            await repository.lock_command(epic_id, key)
             replay = await repository.replay(epic_id, key, digest)
             if replay:
                 return AuthoringReceipt.model_validate(replay)
+            row = await repository.job(epic_id, project_id, job_id, lock=True)
             if row.version != expected_job_version:
                 raise BrainstormConflict("job version is stale")
             if row.state in ("queued", "quota_wait", "capacity_wait"):
@@ -379,10 +383,11 @@ class EpicBrainstormService:
         )
         async with self.sessions() as session, session.begin():
             repository = PostgresBrainstormRepository(session)
-            row = await repository.job(epic_id, project_id, job_id, lock=True)
+            await repository.lock_command(epic_id, key)
             replay = await repository.replay(epic_id, key, digest)
             if replay:
                 return AuthoringReceipt.model_validate(replay)
+            row = await repository.job(epic_id, project_id, job_id, lock=True)
             if (
                 row.version != expected_job_version
                 or row.state != "failed"
@@ -434,6 +439,7 @@ class EpicBrainstormService:
         )
         async with self.sessions() as session, session.begin():
             repository = PostgresBrainstormRepository(session)
+            await repository.lock_command(epic_id, key)
             replay = await repository.replay(epic_id, key, digest)
             if replay:
                 return UUID(str(replay["brief_revision_id"]))
@@ -455,8 +461,6 @@ class EpicBrainstormService:
             conversation = await repository.conversation(
                 epic_id, project_id, row.conversation_id, lock=True
             )
-            if conversation.version != snapshot.conversation_version + 1:
-                raise BrainstormConflict("conversation changed after proposal input")
             if (
                 row.version != expected_job_version
                 or row.state != "proposed"
@@ -467,6 +471,26 @@ class EpicBrainstormService:
             proposal = BrainstormProposal.model_validate(row.proposal)
             if proposal.digest != proposal_digest:
                 raise BrainstormConflict("proposal digest conflicts")
+            history = await repository.turns(row.conversation_id)
+            if (
+                conversation.version != len(history) + 1
+                or snapshot.conversation_version < 2
+                or len(history) < snapshot.conversation_version
+                or history[snapshot.conversation_version - 2].turn_id != snapshot.prompt_turn_id
+                or history[snapshot.conversation_version - 2].role != "operator"
+                or any(
+                    turn.role != "assistant" or turn.pending
+                    for turn in history[snapshot.conversation_version - 1 :]
+                )
+                or sum(
+                    turn.turn_id == proposal.turn_id
+                    and turn.text == proposal.problem
+                    and turn.proposal == proposal
+                    for turn in history[snapshot.conversation_version - 1 :]
+                )
+                != 1
+            ):
+                raise BrainstormConflict("conversation changed after proposal input")
             revision_id = await self.briefs(session).save_proposal_revision(
                 epic_id,
                 expected_version=expected_epic_version,

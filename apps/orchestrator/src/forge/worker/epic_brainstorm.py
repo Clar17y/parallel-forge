@@ -220,7 +220,11 @@ class EpicBrainstormWorker:
 
     @staticmethod
     def _quota_reset(result: BrainstormGatewayResult | None) -> datetime | None:
-        if result is None or result.quota_reset_at is None:
+        if (
+            result is None
+            or not isinstance(result.quota_reset_at, str)
+            or len(result.quota_reset_at) > 64
+        ):
             return None
         try:
             value = datetime.fromisoformat(result.quota_reset_at)
@@ -633,7 +637,20 @@ class EpicBrainstormWorker:
                 return
             telemetry: AttemptTelemetry | None = result.telemetry if result else None
             telemetry_valid = True
+            safe_currency = None
             if telemetry is not None:
+                currency = telemetry.currency
+                if currency is not None:
+                    if (
+                        isinstance(currency, str)
+                        and len(currency) == 3
+                        and currency.isascii()
+                        and currency.isupper()
+                        and currency.isalpha()
+                    ):
+                        safe_currency = currency
+                    else:
+                        telemetry_valid = False
                 try:
                     snapshot.budget.unknown_telemetry_policy.validate_telemetry(
                         telemetry, snapshot.budget.billing_mode
@@ -655,7 +672,9 @@ class EpicBrainstormWorker:
             elif telemetry is not None:
                 measured_duration = max(telemetry.duration_ms, self._host_duration_ms(attempt))
                 attempt.usage_known = (
-                    telemetry.input_tokens is not None
+                    telemetry_valid
+                    and (telemetry.estimated_api_cost_minor is None or safe_currency is not None)
+                    and telemetry.input_tokens is not None
                     and telemetry.output_tokens is not None
                     and (
                         attempt.reservation["estimated_api_cost_minor"] is None
@@ -669,7 +688,7 @@ class EpicBrainstormWorker:
                     "duration_ms": measured_duration,
                     "duration_lower_bound_ms": measured_duration,
                     "estimated_api_cost_minor": telemetry.estimated_api_cost_minor,
-                    "currency": telemetry.currency,
+                    "currency": safe_currency,
                 }
             over_budget = telemetry is not None and (
                 measured_duration > cast(int, attempt.reservation["duration_ms"])
@@ -753,7 +772,9 @@ class EpicBrainstormWorker:
                     else "invalid_output"
                     if not telemetry_valid
                     else result.failure
-                    if result and result.failure in safe_failures
+                    if result
+                    and isinstance(result.failure, str)
+                    and result.failure in safe_failures
                     else failure
                 )
                 row.state, row.failure = "failed", safe_failure

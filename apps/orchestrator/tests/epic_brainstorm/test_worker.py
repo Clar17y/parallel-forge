@@ -259,6 +259,164 @@ async def test_restart_adoption_and_stale_draft(brainstorm_session_factory):
 
 
 @pytest.mark.asyncio
+async def test_sibling_proposals_remain_selectable_until_human_or_brief_changes(
+    brainstorm_session_factory,
+):
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, attempts=2
+    )
+    async with brainstorm_session_factory() as session:
+        first_row = await session.get(BrainstormJobRow, first.job_id)
+        assert first_row is not None
+        conversation_id = first_row.conversation_id
+    prompt = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    second = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=prompt.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=2,
+        actor=actor,
+        key="sibling-submit",
+    )
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="sibling-worker",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert {await worker.run_once(), await worker.run_once()} == {first.job_id, second.job_id}
+    first_outcome = await service.observe(
+        epic_id=epic_id, project_id=project_id, job_id=first.job_id
+    )
+    second_outcome = await service.observe(
+        epic_id=epic_id, project_id=project_id, job_id=second.job_id
+    )
+    assert first_outcome.state == second_outcome.state == "proposed"
+    assert (
+        len(
+            await service.turns(
+                epic_id=epic_id, project_id=project_id, conversation_id=conversation_id
+            )
+        )
+        == 3
+    )
+    assert await service.adopt(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=second.job_id,
+        proposal_digest=second_outcome.proposal_digest,
+        expected_job_version=second_outcome.job_version,
+        expected_epic_version=1,
+        actor=actor,
+        key="sibling-adopt",
+    )
+    with pytest.raises(BrainstormConflict, match="brief changed"):
+        await service.adopt(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=first.job_id,
+            proposal_digest=first_outcome.proposal_digest,
+            expected_job_version=first_outcome.job_version,
+            expected_epic_version=1,
+            actor=actor,
+            key="sibling-stale",
+        )
+
+
+@pytest.mark.asyncio
+async def test_same_key_concurrent_adoption_replays_after_revision_write(
+    brainstorm_session_factory,
+):
+    service, epic_id, project_id, actor, receipt = await prepared(brainstorm_session_factory)
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="adopt-worker",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    brief = service.briefs(None)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_save = brief.save_proposal_revision
+
+    async def delayed_save(epic_id, *, expected_version, source_job_id, proposal):
+        entered.set()
+        await asyncio.wait_for(release.wait(), timeout=2)
+        return await original_save(
+            epic_id,
+            expected_version=expected_version,
+            source_job_id=source_job_id,
+            proposal=proposal,
+        )
+
+    brief.save_proposal_revision = delayed_save
+    request = {
+        "epic_id": epic_id,
+        "project_id": project_id,
+        "job_id": receipt.job_id,
+        "proposal_digest": outcome.proposal_digest,
+        "expected_job_version": outcome.job_version,
+        "expected_epic_version": 1,
+        "actor": actor,
+        "key": "concurrent-adopt",
+    }
+    first = asyncio.create_task(service.adopt(**request))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    second = asyncio.create_task(service.adopt(**request))
+    await asyncio.sleep(0.1)
+    release.set()
+    first_revision, second_revision = await asyncio.wait_for(
+        asyncio.gather(first, second), timeout=5
+    )
+    assert first_revision == second_revision
+    assert len(brief.saved) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [False, True])
+async def test_operator_followup_makes_proposal_stale(brainstorm_session_factory, pending):
+    service, epic_id, project_id, actor, receipt = await prepared(brainstorm_session_factory)
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="followup-worker",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    async with brainstorm_session_factory() as session:
+        row = await session.get(BrainstormJobRow, receipt.job_id)
+        assert row is not None
+        conversation_id = row.conversation_id
+    await service.append(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        expected_version=3,
+        actor=actor,
+        key=f"followup-{pending}",
+        text="Human changed direction",
+        pending=pending,
+    )
+    with pytest.raises(BrainstormConflict, match="conversation changed"):
+        await service.adopt(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=receipt.job_id,
+            proposal_digest=outcome.proposal_digest,
+            expected_job_version=outcome.job_version,
+            expected_epic_version=1,
+            actor=actor,
+            key=f"adopt-followup-{pending}",
+        )
+
+
+@pytest.mark.asyncio
 async def test_unsettled_launch_cannot_be_retried(brainstorm_session_factory):
     project_id, epic_id = uuid4(), uuid4()
     async with brainstorm_session_factory() as session, session.begin():
@@ -1324,6 +1482,55 @@ async def test_provider_failure_text_is_closed_before_persistence(brainstorm_ses
     assert await worker.run_once() == receipt.job_id
     outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
     assert outcome.state == "failed" and outcome.failure == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_invalid_gateway_currency_keeps_numeric_charges_without_persisting_credential(
+    brainstorm_session_factory,
+):
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(max_provider_attempts=2, max_cost_minor=20),
+    )
+
+    class LeakingTelemetry(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            result = await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            return replace(
+                result,
+                telemetry=replace(
+                    result.telemetry,
+                    input_tokens=7,
+                    output_tokens=8,
+                    estimated_api_cost_minor=5,
+                    currency="api_key=secret-provider-value",
+                ),
+                quota_reset_at="api_key=secret-reset-value",
+            )
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="currency-worker",
+        gateway_factory=lambda _: LeakingTelemetry(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "failed" and outcome.failure == "invalid_output"
+    assert outcome.cumulative_usage.estimated_api_cost_minor == 5
+    assert outcome.held_reservations.estimated_api_cost_minor == 15
+    assert outcome.currency is None and outcome.usage_known is False
+    async with brainstorm_session_factory() as session:
+        row = await session.get(BrainstormJobRow, receipt.job_id)
+        assert row is not None and row.current_attempt_id is not None
+        attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+        assert attempt is not None
+        assert attempt.usage["input_tokens"] == 7
+        assert attempt.usage["output_tokens"] == 8
+        assert attempt.usage["currency"] is None
+        assert "secret-provider-value" not in str(attempt.usage)
 
 
 async def submit_second_on_epic(service, epic_id, project_id, actor, *, prefix):

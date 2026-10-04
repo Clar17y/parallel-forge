@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -240,7 +241,10 @@ class PostgresBrainstormRepository:
                     value = attempt.tool_calls_used
                 if type(value) is int and value >= 0:
                     charged[key] += value
-                    if not attempt.process_settled and type(reserve) is int:
+                    if (
+                        not attempt.process_settled
+                        or (key == "estimated_api_cost_minor" and usage.get("currency") is None)
+                    ) and type(reserve) is int:
                         held[key] += max(reserve - value, 0)
                 elif type(reserve) is int:
                     held[key] += reserve
@@ -542,6 +546,15 @@ class PostgresBrainstormRepository:
                     {key: "unsettled_or_unknown" for key, value in held.items() if value}
                 ),
             }
+        )
+
+    async def lock_command(self, epic_id: UUID, key: str) -> None:
+        """Serialize one idempotency key before reading receipts or command state."""
+        if not key or len(key) > 255:
+            raise ValueError("invalid idempotency key")
+        identity = sha256(epic_id.bytes + key.encode("utf-8")).digest()
+        await self.session.execute(
+            select(func.pg_advisory_xact_lock(int.from_bytes(identity[:8], "big", signed=True)))
         )
 
     async def replay(self, epic_id: UUID, key: str, digest: str) -> dict[str, object] | None:
