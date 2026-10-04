@@ -134,7 +134,7 @@ class EpicItemsService:
                 if revision.graph_digest != request.graph_digest:
                     raise GraphBindingConflict("graph digest does not match revision")
                 self._brief(epic, revision.brief_revision_id, revision.brief_digest)
-                self._validate_revision(revision, adoption=True)
+                self._validate_revision(revision)
                 result = await work.epic_items.adopt_revision(
                     epic_id, version=epic.version, revision=revision
                 )
@@ -163,7 +163,7 @@ class EpicItemsService:
             if revision.graph_digest != epic.accepted_graph_digest:
                 raise GraphBindingConflict("accepted graph digest does not match revision")
             self._brief(epic, revision.brief_revision_id, revision.brief_digest)
-            self._validate_revision(revision, adoption=True)
+            self._validate_revision(revision)
             result = AcceptedGraph(
                 epic_id=epic_id,
                 brief_revision_id=revision.brief_revision_id,
@@ -191,7 +191,7 @@ class EpicItemsService:
             raise BriefBindingConflict("graph brief binding does not match accepted brief")
 
     @staticmethod
-    def _validate_revision(revision: GraphRevisionRecord, *, adoption: bool) -> None:
+    def _validate_revision(revision: GraphRevisionRecord) -> None:
         items = [
             ItemInput.model_validate(
                 item.model_dump(mode="python", exclude={"graph_revision_id", "item_digest"})
@@ -203,7 +203,7 @@ class EpicItemsService:
         )
         if digest != revision.graph_digest or snapshots != revision.items:
             raise GraphBindingConflict("graph snapshot digest does not match")
-        validate_graph(items, adoption=adoption)
+        validate_graph(items, adoption=True)
 
     @staticmethod
     async def _reserve(
@@ -235,14 +235,10 @@ class EpicItemsService:
         status: int,
         result: EpicRecord | GraphRevisionRecord,
     ) -> None:
-        evidence: dict[str, object] = {
-            "epic_id": str(epic_id),
-            "epic_version": result.version
-            if isinstance(result, EpicRecord)
-            else result.epic_version,
-        }
+        evidence: dict[str, object] = {"epic_id": str(epic_id)}
         if isinstance(result, GraphRevisionRecord):
             evidence.update(
+                epic_version=result.epic_version,
                 graph_revision_id=str(result.graph_revision_id),
                 graph_digest=result.graph_digest,
                 brief_revision_id=str(result.brief_revision_id),
@@ -252,6 +248,7 @@ class EpicItemsService:
             resource_kind = "epic_graph_revision"
         else:
             evidence.update(
+                epic_version=result.version,
                 graph_revision_id=str(result.accepted_graph_revision_id),
                 graph_digest=result.accepted_graph_digest,
             )

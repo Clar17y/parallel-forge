@@ -241,20 +241,24 @@ def make_snapshot(
 
 
 def project_readiness(items: list[ItemSnapshot]) -> list[ItemReadiness]:
-    return [
-        ItemReadiness(
-            item_id=item.item_id,
-            status="deferred"
-            if item.disposition == "deferred"
-            else "blocked"
-            if item.dependency_item_ids
-            else "ready",
-            reason="Explicitly deferred"
-            if item.disposition == "deferred"
-            else "Pending verified prerequisite integration"
-            if item.dependency_item_ids
-            else "Structurally ready; execution eligibility is checked separately",
-            dependency_item_ids=item.dependency_item_ids,
+    readiness = []
+    for item in sorted(items, key=lambda item: (item.ordinal, str(item.item_id))):
+        status: Literal["ready", "blocked", "deferred"]
+        if item.disposition == "deferred":
+            status, reason = "deferred", "Explicitly deferred"
+        elif item.dependency_item_ids:
+            status, reason = "blocked", "Pending verified prerequisite integration"
+        else:
+            status, reason = (
+                "ready",
+                "Structurally ready; execution eligibility is checked separately",
+            )
+        readiness.append(
+            ItemReadiness(
+                item_id=item.item_id,
+                status=status,
+                reason=reason,
+                dependency_item_ids=item.dependency_item_ids,
+            )
         )
-        for item in sorted(items, key=lambda item: (item.ordinal, str(item.item_id)))
-    ]
+    return readiness
