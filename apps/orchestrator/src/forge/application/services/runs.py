@@ -17,10 +17,15 @@ from forge.application.adapters.git import LocalGitRepositoryInspector
 from forge.application.ports.audit import AuditRepository
 from forge.application.ports.commands import CommandRepository
 from forge.application.ports.mutations import ApiMutationRecord, MutationRepository
-from forge.application.ports.projects import ProjectRepository, RepositoryInspector
+from forge.application.ports.projects import (
+    ProjectRecord,
+    ProjectRepository,
+    RepositoryInspection,
+    RepositoryInspector,
+)
 from forge.application.ports.runs import RunRepository
 from forge.application.ports.subscription import SubscriptionRepository
-from forge.application.ports.tasks import TaskRepository
+from forge.application.ports.tasks import TaskRecord, TaskRepository
 from forge.application.ports.unit_of_work import EventRepository
 from forge.application.services.auth import AuthenticatedActor
 from forge.domain.command import CommandEnvelope
@@ -42,9 +47,7 @@ _MAX_IDEMPOTENCY_KEY_BYTES = 255
 _MAX_FEEDBACK_BYTES = 4096
 _TERMINAL_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED})
 _MERGE_SETTLEMENT_REFUSAL = "cancellation is unavailable while merge settlement is in progress"
-_STALE_POLICY_PREPARATION_RESUME_REFUSAL = (
-    "cannot resume preparation after project policy changed"
-)
+_STALE_POLICY_PREPARATION_RESUME_REFUSAL = "cannot resume preparation after project policy changed"
 
 
 class RunServiceError(RuntimeError):
@@ -225,7 +228,9 @@ class RunService:
             raise RunProfileSelectionError("subscription profile identity is incomplete")
         if profile_id is not None and not isinstance(profile_id, UUID):
             raise RunProfileSelectionError("subscription profile identity is invalid")
-        if profile_version is not None and (type(profile_version) is not int or profile_version < 1):
+        if profile_version is not None and (
+            type(profile_version) is not int or profile_version < 1
+        ):
             raise RunProfileSelectionError("subscription profile version is invalid")
         request: dict[str, object] = {"task_id": str(task_id)}
         if profile_id is not None:
@@ -247,88 +252,13 @@ class RunService:
 
             task = await work.tasks.get(task_id, for_update=True)
             project = await work.projects.get(task.project_id, for_update=True)
-            if project.policy is None or project.current_policy_version is None:
-                raise RunCreationError("project has no current policy")
-            inspection = self._repository_inspector.inspect(
-                repository_path=project.canonical_path,
-                data_root=self._data_root,
-                github_repository=project.github_repository,
-                default_branch=project.default_branch,
-            )
-            base_ref = f"refs/heads/{project.default_branch}"
-            if (
-                inspection.default_branch != project.default_branch
-                or inspection.base_ref != base_ref
-                or _BASE_SHA.fullmatch(inspection.base_sha) is None
-            ):
-                raise RunCreationError("default branch binding is invalid")
-            run = RunSnapshot(
-                id=uuid4(),
-                project_id=project.id,
-                task_id=task.id,
-                policy_version=project.current_policy_version,
-                base_ref=base_ref,
-                base_sha=inspection.base_sha,
-            )
-            await work.runs.create(run)
-            selection_source = "run_override" if profile_id is not None else "project_default"
-            profile: OperatorProfile | None
-            if profile_id is not None and profile_version is not None:
-                try:
-                    profile = await work.subscription.profile(profile_id, profile_version)
-                except (TypeError, ValueError):
-                    raise RunProfileSelectionError("requested subscription profile is invalid") from None
-                if profile is None or profile.profile_id != profile_id:
-                    raise RunProfileSelectionError("requested subscription profile identity is invalid")
-                if profile.version != profile_version:
-                    raise RunProfileSelectionError("requested subscription profile version is invalid")
-            else:
-                profile = await work.subscription.project_profile(project.id)
-            routing: dict[str, object] = {}
-            if profile is not None:
-                try:
-                    envelope = freeze_profile(
-                        profile,
-                        run_id=run.id,
-                        safety_policy_version=project.current_policy_version,
-                    )
-                except (TypeError, ValueError):
-                    raise RunProfileSelectionError("selected subscription profile is invalid") from None
-                await work.subscription.freeze_envelope(envelope)
-                routing = {
-                    "subscription_profile_id": str(envelope.profile_id),
-                    "subscription_profile_version": envelope.profile_version,
-                    "subscription_profile_selection_source": selection_source,
-                    "subscription_envelope_digest": canonical_digest(
-                        encode_subscription_record(envelope)
-                    ),
-                }
-            event_writer = _event_writer(work.events)
-            await event_writer.append(
-                RunEvent(
-                    run_id=run.id,
-                    run_version=0,
-                    event_type="run.created",
-                    actor_class="operator",
-                    actor_id=actor.actor_id,
-                    payload={
-                        "project_id": str(project.id),
-                        "task_id": str(task.id),
-                        "task_digest": task.task_digest,
-                        "policy_version": run.policy_version,
-                        "base_ref": run.base_ref,
-                        "base_sha": run.base_sha,
-                        **routing,
-                    },
-                )
-            )
-            await work.commands.enqueue(
-                run_id=run.id,
-                command_type="start_planning",
-                idempotency_key=f"{run.id}:start-planning",
-                payload={},
-                expected_run_version=0,
-                actor_id=actor.actor_id,
+            run = await self.create_in_transaction(
+                work=work,
+                actor=actor,
+                task=task,
+                project=project,
+                profile_id=profile_id,
+                profile_version=profile_version,
             )
             await work.mutations.complete(
                 receipt.id,
@@ -340,14 +270,128 @@ class RunService:
             await work.commit()
             return run
 
+    def inspect_base(self, project: ProjectRecord) -> RepositoryInspection:
+        """Inspect and validate the actual branch under the caller's project lock."""
+        if project.policy is None or project.current_policy_version is None:
+            raise RunCreationError("project has no current policy")
+        inspection = self._repository_inspector.inspect(
+            repository_path=project.canonical_path,
+            data_root=self._data_root,
+            github_repository=project.github_repository,
+            default_branch=project.default_branch,
+        )
+        self._validate_inspection(project, inspection)
+        return inspection
+
+    @staticmethod
+    def _validate_inspection(project: ProjectRecord, inspection: RepositoryInspection) -> None:
+        if (
+            inspection.default_branch != project.default_branch
+            or inspection.base_ref != f"refs/heads/{project.default_branch}"
+            or _BASE_SHA.fullmatch(inspection.base_sha) is None
+        ):
+            raise RunCreationError("default branch binding is invalid")
+
+    async def create_in_transaction(
+        self,
+        *,
+        work: RunUnitOfWork,
+        actor: RunActor,
+        task: TaskRecord,
+        project: ProjectRecord,
+        profile_id: UUID | None = None,
+        profile_version: int | None = None,
+        inspection: RepositoryInspection | None = None,
+    ) -> RunSnapshot:
+        """Create the ordinary run/event/queue inside an already-owned transaction."""
+        if (profile_id is None) != (profile_version is None):
+            raise RunProfileSelectionError("subscription profile identity is incomplete")
+        if inspection is None:
+            inspection = self.inspect_base(project)
+        else:
+            self._validate_inspection(project, inspection)
+        if task.project_id != project.id:
+            raise RunCreationError("task belongs to another project")
+        if project.current_policy_version is None:
+            raise RunCreationError("project has no current policy")
+        run = RunSnapshot(
+            id=uuid4(),
+            project_id=project.id,
+            task_id=task.id,
+            policy_version=project.current_policy_version,
+            base_ref=inspection.base_ref,
+            base_sha=inspection.base_sha,
+        )
+        await work.runs.create(run)
+        selection_source = "run_override" if profile_id is not None else "project_default"
+        profile: OperatorProfile | None
+        if profile_id is not None and profile_version is not None:
+            try:
+                profile = await work.subscription.profile(profile_id, profile_version)
+            except TypeError, ValueError:
+                raise RunProfileSelectionError(
+                    "requested subscription profile is invalid"
+                ) from None
+            if profile is None or profile.profile_id != profile_id:
+                raise RunProfileSelectionError("requested subscription profile identity is invalid")
+            if profile.version != profile_version:
+                raise RunProfileSelectionError("requested subscription profile version is invalid")
+        else:
+            profile = await work.subscription.project_profile(project.id)
+        routing: dict[str, object] = {}
+        if profile is not None:
+            try:
+                envelope = freeze_profile(
+                    profile,
+                    run_id=run.id,
+                    safety_policy_version=project.current_policy_version,
+                )
+            except TypeError, ValueError:
+                raise RunProfileSelectionError("selected subscription profile is invalid") from None
+            await work.subscription.freeze_envelope(envelope)
+            routing = {
+                "subscription_profile_id": str(envelope.profile_id),
+                "subscription_profile_version": envelope.profile_version,
+                "subscription_profile_selection_source": selection_source,
+                "subscription_envelope_digest": canonical_digest(
+                    encode_subscription_record(envelope)
+                ),
+            }
+        event_writer = _event_writer(work.events)
+        await event_writer.append(
+            RunEvent(
+                run_id=run.id,
+                run_version=0,
+                event_type="run.created",
+                actor_class="operator",
+                actor_id=actor.actor_id,
+                payload={
+                    "project_id": str(project.id),
+                    "task_id": str(task.id),
+                    "task_digest": task.task_digest,
+                    "policy_version": run.policy_version,
+                    "base_ref": run.base_ref,
+                    "base_sha": run.base_sha,
+                    **routing,
+                },
+            )
+        )
+        await work.commands.enqueue(
+            run_id=run.id,
+            command_type="start_planning",
+            idempotency_key=f"{run.id}:start-planning",
+            payload={},
+            expected_run_version=0,
+            actor_id=actor.actor_id,
+        )
+        return run
+
     async def profile_selection(self, run_id: UUID) -> dict[str, object] | None:
         """Read the frozen profile identity and immutable creation provenance."""
         selections = await self.profile_selections((run_id,))
         return selections.get(run_id)
 
-    async def profile_selections(
-        self, run_ids: tuple[UUID, ...]
-    ) -> dict[UUID, dict[str, object]]:
+    async def profile_selections(self, run_ids: tuple[UUID, ...]) -> dict[UUID, dict[str, object]]:
         """Read profile selections in one bounded repository query."""
         if not run_ids:
             return {}

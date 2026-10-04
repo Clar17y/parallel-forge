@@ -75,7 +75,13 @@ class PostgresEpicBriefRepository:
         return _epic(row)
 
     async def save_revision(
-        self, epic_id: UUID, *, version: int, content: BriefContent, content_digest: str
+        self,
+        epic_id: UUID,
+        *,
+        version: int,
+        content: BriefContent,
+        content_digest: str,
+        source_job_id: UUID | None = None,
     ) -> BriefRevisionRecord:
         row = await self._row(epic_id)
         if row.version != version:
@@ -97,6 +103,7 @@ class PostgresEpicBriefRepository:
             epic_version=row.version,
             content=content_json,
             content_digest=content_digest,
+            source_job_id=source_job_id,
         )
         self._session.add(revision)
         await self._session.flush()

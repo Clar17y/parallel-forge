@@ -7,8 +7,33 @@ from forge.persistence.models.auth import ApprovalChallenge, OperatorSession
 from forge.persistence.models.base import Base
 from forge.persistence.models.capability_evidence import CapabilityEvidence
 from forge.persistence.models.capability_probe_diagnostics import CapabilityProbeDiagnosticRecord
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormAttemptRow as BrainstormAttemptRow,
+)
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormAuditRow as BrainstormAuditRow,
+)
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormBudgetLedger as BrainstormBudgetLedger,
+)
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormConversation as BrainstormConversation,
+)
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormJobRow as BrainstormJobRow,
+)
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormQuotaAdmission as BrainstormQuotaAdmission,
+)
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormReceiptRow as BrainstormReceiptRow,
+)
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormTurnRow as BrainstormTurnRow,
+)
 from forge.persistence.models.epic_brief import Epic, EpicBriefRevision
 from forge.persistence.models.epic_items import EpicGraphRevision
+from forge.persistence.models.epic_run_bridge import EpicExecution, EpicItemAttempt
 from forge.persistence.models.evaluation import EvaluationCase, EvaluationSuite
 from forge.persistence.models.execution import (
     AgentExecution,
@@ -109,7 +134,9 @@ __all__ = [
     "CapabilityProbeDiagnosticRecord",
     "Epic",
     "EpicBriefRevision",
+    "EpicExecution",
     "EpicGraphRevision",
+    "EpicItemAttempt",
     "EvaluationCase",
     "EvaluationSuite",
     "EvidenceSet",

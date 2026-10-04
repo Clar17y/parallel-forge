@@ -11,6 +11,7 @@ from forge.application.ports.commands import CommandRepository
 from forge.application.ports.controller_steps import ControllerStepRepository
 from forge.application.ports.epic_brief import EpicBriefRepository
 from forge.application.ports.epic_items import EpicItemsRepository
+from forge.application.ports.epic_run_bridge import EpicRunBridgeRepository
 from forge.application.ports.evidence import EvidenceRepository
 from forge.application.ports.executions import ExecutionRepository
 from forge.application.ports.jev import JevRepository
@@ -50,6 +51,7 @@ class UnitOfWork(Protocol):
     projects: ProjectRepository
     epics: EpicBriefRepository
     epic_items: EpicItemsRepository
+    epic_run_bridge: EpicRunBridgeRepository
     events: EventRepository
     tool_calls: ToolCallRepository
     operations: OperationRepository

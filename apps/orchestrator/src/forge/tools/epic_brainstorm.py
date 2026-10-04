@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from itertools import islice
@@ -121,14 +122,21 @@ class BrainstormReadOnlyTools:
         for path in paths:
             _safe_metadata(path)
         await self._check()
-        return self._reader.excludes_paths(paths)
+        return await asyncio.to_thread(self._reader.excludes_paths, paths)
 
     async def list_files(self, path: str = ".") -> Sequence[RepositoryEntry]:
         _safe_path(path)
         await self._check()
-        entries = self._reader.list_files(path)
+        entries = await asyncio.to_thread(
+            lambda: tuple(
+                islice(
+                    (item for item in self._reader.list_files(path) if self._allowed(item.path)),
+                    self._max_items,
+                )
+            )
+        )
         selected: list[RepositoryEntry] = []
-        for item in islice((item for item in entries if self._allowed(item.path)), self._max_items):
+        for item in entries:
             _safe_metadata(item.kind)
             _safe_count(item.byte_count)
             selected.append(item)
@@ -137,7 +145,7 @@ class BrainstormReadOnlyTools:
     async def read_file(self, path: str) -> FileRead:
         _safe_path(path)
         await self._check()
-        value = self._reader.read_file(path)
+        value = await asyncio.to_thread(self._reader.read_file, path)
         _safe_path(value.path)
         _safe_count(value.original_byte_count)
         if type(value.truncated) is not bool:
@@ -157,7 +165,8 @@ class BrainstormReadOnlyTools:
         await self._check()
         results: list[SearchMatch] = []
         protected_by_path: dict[str, tuple[set[int], list[str], bool]] = {}
-        for item in self._reader.search(literal, path):
+        iterator = await asyncio.to_thread(lambda: iter(self._reader.search(literal, path)))
+        while (item := await asyncio.to_thread(next, iterator, None)) is not None:
             if not self._allowed(item.path):
                 continue
             _safe_count(item.line_number)
@@ -165,7 +174,7 @@ class BrainstormReadOnlyTools:
             if not isinstance(item.line_text, str):
                 raise RepositoryAccessDenied("repository metadata is unavailable to brainstorming")
             if item.path not in protected_by_path:
-                source = self._reader.read_file(item.path)
+                source = await asyncio.to_thread(self._reader.read_file, item.path)
                 protected: set[int] = set()
                 active_kinds: list[str] = []
                 putty_private = False
@@ -209,9 +218,19 @@ class BrainstormReadOnlyTools:
         _safe_path(target_path)
         await self._check()
         results: list[InstructionDocument] = []
-        for item in self._reader.read_instructions(target_path):
-            if not self._allowed(item.path):
-                continue
+        documents = await asyncio.to_thread(
+            lambda: tuple(
+                islice(
+                    (
+                        item
+                        for item in self._reader.read_instructions(target_path)
+                        if self._allowed(item.path)
+                    ),
+                    self._max_items,
+                )
+            )
+        )
+        for item in documents:
             _safe_count(item.original_byte_count)
             if type(item.truncated) is not bool:
                 raise RepositoryAccessDenied("repository metadata is unavailable to brainstorming")

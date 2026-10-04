@@ -366,6 +366,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/epics/{epic_id}/brainstorm-conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Threads */
+        get: operations["threads_api_epics__epic_id__brainstorm_conversations_get"];
+        put?: never;
+        /** Create */
+        post: operations["create_api_epics__epic_id__brainstorm_conversations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brainstorm-conversations/{conversation_id}/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit */
+        post: operations["submit_api_epics__epic_id__brainstorm_conversations__conversation_id__jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brainstorm-conversations/{conversation_id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Turns */
+        get: operations["turns_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_get"];
+        put?: never;
+        /** Append */
+        post: operations["append_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Observe */
+        get: operations["observe_api_epics__epic_id__brainstorm_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adopt */
+        post: operations["adopt_api_epics__epic_id__brainstorm_jobs__job_id__adopt_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel */
+        post: operations["cancel_api_epics__epic_id__brainstorm_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry */
+        post: operations["retry_api_epics__epic_id__brainstorm_jobs__job_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/epics/{epic_id}/brief-adoptions": {
         parameters: {
             query?: never;
@@ -462,6 +583,41 @@ export interface paths {
         };
         /** Get Graph Revision */
         get: operations["get_graph_revision_api_epics__epic_id__graph_revisions__graph_revision_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/work-item-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Attempts */
+        get: operations["list_attempts_api_epics__epic_id__work_item_runs_get"];
+        put?: never;
+        /** Launch */
+        post: operations["launch_api_epics__epic_id__work_item_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/work-item-runs/{attempt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Attempt */
+        get: operations["get_attempt_api_epics__epic_id__work_item_runs__attempt_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1600,6 +1756,76 @@ export interface components {
          * @enum {string}
          */
         AuthMode: "subscription" | "api_key";
+        /** AuthoringOutcome */
+        AuthoringOutcome: {
+            /** Adopted Revision Id */
+            adopted_revision_id?: string | null;
+            cumulative_usage?: components["schemas"]["BrainstormAmounts"];
+            /** Currency */
+            currency?: string | null;
+            failure?: components["schemas"]["BrainstormFailure"] | null;
+            held_reasons?: components["schemas"]["BrainstormHeldReasons"];
+            held_reservations?: components["schemas"]["BrainstormAmounts"];
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Job Version */
+            job_version: number;
+            /**
+             * Process Settled
+             * @default false
+             */
+            process_settled: boolean;
+            proposal?: components["schemas"]["BrainstormProposal"] | null;
+            /** Proposal Digest */
+            proposal_digest?: string | null;
+            reservation?: components["schemas"]["BrainstormReservation"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            state: components["schemas"]["BrainstormState"];
+            /**
+             * Uncertain Attempts
+             * @default 0
+             */
+            uncertain_attempts: number;
+            /**
+             * Unknown Usage Fields
+             * @default []
+             */
+            unknown_usage_fields: components["schemas"]["BrainstormDimension"][];
+            usage?: components["schemas"]["BrainstormMeasuredUsage"] | null;
+            /** Usage Known */
+            usage_known?: boolean | null;
+        };
+        /** AuthoringReceipt */
+        AuthoringReceipt: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Job Version */
+            job_version: number;
+            /** Replay Key */
+            replay_key: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "running" | "quota_wait" | "capacity_wait" | "cancel_requested" | "cancelled" | "proposed" | "failed" | "reconciling";
+        };
         /** AvailableCommand */
         AvailableCommand: {
             /** Evidence Digest */
@@ -1640,6 +1866,240 @@ export interface components {
             expires_at: string;
             /** Idle Expires At */
             idle_expires_at: string;
+        };
+        /** BrainstormAmounts */
+        BrainstormAmounts: {
+            /**
+             * Duration Ms
+             * @default 0
+             */
+            duration_ms: number;
+            /**
+             * Estimated Api Cost Minor
+             * @default 0
+             */
+            estimated_api_cost_minor: number;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Tool Call Count
+             * @default 0
+             */
+            tool_call_count: number;
+        };
+        /** @enum {string} */
+        BrainstormDimension: "duration_ms" | "tool_call_count" | "input_tokens" | "output_tokens" | "estimated_api_cost_minor";
+        /** BrainstormEvidence */
+        BrainstormEvidence: {
+            /** Content Digest */
+            content_digest: string;
+            /** Excerpt */
+            excerpt: string;
+            /** Path */
+            path: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** @enum {string} */
+        BrainstormFailure: "cancelled" | "lost_result" | "process_unsettled" | "budget_exhausted" | "quota_exhausted" | "unavailable" | "timeout" | "invalid_output" | "interrupted" | "input_conflict";
+        /** BrainstormHeldReasons */
+        BrainstormHeldReasons: {
+            /** Duration Ms */
+            duration_ms?: "unsettled_or_unknown" | null;
+            /** Estimated Api Cost Minor */
+            estimated_api_cost_minor?: "unsettled_or_unknown" | null;
+            /** Input Tokens */
+            input_tokens?: "unsettled_or_unknown" | null;
+            /** Output Tokens */
+            output_tokens?: "unsettled_or_unknown" | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Tool Call Count */
+            tool_call_count?: "unsettled_or_unknown" | null;
+        };
+        /** BrainstormMeasuredUsage */
+        BrainstormMeasuredUsage: {
+            /**
+             * Duration Lower Bound Ms
+             * @default 0
+             */
+            duration_lower_bound_ms: number;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Estimated Api Cost Minor */
+            estimated_api_cost_minor?: number | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Tool Call Count */
+            tool_call_count: number;
+            /**
+             * Unknown Fields
+             * @default []
+             */
+            unknown_fields: components["schemas"]["BrainstormDimension"][];
+        };
+        /** BrainstormProposal */
+        BrainstormProposal: {
+            /**
+             * Assumptions
+             * @default []
+             */
+            assumptions: string[];
+            /**
+             * Decisions
+             * @default []
+             */
+            decisions: string[];
+            /**
+             * Evidence
+             * @default []
+             */
+            evidence: components["schemas"]["BrainstormEvidence"][];
+            /**
+             * Exclusions
+             * @default []
+             */
+            exclusions: string[];
+            /**
+             * Open Questions
+             * @default []
+             */
+            open_questions: string[];
+            /**
+             * Outcomes
+             * @default []
+             */
+            outcomes: string[];
+            /** Problem */
+            problem: string;
+            /** Requirement Criteria */
+            requirement_criteria?: {
+                [key: string]: string[];
+            };
+            /**
+             * Requirements
+             * @default []
+             */
+            requirements: string[];
+            /**
+             * Resolved Turn Ids
+             * @default []
+             */
+            resolved_turn_ids: string[];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Scope
+             * @default []
+             */
+            scope: string[];
+            /**
+             * Turn Id
+             * Format: uuid
+             */
+            turn_id: string;
+        };
+        /** BrainstormReservation */
+        BrainstormReservation: {
+            /** Duration Ms */
+            duration_ms: number;
+            /** Estimated Api Cost Minor */
+            estimated_api_cost_minor?: number | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Tool Call Count */
+            tool_call_count: number;
+        };
+        /** @enum {string} */
+        BrainstormState: "queued" | "running" | "quota_wait" | "capacity_wait" | "cancel_requested" | "cancelled" | "proposed" | "failed" | "reconciling";
+        /** BrainstormThread */
+        BrainstormThread: {
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /** Conversation Version */
+            conversation_version: number;
+            /**
+             * Job Ids
+             * @default []
+             */
+            job_ids: string[];
+        };
+        /** BrainstormTurn */
+        BrainstormTurn: {
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /**
+             * Pending
+             * @default false
+             */
+            pending: boolean;
+            proposal?: components["schemas"]["BrainstormProposal"] | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "operator" | "assistant";
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Text */
+            text: string;
+            /**
+             * Turn Id
+             * Format: uuid
+             */
+            turn_id?: string;
         };
         /**
          * BriefAdoptionRequest
@@ -1897,6 +2357,22 @@ export interface components {
             /** Timeout Seconds */
             timeout_seconds: number;
         };
+        /** ConversationCreate */
+        ConversationCreate: {
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Text */
+            text: string;
+        };
         /** CsrfResponse */
         CsrfResponse: {
             /** Csrf Token */
@@ -1938,6 +2414,109 @@ export interface components {
              */
             injected_environment_key: string;
         };
+        /** DependencyEvidence */
+        DependencyEvidence: {
+            /** Integrated Sha */
+            integrated_sha?: string | null;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Predecessor Run Id */
+            predecessor_run_id?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "verified" | "unknown" | "unverified";
+        };
+        /** EpicAttemptResponse */
+        EpicAttemptResponse: {
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Actual Epic Version */
+            actual_epic_version: number;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /** Base Ref */
+            base_ref: string;
+            /** Base Sha */
+            base_sha: string;
+            /** Blocker Codes */
+            blocker_codes: string[];
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /** Context Digest */
+            context_digest: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Dependency Evidence */
+            dependency_evidence: components["schemas"]["DependencyEvidence"][];
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /** Graph Digest */
+            graph_digest: string;
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+            /** Item Digest */
+            item_digest: string;
+            /**
+             * Item Disposition
+             * @enum {string}
+             */
+            item_disposition: "required" | "deferred";
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Override Note */
+            override_note: string | null;
+            /** Owner Override */
+            owner_override: boolean;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Task Digest */
+            task_digest: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+        };
         /**
          * EpicCreateRequest
          * @description Closed epic creation request body.
@@ -1974,6 +2553,49 @@ export interface components {
             schema_version: 1;
             /** Title */
             title: string;
+        };
+        /** EpicLaunchRequest */
+        EpicLaunchRequest: {
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /** Execution Id */
+            execution_id?: string | null;
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /** Graph Digest */
+            graph_digest: string;
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Override Note */
+            override_note?: string | null;
+            /**
+             * Owner Override
+             * @default false
+             */
+            owner_override: boolean;
+            /** Profile Id */
+            profile_id?: string | null;
+            /** Profile Version */
+            profile_version?: number | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
         };
         /**
          * EpicResponse
@@ -2459,6 +3081,45 @@ export interface components {
             /** Unknown */
             unknown: number;
         };
+        /** JobControl */
+        JobControl: {
+            /** Expected Job Version */
+            expected_job_version: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** JobSubmit */
+        JobSubmit: {
+            /** Expected Conversation Version */
+            expected_conversation_version: number;
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Prompt Turn Id
+             * Format: uuid
+             */
+            prompt_turn_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /** ListPage[AgentItem] */
         ListPage_AgentItem_: {
             /** Items */
@@ -2897,6 +3558,26 @@ export interface components {
             scope: "current_configuration";
             /** Version */
             version: string;
+        };
+        /** ProposalAdopt */
+        ProposalAdopt: {
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /** Expected Job Version */
+            expected_job_version: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Proposal Digest */
+            proposal_digest: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
         };
         /** ProtectionSnapshotResponse */
         ProtectionSnapshotResponse: {
@@ -4306,6 +4987,29 @@ export interface components {
             /** Untrusted External Content */
             untrusted_external_content: boolean;
         };
+        /** TurnAppend */
+        TurnAppend: {
+            /** Expected Conversation Version */
+            expected_conversation_version: number;
+            /**
+             * Pending
+             * @default false
+             */
+            pending: boolean;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Text */
+            text: string;
+        };
         /** UsageItem */
         UsageItem: {
             /** Currency */
@@ -5052,6 +5756,340 @@ export interface operations {
             };
         };
     };
+    threads_api_epics__epic_id__brainstorm_conversations_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrainstormThread"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_api_epics__epic_id__brainstorm_conversations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string | number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_api_epics__epic_id__brainstorm_conversations__conversation_id__jobs_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthoringReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    turns_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrainstormTurn"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    append_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnAppend"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    observe_api_epics__epic_id__brainstorm_jobs__job_id__get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthoringOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adopt_api_epics__epic_id__brainstorm_jobs__job_id__adopt_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposalAdopt"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_api_epics__epic_id__brainstorm_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobControl"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthoringReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_api_epics__epic_id__brainstorm_jobs__job_id__retry_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobControl"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthoringReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     adopt_brief_revision_api_epics__epic_id__brief_adoptions_post: {
         parameters: {
             query?: never;
@@ -5313,6 +6351,106 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GraphRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_attempts_api_epics__epic_id__work_item_runs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicAttemptResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    launch_api_epics__epic_id__work_item_runs_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicLaunchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicAttemptResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_attempt_api_epics__epic_id__work_item_runs__attempt_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicAttemptResponse"];
                 };
             };
             /** @description Validation Error */

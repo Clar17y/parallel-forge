@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
 from forge.application.ports.commands import CommandLane, CommandRecoveryRequired
+from forge.application.ports.epic_brainstorm import BrainstormGateway
 from forge.application.ports.operations import OperationAdapter
+from forge.application.ports.repository import RepositoryReader
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.recovery import RecoveryError, RecoveryService
 from forge.application.services.subscription_decision_recovery import (
@@ -28,6 +30,7 @@ from forge.application.services.subscription_effect_recovery import Subscription
 from forge.application.services.terminal_recovery import TerminalMergeRecovery
 from forge.application.services.worker import CommandHandler, Worker
 from forge.artifacts.filesystem import FilesystemArtifactStore
+from forge.domain.epic_brainstorm import AuthoringJobSnapshot
 from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription_installations import SubscriptionInstallationSpec
 from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPoolKey
@@ -46,6 +49,7 @@ from forge.persistence.repositories.subscription_quota import PostgresSubscripti
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.settings import Settings
 from forge.worker.composition import WorkerCompositionError, WorkerHandlers, compose_worker_handlers
+from forge.worker.epic_brainstorm import EpicBrainstormWorker, brainstorm_worker_owner
 from forge.worker.startup import run_startup_recovery
 from forge.worker.startup_intervention import StartupInterventionRecovery
 from forge.worker.subscription_installations import (
@@ -69,10 +73,12 @@ async def _publish_recovery_worker(
     try:
         async with asyncio.timeout(_RECOVERY_PERSIST_SECONDS), factory() as session:
             observed_at = datetime.now(UTC)
-            await session.execute(delete(SubscriptionRecoveryWorker).where(
-                SubscriptionRecoveryWorker.observed_at
-                < observed_at - timedelta(seconds=RECOVERY_WORKER_FRESHNESS_SECONDS)
-            ))
+            await session.execute(
+                delete(SubscriptionRecoveryWorker).where(
+                    SubscriptionRecoveryWorker.observed_at
+                    < observed_at - timedelta(seconds=RECOVERY_WORKER_FRESHNESS_SECONDS)
+                )
+            )
             statement = insert(SubscriptionRecoveryWorker).values(
                 worker_id=worker_id, contract_version=1, observed_at=observed_at
             )
@@ -108,6 +114,11 @@ async def run_worker(
     poll_interval: float = 1.0,
     decision_retry_interval: float = 5.0,
     worker_id: str | None = None,
+    brainstorm_gateway_factory: Callable[[AuthoringJobSnapshot], BrainstormGateway] | None = None,
+    brainstorm_reader_factory: Callable[
+        [AuthoringJobSnapshot], RepositoryReader | Awaitable[RepositoryReader]
+    ]
+    | None = None,
 ) -> None:
     """Build PostgreSQL dependencies, recover intents, then poll durably.
 
@@ -121,6 +132,8 @@ async def run_worker(
     if poll_interval <= 0 or poll_interval > 1:
         raise ValueError("worker idle poll interval must be between zero and one second")
     _validate_decision_retry_interval(decision_retry_interval)
+    if (brainstorm_gateway_factory is None) != (brainstorm_reader_factory is None):
+        raise ValueError("brainstorm gateway and reader must be registered together")
     supplied_subscription_adapters = (
         None if subscription_adapters is None else tuple(subscription_adapters)
     )
@@ -130,6 +143,20 @@ async def run_worker(
     stop_event = stop_event or asyncio.Event()
     engine = create_engine(settings.database_url)
     factory = create_session_factory(engine)
+    resolved_brainstorm_gateway_factory = brainstorm_gateway_factory
+    resolved_brainstorm_reader_factory = brainstorm_reader_factory
+    if (
+        handlers is None
+        and resolved_brainstorm_gateway_factory is None
+        and resolved_brainstorm_reader_factory is None
+    ):
+        from forge.worker.epic_brainstorm_composition import (
+            make_brainstorm_gateway_factory,
+            make_brainstorm_reader_factory,
+        )
+
+        resolved_brainstorm_gateway_factory = make_brainstorm_gateway_factory(settings)
+        resolved_brainstorm_reader_factory = make_brainstorm_reader_factory(factory)
     worker: Worker | None = None
     control_worker: Worker | None = None
     owned_handlers: WorkerHandlers | None = None
@@ -300,6 +327,20 @@ async def run_worker(
                 polls.append(
                     asyncio.create_task(_poll_invocations(invocation, stop_event, poll_interval))
                 )
+        if (
+            resolved_brainstorm_gateway_factory is not None
+            and resolved_brainstorm_reader_factory is not None
+        ):
+            brainstorm = EpicBrainstormWorker(
+                factory,
+                owner=brainstorm_worker_owner(base_worker_id),
+                gateway_factory=resolved_brainstorm_gateway_factory,
+                reader_factory=resolved_brainstorm_reader_factory,
+                quota_policy=getattr(settings, "subscription_quota_policy", None),
+            )
+            polls.append(
+                asyncio.create_task(_poll_brainstorms(brainstorm, stop_event, poll_interval))
+            )
         await asyncio.gather(*polls)
     finally:
 
@@ -363,6 +404,22 @@ def run() -> None:
 async def _poll(worker: Worker, stop_event: asyncio.Event, poll_interval: float) -> None:
     while not stop_event.is_set():
         if await worker.tick() is None:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+            except TimeoutError:
+                pass
+
+
+async def _poll_brainstorms(
+    worker: EpicBrainstormWorker, stop_event: asyncio.Event, poll_interval: float
+) -> None:
+    while not stop_event.is_set():
+        try:
+            result = await worker.run_once(stop_event=stop_event)
+        except Exception:  # noqa: BLE001 - isolate one durable job; never log provider text
+            logger.warning("Epic brainstorm polling failed; retrying durable work")
+            result = None
+        if result is None:
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
             except TimeoutError:

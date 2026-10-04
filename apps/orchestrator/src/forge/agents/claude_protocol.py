@@ -29,6 +29,7 @@ class ClaudeStreamCodec:
     turn_id: str
     handler: ToolHandler
     tools: frozenset[str]
+    authoring_schemas: Mapping[str, Mapping[str, object]] | None = None
     _requests: set[str] = field(default_factory=set, init=False)
     _calls: dict[str, tuple[str, str, str | None]] = field(default_factory=dict, init=False)
     _tool_use_ids: dict[str, str] = field(default_factory=dict, init=False)
@@ -289,7 +290,11 @@ class ClaudeStreamCodec:
             {
                 "name": name,
                 "description": f"Forge controlled {name}",
-                "inputSchema": tool_input_schema(ToolName(name)),
+                "inputSchema": (
+                    self.authoring_schemas[name]
+                    if self.authoring_schemas is not None
+                    else tool_input_schema(ToolName(name))
+                ),
             }
             for name in sorted(self.tools)
         ]

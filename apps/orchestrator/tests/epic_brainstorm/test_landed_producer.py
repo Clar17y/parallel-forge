@@ -5,6 +5,7 @@ import inspect
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import delete, text
 from sqlalchemy import inspect as inspect_database
 
 pytest.importorskip("forge.domain.epic_brief")
@@ -125,6 +126,11 @@ async def test_landed_brief_revision_preserves_ids_criteria_and_pending_choices(
             )
         fresh = await PostgresEpicBriefRepository(session).get(epic_id)
         assert fresh.draft.open_questions == ["Human choice pending"]
+    # The shared disposable fixture downgrades after this test. Remove only the
+    # disposable test data; immutable revision triggers reject ordinary DELETE.
+    async with session_factory() as session, session.begin():
+        await session.execute(text("TRUNCATE TABLE epic_brief_revisions, epics CASCADE"))
+        await session.execute(delete(Project).where(Project.id == project_id))
     async with engine.begin() as connection:
         await connection.run_sync(lambda sync: Base.metadata.drop_all(sync, tables=created_tables))
 

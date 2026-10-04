@@ -23,6 +23,7 @@ from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.controller_steps import PostgresControllerStepRepository
 from forge.persistence.repositories.epic_brief import PostgresEpicBriefRepository
 from forge.persistence.repositories.epic_items import PostgresEpicItemsRepository
+from forge.persistence.repositories.epic_run_bridge import PostgresEpicRunBridgeRepository
 from forge.persistence.repositories.events import PostgresEventRepository
 from forge.persistence.repositories.evidence import PostgresEvidenceRepository
 from forge.persistence.repositories.executions import PostgresExecutionRepository
@@ -84,6 +85,7 @@ class PostgresUnitOfWork:
         self.projects: PostgresProjectRepository
         self.epics: PostgresEpicBriefRepository
         self.epic_items: PostgresEpicItemsRepository
+        self.epic_run_bridge: PostgresEpicRunBridgeRepository
         self.tasks: PostgresTaskRepository
         self.mutations: PostgresMutationRepository
         self.audit: PostgresAuditRepository
@@ -125,6 +127,7 @@ class PostgresUnitOfWork:
         self.projects = PostgresProjectRepository(self._session)
         self.epics = PostgresEpicBriefRepository(self._session)
         self.epic_items = PostgresEpicItemsRepository(self._session)
+        self.epic_run_bridge = PostgresEpicRunBridgeRepository(self._session)
         self.tasks = PostgresTaskRepository(self._session)
         self.releases = PostgresReleaseRepository(self._session)
         self.mutations = PostgresMutationRepository(self._session)

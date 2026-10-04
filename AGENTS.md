@@ -33,11 +33,38 @@ sources instead of copying a stale routing policy into this repository.
 - Preserve `.llm-output/` contracts, logs and partial edits locally. One owner
   monitors each delegated process or CI run using the installed backoff policy.
   Never reset or clean another writer's work.
+- For substantial stateful changes, record critical invariants, transitions and
+  combined boundary cases in the existing task contract before implementation.
+  Keep a compact coverage map with planned checks, concrete candidate-specific
+  results and explicit unproved cases. The primary checks the evidence before
+  accepting the outcome; a populated map does not establish completeness.
+- Consolidate related defects into one repair batch for the owning component.
+  After a second related defect during implementation, validation or review,
+  reassess remaining paths before another patch. For complex repairs, checkpoint
+  a stable candidate after focused tests and the selected self-review, then run
+  required broad checks on that final candidate and reuse unchanged evidence.
 
 This framework routes the development assistants building Forge. It does not
 configure the Forge application's runtime roles or grant them unrestricted
 shell, provider credentials, CLI bypass flags or release authority. Subscription
 runtime adapters must preserve the runtime boundaries below.
+
+## Owner overrides in every plan
+
+- Workflow controls are soft defaults. Every planned approval, readiness,
+  sequencing, deferral, budget, retry or review restriction must include an
+  explicit authenticated-owner override or an owner-editable setting.
+- The owner's action authorizes the concrete requested operation. Do not add a
+  second permission request, compulsory justification or separate proof workflow
+  merely to override a recommendation. Notes are optional.
+- Record the owner, action, actual warnings and affected snapshot. Preserve real
+  usage and evidence; an override never turns an unrun check into a passing
+  check, unknown spending into zero, or an unverified dependency into verified
+  integration. Show the override in the operation's normal projection.
+- Keep inputs and durable identities accurate. Resolve stale edits or interrupted
+  effects with an explicit owner recovery action that preserves existing work.
+- Apply this policy to all new plans and to controls changed by the current
+  feature. Include default and owner-override behavior in its focused tests.
 
 ## Runtime and boundaries
 
