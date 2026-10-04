@@ -1,0 +1,61 @@
+diff --git a/apps/orchestrator/migrations/versions/20261004_0033_epic_brainstorm.py b/apps/orchestrator/migrations/versions/20261004_0033_epic_brainstorm.py
+new file mode 100644
+--- /dev/null
++++ b/apps/orchestrator/migrations/versions/20261004_0033_epic_brainstorm.py
+@@ -0,0 +1,56 @@
++"""Add durable epic brainstorming after #69 and #70.
++
++Revision ID: 20261004_0033
++Revises: 20261003_0032
++"""
++
++import sqlalchemy as sa
++from alembic import op
++
++revision = "20261004_0033"
++down_revision = "20261003_0032"
++branch_labels = None
++depends_on = None
++
++_DDL = (
++    "CREATE TABLE epic_brainstorm_audit (\n\tid UUID NOT NULL, \n\tepic_id UUID NOT NULL, \n\tactor_id UUID, \n\taction VARCHAR(64) NOT NULL, \n\tsubject_id UUID NOT NULL, \n\tdetail JSONB NOT NULL, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_epic_brainstorm_audit PRIMARY KEY (id)\n);",
++    "CREATE TABLE epic_brainstorm_budget_ledgers (\n\tepic_id UUID NOT NULL, \n\tproject_id UUID NOT NULL, \n\tceiling JSONB NOT NULL, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_epic_brainstorm_budget_ledgers PRIMARY KEY (epic_id)\n);",
++    "CREATE TABLE epic_brainstorm_receipts (\n\tid UUID NOT NULL, \n\tepic_id UUID NOT NULL, \n\tkey VARCHAR(255) NOT NULL, \n\trequest_digest VARCHAR(64) NOT NULL, \n\tresponse JSONB NOT NULL, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_epic_brainstorm_receipts PRIMARY KEY (id), \n\tCONSTRAINT uq_epic_brainstorm_receipts_epic_id UNIQUE (epic_id, key)\n);",
++    "CREATE TABLE epic_brainstorm_conversations (\n\tid UUID NOT NULL, \n\tepic_id UUID NOT NULL, \n\tproject_id UUID NOT NULL, \n\tversion INTEGER NOT NULL, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_epic_brainstorm_conversations PRIMARY KEY (id), \n\tCONSTRAINT uq_epic_brainstorm_conversations_id UNIQUE (id, epic_id, project_id), \n\tCONSTRAINT fk_epic_brainstorm_conversations_project_id_projects FOREIGN KEY(project_id) REFERENCES projects (id)\n);",
++    "CREATE TABLE epic_brainstorm_jobs (\n\tid UUID NOT NULL, \n\tepic_id UUID NOT NULL, \n\tproject_id UUID NOT NULL, \n\tconversation_id UUID NOT NULL, \n\tversion INTEGER NOT NULL, \n\tstate VARCHAR(32) NOT NULL, \n\tsnapshot JSONB NOT NULL, \n\tproposal JSONB, \n\tproposal_digest VARCHAR(64), \n\tfailure VARCHAR(64), \n\tcurrent_attempt_id UUID, \n\tadopted_revision_id UUID, \n\tnext_eligible_at TIMESTAMP WITH TIME ZONE, \n\twait_pool_revision INTEGER, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_epic_brainstorm_jobs PRIMARY KEY (id), \n\tCONSTRAINT fk_epic_brainstorm_jobs_conversation_id_epic_brainstorm_d33e FOREIGN KEY(conversation_id, epic_id, project_id) REFERENCES epic_brainstorm_conversations (id, epic_id, project_id)\n);",
++    "CREATE INDEX ix_epic_brainstorm_jobs_queued ON epic_brainstorm_jobs (state, created_at);",
++    "CREATE TABLE epic_brainstorm_turns (\n\tid UUID NOT NULL, \n\tconversation_id UUID NOT NULL, \n\tordinal INTEGER NOT NULL, \n\trole VARCHAR(16) NOT NULL, \n\ttext TEXT NOT NULL, \n\tpending BOOLEAN NOT NULL, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_epic_brainstorm_turns PRIMARY KEY (id), \n\tCONSTRAINT uq_epic_brainstorm_turns_conversation_id UNIQUE (conversation_id, ordinal), \n\tCONSTRAINT fk_epic_brainstorm_turns_conversation_id_epic_brainstor_be28 FOREIGN KEY(conversation_id) REFERENCES epic_brainstorm_conversations (id)\n);",
++    "CREATE TABLE epic_brainstorm_attempts (\n\tid UUID NOT NULL, \n\tjob_id UUID NOT NULL, \n\tnumber INTEGER NOT NULL, \n\tstate VARCHAR(32) NOT NULL, \n\towner VARCHAR(128) NOT NULL, \n\tfence UUID NOT NULL, \n\tlease_expires_at TIMESTAMP WITH TIME ZONE NOT NULL, \n\tlaunch_intent BOOLEAN NOT NULL, \n\tlaunch_id VARCHAR(64), \n\torigin_host VARCHAR(64), \n\tprocess_started BOOLEAN NOT NULL, \n\tprocess_pid INTEGER, \n\tprocess_identity VARCHAR(256), \n\tprocess_settled BOOLEAN NOT NULL, \n\tterminal_proof JSONB, \n\tusage JSONB, \n\treservation JSONB NOT NULL, \n\tusage_known BOOLEAN, \n\ttool_calls_used INTEGER NOT NULL, \n\tfailure VARCHAR(64), \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_epic_brainstorm_attempts PRIMARY KEY (id), \n\tCONSTRAINT uq_epic_brainstorm_attempts_job_id UNIQUE (job_id, number), \n\tCONSTRAINT fk_epic_brainstorm_attempts_job_id_epic_brainstorm_jobs FOREIGN KEY(job_id) REFERENCES epic_brainstorm_jobs (id)\n);",
++    "CREATE TABLE epic_brainstorm_quota_admissions (\n\tattempt_id UUID NOT NULL, \n\tprovider VARCHAR(96) NOT NULL, \n\taccount VARCHAR(96) NOT NULL, \n\tpool VARCHAR(96) NOT NULL, \n\trevision INTEGER NOT NULL, \n\tprobe BOOLEAN NOT NULL, \n\tfinished_at TIMESTAMP WITH TIME ZONE, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_epic_brainstorm_quota_admissions PRIMARY KEY (attempt_id), \n\tCONSTRAINT fk_epic_brainstorm_quota_admissions_attempt_id_epic_bra_aecc FOREIGN KEY(attempt_id) REFERENCES epic_brainstorm_attempts (id)\n);",
++)
++
++_TABLES = (
++    "epic_brainstorm_audit",
++    "epic_brainstorm_budget_ledgers",
++    "epic_brainstorm_receipts",
++    "epic_brainstorm_conversations",
++    "epic_brainstorm_jobs",
++    "epic_brainstorm_turns",
++    "epic_brainstorm_attempts",
++    "epic_brainstorm_quota_admissions",
++)
++
++
++def upgrade() -> None:
++    for statement in _DDL:
++        op.execute(statement)
++
++
++def downgrade() -> None:
++    bind = op.get_bind()
++    for table in _TABLES:
++        if bind.execute(sa.text(f"SELECT EXISTS (SELECT 1 FROM {table})")).scalar():
++            raise RuntimeError("durable brainstorm evidence must not be discarded")
++    op.drop_table("epic_brainstorm_quota_admissions")
++    op.drop_table("epic_brainstorm_attempts")
++    op.drop_table("epic_brainstorm_turns")
++    op.drop_table("epic_brainstorm_jobs")
++    op.drop_table("epic_brainstorm_conversations")
++    op.drop_table("epic_brainstorm_receipts")
++    op.drop_table("epic_brainstorm_budget_ledgers")
++    op.drop_table("epic_brainstorm_audit")

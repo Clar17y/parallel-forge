@@ -1,0 +1,208 @@
+diff --git a/apps/orchestrator/src/forge/persistence/models/__init__.py b/apps/orchestrator/src/forge/persistence/models/__init__.py
+--- a/apps/orchestrator/src/forge/persistence/models/__init__.py
++++ b/apps/orchestrator/src/forge/persistence/models/__init__.py
+@@ -7,6 +7,30 @@
+ from forge.persistence.models.base import Base
+ from forge.persistence.models.capability_evidence import CapabilityEvidence
+ from forge.persistence.models.capability_probe_diagnostics import CapabilityProbeDiagnosticRecord
++from forge.persistence.models.epic_brainstorm import (
++    BrainstormAttemptRow as BrainstormAttemptRow,
++)
++from forge.persistence.models.epic_brainstorm import (
++    BrainstormAuditRow as BrainstormAuditRow,
++)
++from forge.persistence.models.epic_brainstorm import (
++    BrainstormBudgetLedger as BrainstormBudgetLedger,
++)
++from forge.persistence.models.epic_brainstorm import (
++    BrainstormConversation as BrainstormConversation,
++)
++from forge.persistence.models.epic_brainstorm import (
++    BrainstormJobRow as BrainstormJobRow,
++)
++from forge.persistence.models.epic_brainstorm import (
++    BrainstormQuotaAdmission as BrainstormQuotaAdmission,
++)
++from forge.persistence.models.epic_brainstorm import (
++    BrainstormReceiptRow as BrainstormReceiptRow,
++)
++from forge.persistence.models.epic_brainstorm import (
++    BrainstormTurnRow as BrainstormTurnRow,
++)
+ from forge.persistence.models.epic_brief import Epic, EpicBriefRevision
+ from forge.persistence.models.epic_items import EpicGraphRevision
+ from forge.persistence.models.evaluation import EvaluationCase, EvaluationSuite
+diff --git a/apps/orchestrator/src/forge/api/app.py b/apps/orchestrator/src/forge/api/app.py
+--- a/apps/orchestrator/src/forge/api/app.py
++++ b/apps/orchestrator/src/forge/api/app.py
+@@ -20,6 +20,7 @@
+ from forge.api.routes.artifacts import router_for as artifact_router_for
+ from forge.api.routes.auth import router_for as auth_router_for
+ from forge.api.routes.dashboard import router_for as dashboard_router_for
++from forge.api.routes.epic_brainstorm import router_for as epic_brainstorm_router_for
+ from forge.api.routes.epic_brief import router_for as epic_brief_router_for
+ from forge.api.routes.epic_items import router_for as epic_items_router_for
+ from forge.api.routes.events import router_for as event_router_for
+@@ -45,6 +46,10 @@
+ )
+ from forge.application.services.artifact_reads import ArtifactReadService
+ from forge.application.services.auth import AuthService
++from forge.application.services.epic_brainstorm import (
++    EpicBrainstormService,
++    EpicBriefBrainstormAdapter,
++)
+ from forge.application.services.epic_brief import EpicBriefService
+ from forge.application.services.epic_items import EpicItemsService
+ from forge.application.services.github_issue_import import GitHubIssueImportService
+@@ -60,6 +65,7 @@
+ from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
+ from forge.application.services.tasks import TaskService
+ from forge.artifacts.filesystem import FilesystemArtifactStore
++from forge.domain.subscription import TaskBudget
+ from forge.persistence.database import create_engine, create_session_factory
+ from forge.persistence.queries.artifacts import PostgresArtifactReadQuery
+ from forge.persistence.queries.dashboard import DashboardQuery
+@@ -91,6 +97,7 @@
+     task_service: Any | None = None,
+     epic_brief_service: Any | None = None,
+     epic_items_service: Any | None = None,
++    epic_brainstorm_budget: TaskBudget | None = None,
+     run_service: Any | None = None,
+     run_command_service: Any | None = None,
+     projection_service: Any | None = None,
+@@ -219,6 +226,13 @@
+     app.state.task_service = resolved_task_service
+     app.state.epic_brief_service = resolved_epic_brief_service
+     app.state.epic_items_service = resolved_epic_items_service
++    app.state.epic_brainstorm_service = (
++        EpicBrainstormService(
++            session_factory, EpicBriefBrainstormAdapter, budget=epic_brainstorm_budget
++        )
++        if session_factory is not None and epic_brainstorm_budget is not None
++        else None
++    )
+     app.state.subscription_profile_service = resolved_subscription_profile_service
+     app.state.subscription_quota_service = resolved_subscription_quota_service
+     app.state.subscription_task_control_service = resolved_task_control_service
+@@ -277,6 +291,7 @@
+     app.include_router(task_router_for(), prefix="/api")
+     app.include_router(epic_brief_router_for(), prefix="/api")
+     app.include_router(epic_items_router_for(), prefix="/api")
++    app.include_router(epic_brainstorm_router_for(), prefix="/api")
+     app.include_router(run_router_for(), prefix="/api")
+     app.include_router(jev_router_for(), prefix="/api")
+     app.include_router(dashboard_router_for(), prefix="/api")
+diff --git a/apps/orchestrator/src/forge/worker/main.py b/apps/orchestrator/src/forge/worker/main.py
+--- a/apps/orchestrator/src/forge/worker/main.py
++++ b/apps/orchestrator/src/forge/worker/main.py
+@@ -5,7 +5,7 @@
+ import asyncio
+ import logging
+ import math
+-from collections.abc import Iterable, Mapping
++from collections.abc import Callable, Iterable, Mapping
+ from contextlib import AbstractAsyncContextManager
+ from datetime import UTC, datetime, timedelta
+ from typing import cast
+@@ -17,7 +17,9 @@
+ 
+ from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
+ from forge.application.ports.commands import CommandLane, CommandRecoveryRequired
++from forge.application.ports.epic_brainstorm import BrainstormGateway
+ from forge.application.ports.operations import OperationAdapter
++from forge.application.ports.repository import RepositoryReader
+ from forge.application.ports.unit_of_work import UnitOfWork
+ from forge.application.services.recovery import RecoveryError, RecoveryService
+ from forge.application.services.subscription_decision_recovery import (
+@@ -28,6 +30,7 @@
+ from forge.application.services.terminal_recovery import TerminalMergeRecovery
+ from forge.application.services.worker import CommandHandler, Worker
+ from forge.artifacts.filesystem import FilesystemArtifactStore
++from forge.domain.epic_brainstorm import AuthoringJobSnapshot
+ from forge.domain.local_cli import LocalCliTrust
+ from forge.domain.subscription_installations import SubscriptionInstallationSpec
+ from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPoolKey
+@@ -46,6 +49,7 @@
+ from forge.persistence.unit_of_work import PostgresUnitOfWork
+ from forge.settings import Settings
+ from forge.worker.composition import WorkerCompositionError, WorkerHandlers, compose_worker_handlers
++from forge.worker.epic_brainstorm import EpicBrainstormWorker, brainstorm_worker_owner
+ from forge.worker.startup import run_startup_recovery
+ from forge.worker.startup_intervention import StartupInterventionRecovery
+ from forge.worker.subscription_installations import (
+@@ -69,10 +73,12 @@
+     try:
+         async with asyncio.timeout(_RECOVERY_PERSIST_SECONDS), factory() as session:
+             observed_at = datetime.now(UTC)
+-            await session.execute(delete(SubscriptionRecoveryWorker).where(
+-                SubscriptionRecoveryWorker.observed_at
+-                < observed_at - timedelta(seconds=RECOVERY_WORKER_FRESHNESS_SECONDS)
+-            ))
++            await session.execute(
++                delete(SubscriptionRecoveryWorker).where(
++                    SubscriptionRecoveryWorker.observed_at
++                    < observed_at - timedelta(seconds=RECOVERY_WORKER_FRESHNESS_SECONDS)
++                )
++            )
+             statement = insert(SubscriptionRecoveryWorker).values(
+                 worker_id=worker_id, contract_version=1, observed_at=observed_at
+             )
+@@ -108,6 +114,8 @@
+     poll_interval: float = 1.0,
+     decision_retry_interval: float = 5.0,
+     worker_id: str | None = None,
++    brainstorm_gateway_factory: Callable[[AuthoringJobSnapshot], BrainstormGateway] | None = None,
++    brainstorm_reader_factory: Callable[[AuthoringJobSnapshot], RepositoryReader] | None = None,
+ ) -> None:
+     """Build PostgreSQL dependencies, recover intents, then poll durably.
+ 
+@@ -121,6 +129,8 @@
+     if poll_interval <= 0 or poll_interval > 1:
+         raise ValueError("worker idle poll interval must be between zero and one second")
+     _validate_decision_retry_interval(decision_retry_interval)
++    if (brainstorm_gateway_factory is None) != (brainstorm_reader_factory is None):
++        raise ValueError("brainstorm gateway and reader must be registered together")
+     supplied_subscription_adapters = (
+         None if subscription_adapters is None else tuple(subscription_adapters)
+     )
+@@ -300,6 +310,17 @@
+                 polls.append(
+                     asyncio.create_task(_poll_invocations(invocation, stop_event, poll_interval))
+                 )
++        if brainstorm_gateway_factory is not None and brainstorm_reader_factory is not None:
++            brainstorm = EpicBrainstormWorker(
++                factory,
++                owner=brainstorm_worker_owner(base_worker_id),
++                gateway_factory=brainstorm_gateway_factory,
++                reader_factory=brainstorm_reader_factory,
++                quota_policy=settings.subscription_quota_policy,
++            )
++            polls.append(
++                asyncio.create_task(_poll_brainstorms(brainstorm, stop_event, poll_interval))
++            )
+         await asyncio.gather(*polls)
+     finally:
+ 
+@@ -363,6 +384,22 @@
+ async def _poll(worker: Worker, stop_event: asyncio.Event, poll_interval: float) -> None:
+     while not stop_event.is_set():
+         if await worker.tick() is None:
++            try:
++                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
++            except TimeoutError:
++                pass
++
++
++async def _poll_brainstorms(
++    worker: EpicBrainstormWorker, stop_event: asyncio.Event, poll_interval: float
++) -> None:
++    while not stop_event.is_set():
++        try:
++            result = await worker.run_once(stop_event=stop_event)
++        except Exception:  # noqa: BLE001 - isolate one durable job; never log provider text
++            logger.warning("Epic brainstorm polling failed; retrying durable work")
++            result = None
++        if result is None:
+             try:
+                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+             except TimeoutError:

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "base": "1e444af79bf654b78e2f805ff01723cdeb937352",
+  "application_order": [
+    "epic_brief_source.patch",
+    "registration.patch",
+    "epic_brainstorm_migration.patch",
+    "generated_contracts.patch"
+  ],
+  "patches": {
+    "epic_brief_source.patch": {
+      "sha256": "a096555b63cda75ed3695aab6b5714e1560a51d381689ea4c26c380ab1865ab8",
+      "byte_length": 1931,
+      "target_paths": [
+        "apps/orchestrator/src/forge/application/ports/epic_brief.py",
+        "apps/orchestrator/src/forge/persistence/repositories/epic_brief.py"
+      ]
+    },
+    "registration.patch": {
+      "sha256": "2b6b0eaebea312ae9fa5b21c39dbf0f9670c3d1a5861b8f467ab7b8f2deb47e9",
+      "byte_length": 10436,
+      "target_paths": [
+        "apps/orchestrator/src/forge/persistence/models/__init__.py",
+        "apps/orchestrator/src/forge/api/app.py",
+        "apps/orchestrator/src/forge/worker/main.py"
+      ]
+    },
+    "epic_brainstorm_migration.patch": {
+      "sha256": "5baf047007b24026f1d2502be9d83d7176a8c4cd70330a3226266d9fa0780c4c",
+      "byte_length": 6626,
+      "target_paths": [
+        "apps/orchestrator/migrations/versions/20261004_0033_epic_brainstorm.py"
+      ]
+    },
+    "generated_contracts.patch": {
+      "sha256": "5631b00b752335fc9409f1e20cf2f6b1114aa53501e8ef48ce80c1fcb4ea3f7e",
+      "byte_length": 72390,
+      "target_paths": [
+        "apps/web/openapi.json",
+        "apps/web/src/lib/api/schema.d.ts"
+      ]
+    }
+  },
+  "migration_renumber_note": "Proposed 20261004_0033 follows landed #70 revision 20261003_0032. The integration owner must recheck the active Alembic head at merge time.",
+  "required_api_budget": "create_app(epic_brainstorm_budget=TaskBudget(...)) enables the proposed API service with an explicit bounded discovery budget.",
+  "worker_gateway_and_reader_factory_bindings": "run_worker(brainstorm_gateway_factory=..., brainstorm_reader_factory=...) requires both subject-specific factories together and uses settings.subscription_quota_policy. The gateway implements execute(snapshot, persisted_turns, controlled_reader, cancelled=..., lifecycle=...).",
+  "genuine_supervised_receipts": "Genuine supervised subprocess receipts (ClientProcessReceipt) under ClientProcessSupervisor with fail-closed authority, no fake delivery run, and no paid provider fallback.",
+  "integration_limits": {
+    "actual_producer_vs_fixture": "Tests use actual landed #69 producer code in disposable overlays, including main after #70. Shared production files remain integration-owned.",
+    "live_integration": "Providerless peer tests run in-process or via supervisor subprocess; live CLI/broker gateway and production repository reader factories remain integration-owned.",
+    "proposal_policy": "Publish proposals only as data artifacts; never apply them to shared production source."
+  }
+}
