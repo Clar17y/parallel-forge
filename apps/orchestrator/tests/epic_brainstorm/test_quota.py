@@ -6,8 +6,12 @@ import forge.persistence.repositories.epic_brainstorm as repository_module
 import pytest
 from forge.application.services.epic_brainstorm import EpicBrainstormService
 from forge.domain.subscription import RouteBinding, RouteSpec, TaskBudget, UnknownTelemetryPolicy
-from forge.domain.subscription_quota import QuotaPolicy
-from forge.persistence.models.epic_brainstorm import BrainstormAttemptRow, BrainstormJobRow
+from forge.domain.subscription_quota import QuotaPolicy, QuotaRoutePool
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormAttemptRow,
+    BrainstormJobRow,
+    BrainstormQuotaAdmission,
+)
 from forge.persistence.models.subscription_quota import (
     SubscriptionQuotaObservation,
 )
@@ -47,6 +51,197 @@ async def _submit_route_job(factory, epic_id, project_id, actor, budget, model, 
         key=f"submit-{suffix}",
     )
     return service, receipt
+
+
+def _account_policy(account: str, pool: str = "shared") -> QuotaPolicy:
+    return QuotaPolicy(
+        route_pools=(
+            QuotaRoutePool(
+                provider="fake", client="fake", model="fixture", account=account, pool=pool
+            ),
+        )
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("account,pool", [("account-b", "shared"), ("account-a", "other")])
+async def test_remapped_account_cannot_borrow_same_route_monetary_proof(
+    brainstorm_session_factory,
+    account,
+    pool,
+) -> None:
+    budget = TaskBudget(max_provider_attempts=3, max_cost_minor=100)
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, budget=budget
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(
+            session, quota_policy=_account_policy("account-a")
+        ).claim("account-a")
+        assert claimed is not None and claimed[0].id == first.job_id
+        job, attempt = claimed
+        attempt.process_settled = True
+        attempt.usage_known = True
+        attempt.usage = {
+            "duration_ms": 10,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_api_cost_minor": 7,
+            "currency": "USD",
+        }
+        job.state = "failed"
+        original_id = attempt.id
+    _, sibling = await _submit_route_job(
+        brainstorm_session_factory, epic_id, project_id, actor, budget, "fixture", "remapped"
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        assert (
+            await PostgresBrainstormRepository(
+                session, quota_policy=_account_policy(account, pool)
+            ).claim("account-b")
+            is None
+        )
+    denied = await service.observe(epic_id=epic_id, project_id=project_id, job_id=sibling.job_id)
+    assert (denied.state, denied.failure) == ("failed", "input_conflict")
+    async with brainstorm_session_factory() as session:
+        admissions = (await session.scalars(select(BrainstormQuotaAdmission))).all()
+        assert len(admissions) == 1 and admissions[0].attempt_id == original_id
+        assert admissions[0].account == "account-a"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remapped", ["account-b", "account-a"])
+async def test_retry_uses_each_attempts_durable_account_scope(
+    brainstorm_session_factory, remapped
+) -> None:
+    budget = TaskBudget(max_provider_attempts=3, max_cost_minor=100)
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, budget=budget
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(
+            session, quota_policy=_account_policy("account-a")
+        ).claim("first")
+        assert claimed is not None
+        job, attempt = claimed
+        attempt.process_settled = attempt.usage_known = True
+        attempt.usage = {
+            "duration_ms": 10,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_api_cost_minor": 7,
+            "currency": "USD",
+        }
+        job.state, job.failure = "failed", "unavailable"
+        job.version += 1
+    failed = await service.observe(epic_id=epic_id, project_id=project_id, job_id=first.job_id)
+    await service.retry(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=first.job_id,
+        expected_job_version=failed.job_version,
+        actor=actor,
+        key=f"retry-{remapped}",
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(
+            session, quota_policy=_account_policy(remapped)
+        ).claim("retry")
+        assert (claimed is not None) == (remapped == "account-a")
+    if remapped == "account-b":
+        denied = await service.observe(epic_id=epic_id, project_id=project_id, job_id=first.job_id)
+        assert (denied.state, denied.failure) == ("failed", "input_conflict")
+
+
+@pytest.mark.asyncio
+async def test_provisional_hold_prevents_concurrent_remapped_scope_claims(
+    brainstorm_session_factory,
+) -> None:
+    budget = TaskBudget(
+        max_provider_attempts=4,
+        max_cost_minor=100,
+        unknown_telemetry_policy=UnknownTelemetryPolicy(max_uncertain_attempts=3),
+    )
+    _, epic_id, project_id, actor, _ = await prepared(brainstorm_session_factory, budget=budget)
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(
+            session, quota_policy=_account_policy("account-a")
+        ).claim("held")
+        assert claimed is not None
+        claimed[1].reservation = {
+            "duration_ms": 1000,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_api_cost_minor": 20,
+        }
+    await _submit_route_job(
+        brainstorm_session_factory, epic_id, project_id, actor, budget, "fixture", "same-scope"
+    )
+    await _submit_route_job(
+        brainstorm_session_factory, epic_id, project_id, actor, budget, "fixture", "new-scope"
+    )
+
+    async def claim(account: str):
+        async with brainstorm_session_factory() as session, session.begin():
+            claimed = await PostgresBrainstormRepository(
+                session, quota_policy=_account_policy(account)
+            ).claim(account)
+            return claimed[1].id if claimed else None
+
+    results = await asyncio.gather(claim("account-a"), claim("account-b"))
+    assert sum(result is not None for result in results) == 1
+    assert results[0] is not None
+    async with brainstorm_session_factory() as session:
+        admissions = (await session.scalars(select(BrainstormQuotaAdmission))).all()
+        assert len(admissions) == 2
+        assert {row.account for row in admissions} == {"account-a"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("amount", [0, 7])
+async def test_missing_historical_scope_does_not_prove_money_unit(
+    brainstorm_session_factory,
+    amount,
+) -> None:
+    budget = TaskBudget(max_provider_attempts=3, max_cost_minor=100)
+    service, epic_id, project_id, actor, _ = await prepared(
+        brainstorm_session_factory, budget=budget
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("legacy")
+        assert claimed is not None
+        job, attempt = claimed
+        attempt.process_settled = attempt.usage_known = True
+        attempt.usage = {
+            "duration_ms": 10,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_api_cost_minor": amount,
+            "currency": "USD",
+        }
+        job.state = "failed"
+        await session.execute(
+            delete(BrainstormQuotaAdmission).where(
+                BrainstormQuotaAdmission.attempt_id == attempt.id
+            )
+        )
+    _, sibling = await _submit_route_job(
+        brainstorm_session_factory, epic_id, project_id, actor, budget, "fixture", "legacy"
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("later")
+        assert (claimed is not None) == (amount == 0)
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=sibling.job_id)
+    assert outcome.currency is None
+    if amount:
+        assert outcome.cumulative_usage.estimated_api_cost_minor == 0
+        assert (outcome.state, outcome.failure) == ("failed", "input_conflict")
+    else:
+        assert outcome.state == "running"
 
 
 @pytest.mark.asyncio
@@ -195,6 +390,16 @@ async def test_historical_route_unit_proof_or_conflict(
                     "currency": second_currency,
                 },
                 tool_calls_used=0,
+            )
+        )
+        session.add(
+            BrainstormQuotaAdmission(
+                attempt_id=seeded_id,
+                provider="fake",
+                account="local",
+                pool="subscription-allowance_only",
+                revision=0,
+                probe=False,
             )
         )
         row.current_attempt_id = seeded_id
@@ -761,6 +966,86 @@ async def test_successful_current_revision_probe_recovers_with_allowed_unknown_c
         pool.blocked = False
         pool.probe_attempt_id = None
     assert recovered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["exhausted", "probe_success", "probe_failure", "not_launched"])
+async def test_settlement_remains_on_admitted_pool_after_policy_remap(
+    brainstorm_session_factory, outcome
+) -> None:
+    _, _, _, _, receipt = await prepared(brainstorm_session_factory)
+    async with brainstorm_session_factory() as session, session.begin():
+        repository = PostgresBrainstormRepository(
+            session, quota_policy=_account_policy("account-a")
+        )
+        row = await session.get(BrainstormJobRow, receipt.job_id)
+        assert row is not None
+        old = await repository.quota_pool(repository.decode_snapshot(row))
+        if outcome.startswith("probe"):
+            old.blocked = True
+            old.revision = 1
+            old.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(
+            session, quota_policy=_account_policy("account-a")
+        ).claim("original")
+        assert claimed is not None
+        job, attempt = claimed
+        assert attempt.id is not None
+        attempt_id = attempt.id
+    async with brainstorm_session_factory() as session, session.begin():
+        repository = PostgresBrainstormRepository(
+            session, quota_policy=_account_policy("account-b")
+        )
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        attempt = await session.get(BrainstormAttemptRow, attempt_id)
+        assert job is not None and attempt is not None
+        attempt.process_settled = True
+        attempt.usage_known = True
+        attempt.usage = {"estimated_api_cost_minor": 0}
+        await repository.quota_settle(
+            job,
+            attempt,
+            exhausted=outcome == "exhausted",
+            reset_at=None,
+            succeeded=outcome == "probe_success",
+        )
+        await repository.quota_settle(
+            job,
+            attempt,
+            exhausted=outcome == "exhausted",
+            reset_at=None,
+            succeeded=outcome == "probe_success",
+        )
+        admission = await session.get(BrainstormQuotaAdmission, attempt_id)
+        assert admission is not None and admission.finished_at is not None
+        old = await session.get(
+            repository_module.SubscriptionQuotaPool, ("fake", "account-a", "shared")
+        )
+        assert old is not None and old.probe_attempt_id is None
+        if outcome == "exhausted":
+            assert old.blocked and old.revision == 1
+        elif outcome == "probe_success":
+            assert not old.blocked and old.recovered_at is not None
+        elif outcome == "probe_failure":
+            assert old.blocked and old.retry_basis == "probe_cooldown"
+        else:
+            assert not old.blocked
+        assert (
+            await session.get(
+                repository_module.SubscriptionQuotaPool, ("fake", "account-b", "shared")
+            )
+            is None
+        )
+        if outcome == "exhausted":
+            await session.execute(
+                delete(SubscriptionQuotaObservation).where(
+                    SubscriptionQuotaObservation.source_attempt_id == attempt_id
+                )
+            )
+            old.blocked = False
+        if outcome == "probe_failure":
+            old.blocked = False
 
 
 @pytest.mark.asyncio

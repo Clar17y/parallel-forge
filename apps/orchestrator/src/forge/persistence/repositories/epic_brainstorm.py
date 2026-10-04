@@ -39,7 +39,7 @@ from forge.domain.subscription import (
     decode_subscription_record,
     encode_subscription_record,
 )
-from forge.domain.subscription_quota import QuotaPolicy
+from forge.domain.subscription_quota import QuotaPolicy, QuotaPoolKey
 from forge.persistence.models.epic_brainstorm import (
     BrainstormAttemptRow,
     BrainstormAuditRow,
@@ -91,14 +91,34 @@ class PostgresBrainstormRepository:
         if row.current_attempt_id != attempt.id:
             raise BrainstormConflict("quota result attempt authority revoked")
         snapshot = self.decode_snapshot(row)
-        pool = await self.quota_pool(snapshot)
-        admission = await self.session.get(
-            BrainstormQuotaAdmission, attempt.id, with_for_update=True
+        admission = await self.session.get(BrainstormQuotaAdmission, attempt.id)
+        if admission is None:
+            raise BrainstormConflict("quota admission identity conflicts")
+        try:
+            key = QuotaPoolKey(admission.provider, admission.account, admission.pool)
+        except ValueError as error:
+            raise BrainstormConflict("quota admission identity conflicts") from error
+        if key.provider != snapshot.route.effective.provider:
+            raise BrainstormConflict("quota admission identity conflicts")
+        # Pool precedes admission in the lock order used by claim. The admission
+        # identity is immutable; recheck it under lock before applying settlement.
+        pool = await self.session.get(
+            SubscriptionQuotaPool,
+            (key.provider, key.account, key.pool),
+            with_for_update=True,
+            populate_existing=True,
         )
-        if admission is None or (pool.provider, pool.account, pool.pool) != (
-            admission.provider,
-            admission.account,
-            admission.pool,
+        admission = await self.session.get(
+            BrainstormQuotaAdmission,
+            attempt.id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        if (
+            pool is None
+            or admission is None
+            or (admission.provider, admission.account, admission.pool)
+            != (key.provider, key.account, key.pool)
         ):
             raise BrainstormConflict("quota admission identity conflicts")
         now = datetime.now(UTC)
@@ -319,24 +339,58 @@ class PostgresBrainstormRepository:
                 continue
         return routes
 
+    async def _attempt_scopes(
+        self, attempts: list[BrainstormAttemptRow]
+    ) -> dict[UUID, tuple[RouteSpec, QuotaPoolKey]]:
+        routes = await self._attempt_routes(attempts)
+        if not attempts:
+            return {}
+        admissions = (
+            await self.session.scalars(
+                select(BrainstormQuotaAdmission).where(
+                    BrainstormQuotaAdmission.attempt_id.in_([attempt.id for attempt in attempts])
+                )
+            )
+        ).all()
+        by_attempt = {admission.attempt_id: admission for admission in admissions}
+        scopes: dict[UUID, tuple[RouteSpec, QuotaPoolKey]] = {}
+        for attempt in attempts:
+            route = routes.get(attempt.job_id)
+            admission = by_attempt.get(attempt.id)
+            if route is None or admission is None:
+                continue
+            try:
+                key = QuotaPoolKey(admission.provider, admission.account, admission.pool)
+            except ValueError:
+                continue
+            if key.provider == route.provider:
+                scopes[attempt.id] = route, key
+        return scopes
+
     @classmethod
     def _money_evidence(
         cls,
         attempts: list[BrainstormAttemptRow],
-        routes: Mapping[UUID, RouteSpec],
-    ) -> tuple[str | None, bool, set[RouteSpec], set[RouteSpec], bool, bool]:
+        scopes: Mapping[UUID, tuple[RouteSpec, QuotaPoolKey]],
+    ) -> tuple[
+        str | None,
+        bool,
+        set[tuple[RouteSpec, QuotaPoolKey]],
+        set[tuple[RouteSpec, QuotaPoolKey]],
+        bool,
+        bool,
+    ]:
         units: set[str] = set()
         reported_units: set[str] = set()
-        proved_routes: dict[RouteSpec, set[str]] = {}
-        held_routes: set[RouteSpec] = set()
+        proved_routes: dict[tuple[RouteSpec, QuotaPoolKey], set[str]] = {}
+        held_routes: set[tuple[RouteSpec, QuotaPoolKey]] = set()
         has_money = False
         unsafe = False
         unknown_hold = False
         for attempt in attempts:
             usage = attempt.usage or {}
             _, held, _ = cls._charges([attempt])
-            job_id = getattr(attempt, "job_id", None)
-            route = routes.get(job_id) if isinstance(job_id, UUID) else None
+            scope = scopes.get(attempt.id)
             raw_cost = usage.get("estimated_api_cost_minor")
             if raw_cost is not None and cls._bounded_measurement(raw_cost) is None:
                 unsafe = True
@@ -370,15 +424,15 @@ class PostgresBrainstormRepository:
                     reported_units.add(currency)
                     if observed is not None and observed > 0:
                         units.add(currency)
-                        if route is not None:
-                            proved_routes.setdefault(route, set()).add(currency)
+                        if scope is not None:
+                            proved_routes.setdefault(scope, set()).add(currency)
                         else:
                             unsafe = True
             if exposed or held["estimated_api_cost_minor"] > 0:
-                if route is None:
+                if scope is None:
                     unsafe = True
                 else:
-                    held_routes.add(route)
+                    held_routes.add(scope)
         unit = next(iter(units)) if len(units) == 1 else None
         compatible = {route for route, values in proved_routes.items() if values == {unit}}
         if len(reported_units) > 1 or (unit is not None and not held_routes <= compatible):
@@ -386,7 +440,10 @@ class PostgresBrainstormRepository:
         return unit, unsafe, compatible, held_routes, has_money, unknown_hold
 
     async def _reservation(
-        self, row: BrainstormJobRow, snapshot: AuthoringJobSnapshot
+        self,
+        row: BrainstormJobRow,
+        snapshot: AuthoringJobSnapshot,
+        pool: SubscriptionQuotaPool,
     ) -> tuple[dict[str, int | None] | None, bool]:
         validate_brainstorm_budget(snapshot.budget)
         ceiling = encode_subscription_record(snapshot.budget)
@@ -402,11 +459,17 @@ class PostgresBrainstormRepository:
         charged, held, unknown = self._charges(attempts)
         budget = snapshot.budget
         if attempts:
-            routes = await self._attempt_routes(attempts)
+            scopes = await self._attempt_scopes(attempts)
             unit, unsafe_money, compatible, pending, has_money, unknown_hold = self._money_evidence(
-                attempts, routes
+                attempts, scopes
             )
-            candidate = snapshot.route.effective
+            try:
+                candidate_key = QuotaPoolKey(pool.provider, pool.account, pool.pool)
+            except ValueError as error:
+                raise BrainstormConflict("epic discovery quota scope is invalid") from error
+            candidate = snapshot.route.effective, candidate_key
+            if candidate_key.provider != candidate[0].provider:
+                raise BrainstormConflict("epic discovery quota scope is invalid")
             if (
                 unsafe_money
                 or (unknown_hold and budget.max_cost_minor is not None)
@@ -635,8 +698,8 @@ class PostgresBrainstormRepository:
         )
         attempts = await self._epic_attempts(row.epic_id)
         charged, held, unknown = self._charges(attempts)
-        routes = await self._attempt_routes(attempts)
-        unit, unsafe_money, _, _, has_money, unknown_hold = self._money_evidence(attempts, routes)
+        scopes = await self._attempt_scopes(attempts)
+        unit, unsafe_money, _, _, has_money, unknown_hold = self._money_evidence(attempts, scopes)
         suppress_money = unsafe_money or unknown_hold or (has_money and unit is None)
         unknown_dimensions = {
             key
@@ -923,7 +986,7 @@ class PostgresBrainstormRepository:
                 await self.session.flush()
                 continue
             try:
-                reservation, waitable = await self._reservation(row, snapshot)
+                reservation, waitable = await self._reservation(row, snapshot, pool)
             except BrainstormConflict:
                 row.state, row.failure = "failed", "input_conflict"
                 row.version += 1

@@ -10,6 +10,7 @@ from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.epic_brainstorm import EpicBrainstormService
 from forge.domain.epic_brainstorm import BrainstormConflict, FrozenBriefContent, FrozenRequirement
 from forge.domain.subscription import RouteBinding, RouteSpec, TaskBudget
+from forge.domain.subscription_quota import QuotaPolicy
 from forge.persistence.models.epic_brainstorm import BrainstormJobRow
 from forge.persistence.models.project import Project
 from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRepository
@@ -317,6 +318,7 @@ async def test_sibling_outcome_marks_unreserved_unknown_cumulative_dimensions(
     session = SimpleNamespace(get=AsyncMock(return_value=known))
     repository = PostgresBrainstormRepository(session)
     repository._epic_attempts = AsyncMock(return_value=[unknown, known])
+    repository._attempt_scopes = AsyncMock(return_value={})
     row = SimpleNamespace(
         id=uuid4(),
         epic_id=uuid4(),
@@ -361,8 +363,9 @@ async def test_queued_sibling_reports_prior_cost_currency_without_current_attemp
     )
     repository = PostgresBrainstormRepository(SimpleNamespace())
     repository._epic_attempts = AsyncMock(return_value=[prior])
-    repository._attempt_routes = AsyncMock(
-        return_value={prior_job_id: RouteSpec(provider="fake", client="fake", model="fixture")}
+    route = RouteSpec(provider="fake", client="fake", model="fixture")
+    repository._attempt_scopes = AsyncMock(
+        return_value={prior.id: (route, QuotaPolicy().key_for(route))}
     )
     row = SimpleNamespace(
         id=uuid4(),
@@ -404,8 +407,9 @@ async def test_mixed_legacy_costs_do_not_report_a_false_single_currency() -> Non
     ]
     repository = PostgresBrainstormRepository(SimpleNamespace())
     repository._epic_attempts = AsyncMock(return_value=attempts)
-    repository._attempt_routes = AsyncMock(
-        return_value={prior_job_id: RouteSpec(provider="fake", client="fake", model="fixture")}
+    route = RouteSpec(provider="fake", client="fake", model="fixture")
+    repository._attempt_scopes = AsyncMock(
+        return_value={attempt.id: (route, QuotaPolicy().key_for(route)) for attempt in attempts}
     )
     row = SimpleNamespace(
         id=uuid4(),
