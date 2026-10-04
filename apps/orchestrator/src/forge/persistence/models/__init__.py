@@ -1,11 +1,14 @@
 """Complete v0.1 SQLAlchemy model inventory."""
 
+from sqlalchemy import ForeignKeyConstraint
+
 from forge.persistence.models.api import ApiMutation, OperatorAuditEvent
 from forge.persistence.models.auth import ApprovalChallenge, OperatorSession
 from forge.persistence.models.base import Base
 from forge.persistence.models.capability_evidence import CapabilityEvidence
 from forge.persistence.models.capability_probe_diagnostics import CapabilityProbeDiagnosticRecord
 from forge.persistence.models.epic_brief import Epic, EpicBriefRevision
+from forge.persistence.models.epic_items import EpicGraphRevision
 from forge.persistence.models.evaluation import EvaluationCase, EvaluationSuite
 from forge.persistence.models.execution import (
     AgentExecution,
@@ -74,6 +77,24 @@ from forge.persistence.models.subscription_usage import (
     SubscriptionAttemptReservation,
 )
 
+# Register the cross-lane selection binding at the shared integration boundary.
+# The brief module remains independent of the graph implementation.
+Base.metadata.tables["epics"].append_constraint(
+    ForeignKeyConstraint(
+        ("id", "accepted_graph_revision_id", "accepted_graph_digest"),
+        (
+            "epic_graph_revisions.epic_id",
+            "epic_graph_revisions.id",
+            "epic_graph_revisions.graph_digest",
+        ),
+        name="fk_epics_accepted_graph",
+        ondelete="RESTRICT",
+        use_alter=True,
+        deferrable=True,
+        initially="DEFERRED",
+    )
+)
+
 __all__ = [
     "AgentExecution",
     "AgentExecutionEvidenceInput",
@@ -88,6 +109,7 @@ __all__ = [
     "CapabilityProbeDiagnosticRecord",
     "Epic",
     "EpicBriefRevision",
+    "EpicGraphRevision",
     "EvaluationCase",
     "EvaluationSuite",
     "EvidenceSet",

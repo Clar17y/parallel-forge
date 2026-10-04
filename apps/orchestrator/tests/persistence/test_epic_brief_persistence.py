@@ -189,6 +189,22 @@ async def test_selection_binding_graph_transition_and_rollback(session_factory, 
     )
     graph_id = uuid4()
     async with session_factory() as session, session.begin():
+        # Graph selection now has an integration-owned relational binding.
+        from forge.persistence.models.epic_items import EpicGraphRevision
+
+        session.add(
+            EpicGraphRevision(
+                id=graph_id,
+                epic_id=epic.epic_id,
+                brief_revision_id=first.brief_revision_id,
+                brief_digest=first.content_digest,
+                revision_number=1,
+                epic_version=3,
+                content={"schema_version": 1, "items": []},
+                graph_digest="a" * 64,
+            )
+        )
+        await session.flush()
         row = await session.get(Epic, epic.epic_id)
         assert row is not None
         row.accepted_graph_revision_id = graph_id

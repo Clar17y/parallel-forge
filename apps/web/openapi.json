@@ -107,6 +107,65 @@
         "title": "AcceptedBriefResponse",
         "type": "object"
       },
+      "AcceptedGraphResponse": {
+        "additionalProperties": false,
+        "description": "Immutable accepted graph projection with deterministic readiness projections.",
+        "properties": {
+          "brief_digest": {
+            "title": "Brief Digest",
+            "type": "string"
+          },
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "graph_digest": {
+            "title": "Graph Digest",
+            "type": "string"
+          },
+          "graph_revision_id": {
+            "format": "uuid",
+            "title": "Graph Revision Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemSnapshot"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "readiness": {
+            "items": {
+              "$ref": "#/components/schemas/ItemReadiness"
+            },
+            "title": "Readiness",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epic_id",
+          "brief_revision_id",
+          "brief_digest",
+          "graph_revision_id",
+          "graph_digest",
+          "items"
+        ],
+        "title": "AcceptedGraphResponse",
+        "type": "object"
+      },
       "AgentItem": {
         "additionalProperties": false,
         "properties": {
@@ -2519,6 +2578,158 @@
         "title": "GitHubIssueImportRequest",
         "type": "object"
       },
+      "GraphAdoptionRequest": {
+        "additionalProperties": false,
+        "description": "Closed graph adoption request body.",
+        "properties": {
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "graph_digest": {
+            "title": "Graph Digest",
+            "type": "string"
+          },
+          "graph_revision_id": {
+            "format": "uuid",
+            "title": "Graph Revision Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_epic_version",
+          "graph_revision_id",
+          "graph_digest"
+        ],
+        "title": "GraphAdoptionRequest",
+        "type": "object"
+      },
+      "GraphRevisionCreateRequest": {
+        "additionalProperties": false,
+        "description": "Closed graph revision creation request body.",
+        "properties": {
+          "brief_digest": {
+            "title": "Brief Digest",
+            "type": "string"
+          },
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemInput"
+            },
+            "maxItems": 128,
+            "title": "Items",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_epic_version",
+          "brief_revision_id",
+          "brief_digest",
+          "items"
+        ],
+        "title": "GraphRevisionCreateRequest",
+        "type": "object"
+      },
+      "GraphRevisionResponse": {
+        "additionalProperties": false,
+        "description": "Immutable graph revision snapshot with deterministic readiness projections.",
+        "properties": {
+          "brief_digest": {
+            "title": "Brief Digest",
+            "type": "string"
+          },
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "epic_version": {
+            "minimum": 1.0,
+            "title": "Epic Version",
+            "type": "integer"
+          },
+          "graph_digest": {
+            "title": "Graph Digest",
+            "type": "string"
+          },
+          "graph_revision_id": {
+            "format": "uuid",
+            "title": "Graph Revision Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemSnapshot"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "readiness": {
+            "items": {
+              "$ref": "#/components/schemas/ItemReadiness"
+            },
+            "title": "Readiness",
+            "type": "array"
+          },
+          "revision_number": {
+            "minimum": 1.0,
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph_revision_id",
+          "epic_id",
+          "brief_revision_id",
+          "brief_digest",
+          "revision_number",
+          "epic_version",
+          "graph_digest",
+          "items",
+          "created_at"
+        ],
+        "title": "GraphRevisionResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2548,6 +2759,197 @@
           "role"
         ],
         "title": "HealthResponse",
+        "type": "object"
+      },
+      "ItemInput": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Acceptance Criteria",
+            "type": "array"
+          },
+          "dependency_item_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 128,
+            "title": "Dependency Item Ids",
+            "type": "array"
+          },
+          "disposition": {
+            "enum": [
+              "required",
+              "deferred"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "ordinal": {
+            "minimum": 0.0,
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "source_requirement_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Source Requirement Ids",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "disposition",
+          "ordinal",
+          "title",
+          "outcome",
+          "acceptance_criteria",
+          "source_requirement_ids"
+        ],
+        "title": "ItemInput",
+        "type": "object"
+      },
+      "ItemReadiness": {
+        "additionalProperties": false,
+        "properties": {
+          "dependency_item_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Dependency Item Ids",
+            "type": "array"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 256,
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "blocked",
+              "deferred"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "status",
+          "reason",
+          "dependency_item_ids"
+        ],
+        "title": "ItemReadiness",
+        "type": "object"
+      },
+      "ItemSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Acceptance Criteria",
+            "type": "array"
+          },
+          "dependency_item_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 128,
+            "title": "Dependency Item Ids",
+            "type": "array"
+          },
+          "disposition": {
+            "enum": [
+              "required",
+              "deferred"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "graph_revision_id": {
+            "format": "uuid",
+            "title": "Graph Revision Id",
+            "type": "string"
+          },
+          "item_digest": {
+            "title": "Item Digest",
+            "type": "string"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "ordinal": {
+            "minimum": 0.0,
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "source_requirement_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Source Requirement Ids",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "disposition",
+          "ordinal",
+          "title",
+          "outcome",
+          "acceptance_criteria",
+          "source_requirement_ids",
+          "graph_revision_id",
+          "item_digest"
+        ],
+        "title": "ItemSnapshot",
         "type": "object"
       },
       "JevPolicy": {
@@ -9312,6 +9714,51 @@
         "summary": "Get Accepted Brief"
       }
     },
+    "/api/epics/{epic_id}/accepted-graph": {
+      "get": {
+        "operationId": "get_accepted_graph_api_epics__epic_id__accepted_graph_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedGraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Accepted Graph"
+      }
+    },
     "/api/epics/{epic_id}/brief-adoptions": {
       "post": {
         "operationId": "adopt_brief_revision_api_epics__epic_id__brief_adoptions_post",
@@ -9544,6 +9991,240 @@
           }
         ],
         "summary": "Get Brief Revision"
+      }
+    },
+    "/api/epics/{epic_id}/graph-adoptions": {
+      "post": {
+        "operationId": "adopt_graph_revision_api_epics__epic_id__graph_adoptions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphAdoptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Adopt Graph Revision"
+      }
+    },
+    "/api/epics/{epic_id}/graph-revisions": {
+      "get": {
+        "operationId": "list_graph_revisions_api_epics__epic_id__graph_revisions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GraphRevisionResponse"
+                  },
+                  "title": "Response List Graph Revisions Api Epics  Epic Id  Graph Revisions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Graph Revisions"
+      },
+      "post": {
+        "operationId": "create_graph_revision_api_epics__epic_id__graph_revisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphRevisionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphRevisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Create Graph Revision"
+      }
+    },
+    "/api/epics/{epic_id}/graph-revisions/{graph_revision_id}": {
+      "get": {
+        "operationId": "get_graph_revision_api_epics__epic_id__graph_revisions__graph_revision_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "graph_revision_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Graph Revision Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphRevisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Graph Revision"
       }
     },
     "/api/evaluations": {

@@ -135,7 +135,6 @@ class FakeRunService:
 
     async def profile_selection(self, run_id: UUID) -> None:
         assert run_id == self.run.id
-        return None
 
     async def list_with_profile_selections(self, *, project_id=None, task_id=None):
         records = await self.list(project_id=project_id, task_id=task_id)
