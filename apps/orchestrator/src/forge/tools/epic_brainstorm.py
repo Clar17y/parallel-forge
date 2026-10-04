@@ -56,6 +56,7 @@ def _redact_private_keys(value: str) -> str:
 
 
 def _safe_path(value: str) -> None:
+    _safe_metadata(value)
     normalized = value.replace("\\", "/")
     parts = normalized.split("/")
     if (
@@ -67,6 +68,16 @@ def _safe_path(value: str) -> None:
         or any(part.lower().endswith((".pem", ".key", ".p12", ".env", ".ppk")) for part in parts)
     ):
         raise RepositoryAccessDenied("repository path is unavailable to brainstorming")
+
+
+def _safe_metadata(value: str) -> None:
+    if not isinstance(value, str) or redact_durable_text(value) != value:
+        raise RepositoryAccessDenied("repository metadata is unavailable to brainstorming")
+
+
+def _safe_count(value: int) -> None:
+    if type(value) is not int or value < 0:
+        raise RepositoryAccessDenied("repository metadata is unavailable to brainstorming")
 
 
 class BrainstormReadOnlyTools:
@@ -102,9 +113,13 @@ class BrainstormReadOnlyTools:
 
     @property
     def root(self) -> RepositoryRoot:
-        return self._reader.root
+        root = self._reader.root
+        _safe_metadata(str(root.path))
+        return root
 
     async def excludes_paths(self, paths: Sequence[str]) -> bool:
+        for path in paths:
+            _safe_metadata(path)
         await self._check()
         return self._reader.excludes_paths(paths)
 
@@ -112,15 +127,21 @@ class BrainstormReadOnlyTools:
         _safe_path(path)
         await self._check()
         entries = self._reader.list_files(path)
-        return tuple(
-            islice((item for item in entries if self._allowed(item.path)), self._max_items)
-        )
+        selected: list[RepositoryEntry] = []
+        for item in islice((item for item in entries if self._allowed(item.path)), self._max_items):
+            _safe_metadata(item.kind)
+            _safe_count(item.byte_count)
+            selected.append(item)
+        return tuple(selected)
 
     async def read_file(self, path: str) -> FileRead:
         _safe_path(path)
         await self._check()
         value = self._reader.read_file(path)
         _safe_path(value.path)
+        _safe_count(value.original_byte_count)
+        if type(value.truncated) is not bool:
+            raise RepositoryAccessDenied("repository metadata is unavailable to brainstorming")
         content, truncated = self._bound_text(value.content, source_truncated=value.truncated)
         return FileRead(
             path=value.path,
@@ -139,6 +160,10 @@ class BrainstormReadOnlyTools:
         for item in self._reader.search(literal, path):
             if not self._allowed(item.path):
                 continue
+            _safe_count(item.line_number)
+            _safe_metadata(item.path)
+            if not isinstance(item.line_text, str):
+                raise RepositoryAccessDenied("repository metadata is unavailable to brainstorming")
             if item.path not in protected_by_path:
                 source = self._reader.read_file(item.path)
                 protected: set[int] = set()
@@ -187,6 +212,9 @@ class BrainstormReadOnlyTools:
         for item in self._reader.read_instructions(target_path):
             if not self._allowed(item.path):
                 continue
+            _safe_count(item.original_byte_count)
+            if type(item.truncated) is not bool:
+                raise RepositoryAccessDenied("repository metadata is unavailable to brainstorming")
             content, truncated = self._bound_text(item.content, source_truncated=item.truncated)
             results.append(
                 InstructionDocument(

@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -41,6 +41,19 @@ from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRep
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 
 _OPERATION_GRACE_SECONDS = 10.0
+
+
+def _invocation_expired(created_at: datetime, reservation: Mapping[str, object]) -> bool:
+    """Evaluate the durable admission clock exactly, including after a restart."""
+    duration_ms = reservation.get("duration_ms")
+    if type(duration_ms) is not int or duration_ms < 1 or not isinstance(created_at, datetime):
+        return True
+    try:
+        elapsed = datetime.now(UTC) - created_at
+    except TypeError, OverflowError:
+        return True
+    elapsed_us = elapsed.days * 86_400_000_000 + elapsed.seconds * 1_000_000 + elapsed.microseconds
+    return elapsed_us >= duration_ms * 1000
 
 
 def brainstorm_worker_owner(base_worker_id: str) -> str:
@@ -108,6 +121,7 @@ class DurableBrainstormProcessLifecycle:
         receipt: ClientProcessReceipt | None = None,
         result: ClientProcessResult | None = None,
     ) -> None:
+        revoke_started = False
         async with self.sessions() as session, session.begin():
             job_id = await session.scalar(
                 select(BrainstormAttemptRow.job_id).where(
@@ -127,7 +141,9 @@ class DurableBrainstormProcessLifecycle:
             ):
                 raise BrainstormConflict("attempt authority revoked")
             if action == "intent" and (
-                job.state != "running" or attempt.lease_expires_at <= datetime.now(UTC)
+                job.state != "running"
+                or attempt.lease_expires_at <= datetime.now(UTC)
+                or _invocation_expired(attempt.created_at, attempt.reservation or {})
             ):
                 raise BrainstormConflict("launch authority expired or cancelled")
             if action == "intent":
@@ -143,18 +159,23 @@ class DurableBrainstormProcessLifecycle:
                     raise BrainstormConflict("process start lacks launch intent")
                 if receipt.launch_id != attempt.launch_id:
                     raise BrainstormConflict("process receipt differs from launch intent")
-                if job.state != "running" or attempt.lease_expires_at <= datetime.now(UTC):
-                    raise BrainstormConflict("launch authority expired or cancelled")
+                revoke_started = (
+                    job.state != "running"
+                    or attempt.lease_expires_at <= datetime.now(UTC)
+                    or _invocation_expired(attempt.created_at, attempt.reservation or {})
+                )
                 if attempt.process_started:
                     if (
                         attempt.process_pid != receipt.pid
                         or attempt.process_identity != receipt.process_start_token
                     ):
                         raise BrainstormConflict("process start replay identity conflicts")
-                    return
-                attempt.process_pid = receipt.pid
-                attempt.process_identity = receipt.process_start_token
-                attempt.process_started = True
+                else:
+                    # A child may already exist under a prior intent. Persist its
+                    # real receipt before rejecting further work so finish can match.
+                    attempt.process_pid = receipt.pid
+                    attempt.process_identity = receipt.process_start_token
+                    attempt.process_started = True
             else:
                 if attempt.process_settled:
                     return
@@ -182,6 +203,8 @@ class DurableBrainstormProcessLifecycle:
                 attempt.terminal_proof = terminal_launch_proof(result).model_dump(mode="json")
                 attempt.process_settled = True
             await session.flush()
+        if revoke_started:
+            raise BrainstormConflict("launch authority expired or cancelled")
 
     async def launch_intent(self, launch_id: str) -> None:
         await self._transition("intent", launch_id)
@@ -364,6 +387,11 @@ class EpicBrainstormWorker:
                 next_failure = (
                     "cancelled"
                     if row.state == "cancel_requested" or row.failure == "cancelled"
+                    else "interrupted"
+                    if row.failure == "interrupted"
+                    else "timeout"
+                    if row.failure == "timeout"
+                    or _invocation_expired(attempt.created_at, attempt.reservation or {})
                     else "process_unsettled"
                 )
                 if row.state != "reconciling" or row.failure != next_failure:
@@ -378,7 +406,17 @@ class EpicBrainstormWorker:
             attempt.usage = self._host_usage(attempt, launched=False, recovery=True)
         cancelled = row.state == "cancel_requested" or row.failure == "cancelled"
         row.state, row.failure = (
-            ("cancelled", "cancelled") if cancelled else ("failed", "lost_result")
+            ("cancelled", "cancelled")
+            if cancelled
+            else (
+                "failed",
+                "interrupted"
+                if row.failure == "interrupted"
+                else "timeout"
+                if row.failure == "timeout"
+                or _invocation_expired(attempt.created_at, attempt.reservation or {})
+                else "lost_result",
+            )
         )
         row.version += 1
         row.next_eligible_at = None
@@ -417,21 +455,35 @@ class EpicBrainstormWorker:
             )
             attempt_id, fence = attempt.id, attempt.fence
             reservation = dict(attempt.reservation)
+            admitted_at = attempt.created_at
+        if _invocation_expired(admitted_at, reservation):
+            await self._settle_not_launched(snapshot.job_id, attempt_id, fence, "timeout")
+            return snapshot.job_id
         if stop.is_set():
             await self._settle_not_launched(snapshot.job_id, attempt_id, fence, "interrupted")
             return snapshot.job_id
         lifecycle = DurableBrainstormProcessLifecycle(self.sessions, attempt_id, fence, self.owner)
 
         async def cancelled() -> bool:
-            if stop.is_set() or job_cancel.is_set():
+            if (
+                stop.is_set()
+                or job_cancel.is_set()
+                or _invocation_expired(admitted_at, reservation)
+            ):
                 return True
             async with self.sessions() as session:
                 row = await session.get(BrainstormJobRow, snapshot.job_id)
-                return (
+                persisted_cancelled = (
                     row is None
                     or row.state == "cancel_requested"
                     or row.current_attempt_id != attempt_id
                 )
+            return (
+                _invocation_expired(admitted_at, reservation)
+                or stop.is_set()
+                or job_cancel.is_set()
+                or persisted_cancelled
+            )
 
         result: BrainstormGatewayResult | None = None
         failure = "unavailable"
@@ -449,6 +501,9 @@ class EpicBrainstormWorker:
             )
             invocation = snapshot.model_copy(update={"budget": invocation_budget})
             gateway = self.gateway_factory(invocation)
+            if _invocation_expired(admitted_at, reservation):
+                await self._apply_bounded(snapshot, attempt_id, fence, None, "timeout", job_cancel)
+                return snapshot.job_id
 
             async def authorize_tool() -> None:
                 async with self.sessions() as session, session.begin():
@@ -464,6 +519,7 @@ class EpicBrainstormWorker:
                         or active.owner != self.owner
                         or active.fence != fence
                         or active.lease_expires_at <= datetime.now(UTC)
+                        or _invocation_expired(active.created_at, active.reservation or {})
                         or stop.is_set()
                         or job_cancel.is_set()
                     ):
@@ -479,22 +535,28 @@ class EpicBrainstormWorker:
                 gateway.execute(invocation, turns, reader, cancelled=cancelled, lifecycle=lifecycle)
             )
             self._track_operation(operation)
-            deadline = (
-                asyncio.get_running_loop().time() + cast(int, reservation["duration_ms"]) / 1000
-            )
             while not operation.done():
+                remaining = (
+                    cast(int, reservation["duration_ms"]) / 1000
+                    - (datetime.now(UTC) - admitted_at).total_seconds()
+                )
                 await asyncio.wait(
                     {operation},
-                    timeout=min(1.0, max(0.0, deadline - asyncio.get_running_loop().time())),
+                    timeout=min(1.0, max(0.0, remaining)),
                 )
+                if _invocation_expired(admitted_at, reservation):
+                    failure = "timeout"
+                    if not operation.done():
+                        operation.cancel()
+                    break
                 if operation.done():
                     break
                 if await cancelled():
-                    failure = "interrupted"
-                    job_cancel.set()
-                    operation.cancel()
-                elif asyncio.get_running_loop().time() >= deadline:
-                    failure = "timeout"
+                    if _invocation_expired(admitted_at, reservation):
+                        failure = "timeout"
+                    else:
+                        failure = "interrupted"
+                        job_cancel.set()
                     operation.cancel()
                 else:
                     await self._renew(snapshot.job_id, attempt_id, fence)
@@ -507,12 +569,17 @@ class EpicBrainstormWorker:
                 try:
                     result = operation.result()
                 except Exception:  # noqa: BLE001 - closed provider failure
-                    failure = "unavailable"
-            elif not done:
+                    if failure not in {"timeout", "interrupted"}:
+                        failure = "unavailable"
+            elif not done and failure not in {"timeout", "interrupted"}:
                 failure = "process_unsettled"
         except asyncio.CancelledError:
-            job_cancel.set()
-            failure = "interrupted"
+            if failure != "interrupted":
+                failure = (
+                    "timeout" if _invocation_expired(admitted_at, reservation) else "interrupted"
+                )
+            if failure != "timeout":
+                job_cancel.set()
             if operation is not None and not operation.done():
                 if not operation.cancelling():
                     operation.cancel()
@@ -520,12 +587,15 @@ class EpicBrainstormWorker:
             await self._apply_bounded(snapshot, attempt_id, fence, result, failure, job_cancel)
             raise
         except Exception:  # noqa: BLE001 - provider errors receive a closed durable category
-            failure = "unavailable"
+            if failure != "interrupted":
+                failure = (
+                    "timeout" if _invocation_expired(admitted_at, reservation) else "unavailable"
+                )
             if operation is not None and not operation.done():
                 if not operation.cancelling():
                     operation.cancel()
                 interrupted_during_cleanup = await self._wait_for_operation(operation)
-                if interrupted_during_cleanup:
+                if interrupted_during_cleanup and failure != "timeout":
                     job_cancel.set()
                     failure = "interrupted"
         interrupted = await self._apply_bounded(
@@ -577,7 +647,8 @@ class EpicBrainstormWorker:
                 await asyncio.wait({task}, timeout=remaining)
             except asyncio.CancelledError:
                 interrupted = True
-                job_cancel.set()
+                if failure != "timeout":
+                    job_cancel.set()
         task.result()
         return interrupted
 
@@ -593,6 +664,7 @@ class EpicBrainstormWorker:
                 or attempt.owner != self.owner
                 or attempt.fence != fence
                 or attempt.lease_expires_at <= datetime.now(UTC)
+                or _invocation_expired(attempt.created_at, attempt.reservation or {})
             ):
                 raise BrainstormConflict("worker lease revoked")
             attempt.lease_expires_at = datetime.now(UTC) + timedelta(seconds=self.lease_seconds)
@@ -656,6 +728,11 @@ class EpicBrainstormWorker:
                 return
             repository = self._repository(session)
             reset_at = self._quota_reset(result)
+            interrupted = failure == "interrupted" or stop.is_set()
+            timed_out = failure == "timeout" or (
+                not interrupted
+                and _invocation_expired(attempt.created_at, attempt.reservation or {})
+            )
             if not attempt.launch_intent:
                 attempt.process_settled = True
                 attempt.usage = self._host_usage(attempt, launched=False)
@@ -676,7 +753,13 @@ class EpicBrainstormWorker:
                 attempt.usage_known = False
                 row.state, row.failure = (
                     "reconciling",
-                    "cancelled" if row.state == "cancel_requested" else "process_unsettled",
+                    "cancelled"
+                    if row.state == "cancel_requested"
+                    else "interrupted"
+                    if interrupted
+                    else "timeout"
+                    if timed_out
+                    else "process_unsettled",
                 )
                 row.version += 1
                 attempt.state = "reconciling"
@@ -807,7 +890,10 @@ class EpicBrainstormWorker:
             if is_cancelled:
                 row.state, row.failure = "cancelled", "cancelled"
                 attempt.failure = "cancelled"
-            elif stop.is_set() or failure == "interrupted":
+            elif timed_out:
+                row.state, row.failure = "failed", "timeout"
+                attempt.failure = "timeout"
+            elif interrupted:
                 row.state, row.failure = "failed", "interrupted"
                 attempt.failure = "interrupted"
             elif (

@@ -1,8 +1,15 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from forge.application.ports.repository import RepositoryAccessDenied, RepositoryEntry
+from forge.application.ports.repository import (
+    FileRead,
+    InstructionDocument,
+    RepositoryAccessDenied,
+    RepositoryEntry,
+    SearchMatch,
+)
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 from forge.tools.repository import RepositoryReader
 
@@ -285,6 +292,73 @@ async def test_nested_key_markers_do_not_release_outer_private_context(
     assert all(body not in item.content for item in await tools.read_instructions())
     matches = await tools.search(body)
     assert len(matches) == 2 and all(item.line_text == "[REDACTED]" for item in matches)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_python", (False, True))
+async def test_credential_bearing_paths_never_escape_read_tools(
+    tmp_path: Path, force_python: bool
+) -> None:
+    credential = "api_key=" + "syntheticvalue123456"
+    private_path = "docs/" + credential + ".txt"
+    (tmp_path / "docs").mkdir()
+    (tmp_path / private_path).write_text("VISIBLE_MATCH", encoding="utf-8")
+    (tmp_path / "safe.txt").write_text("VISIBLE_MATCH", encoding="utf-8")
+    tools = BrainstormReadOnlyTools(RepositoryReader(tmp_path, force_python_search=force_python))
+    if not force_python:
+        assert tools._reader._select_rg_executable() is not None
+    for method in (tools.read_file, tools.list_files):
+        with pytest.raises(RepositoryAccessDenied) as error:
+            await method(private_path)
+        assert credential not in str(error.value)
+    with pytest.raises(RepositoryAccessDenied):
+        await tools.search("VISIBLE_MATCH", private_path)
+    with pytest.raises(RepositoryAccessDenied):
+        await tools.read_instructions(private_path)
+    assert {item.path for item in await tools.list_files("docs")} == set()
+    assert {item.path for item in await tools.search("VISIBLE_MATCH")} == {"safe.txt"}
+    assert (await tools.read_file("safe.txt")).content == "VISIBLE_MATCH"
+
+
+@pytest.mark.asyncio
+async def test_malicious_returned_repository_metadata_is_rejected() -> None:
+    credential = "password=" + "syntheticvalue123456"
+
+    class Reader:
+        root = SimpleNamespace(path=Path("/tmp") / credential)
+
+        def excludes_paths(self, paths):
+            return False
+
+        def list_files(self, path):
+            return (RepositoryEntry(path="safe.txt", kind=credential, byte_count=1),)
+
+        def read_file(self, path):
+            return FileRead(
+                path="safe.txt", content="safe", original_byte_count=credential, truncated=False
+            )
+
+        def search(self, literal, path):
+            return (SearchMatch(path=credential, line_number=1, line_text=literal),)
+
+        def read_instructions(self, target_path):
+            return (
+                InstructionDocument(
+                    path=credential, content="safe", original_byte_count=1, truncated=False
+                ),
+            )
+
+    tools = BrainstormReadOnlyTools(Reader())
+    with pytest.raises(RepositoryAccessDenied):
+        _ = tools.root
+    for operation in (tools.list_files(), tools.read_file("safe.txt")):
+        with pytest.raises(RepositoryAccessDenied) as error:
+            await operation
+        assert credential not in str(error.value)
+    assert await tools.search("safe") == ()
+    assert await tools.read_instructions() == ()
+    with pytest.raises(RepositoryAccessDenied):
+        await tools.excludes_paths((credential,))
 
 
 @pytest.mark.asyncio

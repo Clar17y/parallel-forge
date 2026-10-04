@@ -68,5 +68,6 @@ async def test_physical_child_stopped_after_started_receipt_loses_authority(
         await ClientProcessSupervisor().start(spec, lifecycle=ExpireAtStarted())
     async with brainstorm_session_factory() as session:
         row = await session.get(BrainstormAttemptRow, attempt_id)
-        assert row is not None and row.launch_intent and not row.process_started
+        assert row is not None and row.launch_intent and row.process_started
+        assert row.process_pid is not None
         assert row.process_settled and row.terminal_proof is not None

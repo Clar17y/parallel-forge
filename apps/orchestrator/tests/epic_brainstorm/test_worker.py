@@ -1995,3 +1995,566 @@ def test_invalid_direct_brainstorm_owner_is_rejected_before_claim(invalid: str) 
             gateway_factory=lambda _: None,
             reader_factory=lambda _: None,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_result", ("quota", "exception", "success"))
+async def test_duration_expiry_revokes_tools_launch_and_preserves_timeout(
+    brainstorm_session_factory, late_result: str
+) -> None:
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(max_duration_seconds=1, max_tool_calls=2),
+    )
+    observations = {}
+
+    class Reader:
+        def excludes_paths(self, paths):
+            return False
+
+    class ResistantGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            observations["before_tool"] = await reader.excludes_paths(("README.md",))
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                observations["cancelled_after_deadline"] = await cancelled()
+                try:
+                    await reader.excludes_paths(("README.md",))
+                except BrainstormConflict:
+                    observations["tool_denied"] = True
+                else:
+                    observations["tool_denied"] = False
+                try:
+                    await lifecycle.launch_intent(str(uuid4()))
+                except BrainstormConflict:
+                    observations["launch_denied"] = True
+                else:
+                    observations["launch_denied"] = False
+                if late_result == "exception":
+                    raise RuntimeError("SYNTHETIC_LATE_FAILURE")
+                if late_result == "success":
+                    return BrainstormGatewayResult(
+                        proposal=BrainstormProposal(
+                            turn_id=uuid4(), problem="Late proposal", requirements=("One",)
+                        ),
+                        telemetry=AttemptTelemetry(input_tokens=1, output_tokens=1, duration_ms=1),
+                    )
+                return BrainstormGatewayResult(
+                    proposal=None, telemetry=None, failure="quota_exhausted"
+                )
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="deadline-worker",
+        gateway_factory=lambda _: ResistantGateway(),
+        reader_factory=lambda _: Reader(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    assert observations == {
+        "before_tool": False,
+        "cancelled_after_deadline": True,
+        "tool_denied": True,
+        "launch_denied": True,
+    }
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "failed" and outcome.failure == "timeout"
+    assert outcome.proposal is None and outcome.process_settled
+    if late_result == "quota":
+        # The disposable migration refuses to drop durable quota evidence.
+        async with brainstorm_session_factory() as session, session.begin():
+            job = await session.get(BrainstormJobRow, receipt.job_id)
+            assert job is not None
+            await session.execute(
+                delete(SubscriptionQuotaObservation).where(
+                    SubscriptionQuotaObservation.source_attempt_id == job.current_attempt_id
+                )
+            )
+            pool = await PostgresBrainstormRepository(session).quota_pool(
+                PostgresBrainstormRepository.decode_snapshot(job)
+            )
+            assert pool.blocked and pool.next_eligible_at is not None
+            pool.blocked = False
+            pool.probe_attempt_id = None
+
+
+@pytest.mark.asyncio
+async def test_caller_cancellation_during_expired_cleanup_keeps_timeout(
+    brainstorm_session_factory, monkeypatch
+) -> None:
+    import forge.worker.epic_brainstorm as worker_module
+
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_duration_seconds=1)
+    )
+    monkeypatch.setattr(worker_module, "_OPERATION_GRACE_SECONDS", 2.0)
+    cancelled_by_deadline = asyncio.Event()
+    release = asyncio.Event()
+
+    class ResistantGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled_by_deadline.set()
+                await release.wait()
+                return BrainstormGatewayResult(proposal=None, telemetry=None)
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="deadline-caller-worker",
+        gateway_factory=lambda _: ResistantGateway(),
+        reader_factory=lambda _: object(),
+    )
+    task = asyncio.create_task(worker.run_once())
+    try:
+        await asyncio.wait_for(cancelled_by_deadline.wait(), 5)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        outcome = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert (outcome.state, outcome.failure) == ("failed", "timeout")
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_callback_rechecks_expiry_after_database_wait(
+    brainstorm_session_factory, monkeypatch
+) -> None:
+    import forge.worker.epic_brainstorm as worker_module
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_duration_seconds=3)
+    )
+    original_get = AsyncSession.get
+    entered, release = asyncio.Event(), asyncio.Event()
+    callback_results = []
+    job_reads = 0
+    expired = False
+    original_expired = worker_module._invocation_expired
+    monkeypatch.setattr(
+        worker_module,
+        "_invocation_expired",
+        lambda admitted, reservation: expired or original_expired(admitted, reservation),
+    )
+
+    async def delayed_get(self, entity, ident, *args, **kwargs):
+        nonlocal job_reads
+        if entity is BrainstormJobRow and ident == receipt.job_id:
+            job_reads += 1
+            if job_reads == 2:
+                entered.set()
+                await release.wait()
+        return await original_get(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "get", delayed_get)
+
+    class Gateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            callback_results.append(await cancelled())
+            callback_results.append(await cancelled())
+            return BrainstormGatewayResult(proposal=None, telemetry=None)
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="callback-expiry-worker",
+        gateway_factory=lambda _: Gateway(),
+        reader_factory=lambda _: object(),
+    )
+    task = asyncio.create_task(worker.run_once())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        expired = True
+        release.set()
+        assert await asyncio.wait_for(task, 5) == receipt.job_id
+        assert callback_results == [False, True]
+        outcome = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert outcome.failure == "timeout"
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_callback_rechecks_expiry_after_session_close(
+    brainstorm_session_factory, monkeypatch
+) -> None:
+    import forge.worker.epic_brainstorm as worker_module
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_duration_seconds=3)
+    )
+    original_exit = AsyncSession.__aexit__
+    original_expired = worker_module._invocation_expired
+    entered, release = asyncio.Event(), asyncio.Event()
+    expired = False
+    callback_task = None
+    callback_results = []
+    monkeypatch.setattr(
+        worker_module,
+        "_invocation_expired",
+        lambda admitted, reservation: expired or original_expired(admitted, reservation),
+    )
+
+    async def delayed_exit(self, *args):
+        result = await original_exit(self, *args)
+        if asyncio.current_task() is callback_task:
+            entered.set()
+            await release.wait()
+        return result
+
+    monkeypatch.setattr(AsyncSession, "__aexit__", delayed_exit)
+
+    class Gateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            nonlocal callback_task
+            callback_task = asyncio.current_task()
+            callback_results.append(await cancelled())
+            return BrainstormGatewayResult(proposal=None, telemetry=None)
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="callback-close-worker",
+        gateway_factory=lambda _: Gateway(),
+        reader_factory=lambda _: object(),
+    )
+    task = asyncio.create_task(worker.run_once())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        expired = True
+        release.set()
+        assert await asyncio.wait_for(task, 5) == receipt.job_id
+        assert callback_results == [True]
+        outcome = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert (outcome.state, outcome.failure) == ("failed", "timeout")
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_poll_uses_timeout_when_cancel_check_crosses_deadline(
+    brainstorm_session_factory, monkeypatch
+) -> None:
+    import forge.worker.epic_brainstorm as worker_module
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_duration_seconds=3)
+    )
+    original_get = AsyncSession.get
+    original_expired = worker_module._invocation_expired
+    entered, release = asyncio.Event(), asyncio.Event()
+    expired = False
+    intercepted = False
+    monkeypatch.setattr(
+        worker_module,
+        "_invocation_expired",
+        lambda admitted, reservation: expired or original_expired(admitted, reservation),
+    )
+
+    async def delayed_get(self, entity, ident, *args, **kwargs):
+        nonlocal intercepted
+        if entity is BrainstormJobRow and ident == receipt.job_id and not intercepted:
+            intercepted = True
+            entered.set()
+            await release.wait()
+            return None  # A stale absence also reports cancellation to the poll.
+        return await original_get(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "get", delayed_get)
+
+    class ResistantGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return BrainstormGatewayResult(proposal=None, telemetry=None)
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="poll-deadline-worker",
+        gateway_factory=lambda _: ResistantGateway(),
+        reader_factory=lambda _: object(),
+    )
+    task = asyncio.create_task(worker.run_once())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        expired = True
+        release.set()
+        assert await asyncio.wait_for(task, 5) == receipt.job_id
+        outcome = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert (outcome.state, outcome.failure) == ("failed", "timeout")
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("launched", (False, True))
+async def test_predeadline_stop_keeps_interrupted_cause_across_expiry_and_recovery(
+    brainstorm_session_factory, monkeypatch, launched: bool
+) -> None:
+    import forge.worker.epic_brainstorm as worker_module
+
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_duration_seconds=3)
+    )
+    monkeypatch.setattr(worker_module, "_OPERATION_GRACE_SECONDS", 0.2)
+    entered, aged, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    stop = asyncio.Event()
+    peer = None
+
+    class ResistantGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            nonlocal peer
+            if launched:
+                peer = await ClientProcessSupervisor().start(
+                    ClientLaunchSpec(
+                        argv=(sys.executable, "-c", "import time; time.sleep(30)"),
+                        cwd=".",
+                        environment={},
+                        duration_seconds=30,
+                    ),
+                    lifecycle=lifecycle,
+                )
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                async with brainstorm_session_factory() as session, session.begin():
+                    row = await session.get(BrainstormJobRow, receipt.job_id)
+                    assert row is not None and row.current_attempt_id is not None
+                    attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+                    assert attempt is not None
+                    attempt.created_at = datetime.now(UTC) - timedelta(seconds=4)
+                aged.set()
+                await release.wait()
+                return BrainstormGatewayResult(proposal=None, telemetry=None)
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="predeadline-stop-worker",
+        gateway_factory=lambda _: ResistantGateway(),
+        reader_factory=lambda _: object(),
+    )
+    task = asyncio.create_task(worker.run_once(stop_event=stop))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        stop.set()
+        await asyncio.wait_for(aged.wait(), 5)
+        assert await asyncio.wait_for(task, 5) == receipt.job_id
+        outcome = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert (outcome.state, outcome.failure) == (
+            ("reconciling", "interrupted") if launched else ("failed", "interrupted")
+        )
+        if launched:
+            assert outcome.held_reservations.tool_call_count > 0
+            async with brainstorm_session_factory() as session, session.begin():
+                row = await session.get(BrainstormJobRow, receipt.job_id)
+                assert row is not None
+                row.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+            restarted = EpicBrainstormWorker(
+                brainstorm_session_factory,
+                owner="reopened-worker",
+                gateway_factory=lambda _: None,
+                reader_factory=lambda _: object(),
+            )
+            assert await restarted.reconcile_settled() is None
+            pending = await service.observe(
+                epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+            )
+            assert (pending.state, pending.failure) == ("reconciling", "interrupted")
+            assert peer is not None
+            await peer.close()
+            async with brainstorm_session_factory() as session, session.begin():
+                row = await session.get(BrainstormJobRow, receipt.job_id)
+                assert row is not None
+                row.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+            assert await restarted.reconcile_settled() == receipt.job_id
+            settled = await service.observe(
+                epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+            )
+            assert (settled.state, settled.failure) == ("failed", "interrupted")
+    finally:
+        release.set()
+        if peer is not None:
+            await peer.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_preserves_expired_duration_cause_and_holds(brainstorm_session_factory):
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_duration_seconds=1)
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        repository = PostgresBrainstormRepository(session)
+        claimed = await repository.claim("deadline-recovery", 5)
+        assert claimed is not None
+        row, attempt = claimed
+        snapshot = repository.decode_snapshot(row)
+        attempt.created_at = datetime.now(UTC) - timedelta(seconds=3)
+        attempt.launch_intent = True
+        attempt.launch_id = str(uuid4())
+        attempt.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        attempt_id, fence = attempt.id, attempt.fence
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="deadline-recovery",
+        gateway_factory=lambda _: None,
+        reader_factory=lambda _: object(),
+    )
+    await worker._apply(snapshot, attempt_id, fence, None, "timeout", asyncio.Event())
+    initial = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert initial.state == "reconciling" and initial.failure == "timeout"
+    assert initial.cumulative_usage.duration_ms + initial.held_reservations.duration_ms >= 1000
+    assert await worker.reconcile_settled() is None
+    again = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert again.state == "reconciling" and again.failure == "timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("human_cancel", (False, True))
+async def test_expired_duration_denies_new_start_but_accepts_real_terminal_proof(
+    brainstorm_session_factory, human_cancel: bool
+) -> None:
+    service, epic_id, project_id, actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_duration_seconds=2)
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        repository = PostgresBrainstormRepository(session)
+        claimed = await repository.claim("deadline-process", 5)
+        assert claimed is not None
+        row, attempt = claimed
+        snapshot = repository.decode_snapshot(row)
+        attempt_id, fence = attempt.id, attempt.fence
+    lifecycle = DurableBrainstormProcessLifecycle(
+        brainstorm_session_factory, attempt_id, fence, "deadline-process"
+    )
+    peer = await ClientProcessSupervisor().start(
+        ClientLaunchSpec(
+            argv=(sys.executable, "-c", "import time; time.sleep(30)"),
+            cwd=".",
+            environment={},
+            duration_seconds=40,
+        ),
+        lifecycle=lifecycle,
+    )
+    try:
+        async with brainstorm_session_factory() as session, session.begin():
+            stored = await session.get(BrainstormAttemptRow, attempt_id)
+            assert stored is not None and stored.process_started
+            stored.created_at = datetime.now(UTC) - timedelta(seconds=3)
+        with pytest.raises(BrainstormConflict, match="expired"):
+            await lifecycle.launch_intent(peer.receipt.launch_id)
+        with pytest.raises(BrainstormConflict, match="expired"):
+            await lifecycle.started(peer.receipt)
+        if human_cancel:
+            observed = await service.observe(
+                epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+            )
+            await service.cancel(
+                epic_id=epic_id,
+                project_id=project_id,
+                job_id=receipt.job_id,
+                expected_job_version=observed.job_version,
+                actor=actor,
+                key="deadline-cancel",
+            )
+        terminal = await peer.close()
+        assert terminal.stop_confirmed
+        async with brainstorm_session_factory() as session:
+            stored = await session.get(BrainstormAttemptRow, attempt_id)
+            assert stored is not None and stored.process_settled and stored.terminal_proof
+        worker = EpicBrainstormWorker(
+            brainstorm_session_factory,
+            owner="deadline-process",
+            gateway_factory=lambda _: None,
+            reader_factory=lambda _: object(),
+        )
+        await worker._apply(snapshot, attempt_id, fence, None, "timeout", asyncio.Event())
+        outcome = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert outcome.process_settled
+        assert (outcome.state, outcome.failure) == (
+            ("cancelled", "cancelled") if human_cancel else ("failed", "timeout")
+        )
+    finally:
+        await peer.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revocation", ("expired", "cancelled"))
+async def test_delayed_real_start_receipt_is_persisted_before_revoked_launch_rejection(
+    brainstorm_session_factory,
+    revocation: str,
+) -> None:
+    service, epic_id, project_id, actor, job_receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_duration_seconds=2)
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("late-start", 5)
+        assert claimed is not None
+        _, attempt = claimed
+        attempt_id, fence = attempt.id, attempt.fence
+    durable = DurableBrainstormProcessLifecycle(
+        brainstorm_session_factory, attempt_id, fence, "late-start"
+    )
+    received = []
+
+    class DelayedLifecycle:
+        async def launch_intent(self, launch_id):
+            await durable.launch_intent(launch_id)
+
+        async def started(self, receipt):
+            received.append(receipt)
+            if revocation == "expired":
+                async with brainstorm_session_factory() as session, session.begin():
+                    stored = await session.get(BrainstormAttemptRow, attempt_id)
+                    assert stored is not None
+                    stored.created_at = datetime.now(UTC) - timedelta(seconds=3)
+            else:
+                observed = await service.observe(
+                    epic_id=epic_id, project_id=project_id, job_id=job_receipt.job_id
+                )
+                await service.cancel(
+                    epic_id=epic_id,
+                    project_id=project_id,
+                    job_id=job_receipt.job_id,
+                    expected_job_version=observed.job_version,
+                    actor=actor,
+                    key="delayed-start-cancel",
+                )
+            await durable.started(receipt)
+
+        async def finished(self, receipt, result):
+            await durable.finished(receipt, result)
+
+    with pytest.raises(BrainstormConflict, match="expired"):
+        await ClientProcessSupervisor().start(
+            ClientLaunchSpec(
+                argv=(sys.executable, "-c", "import time; time.sleep(30)"),
+                cwd=".",
+                environment={},
+                duration_seconds=40,
+            ),
+            lifecycle=DelayedLifecycle(),
+        )
+    assert received
+    async with brainstorm_session_factory() as session:
+        stored = await session.get(BrainstormAttemptRow, attempt_id)
+        assert stored is not None
+        assert stored.process_started and stored.process_settled and stored.terminal_proof
+        assert stored.process_pid == received[0].pid
