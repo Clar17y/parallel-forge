@@ -1,0 +1,377 @@
+--- a/apps/orchestrator/src/forge/application/ports/epic_brainstorm.py
++++ b/apps/orchestrator/src/forge/application/ports/epic_brainstorm.py
+@@ -16,6 +16,7 @@
+     BrainstormTurn,
+     FrozenBriefContent,
+ )
++from forge.domain.epic_decomposition import DecompositionProposal
+ from forge.domain.subscription import AttemptTelemetry
+ from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
+ 
+@@ -55,10 +56,26 @@
+ 
+ @dataclass(frozen=True, slots=True)
+ class BrainstormGatewayResult:
+-    proposal: BrainstormProposal | None
++    proposal: BrainstormProposal | DecompositionProposal | None
+     telemetry: AttemptTelemetry | None
+     failure: str | None = None
+     quota_reset_at: str | None = None
++
++
++class AuthoringGatewayResult(Protocol):
++    """Fields the shared worker consumes from either subject's gateway result."""
++
++    @property
++    def proposal(self) -> BrainstormProposal | DecompositionProposal | None: ...
++
++    @property
++    def telemetry(self) -> AttemptTelemetry | None: ...
++
++    @property
++    def failure(self) -> str | None: ...
++
++    @property
++    def quota_reset_at(self) -> str | None: ...
+ 
+ 
+ class BrainstormGateway(Protocol):
+@@ -70,7 +87,7 @@
+         *,
+         cancelled: Callable[[], Awaitable[bool]],
+         lifecycle: BrainstormProcessLifecycle,
+-    ) -> BrainstormGatewayResult: ...
++    ) -> AuthoringGatewayResult: ...
+ 
+ 
+ class BrainstormProcessLifecycle(Protocol):
+@@ -82,6 +99,7 @@
+ 
+ 
+ __all__ = [
++    "AuthoringGatewayResult",
+     "BrainstormBriefPort",
+     "BrainstormGateway",
+     "BrainstormGatewayResult",
+--- a/apps/orchestrator/src/forge/application/services/epic_brainstorm.py
++++ b/apps/orchestrator/src/forge/application/services/epic_brainstorm.py
+@@ -5,7 +5,7 @@
+ from collections.abc import Awaitable, Callable
+ from dataclasses import dataclass
+ from importlib import import_module
+-from typing import cast
++from typing import Literal, cast
+ from uuid import UUID, uuid4
+ 
+ from pydantic import ValidationError
+@@ -99,6 +99,16 @@
+             route_selector,
+         )
+ 
++    async def require_kind(
++        self, *, epic_id: UUID, project_id: UUID, job_id: UUID,
++        kind: Literal["brainstorm", "decomposition"],
++    ) -> None:
++        async with self.sessions() as session:
++            repository = PostgresBrainstormRepository(session)
++            row = await repository.job(epic_id, project_id, job_id)
++            if repository.decode_snapshot(row).kind != kind:
++                raise BrainstormConflict("authoring job kind conflicts with route")
++
+     async def create(
+         self, *, epic_id: UUID, project_id: UUID, actor: AuthenticatedActor, key: str, text: str
+     ) -> tuple[UUID, int]:
+@@ -201,9 +211,10 @@
+         actor: AuthenticatedActor,
+         key: str,
+         expected_snapshot: AuthoringJobSnapshot | None = None,
++        kind: Literal["brainstorm", "decomposition"] = "brainstorm",
+     ) -> AuthoringReceipt:
+-        digest = canonical_digest(
+-            {
++        kind = expected_snapshot.kind if expected_snapshot is not None else kind
++        request = {
+                 "schema_version": 1,
+                 "action": "submit",
+                 "epic_id": str(epic_id),
+@@ -217,7 +228,9 @@
+                 if expected_snapshot
+                 else None,
+             }
+-        )
++        if kind != "brainstorm":
++            request["kind"] = kind
++        digest = canonical_digest(request)
+         async with self.sessions() as session, session.begin():
+             repository = PostgresBrainstormRepository(session)
+             await repository.lock_command(epic_id, key)
+@@ -228,6 +241,12 @@
+                 epic_id, project_id, conversation_id, lock=True
+             )
+             brief = await self.briefs(session).input(epic_id)
++            if kind == "decomposition" and (
++                brief.accepted_revision_id is None
++                or brief.accepted_digest is None
++                or brief.accepted_content is None
++            ):
++                raise BrainstormConflict("decomposition requires an accepted brief")
+             if (
+                 brief.project_id != project_id
+                 or brief.epic_version != expected_epic_version
+@@ -254,6 +273,7 @@
+                 epic_id=epic_id,
+                 project_id=project_id,
+                 conversation_id=conversation_id,
++                kind=kind,
+                 input_brief_revision_id=brief.accepted_revision_id,
+                 input_brief_digest=brief.accepted_digest,
+                 input_draft_digest=brief.draft_digest,
+@@ -449,6 +469,8 @@
+             brief = await self.briefs(session).input(epic_id, for_update=True)
+             row = await repository.job(epic_id, project_id, job_id, lock=True)
+             snapshot = repository.decode_snapshot(row)
++            if snapshot.kind != "brainstorm":
++                raise BrainstormConflict("authoring job kind conflicts with route")
+             if (
+                 brief.project_id != project_id
+                 or brief.epic_version != expected_epic_version
+@@ -535,7 +557,7 @@
+ 
+     async def submit(self, job: AuthoringJobSnapshot) -> AuthoringReceipt:
+         if (
+-            job.kind != "brainstorm"
++            job.kind not in ("brainstorm", "decomposition")
+             or job.epic_id != self.epic_id
+             or job.project_id != self.project_id
+         ):
+--- a/apps/orchestrator/src/forge/domain/epic_brainstorm.py
++++ b/apps/orchestrator/src/forge/domain/epic_brainstorm.py
+@@ -10,6 +10,7 @@
+ 
+ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+ 
++from forge.domain.epic_decomposition import DecompositionProposal
+ from forge.domain.operation import canonical_digest
+ from forge.domain.payload import validate_durable_payload
+ from forge.domain.subscription import RouteBinding, TaskBudget
+@@ -48,7 +49,7 @@
+     role: Literal["operator", "assistant"]
+     text: str
+     pending: bool = False
+-    proposal: BrainstormProposal | None = None
++    proposal: BrainstormProposal | DecompositionProposal | None = None
+ 
+     @field_validator("text")
+     @classmethod
+@@ -205,7 +206,7 @@
+     epic_id: UUID
+     project_id: UUID
+     conversation_id: UUID
+-    kind: Literal["brainstorm"] = "brainstorm"
++    kind: Literal["brainstorm", "decomposition"] = "brainstorm"
+     input_brief_revision_id: UUID | None
+     input_brief_digest: str | None
+     input_draft_digest: str
+@@ -391,7 +392,7 @@
+     job_version: int = Field(ge=1)
+     state: BrainstormState
+     proposal_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", max_length=64)
+-    proposal: BrainstormProposal | None = None
++    proposal: BrainstormProposal | DecompositionProposal | None = None
+     adopted_revision_id: UUID | None = None
+     failure: BrainstormFailure | None = None
+     usage_known: bool | None = None
+--- a/apps/orchestrator/src/forge/persistence/repositories/epic_brainstorm.py
++++ b/apps/orchestrator/src/forge/persistence/repositories/epic_brainstorm.py
+@@ -31,6 +31,7 @@
+     validate_brainstorm_budget,
+     validate_invocation_context,
+ )
++from forge.domain.epic_decomposition import DecompositionProposal
+ from forge.domain.operation import canonical_digest
+ from forge.domain.payload import redact_durable_text
+ from forge.domain.subscription import (
+@@ -54,6 +55,18 @@
+     SubscriptionQuotaObservation,
+     SubscriptionQuotaPool,
+ )
++
++
++def _parse_proposal(
++    payload: object, kind: str
++) -> BrainstormProposal | DecompositionProposal | None:
++    if payload is None:
++        return None
++    if kind == "decomposition":
++        return DecompositionProposal.model_validate(payload)
++    if kind == "brainstorm":
++        return BrainstormProposal.model_validate(payload)
++    raise BrainstormConflict("unknown authoring job kind")
+ 
+ 
+ class PostgresBrainstormRepository:
+@@ -559,7 +572,7 @@
+         ).all()
+         proposals = (
+             await self.session.scalars(
+-                select(BrainstormJobRow.proposal).where(
++                select(BrainstormJobRow).where(
+                     BrainstormJobRow.conversation_id == conversation_id,
+                     BrainstormJobRow.proposal.is_not(None),
+                 )
+@@ -567,9 +580,9 @@
+         ).all()
+         by_turn = {
+             proposal.turn_id: proposal
+-            for payload in proposals
+-            if payload is not None
+-            for proposal in (BrainstormProposal.model_validate(payload),)
++            for job in proposals
++            for proposal in (_parse_proposal(job.proposal, self.decode_snapshot(job).kind),)
++            if proposal is not None
+         }
+         return tuple(
+             BrainstormTurn.model_validate(
+@@ -796,9 +809,11 @@
+                 "job_version": row.version,
+                 "state": row.state,
+                 "proposal_digest": row.proposal_digest,
+-                "proposal": BrainstormProposal.model_validate(row.proposal)
+-                if row.proposal
+-                else None,
++                "proposal": (
++                    _parse_proposal(row.proposal, self.decode_snapshot(row).kind)
++                    if row.proposal
++                    else None
++                ),
+                 "adopted_revision_id": row.adopted_revision_id,
+                 "failure": row.failure,
+                 "usage_known": attempt.usage_known
+@@ -905,7 +920,7 @@
+         await self.session.flush()
+ 
+     async def claim(
+-        self, owner: str, lease_seconds: int = 30
++        self, owner: str, lease_seconds: int = 30, *, kinds: frozenset[str] = frozenset(("brainstorm",))
+     ) -> tuple[BrainstormJobRow, BrainstormAttemptRow] | None:
+         now = datetime.now(UTC)
+         seen: list[UUID] = []
+@@ -920,6 +935,7 @@
+                         | (BrainstormJobRow.next_eligible_at <= now)
+                     ),
+                     BrainstormJobRow.id.not_in(seen),
++                    BrainstormJobRow.snapshot["kind"].astext.in_(kinds),
+                 )
+                 .order_by(BrainstormJobRow.created_at, BrainstormJobRow.id)
+                 .with_for_update(skip_locked=True)
+--- a/apps/orchestrator/src/forge/worker/epic_brainstorm.py
++++ b/apps/orchestrator/src/forge/worker/epic_brainstorm.py
+@@ -24,7 +24,7 @@
+     ProcessIdentityStatus,
+     terminal_launch_proof,
+ )
+-from forge.application.ports.epic_brainstorm import BrainstormGateway, BrainstormGatewayResult
++from forge.application.ports.epic_brainstorm import AuthoringGatewayResult, BrainstormGateway
+ from forge.application.ports.repository import RepositoryReader
+ from forge.domain.epic_brainstorm import (
+     _MAX_USAGE,
+@@ -228,6 +228,7 @@
+         reader_factory: Callable[[AuthoringJobSnapshot], RepositoryReader],
+         lease_seconds: int = 30,
+         quota_policy: QuotaPolicy | None = None,
++        kinds: frozenset[str] = frozenset(("brainstorm",)),
+     ) -> None:
+         if (
+             not isinstance(owner, str)
+@@ -248,18 +249,30 @@
+             reader_factory,
+         )
+         self.lease_seconds = lease_seconds
++        if not kinds or not kinds <= frozenset(("brainstorm", "decomposition")):
++            raise ValueError("authoring worker kinds are invalid")
++        self.kinds = kinds
+         self.quota_policy = quota_policy or QuotaPolicy()
+-        self._active_operations: set[asyncio.Task[BrainstormGatewayResult]] = set()
+-
+-    def _retire_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> None:
++        self._active_operations: set[asyncio.Task[AuthoringGatewayResult]] = set()
++
++    def _retire_operation(self, operation: asyncio.Task[AuthoringGatewayResult]) -> None:
+         self._active_operations.discard(operation)
+         if not operation.cancelled():
+             # Retrieve without formatting or persisting provider exception text.
+             operation.exception()
+ 
+-    def _track_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> None:
++    def _track_operation(self, operation: asyncio.Task[AuthoringGatewayResult]) -> None:
+         self._active_operations.add(operation)
+         operation.add_done_callback(self._retire_operation)
++
++    async def drain(self) -> None:
++        operations = tuple(self._active_operations)
++        if operations:
++            done, pending = await asyncio.wait(operations, timeout=_OPERATION_GRACE_SECONDS)
++            if pending:
++                raise RuntimeError("authoring process did not settle during drain")
++            for operation in done:
++                self._retire_operation(operation)
+ 
+     def _repository(self, session: AsyncSession) -> PostgresBrainstormRepository:
+         return PostgresBrainstormRepository(session, quota_policy=self.quota_policy)
+@@ -287,7 +300,7 @@
+         }
+ 
+     @staticmethod
+-    def _quota_reset(result: BrainstormGatewayResult | None) -> datetime | None:
++    def _quota_reset(result: AuthoringGatewayResult | None) -> datetime | None:
+         if (
+             result is None
+             or not isinstance(result.quota_reset_at, str)
+@@ -445,7 +458,7 @@
+             return reconciled
+         async with self.sessions() as session, session.begin():
+             repository = self._repository(session)
+-            claimed = await repository.claim(self.owner, self.lease_seconds)
++            claimed = await repository.claim(self.owner, self.lease_seconds, kinds=self.kinds)
+             if claimed is None:
+                 return None
+             row, attempt = claimed
+@@ -485,9 +498,9 @@
+                 or persisted_cancelled
+             )
+ 
+-        result: BrainstormGatewayResult | None = None
++        result: AuthoringGatewayResult | None = None
+         failure = "unavailable"
+-        operation: asyncio.Task[BrainstormGatewayResult] | None = None
++        operation: asyncio.Task[AuthoringGatewayResult] | None = None
+         interrupted_during_cleanup = False
+         try:
+             # Construction is lazy. No client exists until the durable admission above.
+@@ -605,7 +618,7 @@
+             raise asyncio.CancelledError
+         return snapshot.job_id
+ 
+-    async def _wait_for_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> bool:
++    async def _wait_for_operation(self, operation: asyncio.Task[AuthoringGatewayResult]) -> bool:
+         deadline = asyncio.get_running_loop().time() + _OPERATION_GRACE_SECONDS
+         interrupted = False
+         while not operation.done():
+@@ -626,7 +639,7 @@
+         snapshot: AuthoringJobSnapshot,
+         attempt_id: UUID,
+         fence: UUID,
+-        result: BrainstormGatewayResult | None,
++        result: AuthoringGatewayResult | None,
+         failure: str,
+         job_cancel: asyncio.Event,
+     ) -> bool:
+@@ -710,7 +723,7 @@
+         snapshot: AuthoringJobSnapshot,
+         attempt_id: UUID,
+         fence: UUID,
+-        result: BrainstormGatewayResult | None,
++        result: AuthoringGatewayResult | None,
+         failure: str,
+         stop: asyncio.Event,
+     ) -> None:
