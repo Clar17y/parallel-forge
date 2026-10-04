@@ -22,6 +22,7 @@ _PRIVATE_KEY_MARKER = re.compile(
     r"(?P<kind>(?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?) ?-{4,5}"
 )
 _AMBIGUOUS_LINE_SEPARATOR = re.compile(r"[\v\f\x1c-\x1e\x85\u2028\u2029]|\r(?!\n)")
+_PUTTY_PRIVATE_HEADER = re.compile(r"(?i)putty-user-key-file-[0-9]+:")
 
 
 def _advance_private_key(active_kinds: list[str], marker: re.Match[str]) -> None:
@@ -49,7 +50,9 @@ def _redact_private_keys(value: str) -> str:
         pieces.extend((value[copied:start], "[REDACTED]"))
     else:
         pieces.append(value[copied:])
-    return "".join(pieces)
+    redacted = "".join(pieces)
+    putty = _PUTTY_PRIVATE_HEADER.search(redacted)
+    return redacted[: putty.start()] + "[REDACTED]" if putty else redacted
 
 
 def _safe_path(value: str) -> None:
@@ -61,7 +64,7 @@ def _safe_path(value: str) -> None:
         or any(part in ("..", "") for part in parts)
         or any(part.startswith(".") and part not in (".", ".env.example") for part in parts)
         or any(part.lower() in ("secrets", "credentials", ".ssh") for part in parts)
-        or any(part.lower().endswith((".pem", ".key", ".p12", ".env")) for part in parts)
+        or any(part.lower().endswith((".pem", ".key", ".p12", ".env", ".ppk")) for part in parts)
     ):
         raise RepositoryAccessDenied("repository path is unavailable to brainstorming")
 
@@ -140,12 +143,15 @@ class BrainstormReadOnlyTools:
                 source = self._reader.read_file(item.path)
                 protected: set[int] = set()
                 active_kinds: list[str] = []
+                putty_private = False
                 lines = source.content.splitlines()
                 for number, line in enumerate(lines, 1):
-                    hidden = bool(active_kinds)
+                    hidden = bool(active_kinds) or putty_private
                     for marker in _PRIVATE_KEY_MARKER.finditer(line):
                         hidden = True
                         _advance_private_key(active_kinds, marker)
+                    if _PUTTY_PRIVATE_HEADER.search(line):
+                        putty_private = hidden = True
                     if hidden:
                         protected.add(number)
                 if source.truncated:

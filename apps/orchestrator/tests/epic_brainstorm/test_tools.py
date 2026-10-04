@@ -285,3 +285,45 @@ async def test_nested_key_markers_do_not_release_outer_private_context(
     assert all(body not in item.content for item in await tools.read_instructions())
     matches = await tools.search(body)
     assert len(matches) == 2 and all(item.line_text == "[REDACTED]" for item in matches)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_python", (False, True))
+@pytest.mark.parametrize("version", ("2", "3"))
+async def test_putty_private_text_is_hidden_across_read_surfaces(
+    tmp_path: Path, force_python: bool, version: str
+) -> None:
+    heading = "PuTTY-User-Key-File-" + version
+    body = "SYNTHETIC_PRIVATE_BODY"
+    content = f"safe\n{heading}: ssh-rsa\nEncryption: none\nPrivate-Lines: 1\n{body}\n"
+    (tmp_path / "notes.txt").write_text(content, encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(content, encoding="utf-8")
+    (tmp_path / "sample.PPK").write_text(content, encoding="utf-8")
+    reader = RepositoryReader(tmp_path, force_python_search=force_python)
+    if not force_python:
+        assert reader._select_rg_executable() is not None
+    tools = BrainstormReadOnlyTools(reader, max_bytes=128)
+    with pytest.raises(RepositoryAccessDenied):
+        await tools.read_file("sample.PPK")
+    assert "sample.PPK" not in {entry.path for entry in await tools.list_files()}
+    with pytest.raises(RepositoryAccessDenied):
+        await tools.search(body, "sample.PPK")
+    read = await tools.read_file("notes.txt")
+    assert read.content.startswith("safe") and body not in read.content
+    assert all(body not in document.content for document in await tools.read_instructions())
+    matches = await tools.search(body)
+    assert matches and all(item.line_text == "[REDACTED]" for item in matches)
+
+
+@pytest.mark.asyncio
+async def test_truncated_putty_context_fails_closed_before_byte_cut(tmp_path: Path) -> None:
+    heading = "PuTTY-User-Key-File-3"
+    (tmp_path / "notes.txt").write_text(
+        f"safe\n{heading}: ssh-ed25519\nPrivate-Lines: 1\n" + "SYNTHETIC_BODY" * 20,
+        encoding="utf-8",
+    )
+    tools = BrainstormReadOnlyTools(RepositoryReader(tmp_path, max_file_bytes=80), max_bytes=12)
+    read = await tools.read_file("notes.txt")
+    assert read.truncated and read.content.startswith("safe")
+    assert "SYNTHETIC" not in read.content
+    assert all("SYNTHETIC" not in item.line_text for item in await tools.search("SYNTHETIC"))

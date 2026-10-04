@@ -40,6 +40,28 @@ from forge.persistence.models.epic_brainstorm import BrainstormAttemptRow, Brain
 from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRepository
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 
+_OPERATION_GRACE_SECONDS = 10.0
+
+
+def brainstorm_worker_owner(base_worker_id: str) -> str:
+    """Fit a configured worker identity into the durable attempt owner column."""
+    if (
+        not isinstance(base_worker_id, str)
+        or not base_worker_id
+        or len(base_worker_id) > 255
+        or "\x00" in base_worker_id
+    ):
+        raise ValueError("invalid brainstorm worker identity")
+    try:
+        encoded = base_worker_id.encode("utf-8")
+    except UnicodeError:
+        raise ValueError("invalid brainstorm worker identity") from None
+    suffix = "-brainstorm"
+    if len(base_worker_id) + len(suffix) <= 128:
+        return base_worker_id + suffix
+    digest = hashlib.sha256(encoded).hexdigest()
+    return f"{base_worker_id[:52]}-{digest}{suffix}"
+
 
 @lru_cache(maxsize=1)
 def worker_host_scope() -> str | None:
@@ -184,8 +206,18 @@ class EpicBrainstormWorker:
         lease_seconds: int = 30,
         quota_policy: QuotaPolicy | None = None,
     ) -> None:
-        if not owner or lease_seconds < 5:
+        if (
+            not isinstance(owner, str)
+            or not owner
+            or len(owner) > 128
+            or "\x00" in owner
+            or lease_seconds < 5
+        ):
             raise ValueError("worker identity and bounded lease are required")
+        try:
+            owner.encode("utf-8")
+        except UnicodeError:
+            raise ValueError("worker identity and bounded lease are required") from None
         self.sessions, self.owner, self.gateway_factory, self.reader_factory = (
             sessions,
             owner,
@@ -194,6 +226,17 @@ class EpicBrainstormWorker:
         )
         self.lease_seconds = lease_seconds
         self.quota_policy = quota_policy or QuotaPolicy()
+        self._active_operations: set[asyncio.Task[BrainstormGatewayResult]] = set()
+
+    def _retire_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> None:
+        self._active_operations.discard(operation)
+        if not operation.cancelled():
+            # Retrieve without formatting or persisting provider exception text.
+            operation.exception()
+
+    def _track_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> None:
+        self._active_operations.add(operation)
+        operation.add_done_callback(self._retire_operation)
 
     def _repository(self, session: AsyncSession) -> PostgresBrainstormRepository:
         return PostgresBrainstormRepository(session, quota_policy=self.quota_policy)
@@ -435,6 +478,7 @@ class EpicBrainstormWorker:
             operation = asyncio.create_task(
                 gateway.execute(invocation, turns, reader, cancelled=cancelled, lifecycle=lifecycle)
             )
+            self._track_operation(operation)
             deadline = (
                 asyncio.get_running_loop().time() + cast(int, reservation["duration_ms"]) / 1000
             )
@@ -456,7 +500,9 @@ class EpicBrainstormWorker:
                     await self._renew(snapshot.job_id, attempt_id, fence)
                 if operation.cancelled() or failure in {"interrupted", "timeout"}:
                     break
-            done, _ = await asyncio.wait({operation}, timeout=10)
+            done, _ = await asyncio.wait({operation}, timeout=_OPERATION_GRACE_SECONDS)
+            if done:
+                self._retire_operation(operation)
             if done and not operation.cancelled():
                 try:
                     result = operation.result()
@@ -489,9 +535,8 @@ class EpicBrainstormWorker:
             raise asyncio.CancelledError
         return snapshot.job_id
 
-    @staticmethod
-    async def _wait_for_operation(operation: asyncio.Task[BrainstormGatewayResult]) -> bool:
-        deadline = asyncio.get_running_loop().time() + 10
+    async def _wait_for_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> bool:
+        deadline = asyncio.get_running_loop().time() + _OPERATION_GRACE_SECONDS
         interrupted = False
         while not operation.done():
             remaining = deadline - asyncio.get_running_loop().time()
@@ -502,6 +547,8 @@ class EpicBrainstormWorker:
             except asyncio.CancelledError:
                 # A second caller cancellation must not interrupt shielded process cleanup.
                 interrupted = True
+        if operation.done():
+            self._retire_operation(operation)
         return interrupted
 
     async def _apply_bounded(

@@ -126,7 +126,7 @@ diff --git a/apps/orchestrator/src/forge/worker/main.py b/apps/orchestrator/src/
  from forge.persistence.unit_of_work import PostgresUnitOfWork
  from forge.settings import Settings
  from forge.worker.composition import WorkerCompositionError, WorkerHandlers, compose_worker_handlers
-+from forge.worker.epic_brainstorm import EpicBrainstormWorker
++from forge.worker.epic_brainstorm import EpicBrainstormWorker, brainstorm_worker_owner
  from forge.worker.startup import run_startup_recovery
  from forge.worker.startup_intervention import StartupInterventionRecovery
  from forge.worker.subscription_installations import (
@@ -172,7 +172,7 @@ diff --git a/apps/orchestrator/src/forge/worker/main.py b/apps/orchestrator/src/
 +        if brainstorm_gateway_factory is not None and brainstorm_reader_factory is not None:
 +            brainstorm = EpicBrainstormWorker(
 +                factory,
-+                owner=f"{base_worker_id}-brainstorm",
++                owner=brainstorm_worker_owner(base_worker_id),
 +                gateway_factory=brainstorm_gateway_factory,
 +                reader_factory=brainstorm_reader_factory,
 +                quota_policy=settings.subscription_quota_policy,

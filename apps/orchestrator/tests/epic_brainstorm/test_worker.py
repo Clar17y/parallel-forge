@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -1898,3 +1899,99 @@ async def test_cancel_after_read_before_launch_keeps_measured_usage(brainstorm_s
     assert await worker.run_once() is None
     blocked = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
     assert blocked.failure == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interruption", ("stop", "deadline", "caller", "repeated_caller"))
+async def test_late_gateway_failure_after_bounded_exit_is_consumed(
+    brainstorm_session_factory, monkeypatch, interruption: str
+) -> None:
+    import forge.worker.epic_brainstorm as worker_module
+
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(max_duration_seconds=1) if interruption == "deadline" else None,
+    )
+    monkeypatch.setattr(worker_module, "_OPERATION_GRACE_SECONDS", 0.02, raising=False)
+    entered, release = asyncio.Event(), asyncio.Event()
+    contexts = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+
+    class ResistantGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+                raise RuntimeError("SYNTHETIC_PROVIDER_PRIVATE_TEXT")
+
+    stop = asyncio.Event()
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="late-failure-worker",
+        gateway_factory=lambda _: ResistantGateway(),
+        reader_factory=lambda _: object(),
+    )
+    try:
+        task = asyncio.create_task(worker.run_once(stop_event=stop))
+        await asyncio.wait_for(entered.wait(), 5)
+        if interruption == "stop":
+            stop.set()
+        elif interruption in ("caller", "repeated_caller"):
+            task.cancel()
+            if interruption == "repeated_caller":
+                await asyncio.sleep(0)
+                task.cancel()
+        if interruption in ("caller", "repeated_caller"):
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 15)
+        else:
+            assert await asyncio.wait_for(task, 15) == receipt.job_id
+        release.set()
+        await asyncio.sleep(0.05)
+        gc.collect()
+        await asyncio.sleep(0)
+        assert not contexts
+        assert not worker._active_operations
+        outcome = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert outcome.proposal is None
+    finally:
+        release.set()
+        loop.set_exception_handler(previous_handler)
+
+
+@pytest.mark.parametrize("length", (117, 118, 128, 255))
+def test_brainstorm_owner_composition_is_bounded_and_distinct(length: int) -> None:
+    from forge.worker.epic_brainstorm import brainstorm_worker_owner
+
+    base = "x" * length
+    owner = brainstorm_worker_owner(base)
+    assert len(owner) <= 128
+    if length == 117:
+        assert owner == base + "-brainstorm"
+    else:
+        assert owner != brainstorm_worker_owner("x" * (length - 1) + "y")
+    if length > 117:
+        with pytest.raises(ValueError):
+            EpicBrainstormWorker(
+                None,
+                owner=base + "-brainstorm",
+                gateway_factory=lambda _: None,
+                reader_factory=lambda _: None,
+            )
+
+
+@pytest.mark.parametrize("invalid", ("", "x" * 129, "a\x00b", "a\ud800b"))
+def test_invalid_direct_brainstorm_owner_is_rejected_before_claim(invalid: str) -> None:
+    with pytest.raises(ValueError, match="worker identity"):
+        EpicBrainstormWorker(
+            None,
+            owner=invalid,
+            gateway_factory=lambda _: None,
+            reader_factory=lambda _: None,
+        )

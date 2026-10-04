@@ -17,8 +17,8 @@
       ]
     },
     "registration.patch": {
-      "sha256": "4e197efd8c413f7b8c91bff2a1fd2e9ce679dd37f125fc8cbf68cb7e8b687611",
-      "byte_length": 10402,
+      "sha256": "2b6b0eaebea312ae9fa5b21c39dbf0f9670c3d1a5861b8f467ab7b8f2deb47e9",
+      "byte_length": 10436,
       "target_paths": [
         "apps/orchestrator/src/forge/persistence/models/__init__.py",
         "apps/orchestrator/src/forge/api/app.py",
