@@ -1,0 +1,1457 @@
+import asyncio
+import sys
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+import pytest
+from forge.agents.client_process import ClientLaunchSpec, ClientProcessSupervisor, _process_token
+from forge.application.ports.epic_brainstorm import BrainstormGatewayResult, BriefInput
+from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.epic_brainstorm import EpicBrainstormService
+from forge.domain.epic_brainstorm import BrainstormConflict, BrainstormProposal
+from forge.domain.subscription import (
+    AttemptTelemetry,
+    RouteBinding,
+    RouteSpec,
+    TaskBudget,
+    UnknownTelemetryPolicy,
+)
+from forge.domain.subscription_quota import QuotaPolicy
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormAttemptRow,
+    BrainstormBudgetLedger,
+    BrainstormJobRow,
+    BrainstormQuotaAdmission,
+)
+from forge.persistence.models.project import Project
+from forge.persistence.models.subscription_quota import (
+    SubscriptionQuotaObservation,
+    SubscriptionQuotaPool,
+)
+from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRepository
+from forge.worker.epic_brainstorm import (
+    DurableBrainstormProcessLifecycle,
+    EpicBrainstormWorker,
+    worker_host_scope,
+)
+
+
+class BriefFixture:
+    def __init__(self, epic_id, project_id):
+        self.current = BriefInput(
+            epic_id=epic_id,
+            project_id=project_id,
+            epic_version=1,
+            draft_digest="a" * 64,
+            accepted_revision_id=None,
+            accepted_digest=None,
+        )
+        self.saved = []
+
+    async def input(self, epic_id, *, for_update=False):
+        assert epic_id == self.current.epic_id
+        return self.current
+
+    async def save_proposal_revision(self, epic_id, *, expected_version, source_job_id, proposal):
+        assert self.current.epic_version == expected_version
+        revision_id = uuid4()
+        self.saved.append((source_job_id, revision_id, proposal.digest))
+        self.current = replace(self.current, epic_version=expected_version + 1)
+        return revision_id
+
+
+class FakeGateway:
+    def __init__(self, *, finish=True, blocked=None):
+        self.finish, self.blocked = finish, blocked
+        self.result = None
+
+    async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+        if self.blocked:
+            self.blocked.set()
+        owner = self
+
+        class RecordingLifecycle:
+            async def launch_intent(self, launch_id):
+                await lifecycle.launch_intent(launch_id)
+
+            async def started(self, receipt):
+                await lifecycle.started(receipt)
+
+            async def finished(self, receipt, result):
+                owner.result = result
+                if owner.finish:
+                    await lifecycle.finished(receipt, result)
+
+        spec = ClientLaunchSpec(
+            argv=(
+                sys.executable,
+                "-c",
+                "import sys,json; sys.stdin.readline(); print(json.dumps({'ok':True}))",
+            ),
+            cwd=".",
+            environment={},
+            duration_seconds=5,
+        )
+        self.result = await ClientProcessSupervisor().run(
+            spec, {"prompt": turns[-1].text}, lifecycle=RecordingLifecycle()
+        )
+        proposal = BrainstormProposal(
+            turn_id=uuid4(), problem="Proposed problem", requirements=("One requirement",)
+        )
+        self.proposal = proposal
+        return BrainstormGatewayResult(
+            proposal=proposal,
+            telemetry=AttemptTelemetry(input_tokens=4, output_tokens=5, duration_ms=10),
+        )
+
+
+async def prepared(factory, *, attempts=2, budget=None, repository="example/repo", provider="fake"):
+    project_id, epic_id = uuid4(), uuid4()
+    async with factory() as session, session.begin():
+        session.add(
+            Project(
+                id=project_id,
+                canonical_path=f"/tmp/{project_id}",
+                github_repository=repository,
+                default_branch="main",
+            )
+        )
+    brief = BriefFixture(epic_id, project_id)
+    route = RouteSpec(provider=provider, client="fake", model="fixture")
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    service = EpicBrainstormService(
+        factory,
+        lambda _: brief,
+        route=RouteBinding(requested=route, effective=route),
+        budget=budget or TaskBudget(max_provider_attempts=attempts),
+    )
+    conversation_id, version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="create", text="Investigate"
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    receipt = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="submit",
+    )
+    return service, epic_id, project_id, actor, receipt
+
+
+@pytest.mark.asyncio
+async def test_restart_adoption_and_stale_draft(brainstorm_session_factory):
+    project_id, epic_id = uuid4(), uuid4()
+    async with brainstorm_session_factory() as session, session.begin():
+        session.add(
+            Project(
+                id=project_id,
+                canonical_path=f"/tmp/{project_id}",
+                github_repository="example/repo",
+                default_branch="main",
+            )
+        )
+    brief = BriefFixture(epic_id, project_id)
+    route = RouteSpec(provider="fake", client="fake", model="fixture")
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+
+    def service():
+        return EpicBrainstormService(
+            brainstorm_session_factory,
+            lambda _session: brief,
+            route=RouteBinding(requested=route, effective=route),
+            budget=TaskBudget(max_provider_attempts=2),
+        )
+
+    conversation_id, version = await service().create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="create", text="Please brainstorm"
+    )
+    turns = await service().turns(
+        epic_id=epic_id, project_id=project_id, conversation_id=conversation_id
+    )
+    receipt = await service().submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turns[0].turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="submit",
+    )
+    worker = lambda gateway: EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-A",
+        gateway_factory=lambda _: gateway,
+        reader_factory=lambda _: object(),
+    )
+    assert await worker(FakeGateway()).run_once() == receipt.job_id
+    outcome = await service().observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "proposed" and outcome.process_settled and outcome.usage_known
+    assert outcome.proposal is not None and outcome.proposal_digest == outcome.proposal.digest
+    adopted = await service().adopt(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        proposal_digest=outcome.proposal_digest,
+        expected_job_version=outcome.job_version,
+        expected_epic_version=1,
+        actor=actor,
+        key="adopt",
+    )
+    assert brief.saved == [(receipt.job_id, adopted, outcome.proposal_digest)]
+    assert (
+        await service().adopt(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=receipt.job_id,
+            proposal_digest=outcome.proposal_digest,
+            expected_job_version=outcome.job_version,
+            expected_epic_version=1,
+            actor=actor,
+            key="adopt",
+        )
+        == adopted
+    )
+    second_id, second_version = await service().create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="create-second", text="Follow up"
+    )
+    second_turn = (
+        await service().turns(epic_id=epic_id, project_id=project_id, conversation_id=second_id)
+    )[0]
+    second = await service().submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=second_id,
+        prompt_turn_id=second_turn.turn_id,
+        expected_epic_version=2,
+        expected_conversation_version=second_version,
+        actor=actor,
+        key="submit-second",
+    )
+    assert await worker(FakeGateway()).run_once() == second.job_id
+    second_outcome = await service().observe(
+        epic_id=epic_id, project_id=project_id, job_id=second.job_id
+    )
+    # Unaccepted human draft edits change epic version, even with unchanged accepted pointer.
+    brief.current = replace(brief.current, epic_version=3, draft_digest="b" * 64)
+    with pytest.raises(BrainstormConflict, match="brief changed"):
+        await service().adopt(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=second.job_id,
+            proposal_digest=second_outcome.proposal_digest,
+            expected_job_version=second_outcome.job_version,
+            expected_epic_version=2,
+            actor=actor,
+            key="adopt-stale",
+        )
+    assert len(brief.saved) == 1
+    assert (
+        await service().observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    ).state == "proposed"
+
+
+@pytest.mark.asyncio
+async def test_unsettled_launch_cannot_be_retried(brainstorm_session_factory):
+    project_id, epic_id = uuid4(), uuid4()
+    async with brainstorm_session_factory() as session, session.begin():
+        session.add(
+            Project(
+                id=project_id,
+                canonical_path=f"/tmp/{project_id}",
+                github_repository="example/repo",
+                default_branch="main",
+            )
+        )
+    brief = BriefFixture(epic_id, project_id)
+    route = RouteSpec(provider="fake", client="fake", model="fixture")
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    service = EpicBrainstormService(
+        brainstorm_session_factory,
+        lambda _: brief,
+        route=RouteBinding(requested=route, effective=route),
+        budget=TaskBudget(max_provider_attempts=2),
+    )
+    conversation_id, version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="create", text="Investigate"
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    receipt = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="submit",
+    )
+    gateway = FakeGateway(finish=False)
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-A",
+        gateway_factory=lambda _: gateway,
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    assert (
+        await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    ).state == "reconciling"
+    assert await worker.run_once() == receipt.job_id
+    async with brainstorm_session_factory() as session:
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        assert job is not None
+        attempt = await session.get(BrainstormAttemptRow, job.current_attempt_id)
+        assert attempt is not None and attempt.launch_intent and attempt.process_settled
+        attempt_id, fence = attempt.id, attempt.fence
+    await DurableBrainstormProcessLifecycle(
+        brainstorm_session_factory, attempt_id, fence, "worker-A"
+    ).finished(gateway.result.receipt, gateway.result)
+    assert await worker.run_once() is None
+    recovered = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert (
+        recovered.state == "failed"
+        and recovered.failure == "lost_result"
+        and recovered.usage_known is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_and_during_invocation_discards_late_proposal(
+    brainstorm_session_factory,
+):
+    service, epic_id, project_id, actor, receipt = await prepared(brainstorm_session_factory)
+    stopped = await service.cancel(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=receipt.job_version,
+        actor=actor,
+        key="cancel-before",
+    )
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() is None
+    assert stopped.state == "cancelled"
+    assert (
+        await service.cancel(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=receipt.job_id,
+            expected_job_version=receipt.job_version,
+            actor=actor,
+            key="cancel-before",
+        )
+        == stopped
+    )
+
+    # A separate job is already running when cancellation commits.
+    conversation_id, version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="create-2", text="Second idea"
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    second = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="submit-2",
+    )
+    started, released = asyncio.Event(), asyncio.Event()
+
+    class SlowGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            result = await FakeGateway().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            started.set()
+            await released.wait()
+            assert await cancelled()
+            return result
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-b",
+        gateway_factory=lambda _: SlowGateway(),
+        reader_factory=lambda _: object(),
+    )
+    operation = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(started.wait(), timeout=5)
+    current = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    await service.cancel(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=second.job_id,
+        expected_job_version=current.job_version,
+        actor=actor,
+        key="cancel-during",
+    )
+    released.set()
+    assert await operation == second.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    assert outcome.state == "cancelled" and outcome.proposal is None and outcome.process_settled
+
+
+@pytest.mark.asyncio
+async def test_concurrent_admission_and_shared_quota_wait(brainstorm_session_factory):
+    service, epic_id, project_id, _actor, receipt = await prepared(brainstorm_session_factory)
+    route = RouteSpec(provider="fake", client="fake", model="fixture")
+    key = QuotaPolicy().key_for(route)
+    async with brainstorm_session_factory() as session, session.begin():
+        session.add(
+            SubscriptionQuotaPool(
+                provider=key.provider,
+                account=key.account,
+                pool=key.pool,
+                revision=1,
+                blocked=True,
+                observed_at=datetime.now(UTC),
+                reason="usage_exhausted",
+                reset_at=datetime.now(UTC) + timedelta(hours=1),
+                next_eligible_at=datetime.now(UTC) + timedelta(hours=1),
+                retry_basis="known_reset",
+            )
+        )
+    worker = lambda owner: EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner=owner,
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker("one").run_once() is None
+    waiting = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert waiting.state == "quota_wait" and waiting.job_version > receipt.job_version
+    assert await worker("same").run_once() is None
+    assert (
+        await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    ).job_version == waiting.job_version
+    async with brainstorm_session_factory() as session, session.begin():
+        pool = await session.get(
+            SubscriptionQuotaPool, (key.provider, key.account, key.pool), with_for_update=True
+        )
+        assert pool is not None
+        pool.blocked, pool.next_eligible_at, pool.reset_at = False, None, None
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        assert job is not None
+        job.next_eligible_at = None
+    outcomes = await asyncio.gather(worker("one").run_once(), worker("two").run_once())
+    assert outcomes.count(receipt.job_id) == 1 and outcomes.count(None) == 1
+
+
+@pytest.mark.asyncio
+async def test_second_job_cannot_reset_epic_attempt_ceiling(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, attempts=1
+    )
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == first.job_id
+    conversation_id, version = await service.create(
+        epic_id=epic_id,
+        project_id=project_id,
+        actor=actor,
+        key="second-conversation",
+        text="Another idea",
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    second = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="second-job",
+    )
+    assert await worker.run_once() is None
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    assert outcome.state == "failed" and outcome.failure == "budget_exhausted"
+    assert outcome.cumulative_usage.input_tokens == 4
+    assert outcome.cumulative_usage.output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_unknown_cost_holds_epic_reservation_across_jobs(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_provider_attempts=3, max_cost_minor=9)
+    )
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == first.job_id
+    first_outcome = await service.observe(
+        epic_id=epic_id, project_id=project_id, job_id=first.job_id
+    )
+    assert first_outcome.held_reservations.estimated_api_cost_minor == 9
+    conversation_id, version = await service.create(
+        epic_id=epic_id,
+        project_id=project_id,
+        actor=actor,
+        key="cost-conversation",
+        text="Another cost",
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    second = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="cost-job",
+    )
+    assert await worker.run_once() is None
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    assert outcome.state == "failed" and outcome.failure == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_active_reservation_waits_then_wakes_other_job(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(brainstorm_session_factory)
+    conversation_id, version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="capacity-conversation", text="Two"
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    second = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="capacity-job",
+    )
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    class WaitingGateway(FakeGateway):
+        async def execute(self, *args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super().execute(*args, **kwargs)
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="capacity-a",
+        gateway_factory=lambda _: WaitingGateway(),
+        reader_factory=lambda _: object(),
+    )
+    task = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(entered.wait(), 5)
+    other = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="capacity-b",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await other.run_once() is None
+    waiting = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    assert waiting.state == "capacity_wait" and waiting.failure is None
+    assert waiting.reservation is None
+    third_conversation, third_version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="capacity-third", text="Three"
+    )
+    third_turn = (
+        await service.turns(
+            epic_id=epic_id, project_id=project_id, conversation_id=third_conversation
+        )
+    )[0]
+    third = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=third_conversation,
+        prompt_turn_id=third_turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=third_version,
+        actor=actor,
+        key="capacity-third-job",
+    )
+    assert await other.run_once() is None
+    third_wait = await service.observe(epic_id=epic_id, project_id=project_id, job_id=third.job_id)
+    assert third_wait.state == "capacity_wait"
+    await service.cancel(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=third.job_id,
+        expected_job_version=third_wait.job_version,
+        actor=actor,
+        key="cancel-capacity",
+    )
+    _, _, _, _, independent = await prepared(
+        brainstorm_session_factory, repository="example/independent"
+    )
+    assert await other.run_once() == independent.job_id
+    release.set()
+    assert await task == first.job_id
+    assert await other.run_once() == second.job_id
+    assert (
+        await service.observe(epic_id=epic_id, project_id=project_id, job_id=third.job_id)
+    ).state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_ceiling_conflict_isolated_from_other_queued_epic(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(brainstorm_session_factory)
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="conflict-worker",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == first.job_id
+    conversation_id, version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="conflict-conversation", text="Two"
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    incompatible = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="conflict-job",
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        ledger = await session.get(BrainstormBudgetLedger, epic_id, with_for_update=True)
+        assert ledger is not None
+        ledger.ceiling = {**ledger.ceiling, "max_tool_calls": 1}
+    _, _, _, _, other = await prepared(brainstorm_session_factory, repository="example/other")
+    assert await worker.run_once() is None
+    assert await worker.run_once() == other.job_id
+    outcome = await service.observe(
+        epic_id=epic_id, project_id=project_id, job_id=incompatible.job_id
+    )
+    assert outcome.state == "failed" and outcome.failure == "input_conflict"
+    assert outcome.reservation is None
+    assert (
+        await service.observe(epic_id=epic_id, project_id=project_id, job_id=first.job_id)
+    ).cumulative_usage.input_tokens == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operator_cancel", [False, True])
+async def test_restart_reconciles_only_confirmed_gone_physical_peer(
+    brainstorm_session_factory, operator_cancel
+):
+    service, epic_id, project_id, actor, receipt = await prepared(brainstorm_session_factory)
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)"
+    )
+    try:
+        token = _process_token(process.pid)
+        assert token
+        async with brainstorm_session_factory() as session, session.begin():
+            repository = PostgresBrainstormRepository(session)
+            claimed = await repository.claim("dead-worker", 5)
+            assert claimed is not None
+            row, attempt = claimed
+            attempt.launch_intent = True
+            attempt.launch_id = str(uuid4())
+            attempt.process_started = True
+            attempt.process_pid = process.pid
+            attempt.process_identity = token
+            attempt.origin_host = worker_host_scope()
+            attempt.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            admission = await session.get(BrainstormQuotaAdmission, attempt.id)
+            assert admission is not None
+            admission.probe = True
+            pool = await repository.quota_pool(repository.decode_snapshot(row))
+            pool.blocked = True
+            pool.probe_attempt_id = attempt.id
+        worker = EpicBrainstormWorker(
+            brainstorm_session_factory,
+            owner="new-worker",
+            gateway_factory=lambda _: FakeGateway(),
+            reader_factory=lambda _: object(),
+        )
+        assert await worker.reconcile_settled() is None
+        live = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+        assert live.state == "reconciling" and not live.process_settled
+        if operator_cancel:
+            await service.cancel(
+                epic_id=epic_id,
+                project_id=project_id,
+                job_id=receipt.job_id,
+                expected_job_version=live.job_version,
+                actor=actor,
+                key="cancel-reconciling",
+            )
+        async with brainstorm_session_factory() as session, session.begin():
+            attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+            assert attempt is not None
+            attempt.process_identity = "reused-identity"
+        assert await worker.reconcile_settled() is None
+        async with brainstorm_session_factory() as session, session.begin():
+            attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+            assert attempt is not None
+            attempt.process_identity = token
+            job = await session.get(BrainstormJobRow, receipt.job_id)
+            job.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+        process.terminate()
+        await asyncio.wait_for(process.wait(), 5)
+        async with brainstorm_session_factory() as session, session.begin():
+            attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+            assert attempt is not None
+            attempt.process_identity = None
+            job = await session.get(BrainstormJobRow, receipt.job_id)
+            job.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+        assert await worker.reconcile_settled() is None
+        missing = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert missing.state == "reconciling" and not missing.process_settled
+        async with brainstorm_session_factory() as session, session.begin():
+            attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+            assert attempt is not None
+            attempt.process_identity = token
+            attempt.origin_host = None
+            job = await session.get(BrainstormJobRow, receipt.job_id)
+            job.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+        assert await worker.reconcile_settled() is None
+        async with brainstorm_session_factory() as session, session.begin():
+            attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+            assert attempt is not None
+            attempt.origin_host = "foreign-host"
+            job = await session.get(BrainstormJobRow, receipt.job_id)
+            job.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+        assert await worker.reconcile_settled() is None
+        async with brainstorm_session_factory() as session, session.begin():
+            attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+            assert attempt is not None
+            attempt.origin_host = worker_host_scope()
+            job = await session.get(BrainstormJobRow, receipt.job_id)
+            job.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+        assert await worker.reconcile_settled() == receipt.job_id
+        settled = await service.observe(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id
+        )
+        assert settled.state == ("cancelled" if operator_cancel else "failed")
+        assert settled.failure == ("cancelled" if operator_cancel else "lost_result")
+        assert settled.process_settled and settled.usage_known is False
+        assert settled.usage.duration_ms is None
+        assert settled.held_reservations.duration_ms > 0
+        async with brainstorm_session_factory() as session, session.begin():
+            repository = PostgresBrainstormRepository(session)
+            pool = await repository.quota_pool(
+                repository.decode_snapshot(
+                    await repository.job(epic_id, project_id, receipt.job_id)
+                )
+            )
+            assert pool.probe_attempt_id is None
+            pool.blocked = False
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), 5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uncertain_oldest", [False, True])
+async def test_live_or_uncertain_oldest_orphan_does_not_starve_later_recovery(
+    brainstorm_session_factory, uncertain_oldest
+):
+    first_service, first_epic, first_project, _, first = await prepared(
+        brainstorm_session_factory, repository="example/recovery-first"
+    )
+    second_service, second_epic, second_project, _, second = await prepared(
+        brainstorm_session_factory, repository="example/recovery-second"
+    )
+    live = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)")
+    gone = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)")
+    try:
+        live_token, gone_token = _process_token(live.pid), _process_token(gone.pid)
+        assert live_token and gone_token
+        async with brainstorm_session_factory() as session, session.begin():
+            repository = PostgresBrainstormRepository(session)
+            first_claim = await repository.claim("dead-worker", 5)
+            second_claim = await repository.claim("dead-worker", 5)
+            assert first_claim is not None and second_claim is not None
+            assert first_claim[0].id == first.job_id and second_claim[0].id == second.job_id
+            for (_, attempt), process, token in (
+                (first_claim, live, live_token + "-reused" if uncertain_oldest else live_token),
+                (second_claim, gone, gone_token),
+            ):
+                attempt.launch_intent = True
+                attempt.launch_id = str(uuid4())
+                attempt.process_started = True
+                attempt.process_pid = process.pid
+                attempt.process_identity = token
+                attempt.origin_host = worker_host_scope()
+                attempt.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        gone.terminate()
+        await asyncio.wait_for(gone.wait(), 5)
+        worker = EpicBrainstormWorker(
+            brainstorm_session_factory,
+            owner="recover-other",
+            gateway_factory=lambda _: FakeGateway(),
+            reader_factory=lambda _: object(),
+        )
+        assert await worker.reconcile_settled() == second.job_id
+        first_outcome = await first_service.observe(
+            epic_id=first_epic, project_id=first_project, job_id=first.job_id
+        )
+        second_outcome = await second_service.observe(
+            epic_id=second_epic, project_id=second_project, job_id=second.job_id
+        )
+        assert first_outcome.state == "reconciling" and not first_outcome.process_settled
+        assert first_outcome.held_reservations.duration_ms > 0
+        assert second_outcome.state == "failed" and second_outcome.process_settled
+        _, _, _, _, independent = await prepared(
+            brainstorm_session_factory, repository="example/recovery-independent"
+        )
+        assert await worker.run_once() == independent.job_id
+    finally:
+        for process in (live, gone):
+            if process.returncode is None:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), 5)
+
+
+@pytest.mark.asyncio
+async def test_late_apply_cannot_replace_terminal_measurement_or_duplicate_turn(
+    brainstorm_session_factory,
+):
+    service, epic_id, project_id, _actor, receipt = await prepared(brainstorm_session_factory)
+    gateway = FakeGateway()
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="terminal-worker",
+        gateway_factory=lambda _: gateway,
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    before = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert before.proposal is not None
+    assert before.proposal.turn_id != gateway.proposal.turn_id
+    async with brainstorm_session_factory() as session:
+        row = await session.get(BrainstormJobRow, receipt.job_id)
+        assert row is not None and row.current_attempt_id is not None
+        attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+        assert attempt is not None
+        snapshot = PostgresBrainstormRepository.decode_snapshot(row)
+        attempt_id, fence = attempt.id, attempt.fence
+    await worker._apply(
+        snapshot,
+        attempt_id,
+        fence,
+        BrainstormGatewayResult(
+            proposal=BrainstormProposal(turn_id=before.proposal.turn_id, problem="Forged replay"),
+            telemetry=AttemptTelemetry(input_tokens=0, output_tokens=0, duration_ms=0),
+        ),
+        "unavailable",
+        asyncio.Event(),
+    )
+    after = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    turns = await service.turns(
+        epic_id=epic_id, project_id=project_id, conversation_id=snapshot.conversation_id
+    )
+    assert after == before and len(turns) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_capped_unknown_token_policy_is_honest(brainstorm_session_factory, allowed):
+    budget = TaskBudget(
+        max_input_tokens=10,
+        max_output_tokens=10,
+        unknown_telemetry_policy=UnknownTelemetryPolicy(allow_unknown_tokens=allowed),
+    )
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory, budget=budget
+    )
+
+    class UnknownGateway(FakeGateway):
+        async def execute(self, *args, **kwargs):
+            result = await super().execute(*args, **kwargs)
+            return replace(
+                result,
+                telemetry=AttemptTelemetry(input_tokens=None, output_tokens=5, duration_ms=10),
+            )
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="unknown-worker",
+        gateway_factory=lambda _: UnknownGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == ("proposed" if allowed else "failed")
+    assert outcome.failure == (None if allowed else "invalid_output")
+    assert outcome.held_reservations.input_tokens == 10
+
+
+@pytest.mark.asyncio
+async def test_measured_provider_overrun_fails_with_budget_category(brainstorm_session_factory):
+    service, epic_id, project_id, _actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_input_tokens=2)
+    )
+
+    class OverrunGateway(FakeGateway):
+        async def execute(self, *args, **kwargs):
+            result = await super().execute(*args, **kwargs)
+            return replace(
+                result, telemetry=AttemptTelemetry(input_tokens=4, output_tokens=5, duration_ms=10)
+            )
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="overrun-worker",
+        gateway_factory=lambda _: OverrunGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "failed" and outcome.failure == "budget_exhausted"
+    assert outcome.cumulative_usage.input_tokens == 4 and outcome.proposal is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_active_supervised_peer_reaps_before_settlement(brainstorm_session_factory):
+    service, epic_id, project_id, actor, receipt = await prepared(brainstorm_session_factory)
+    started = asyncio.Event()
+
+    class SleepingGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            class NotifyLifecycle:
+                async def launch_intent(self, launch_id):
+                    await lifecycle.launch_intent(launch_id)
+
+                async def started(self, process_receipt):
+                    await lifecycle.started(process_receipt)
+                    started.set()
+
+                async def finished(self, process_receipt, result):
+                    await lifecycle.finished(process_receipt, result)
+
+            async def slow_revoke():
+                await asyncio.sleep(1.6)
+
+            peer = await ClientProcessSupervisor().start(
+                ClientLaunchSpec(
+                    argv=(
+                        sys.executable,
+                        "-c",
+                        "import sys,time; sys.stdin.readline(); time.sleep(30)",
+                    ),
+                    cwd=".",
+                    environment={},
+                    duration_seconds=40,
+                ),
+                lifecycle=NotifyLifecycle(),
+                before_stop=slow_revoke,
+            )
+            try:
+                await peer.send({"prompt": turns[-1].text})
+                await peer.close_stdin()
+                while await peer.receive() is not None:
+                    pass
+            finally:
+                await peer.close()
+            return BrainstormGatewayResult(proposal=None, telemetry=None, failure="cancelled")
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: SleepingGateway(),
+        reader_factory=lambda _: object(),
+    )
+    task = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(started.wait(), 5)
+    current = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    await service.cancel(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=current.job_version,
+        actor=actor,
+        key="cancel-active",
+    )
+    assert await asyncio.wait_for(task, 15) == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "cancelled" and outcome.process_settled
+
+
+@pytest.mark.asyncio
+async def test_confirmed_exhaustion_blocks_pool_before_process_settles(brainstorm_session_factory):
+    _, _, _, _, receipt = await prepared(brainstorm_session_factory)
+    reset_at = datetime.now(UTC) + timedelta(hours=1)
+    async with brainstorm_session_factory() as session, session.begin():
+        repository = PostgresBrainstormRepository(session)
+        claimed = await repository.claim("worker-a")
+        assert claimed is not None
+        job, attempt = claimed
+        await repository.quota_settle(job, attempt, exhausted=True, reset_at=reset_at)
+        assert not attempt.process_settled
+    async with brainstorm_session_factory() as session:
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        assert job is not None
+        pool = await PostgresBrainstormRepository(session).quota_pool(
+            PostgresBrainstormRepository.decode_snapshot(job)
+        )
+        assert pool.blocked and pool.retry_basis == "known_reset"
+        assert pool.next_eligible_at == reset_at
+    # The base migration deliberately refuses to discard durable quota evidence.
+    # Restore this disposable test database so its downgrade can complete.
+    from sqlalchemy import delete
+
+    async with brainstorm_session_factory() as session, session.begin():
+        await session.execute(
+            delete(SubscriptionQuotaObservation).where(
+                SubscriptionQuotaObservation.source_attempt_id == attempt.id
+            )
+        )
+        pool = await session.get(
+            SubscriptionQuotaPool, (pool.provider, pool.account, pool.pool), with_for_update=True
+        )
+        assert pool is not None
+        pool.blocked = False
+        pool.probe_attempt_id = None
+
+
+@pytest.mark.asyncio
+async def test_expired_admission_without_launch_recovers_and_releases_budget(
+    brainstorm_session_factory,
+):
+    service, epic_id, project_id, _actor, receipt = await prepared(brainstorm_session_factory)
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("dead-worker")
+        assert claimed is not None
+        _, attempt = claimed
+        attempt.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="replacement",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "failed" and outcome.process_settled
+    assert outcome.held_reservations.duration_ms > 0
+    assert outcome.usage.duration_ms is None
+
+
+@pytest.mark.asyncio
+async def test_job_cancel_does_not_stop_shared_poller(brainstorm_session_factory):
+    service, epic_id, project_id, actor, receipt = await prepared(brainstorm_session_factory)
+    started = asyncio.Event()
+
+    class WaitingGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            started.set()
+            await asyncio.Event().wait()
+
+    shared_stop = asyncio.Event()
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: WaitingGateway(),
+        reader_factory=lambda _: object(),
+    )
+    task = asyncio.create_task(worker.run_once(stop_event=shared_stop))
+    await asyncio.wait_for(started.wait(), 5)
+    current = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    await service.cancel(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=current.job_version,
+        actor=actor,
+        key="cancel-shared",
+    )
+    assert await asyncio.wait_for(task, 5) == receipt.job_id
+    assert not shared_stop.is_set()
+
+
+@pytest.mark.asyncio
+async def test_second_invocation_receives_remaining_epic_capacity(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(max_provider_attempts=2, max_input_tokens=10, max_output_tokens=12),
+    )
+    budgets = []
+
+    class RecordingGateway(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            budgets.append(job.budget)
+            return await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: RecordingGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == first.job_id
+    conversation_id, version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="capacity-create", text="Follow-up"
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    second = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key="capacity-submit",
+    )
+    assert await worker.run_once() == second.job_id
+    assert [(b.max_input_tokens, b.max_output_tokens) for b in budgets] == [(10, 12), (6, 7)]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_gateway_sees_full_prior_proposal(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(brainstorm_session_factory)
+    seen = []
+
+    class ProposalGateway(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            seen.append(turns)
+            result = await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            proposal = result.proposal.model_copy(
+                update={
+                    "decisions": ("Keep the existing API",),
+                    "open_questions": ("Choose rollout date",),
+                }
+            )
+            return replace(result, proposal=proposal)
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: ProposalGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == first.job_id
+    async with brainstorm_session_factory() as session:
+        row = await session.get(BrainstormJobRow, first.job_id)
+        conversation_id = row.conversation_id
+    history = await service.turns(
+        epic_id=epic_id, project_id=project_id, conversation_id=conversation_id
+    )
+    assert history[-1].proposal is not None and history[-1].proposal.decisions == (
+        "Keep the existing API",
+    )
+    new_version = await service.append(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        expected_version=len(history) + 1,
+        actor=actor,
+        key="followup-turn",
+        text="What about the rollout date?",
+    )
+    latest = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[-1]
+    second = await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=latest.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=new_version,
+        actor=actor,
+        key="followup-job",
+    )
+    assert await worker.run_once() == second.job_id
+    assert seen[-1][-2].proposal.open_questions == ("Choose rollout date",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shutdown", [False, True])
+async def test_caller_cancellation_reaps_physical_peer_and_propagates(
+    brainstorm_session_factory, shutdown
+):
+    service, epic_id, project_id, actor, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(
+            max_provider_attempts=3,
+            unknown_telemetry_policy=UnknownTelemetryPolicy(max_uncertain_attempts=2),
+        ),
+    )
+    started = asyncio.Event()
+
+    class SleepingGateway:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            class NotifyLifecycle:
+                async def launch_intent(self, launch_id):
+                    await lifecycle.launch_intent(launch_id)
+
+                async def started(self, process_receipt):
+                    await lifecycle.started(process_receipt)
+                    started.set()
+
+                async def finished(self, process_receipt, result):
+                    await lifecycle.finished(process_receipt, result)
+
+            await ClientProcessSupervisor().run(
+                ClientLaunchSpec(
+                    argv=(
+                        sys.executable,
+                        "-c",
+                        "import sys,time; sys.stdin.readline(); time.sleep(30)",
+                    ),
+                    cwd=".",
+                    environment={},
+                    duration_seconds=40,
+                ),
+                {"prompt": turns[-1].text},
+                lifecycle=NotifyLifecycle(),
+            )
+            return BrainstormGatewayResult(proposal=None, telemetry=None, failure="cancelled")
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: SleepingGateway(),
+        reader_factory=lambda _: object(),
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(worker.run_once(stop_event=stop))
+    await asyncio.wait_for(started.wait(), 5)
+    if shutdown:
+        stop.set()
+        assert await asyncio.wait_for(task, 15) == receipt.job_id
+    else:
+        task.cancel()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 15)
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "failed" and outcome.failure == "interrupted"
+    assert outcome.process_settled
+    retried = await service.retry(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=outcome.job_version,
+        actor=actor,
+        key="retry-interrupted",
+    )
+    assert retried.state == "queued"
+    resumed = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-b",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await resumed.run_once() == receipt.job_id
+
+
+@pytest.mark.asyncio
+async def test_zero_uncertain_allowance_still_admits_measured_attempt(brainstorm_session_factory):
+    _, _, _, _, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(
+            max_provider_attempts=1,
+            unknown_telemetry_policy=UnknownTelemetryPolicy(max_uncertain_attempts=0),
+        ),
+    )
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_text_is_closed_before_persistence(brainstorm_session_factory):
+    service, epic_id, project_id, _actor, receipt = await prepared(brainstorm_session_factory)
+
+    class LeakingGateway(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            result = await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            return replace(result, proposal=None, failure="credential sk-private from stderr")
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: LeakingGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "failed" and outcome.failure == "unavailable"
+
+
+async def submit_second_on_epic(service, epic_id, project_id, actor, *, prefix):
+    conversation_id, version = await service.create(
+        epic_id=epic_id,
+        project_id=project_id,
+        actor=actor,
+        key=f"{prefix}-create",
+        text="Second idea",
+    )
+    turn = (
+        await service.turns(epic_id=epic_id, project_id=project_id, conversation_id=conversation_id)
+    )[0]
+    return await service.submit(
+        epic_id=epic_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        prompt_turn_id=turn.turn_id,
+        expected_epic_version=1,
+        expected_conversation_version=version,
+        actor=actor,
+        key=f"{prefix}-submit",
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_before_launch_failure_charges_epic_tool_capacity(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_provider_attempts=2, max_tool_calls=1)
+    )
+
+    class Reader:
+        def excludes_paths(self, paths):
+            return False
+
+    class ReadThenFail:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            await reader.excludes_paths(("README.md",))
+            await asyncio.sleep(0.02)
+            raise RuntimeError("client unavailable before launch")
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: ReadThenFail(),
+        reader_factory=lambda _: Reader(),
+    )
+    assert await worker.run_once() == first.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=first.job_id)
+    assert outcome.state == "failed" and outcome.process_settled
+    assert outcome.usage.tool_call_count == 1
+    assert outcome.usage.duration_ms > 0
+    assert outcome.cumulative_usage.tool_call_count == 1
+    second = await submit_second_on_epic(
+        service, epic_id, project_id, actor, prefix="read-before-launch"
+    )
+    assert await worker.run_once() is None
+    blocked = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    assert blocked.state == "failed" and blocked.failure == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_expired_read_before_launch_recovery_keeps_tool_charge(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_provider_attempts=2, max_tool_calls=1)
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("dead-worker")
+        assert claimed is not None
+        _, attempt = claimed
+        attempt.tool_calls_used = 1
+        attempt.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="replacement",
+        gateway_factory=lambda _: FakeGateway(),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == first.job_id
+    recovered = await service.observe(epic_id=epic_id, project_id=project_id, job_id=first.job_id)
+    assert recovered.usage.tool_call_count == 1
+    assert recovered.cumulative_usage.tool_call_count == 1
+    second = await submit_second_on_epic(service, epic_id, project_id, actor, prefix="expired-read")
+    assert await worker.run_once() is None
+    blocked = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    assert blocked.state == "failed" and blocked.failure == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_read_before_launch_keeps_measured_usage(brainstorm_session_factory):
+    service, epic_id, project_id, actor, first = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_provider_attempts=2, max_tool_calls=1)
+    )
+    read = asyncio.Event()
+
+    class Reader:
+        def excludes_paths(self, paths):
+            return False
+
+    class ReadThenWait:
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            await reader.excludes_paths(("README.md",))
+            read.set()
+            await asyncio.Event().wait()
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="worker-a",
+        gateway_factory=lambda _: ReadThenWait(),
+        reader_factory=lambda _: Reader(),
+    )
+    task = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(read.wait(), 5)
+    current = await service.observe(epic_id=epic_id, project_id=project_id, job_id=first.job_id)
+    await service.cancel(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=first.job_id,
+        expected_job_version=current.job_version,
+        actor=actor,
+        key="cancel-after-read",
+    )
+    assert await asyncio.wait_for(task, 5) == first.job_id
+    cancelled = await service.observe(epic_id=epic_id, project_id=project_id, job_id=first.job_id)
+    assert cancelled.state == "cancelled" and cancelled.usage.tool_call_count == 1
+    second = await submit_second_on_epic(
+        service, epic_id, project_id, actor, prefix="cancelled-read"
+    )
+    assert await worker.run_once() is None
+    blocked = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    assert blocked.failure == "budget_exhausted"

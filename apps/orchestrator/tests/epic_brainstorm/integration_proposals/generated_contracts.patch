@@ -1,0 +1,2545 @@
+diff --git a/apps/web/openapi.json b/apps/web/openapi.json
+--- a/apps/web/openapi.json
++++ b/apps/web/openapi.json
+@@ -1031,6 +1031,204 @@
+         "title": "AuthMode",
+         "type": "string"
+       },
++      "AuthoringOutcome": {
++        "additionalProperties": false,
++        "properties": {
++          "adopted_revision_id": {
++            "anyOf": [
++              {
++                "format": "uuid",
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Adopted Revision Id"
++          },
++          "cumulative_usage": {
++            "$ref": "#/components/schemas/BrainstormAmounts"
++          },
++          "currency": {
++            "anyOf": [
++              {
++                "maxLength": 3,
++                "pattern": "^[A-Z]{3}$",
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Currency"
++          },
++          "failure": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/BrainstormFailure"
++              },
++              {
++                "type": "null"
++              }
++            ]
++          },
++          "held_reasons": {
++            "$ref": "#/components/schemas/BrainstormHeldReasons"
++          },
++          "held_reservations": {
++            "$ref": "#/components/schemas/BrainstormAmounts"
++          },
++          "job_id": {
++            "format": "uuid",
++            "title": "Job Id",
++            "type": "string"
++          },
++          "job_version": {
++            "minimum": 1.0,
++            "title": "Job Version",
++            "type": "integer"
++          },
++          "process_settled": {
++            "default": false,
++            "title": "Process Settled",
++            "type": "boolean"
++          },
++          "proposal": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/BrainstormProposal"
++              },
++              {
++                "type": "null"
++              }
++            ]
++          },
++          "proposal_digest": {
++            "anyOf": [
++              {
++                "maxLength": 64,
++                "pattern": "^[0-9a-f]{64}$",
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Proposal Digest"
++          },
++          "reservation": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/BrainstormReservation"
++              },
++              {
++                "type": "null"
++              }
++            ]
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "state": {
++            "$ref": "#/components/schemas/BrainstormState"
++          },
++          "uncertain_attempts": {
++            "default": 0,
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Uncertain Attempts",
++            "type": "integer"
++          },
++          "unknown_usage_fields": {
++            "default": [],
++            "items": {
++              "$ref": "#/components/schemas/BrainstormDimension"
++            },
++            "maxItems": 4,
++            "title": "Unknown Usage Fields",
++            "type": "array"
++          },
++          "usage": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/BrainstormMeasuredUsage"
++              },
++              {
++                "type": "null"
++              }
++            ]
++          },
++          "usage_known": {
++            "anyOf": [
++              {
++                "type": "boolean"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Usage Known"
++          }
++        },
++        "required": [
++          "job_id",
++          "job_version",
++          "state"
++        ],
++        "title": "AuthoringOutcome",
++        "type": "object"
++      },
++      "AuthoringReceipt": {
++        "additionalProperties": false,
++        "properties": {
++          "job_id": {
++            "format": "uuid",
++            "title": "Job Id",
++            "type": "string"
++          },
++          "job_version": {
++            "minimum": 1.0,
++            "title": "Job Version",
++            "type": "integer"
++          },
++          "replay_key": {
++            "title": "Replay Key",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "state": {
++            "enum": [
++              "queued",
++              "running",
++              "quota_wait",
++              "capacity_wait",
++              "cancel_requested",
++              "cancelled",
++              "proposed",
++              "failed",
++              "reconciling"
++            ],
++            "title": "State",
++            "type": "string"
++          }
++        },
++        "required": [
++          "job_id",
++          "job_version",
++          "state",
++          "replay_key"
++        ],
++        "title": "AuthoringReceipt",
++        "type": "object"
++      },
+       "AvailableCommand": {
+         "additionalProperties": false,
+         "properties": {
+@@ -1153,6 +1351,557 @@
+           "absolute_expires_at"
+         ],
+         "title": "BootstrapResponse",
++        "type": "object"
++      },
++      "BrainstormAmounts": {
++        "additionalProperties": false,
++        "properties": {
++          "duration_ms": {
++            "default": 0,
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Duration Ms",
++            "type": "integer"
++          },
++          "estimated_api_cost_minor": {
++            "default": 0,
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Estimated Api Cost Minor",
++            "type": "integer"
++          },
++          "input_tokens": {
++            "default": 0,
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Input Tokens",
++            "type": "integer"
++          },
++          "output_tokens": {
++            "default": 0,
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Output Tokens",
++            "type": "integer"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "tool_call_count": {
++            "default": 0,
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Tool Call Count",
++            "type": "integer"
++          }
++        },
++        "title": "BrainstormAmounts",
++        "type": "object"
++      },
++      "BrainstormDimension": {
++        "enum": [
++          "duration_ms",
++          "tool_call_count",
++          "input_tokens",
++          "output_tokens",
++          "estimated_api_cost_minor"
++        ],
++        "type": "string"
++      },
++      "BrainstormEvidence": {
++        "additionalProperties": false,
++        "properties": {
++          "content_digest": {
++            "title": "Content Digest",
++            "type": "string"
++          },
++          "excerpt": {
++            "title": "Excerpt",
++            "type": "string"
++          },
++          "path": {
++            "title": "Path",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "path",
++          "content_digest",
++          "excerpt"
++        ],
++        "title": "BrainstormEvidence",
++        "type": "object"
++      },
++      "BrainstormFailure": {
++        "enum": [
++          "cancelled",
++          "lost_result",
++          "process_unsettled",
++          "budget_exhausted",
++          "quota_exhausted",
++          "unavailable",
++          "timeout",
++          "invalid_output",
++          "interrupted",
++          "input_conflict"
++        ],
++        "type": "string"
++      },
++      "BrainstormHeldReasons": {
++        "additionalProperties": false,
++        "properties": {
++          "duration_ms": {
++            "anyOf": [
++              {
++                "const": "unsettled_or_unknown",
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Duration Ms"
++          },
++          "estimated_api_cost_minor": {
++            "anyOf": [
++              {
++                "const": "unsettled_or_unknown",
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Estimated Api Cost Minor"
++          },
++          "input_tokens": {
++            "anyOf": [
++              {
++                "const": "unsettled_or_unknown",
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Input Tokens"
++          },
++          "output_tokens": {
++            "anyOf": [
++              {
++                "const": "unsettled_or_unknown",
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Output Tokens"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "tool_call_count": {
++            "anyOf": [
++              {
++                "const": "unsettled_or_unknown",
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Tool Call Count"
++          }
++        },
++        "title": "BrainstormHeldReasons",
++        "type": "object"
++      },
++      "BrainstormMeasuredUsage": {
++        "additionalProperties": false,
++        "properties": {
++          "duration_lower_bound_ms": {
++            "default": 0,
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Duration Lower Bound Ms",
++            "type": "integer"
++          },
++          "duration_ms": {
++            "anyOf": [
++              {
++                "maximum": 9.223372036854776e+18,
++                "minimum": 0.0,
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Duration Ms"
++          },
++          "estimated_api_cost_minor": {
++            "anyOf": [
++              {
++                "maximum": 9.223372036854776e+18,
++                "minimum": 0.0,
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Estimated Api Cost Minor"
++          },
++          "input_tokens": {
++            "anyOf": [
++              {
++                "maximum": 9.223372036854776e+18,
++                "minimum": 0.0,
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Input Tokens"
++          },
++          "output_tokens": {
++            "anyOf": [
++              {
++                "maximum": 9.223372036854776e+18,
++                "minimum": 0.0,
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Output Tokens"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "tool_call_count": {
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Tool Call Count",
++            "type": "integer"
++          },
++          "unknown_fields": {
++            "default": [],
++            "items": {
++              "$ref": "#/components/schemas/BrainstormDimension"
++            },
++            "maxItems": 4,
++            "title": "Unknown Fields",
++            "type": "array"
++          }
++        },
++        "required": [
++          "tool_call_count"
++        ],
++        "title": "BrainstormMeasuredUsage",
++        "type": "object"
++      },
++      "BrainstormProposal": {
++        "additionalProperties": false,
++        "properties": {
++          "assumptions": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 32,
++            "title": "Assumptions",
++            "type": "array"
++          },
++          "decisions": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 32,
++            "title": "Decisions",
++            "type": "array"
++          },
++          "evidence": {
++            "default": [],
++            "items": {
++              "$ref": "#/components/schemas/BrainstormEvidence"
++            },
++            "maxItems": 16,
++            "title": "Evidence",
++            "type": "array"
++          },
++          "exclusions": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 32,
++            "title": "Exclusions",
++            "type": "array"
++          },
++          "open_questions": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 32,
++            "title": "Open Questions",
++            "type": "array"
++          },
++          "outcomes": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 32,
++            "title": "Outcomes",
++            "type": "array"
++          },
++          "problem": {
++            "title": "Problem",
++            "type": "string"
++          },
++          "requirement_criteria": {
++            "additionalProperties": {
++              "items": {
++                "type": "string"
++              },
++              "type": "array"
++            },
++            "maxProperties": 32,
++            "title": "Requirement Criteria",
++            "type": "object"
++          },
++          "requirements": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 32,
++            "title": "Requirements",
++            "type": "array"
++          },
++          "resolved_turn_ids": {
++            "default": [],
++            "items": {
++              "format": "uuid",
++              "type": "string"
++            },
++            "title": "Resolved Turn Ids",
++            "type": "array"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "scope": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 32,
++            "title": "Scope",
++            "type": "array"
++          },
++          "turn_id": {
++            "format": "uuid",
++            "title": "Turn Id",
++            "type": "string"
++          }
++        },
++        "required": [
++          "turn_id",
++          "problem"
++        ],
++        "title": "BrainstormProposal",
++        "type": "object"
++      },
++      "BrainstormReservation": {
++        "additionalProperties": false,
++        "properties": {
++          "duration_ms": {
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Duration Ms",
++            "type": "integer"
++          },
++          "estimated_api_cost_minor": {
++            "anyOf": [
++              {
++                "maximum": 9.223372036854776e+18,
++                "minimum": 0.0,
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Estimated Api Cost Minor"
++          },
++          "input_tokens": {
++            "anyOf": [
++              {
++                "maximum": 9.223372036854776e+18,
++                "minimum": 0.0,
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Input Tokens"
++          },
++          "output_tokens": {
++            "anyOf": [
++              {
++                "maximum": 9.223372036854776e+18,
++                "minimum": 0.0,
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Output Tokens"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "tool_call_count": {
++            "maximum": 9.223372036854776e+18,
++            "minimum": 0.0,
++            "title": "Tool Call Count",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "duration_ms",
++          "tool_call_count"
++        ],
++        "title": "BrainstormReservation",
++        "type": "object"
++      },
++      "BrainstormState": {
++        "enum": [
++          "queued",
++          "running",
++          "quota_wait",
++          "capacity_wait",
++          "cancel_requested",
++          "cancelled",
++          "proposed",
++          "failed",
++          "reconciling"
++        ],
++        "type": "string"
++      },
++      "BrainstormThread": {
++        "additionalProperties": false,
++        "properties": {
++          "conversation_id": {
++            "format": "uuid",
++            "title": "Conversation Id",
++            "type": "string"
++          },
++          "conversation_version": {
++            "minimum": 1.0,
++            "title": "Conversation Version",
++            "type": "integer"
++          },
++          "job_ids": {
++            "default": [],
++            "items": {
++              "format": "uuid",
++              "type": "string"
++            },
++            "title": "Job Ids",
++            "type": "array"
++          }
++        },
++        "required": [
++          "conversation_id",
++          "conversation_version"
++        ],
++        "title": "BrainstormThread",
++        "type": "object"
++      },
++      "BrainstormTurn": {
++        "additionalProperties": false,
++        "properties": {
++          "conversation_id": {
++            "format": "uuid",
++            "title": "Conversation Id",
++            "type": "string"
++          },
++          "pending": {
++            "default": false,
++            "title": "Pending",
++            "type": "boolean"
++          },
++          "proposal": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/BrainstormProposal"
++              },
++              {
++                "type": "null"
++              }
++            ]
++          },
++          "role": {
++            "enum": [
++              "operator",
++              "assistant"
++            ],
++            "title": "Role",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "text": {
++            "title": "Text",
++            "type": "string"
++          },
++          "turn_id": {
++            "format": "uuid",
++            "title": "Turn Id",
++            "type": "string"
++          }
++        },
++        "required": [
++          "conversation_id",
++          "role",
++          "text"
++        ],
++        "title": "BrainstormTurn",
+         "type": "object"
+       },
+       "BriefAdoptionRequest": {
+@@ -1837,6 +2586,34 @@
+           "timeout_seconds"
+         ],
+         "title": "CommandSpec",
++        "type": "object"
++      },
++      "ConversationCreate": {
++        "additionalProperties": false,
++        "properties": {
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "text": {
++            "maxLength": 8000,
++            "minLength": 1,
++            "title": "Text",
++            "type": "string"
++          }
++        },
++        "required": [
++          "project_id",
++          "text"
++        ],
++        "title": "ConversationCreate",
+         "type": "object"
+       },
+       "CsrfResponse": {
+@@ -2794,6 +3571,72 @@
+         "title": "JevReportResponse",
+         "type": "object"
+       },
++      "JobControl": {
++        "additionalProperties": false,
++        "properties": {
++          "expected_job_version": {
++            "minimum": 1.0,
++            "title": "Expected Job Version",
++            "type": "integer"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "project_id",
++          "expected_job_version"
++        ],
++        "title": "JobControl",
++        "type": "object"
++      },
++      "JobSubmit": {
++        "additionalProperties": false,
++        "properties": {
++          "expected_conversation_version": {
++            "minimum": 1.0,
++            "title": "Expected Conversation Version",
++            "type": "integer"
++          },
++          "expected_epic_version": {
++            "minimum": 1.0,
++            "title": "Expected Epic Version",
++            "type": "integer"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "prompt_turn_id": {
++            "format": "uuid",
++            "title": "Prompt Turn Id",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "project_id",
++          "prompt_turn_id",
++          "expected_epic_version",
++          "expected_conversation_version"
++        ],
++        "title": "JobSubmit",
++        "type": "object"
++      },
+       "ListPage_AgentItem_": {
+         "additionalProperties": false,
+         "properties": {
+@@ -4054,6 +4897,45 @@
+           "digest"
+         ],
+         "title": "PromptMetadata",
++        "type": "object"
++      },
++      "ProposalAdopt": {
++        "additionalProperties": false,
++        "properties": {
++          "expected_epic_version": {
++            "minimum": 1.0,
++            "title": "Expected Epic Version",
++            "type": "integer"
++          },
++          "expected_job_version": {
++            "minimum": 1.0,
++            "title": "Expected Job Version",
++            "type": "integer"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "proposal_digest": {
++            "pattern": "^[0-9a-f]{64}$",
++            "title": "Proposal Digest",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "project_id",
++          "expected_job_version",
++          "expected_epic_version",
++          "proposal_digest"
++        ],
++        "title": "ProposalAdopt",
+         "type": "object"
+       },
+       "ProtectionSnapshotResponse": {
+@@ -8109,6 +8991,45 @@
+         "title": "TaskSection",
+         "type": "object"
+       },
++      "TurnAppend": {
++        "additionalProperties": false,
++        "properties": {
++          "expected_conversation_version": {
++            "minimum": 1.0,
++            "title": "Expected Conversation Version",
++            "type": "integer"
++          },
++          "pending": {
++            "default": false,
++            "title": "Pending",
++            "type": "boolean"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "text": {
++            "maxLength": 8000,
++            "minLength": 1,
++            "title": "Text",
++            "type": "string"
++          }
++        },
++        "required": [
++          "project_id",
++          "expected_conversation_version",
++          "text"
++        ],
++        "title": "TurnAppend",
++        "type": "object"
++      },
+       "UsageItem": {
+         "additionalProperties": false,
+         "properties": {
+@@ -9312,6 +10233,662 @@
+         "summary": "Get Accepted Brief"
+       }
+     },
++    "/api/epics/{epic_id}/brainstorm-conversations": {
++      "get": {
++        "operationId": "threads_api_epics__epic_id__brainstorm_conversations_get",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "query",
++            "name": "project_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Project Id",
++              "type": "string"
++            }
++          }
++        ],
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "items": {
++                    "$ref": "#/components/schemas/BrainstormThread"
++                  },
++                  "title": "Response Threads Api Epics  Epic Id  Brainstorm Conversations Get",
++                  "type": "array"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Threads"
++      },
++      "post": {
++        "operationId": "create_api_epics__epic_id__brainstorm_conversations_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/ConversationCreate"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "additionalProperties": {
++                    "anyOf": [
++                      {
++                        "format": "uuid",
++                        "type": "string"
++                      },
++                      {
++                        "type": "integer"
++                      }
++                    ]
++                  },
++                  "title": "Response Create Api Epics  Epic Id  Brainstorm Conversations Post",
++                  "type": "object"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Create"
++      }
++    },
++    "/api/epics/{epic_id}/brainstorm-conversations/{conversation_id}/jobs": {
++      "post": {
++        "operationId": "submit_api_epics__epic_id__brainstorm_conversations__conversation_id__jobs_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "conversation_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Conversation Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/JobSubmit"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/AuthoringReceipt"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Submit"
++      }
++    },
++    "/api/epics/{epic_id}/brainstorm-conversations/{conversation_id}/turns": {
++      "get": {
++        "operationId": "turns_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_get",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "conversation_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Conversation Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "query",
++            "name": "project_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Project Id",
++              "type": "string"
++            }
++          }
++        ],
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "items": {
++                    "$ref": "#/components/schemas/BrainstormTurn"
++                  },
++                  "title": "Response Turns Api Epics  Epic Id  Brainstorm Conversations  Conversation Id  Turns Get",
++                  "type": "array"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Turns"
++      },
++      "post": {
++        "operationId": "append_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "conversation_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Conversation Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/TurnAppend"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "additionalProperties": {
++                    "type": "integer"
++                  },
++                  "title": "Response Append Api Epics  Epic Id  Brainstorm Conversations  Conversation Id  Turns Post",
++                  "type": "object"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Append"
++      }
++    },
++    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}": {
++      "get": {
++        "operationId": "observe_api_epics__epic_id__brainstorm_jobs__job_id__get",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "job_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Job Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "query",
++            "name": "project_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Project Id",
++              "type": "string"
++            }
++          }
++        ],
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/AuthoringOutcome"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Observe"
++      }
++    },
++    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/adopt": {
++      "post": {
++        "operationId": "adopt_api_epics__epic_id__brainstorm_jobs__job_id__adopt_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "job_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Job Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/ProposalAdopt"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "additionalProperties": {
++                    "format": "uuid",
++                    "type": "string"
++                  },
++                  "title": "Response Adopt Api Epics  Epic Id  Brainstorm Jobs  Job Id  Adopt Post",
++                  "type": "object"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Adopt"
++      }
++    },
++    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/cancel": {
++      "post": {
++        "operationId": "cancel_api_epics__epic_id__brainstorm_jobs__job_id__cancel_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "job_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Job Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/JobControl"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/AuthoringReceipt"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Cancel"
++      }
++    },
++    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/retry": {
++      "post": {
++        "operationId": "retry_api_epics__epic_id__brainstorm_jobs__job_id__retry_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "job_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Job Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/JobControl"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/AuthoringReceipt"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Retry"
++      }
++    },
+     "/api/epics/{epic_id}/brief-adoptions": {
+       "post": {
+         "operationId": "adopt_brief_revision_api_epics__epic_id__brief_adoptions_post",
+diff --git a/apps/web/src/lib/api/schema.d.ts b/apps/web/src/lib/api/schema.d.ts
+--- a/apps/web/src/lib/api/schema.d.ts
++++ b/apps/web/src/lib/api/schema.d.ts
+@@ -343,6 +343,127 @@
+         get: operations["get_accepted_brief_api_epics__epic_id__accepted_brief_get"];
+         put?: never;
+         post?: never;
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/brainstorm-conversations": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        /** Threads */
++        get: operations["threads_api_epics__epic_id__brainstorm_conversations_get"];
++        put?: never;
++        /** Create */
++        post: operations["create_api_epics__epic_id__brainstorm_conversations_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/brainstorm-conversations/{conversation_id}/jobs": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        get?: never;
++        put?: never;
++        /** Submit */
++        post: operations["submit_api_epics__epic_id__brainstorm_conversations__conversation_id__jobs_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/brainstorm-conversations/{conversation_id}/turns": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        /** Turns */
++        get: operations["turns_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_get"];
++        put?: never;
++        /** Append */
++        post: operations["append_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        /** Observe */
++        get: operations["observe_api_epics__epic_id__brainstorm_jobs__job_id__get"];
++        put?: never;
++        post?: never;
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/adopt": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        get?: never;
++        put?: never;
++        /** Adopt */
++        post: operations["adopt_api_epics__epic_id__brainstorm_jobs__job_id__adopt_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/cancel": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        get?: never;
++        put?: never;
++        /** Cancel */
++        post: operations["cancel_api_epics__epic_id__brainstorm_jobs__job_id__cancel_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/retry": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        get?: never;
++        put?: never;
++        /** Retry */
++        post: operations["retry_api_epics__epic_id__brainstorm_jobs__job_id__retry_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+@@ -1496,6 +1617,76 @@
+          * @enum {string}
+          */
+         AuthMode: "subscription" | "api_key";
++        /** AuthoringOutcome */
++        AuthoringOutcome: {
++            /** Adopted Revision Id */
++            adopted_revision_id?: string | null;
++            cumulative_usage?: components["schemas"]["BrainstormAmounts"];
++            /** Currency */
++            currency?: string | null;
++            failure?: components["schemas"]["BrainstormFailure"] | null;
++            held_reasons?: components["schemas"]["BrainstormHeldReasons"];
++            held_reservations?: components["schemas"]["BrainstormAmounts"];
++            /**
++             * Job Id
++             * Format: uuid
++             */
++            job_id: string;
++            /** Job Version */
++            job_version: number;
++            /**
++             * Process Settled
++             * @default false
++             */
++            process_settled: boolean;
++            proposal?: components["schemas"]["BrainstormProposal"] | null;
++            /** Proposal Digest */
++            proposal_digest?: string | null;
++            reservation?: components["schemas"]["BrainstormReservation"] | null;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            state: components["schemas"]["BrainstormState"];
++            /**
++             * Uncertain Attempts
++             * @default 0
++             */
++            uncertain_attempts: number;
++            /**
++             * Unknown Usage Fields
++             * @default []
++             */
++            unknown_usage_fields: components["schemas"]["BrainstormDimension"][];
++            usage?: components["schemas"]["BrainstormMeasuredUsage"] | null;
++            /** Usage Known */
++            usage_known?: boolean | null;
++        };
++        /** AuthoringReceipt */
++        AuthoringReceipt: {
++            /**
++             * Job Id
++             * Format: uuid
++             */
++            job_id: string;
++            /** Job Version */
++            job_version: number;
++            /** Replay Key */
++            replay_key: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /**
++             * State
++             * @enum {string}
++             */
++            state: "queued" | "running" | "quota_wait" | "capacity_wait" | "cancel_requested" | "cancelled" | "proposed" | "failed" | "reconciling";
++        };
+         /** AvailableCommand */
+         AvailableCommand: {
+             /** Evidence Digest */
+@@ -1536,6 +1727,240 @@
+             expires_at: string;
+             /** Idle Expires At */
+             idle_expires_at: string;
++        };
++        /** BrainstormAmounts */
++        BrainstormAmounts: {
++            /**
++             * Duration Ms
++             * @default 0
++             */
++            duration_ms: number;
++            /**
++             * Estimated Api Cost Minor
++             * @default 0
++             */
++            estimated_api_cost_minor: number;
++            /**
++             * Input Tokens
++             * @default 0
++             */
++            input_tokens: number;
++            /**
++             * Output Tokens
++             * @default 0
++             */
++            output_tokens: number;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /**
++             * Tool Call Count
++             * @default 0
++             */
++            tool_call_count: number;
++        };
++        /** @enum {string} */
++        BrainstormDimension: "duration_ms" | "tool_call_count" | "input_tokens" | "output_tokens" | "estimated_api_cost_minor";
++        /** BrainstormEvidence */
++        BrainstormEvidence: {
++            /** Content Digest */
++            content_digest: string;
++            /** Excerpt */
++            excerpt: string;
++            /** Path */
++            path: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
++        /** @enum {string} */
++        BrainstormFailure: "cancelled" | "lost_result" | "process_unsettled" | "budget_exhausted" | "quota_exhausted" | "unavailable" | "timeout" | "invalid_output" | "interrupted" | "input_conflict";
++        /** BrainstormHeldReasons */
++        BrainstormHeldReasons: {
++            /** Duration Ms */
++            duration_ms?: "unsettled_or_unknown" | null;
++            /** Estimated Api Cost Minor */
++            estimated_api_cost_minor?: "unsettled_or_unknown" | null;
++            /** Input Tokens */
++            input_tokens?: "unsettled_or_unknown" | null;
++            /** Output Tokens */
++            output_tokens?: "unsettled_or_unknown" | null;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /** Tool Call Count */
++            tool_call_count?: "unsettled_or_unknown" | null;
++        };
++        /** BrainstormMeasuredUsage */
++        BrainstormMeasuredUsage: {
++            /**
++             * Duration Lower Bound Ms
++             * @default 0
++             */
++            duration_lower_bound_ms: number;
++            /** Duration Ms */
++            duration_ms?: number | null;
++            /** Estimated Api Cost Minor */
++            estimated_api_cost_minor?: number | null;
++            /** Input Tokens */
++            input_tokens?: number | null;
++            /** Output Tokens */
++            output_tokens?: number | null;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /** Tool Call Count */
++            tool_call_count: number;
++            /**
++             * Unknown Fields
++             * @default []
++             */
++            unknown_fields: components["schemas"]["BrainstormDimension"][];
++        };
++        /** BrainstormProposal */
++        BrainstormProposal: {
++            /**
++             * Assumptions
++             * @default []
++             */
++            assumptions: string[];
++            /**
++             * Decisions
++             * @default []
++             */
++            decisions: string[];
++            /**
++             * Evidence
++             * @default []
++             */
++            evidence: components["schemas"]["BrainstormEvidence"][];
++            /**
++             * Exclusions
++             * @default []
++             */
++            exclusions: string[];
++            /**
++             * Open Questions
++             * @default []
++             */
++            open_questions: string[];
++            /**
++             * Outcomes
++             * @default []
++             */
++            outcomes: string[];
++            /** Problem */
++            problem: string;
++            /** Requirement Criteria */
++            requirement_criteria?: {
++                [key: string]: string[];
++            };
++            /**
++             * Requirements
++             * @default []
++             */
++            requirements: string[];
++            /**
++             * Resolved Turn Ids
++             * @default []
++             */
++            resolved_turn_ids: string[];
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /**
++             * Scope
++             * @default []
++             */
++            scope: string[];
++            /**
++             * Turn Id
++             * Format: uuid
++             */
++            turn_id: string;
++        };
++        /** BrainstormReservation */
++        BrainstormReservation: {
++            /** Duration Ms */
++            duration_ms: number;
++            /** Estimated Api Cost Minor */
++            estimated_api_cost_minor?: number | null;
++            /** Input Tokens */
++            input_tokens?: number | null;
++            /** Output Tokens */
++            output_tokens?: number | null;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /** Tool Call Count */
++            tool_call_count: number;
++        };
++        /** @enum {string} */
++        BrainstormState: "queued" | "running" | "quota_wait" | "capacity_wait" | "cancel_requested" | "cancelled" | "proposed" | "failed" | "reconciling";
++        /** BrainstormThread */
++        BrainstormThread: {
++            /**
++             * Conversation Id
++             * Format: uuid
++             */
++            conversation_id: string;
++            /** Conversation Version */
++            conversation_version: number;
++            /**
++             * Job Ids
++             * @default []
++             */
++            job_ids: string[];
++        };
++        /** BrainstormTurn */
++        BrainstormTurn: {
++            /**
++             * Conversation Id
++             * Format: uuid
++             */
++            conversation_id: string;
++            /**
++             * Pending
++             * @default false
++             */
++            pending: boolean;
++            proposal?: components["schemas"]["BrainstormProposal"] | null;
++            /**
++             * Role
++             * @enum {string}
++             */
++            role: "operator" | "assistant";
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /** Text */
++            text: string;
++            /**
++             * Turn Id
++             * Format: uuid
++             */
++            turn_id?: string;
+         };
+         /**
+          * BriefAdoptionRequest
+@@ -1792,6 +2217,22 @@
+             required: boolean;
+             /** Timeout Seconds */
+             timeout_seconds: number;
++        };
++        /** ConversationCreate */
++        ConversationCreate: {
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /** Text */
++            text: string;
+         };
+         /** CsrfResponse */
+         CsrfResponse: {
+@@ -2193,6 +2634,45 @@
+             /** Unknown */
+             unknown: number;
+         };
++        /** JobControl */
++        JobControl: {
++            /** Expected Job Version */
++            expected_job_version: number;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
++        /** JobSubmit */
++        JobSubmit: {
++            /** Expected Conversation Version */
++            expected_conversation_version: number;
++            /** Expected Epic Version */
++            expected_epic_version: number;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Prompt Turn Id
++             * Format: uuid
++             */
++            prompt_turn_id: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
+         /** ListPage[AgentItem] */
+         ListPage_AgentItem_: {
+             /** Items */
+@@ -2632,6 +3112,26 @@
+             /** Version */
+             version: string;
+         };
++        /** ProposalAdopt */
++        ProposalAdopt: {
++            /** Expected Epic Version */
++            expected_epic_version: number;
++            /** Expected Job Version */
++            expected_job_version: number;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /** Proposal Digest */
++            proposal_digest: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
+         /** ProtectionSnapshotResponse */
+         ProtectionSnapshotResponse: {
+             /** Actor Can Bypass */
+@@ -4040,6 +4540,29 @@
+             /** Untrusted External Content */
+             untrusted_external_content: boolean;
+         };
++        /** TurnAppend */
++        TurnAppend: {
++            /** Expected Conversation Version */
++            expected_conversation_version: number;
++            /**
++             * Pending
++             * @default false
++             */
++            pending: boolean;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /** Text */
++            text: string;
++        };
+         /** UsageItem */
+         UsageItem: {
+             /** Currency */
+@@ -4755,6 +5278,340 @@
+             };
+         };
+     };
++    threads_api_epics__epic_id__brainstorm_conversations_get: {
++        parameters: {
++            query: {
++                project_id: string;
++            };
++            header?: never;
++            path: {
++                epic_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody?: never;
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["BrainstormThread"][];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    create_api_epics__epic_id__brainstorm_conversations_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["ConversationCreate"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": {
++                        [key: string]: string | number;
++                    };
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    submit_api_epics__epic_id__brainstorm_conversations__conversation_id__jobs_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                conversation_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["JobSubmit"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["AuthoringReceipt"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    turns_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_get: {
++        parameters: {
++            query: {
++                project_id: string;
++            };
++            header?: never;
++            path: {
++                epic_id: string;
++                conversation_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody?: never;
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["BrainstormTurn"][];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    append_api_epics__epic_id__brainstorm_conversations__conversation_id__turns_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                conversation_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["TurnAppend"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": {
++                        [key: string]: number;
++                    };
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    observe_api_epics__epic_id__brainstorm_jobs__job_id__get: {
++        parameters: {
++            query: {
++                project_id: string;
++            };
++            header?: never;
++            path: {
++                epic_id: string;
++                job_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody?: never;
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["AuthoringOutcome"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    adopt_api_epics__epic_id__brainstorm_jobs__job_id__adopt_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                job_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["ProposalAdopt"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": {
++                        [key: string]: string;
++                    };
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    cancel_api_epics__epic_id__brainstorm_jobs__job_id__cancel_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                job_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["JobControl"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["AuthoringReceipt"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    retry_api_epics__epic_id__brainstorm_jobs__job_id__retry_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                job_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["JobControl"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["AuthoringReceipt"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
+     adopt_brief_revision_api_epics__epic_id__brief_adoptions_post: {
+         parameters: {
+             query?: never;
