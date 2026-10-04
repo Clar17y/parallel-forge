@@ -32,7 +32,13 @@ from forge.domain.epic_brainstorm import (
     validate_invocation_context,
 )
 from forge.domain.operation import canonical_digest
-from forge.domain.subscription import decode_subscription_record, encode_subscription_record
+from forge.domain.payload import redact_durable_text
+from forge.domain.subscription import (
+    RouteBinding,
+    RouteSpec,
+    decode_subscription_record,
+    encode_subscription_record,
+)
 from forge.domain.subscription_quota import QuotaPolicy
 from forge.persistence.models.epic_brainstorm import (
     BrainstormAttemptRow,
@@ -244,7 +250,7 @@ class PostgresBrainstormRepository:
         unknown = 0
         for attempt in attempts:
             usage = attempt.usage or {}
-            reservation = attempt.reservation or {}
+            reservation = attempt.reservation if isinstance(attempt.reservation, Mapping) else {}
             if attempt.usage_known is False or PostgresBrainstormRepository._unsafe_usage(usage):
                 unknown += 1
             for key in charged:
@@ -268,12 +274,116 @@ class PostgresBrainstormRepository:
                     if (
                         not attempt.process_settled
                         or (key == "tool_call_count" and usage.get("tool_call_count_unknown"))
-                        or (key == "estimated_api_cost_minor" and usage.get("currency") is None)
+                        or (
+                            key == "estimated_api_cost_minor"
+                            and (
+                                attempt.usage_known is not True
+                                or (usage.get("currency") is None and value > 0)
+                            )
+                        )
                     ) and type(reserve) is int:
                         held[key] += max(reserve - value, 0)
                 elif type(reserve) is int:
                     held[key] += reserve
         return charged, held, unknown
+
+    @staticmethod
+    def _currency(value: object) -> str | None:
+        if (
+            isinstance(value, str)
+            and len(value) == 3
+            and value.isascii()
+            and value.isupper()
+            and value.isalpha()
+        ):
+            return value
+        return None
+
+    async def _attempt_routes(self, attempts: list[BrainstormAttemptRow]) -> dict[UUID, RouteSpec]:
+        job_ids = {attempt.job_id for attempt in attempts if hasattr(attempt, "job_id")}
+        if not job_ids:
+            return {}
+        rows = await self.session.execute(
+            select(BrainstormJobRow.id, BrainstormJobRow.snapshot).where(
+                BrainstormJobRow.id.in_(job_ids)
+            )
+        )
+        routes: dict[UUID, RouteSpec] = {}
+        for job_id, payload in rows:
+            try:
+                binding = decode_subscription_record(cast(Mapping[str, object], payload["route"]))
+                if isinstance(binding, RouteBinding):
+                    routes[job_id] = binding.effective
+            except KeyError, TypeError, ValueError, ValidationError:
+                # A malformed legacy snapshot cannot establish a monetary unit.
+                continue
+        return routes
+
+    @classmethod
+    def _money_evidence(
+        cls,
+        attempts: list[BrainstormAttemptRow],
+        routes: Mapping[UUID, RouteSpec],
+    ) -> tuple[str | None, bool, set[RouteSpec], set[RouteSpec], bool, bool]:
+        units: set[str] = set()
+        reported_units: set[str] = set()
+        proved_routes: dict[RouteSpec, set[str]] = {}
+        held_routes: set[RouteSpec] = set()
+        has_money = False
+        unsafe = False
+        unknown_hold = False
+        for attempt in attempts:
+            usage = attempt.usage or {}
+            _, held, _ = cls._charges([attempt])
+            job_id = getattr(attempt, "job_id", None)
+            route = routes.get(job_id) if isinstance(job_id, UUID) else None
+            raw_cost = usage.get("estimated_api_cost_minor")
+            if raw_cost is not None and cls._bounded_measurement(raw_cost) is None:
+                unsafe = True
+            observed = cls._bounded_measurement(raw_cost)
+            reservation = attempt.reservation
+            if reservation is not None and not isinstance(reservation, Mapping):
+                unsafe = True
+            raw_reserve = (
+                reservation.get("estimated_api_cost_minor")
+                if isinstance(reservation, Mapping)
+                else None
+            )
+            if raw_reserve is not None and cls._bounded_measurement(raw_reserve) is None:
+                unsafe = True
+            # Only a trusted terminal measurement discharges uncertainty. An active
+            # zero/absent amount still has monetary exposure, even without a finite hold.
+            exposed = not (
+                attempt.process_settled and attempt.usage_known is True and observed is not None
+            )
+            if exposed and raw_reserve is None:
+                unknown_hold = True
+            if (observed is not None and observed > 0) or exposed:
+                has_money = True
+                raw_currency = usage.get("currency")
+                currency = cls._currency(raw_currency)
+                if (raw_currency is not None and currency is None) or (
+                    observed is not None and observed > 0 and currency is None
+                ):
+                    unsafe = True
+                if currency is not None:
+                    reported_units.add(currency)
+                    if observed is not None and observed > 0:
+                        units.add(currency)
+                        if route is not None:
+                            proved_routes.setdefault(route, set()).add(currency)
+                        else:
+                            unsafe = True
+            if exposed or held["estimated_api_cost_minor"] > 0:
+                if route is None:
+                    unsafe = True
+                else:
+                    held_routes.add(route)
+        unit = next(iter(units)) if len(units) == 1 else None
+        compatible = {route for route, values in proved_routes.items() if values == {unit}}
+        if len(reported_units) > 1 or (unit is not None and not held_routes <= compatible):
+            unsafe = True
+        return unit, unsafe, compatible, held_routes, has_money, unknown_hold
 
     async def _reservation(
         self, row: BrainstormJobRow, snapshot: AuthoringJobSnapshot
@@ -291,6 +401,24 @@ class PostgresBrainstormRepository:
         attempts = await self._epic_attempts(row.epic_id)
         charged, held, unknown = self._charges(attempts)
         budget = snapshot.budget
+        if attempts:
+            routes = await self._attempt_routes(attempts)
+            unit, unsafe_money, compatible, pending, has_money, unknown_hold = self._money_evidence(
+                attempts, routes
+            )
+            candidate = snapshot.route.effective
+            if (
+                unsafe_money
+                or (unknown_hold and budget.max_cost_minor is not None)
+                or (
+                    has_money
+                    and budget.max_cost_minor != 0
+                    and (
+                        candidate not in compatible if unit is not None else pending != {candidate}
+                    )
+                )
+            ):
+                raise BrainstormConflict("epic discovery cost currency is unproved or conflicting")
         if len(attempts) >= budget.max_provider_attempts or (
             unknown > 0 and unknown >= budget.unknown_telemetry_policy.max_uncertain_attempts
         ):
@@ -494,6 +622,7 @@ class PostgresBrainstormRepository:
 
     @staticmethod
     def receipt(row: BrainstormJobRow, key: str) -> AuthoringReceipt:
+        PostgresBrainstormRepository._valid_key(key)
         return AuthoringReceipt.model_validate(
             {"job_id": row.id, "job_version": row.version, "state": row.state, "replay_key": key}
         )
@@ -506,6 +635,9 @@ class PostgresBrainstormRepository:
         )
         attempts = await self._epic_attempts(row.epic_id)
         charged, held, unknown = self._charges(attempts)
+        routes = await self._attempt_routes(attempts)
+        unit, unsafe_money, _, _, has_money, unknown_hold = self._money_evidence(attempts, routes)
+        suppress_money = unsafe_money or unknown_hold or (has_money and unit is None)
         unknown_dimensions = {
             key
             for recorded in attempts
@@ -514,9 +646,18 @@ class PostgresBrainstormRepository:
             or self._bounded_measurement((recorded.usage or {}).get(key)) is None
             or (key == "tool_call_count" and (recorded.usage or {}).get("tool_call_count_unknown"))
             or (
-                key == "estimated_api_cost_minor" and (recorded.usage or {}).get("currency") is None
+                key == "estimated_api_cost_minor"
+                and (
+                    recorded.usage_known is not True
+                    or (
+                        (recorded.usage or {}).get("currency") is None
+                        and (recorded.usage or {}).get(key) != 0
+                    )
+                )
             )
         }
+        if suppress_money:
+            unknown_dimensions.add("estimated_api_cost_minor")
         raw_usage = attempt.usage if attempt else None
         usage = None
         if raw_usage is not None and attempt is not None:
@@ -538,7 +679,9 @@ class PostgresBrainstormRepository:
                 "output_tokens": self._bounded_measurement(raw_usage.get("output_tokens")),
                 "estimated_api_cost_minor": self._bounded_measurement(
                     raw_usage.get("estimated_api_cost_minor")
-                ),
+                )
+                if not suppress_money
+                else None,
             }
             missing = tuple(
                 key
@@ -551,16 +694,7 @@ class PostgresBrainstormRepository:
                 if projected[key] is None
             )
             usage = BrainstormMeasuredUsage.model_validate({**projected, "unknown_fields": missing})
-        currency = raw_usage.get("currency") if raw_usage else None
-        safe_currency = (
-            currency
-            if isinstance(currency, str)
-            and len(currency) == 3
-            and currency.isascii()
-            and currency.isupper()
-            and currency.isalpha()
-            else None
-        )
+        safe_currency = unit if not suppress_money else None
         reservation = None
         if attempt is not None:
             try:
@@ -568,6 +702,31 @@ class PostgresBrainstormRepository:
             except ValidationError:
                 pass
         overflow = {key for key in charged if charged[key] > _MAX_USAGE or held[key] > _MAX_USAGE}
+        public_charged, public_held = dict(charged), dict(held)
+        if suppress_money:
+            public_charged["estimated_api_cost_minor"] = 0
+            public_held["estimated_api_cost_minor"] = 0
+        invalid_money = any(
+            value is not None and self._bounded_measurement(value) is None
+            for recorded in attempts
+            for value in (
+                (recorded.usage or {}).get("estimated_api_cost_minor"),
+                (recorded.reservation or {}).get("estimated_api_cost_minor")
+                if isinstance(recorded.reservation, Mapping)
+                else None,
+            )
+        )
+        current_cost = (raw_usage or {}).get("estimated_api_cost_minor")
+        current_money_conflict = invalid_money or (
+            suppress_money
+            and (current_cost is not None or (raw_usage or {}).get("currency") is not None)
+            and not (
+                attempt is not None
+                and attempt.process_settled
+                and attempt.usage_known is True
+                and current_cost == 0
+            )
+        )
         return AuthoringOutcome.model_validate(
             {
                 "job_id": row.id,
@@ -579,7 +738,9 @@ class PostgresBrainstormRepository:
                 else None,
                 "adopted_revision_id": row.adopted_revision_id,
                 "failure": row.failure,
-                "usage_known": attempt.usage_known and not self._unsafe_usage(raw_usage or {})
+                "usage_known": attempt.usage_known
+                and not self._unsafe_usage(raw_usage or {})
+                and not current_money_conflict
                 if attempt
                 else None,
                 "process_settled": attempt.process_settled if attempt else False,
@@ -588,10 +749,10 @@ class PostgresBrainstormRepository:
                 # A saturated public amount is a lower bound, never used for admission.
                 # held_reasons marks its dimension unknown; raw arithmetic stays exact.
                 "cumulative_usage": BrainstormAmounts.model_validate(
-                    {key: min(value, _MAX_USAGE) for key, value in charged.items()}
+                    {key: min(value, _MAX_USAGE) for key, value in public_charged.items()}
                 ),
                 "held_reservations": BrainstormAmounts.model_validate(
-                    {key: min(value, _MAX_USAGE) for key, value in held.items()}
+                    {key: min(value, _MAX_USAGE) for key, value in public_held.items()}
                 ),
                 "uncertain_attempts": unknown,
                 "currency": safe_currency,
@@ -608,36 +769,57 @@ class PostgresBrainstormRepository:
 
     async def lock_command(self, epic_id: UUID, key: str) -> None:
         """Serialize one idempotency key before reading receipts or command state."""
-        if not key or len(key) > 255:
-            raise ValueError("invalid idempotency key")
+        self._valid_key(key)
         identity = sha256(epic_id.bytes + key.encode("utf-8")).digest()
         await self.session.execute(
             select(func.pg_advisory_xact_lock(int.from_bytes(identity[:8], "big", signed=True)))
         )
 
     async def replay(self, epic_id: UUID, key: str, digest: str) -> dict[str, object] | None:
+        self._valid_key(key)
         row = await self.session.scalar(
             select(BrainstormReceiptRow).where(
-                BrainstormReceiptRow.epic_id == epic_id, BrainstormReceiptRow.key == key
+                BrainstormReceiptRow.epic_id == epic_id,
+                BrainstormReceiptRow.key == self._key_digest(key),
             )
         )
         if row is None:
             return None
         if row.request_digest != digest:
             raise BrainstormConflict("idempotency key payload conflicts")
-        return row.response
+        response = dict(row.response)
+        if response.pop("_authoring_receipt", False):
+            response["replay_key"] = key
+        return response
 
     async def save_receipt(
         self, epic_id: UUID, key: str, digest: str, response: dict[str, object]
     ) -> None:
-        if not key or len(key) > 255:
-            raise ValueError("invalid idempotency key")
+        self._valid_key(key)
+        stored = dict(response)
+        if "replay_key" in stored:
+            stored.pop("replay_key")
+            stored["_authoring_receipt"] = True
         self.session.add(
             BrainstormReceiptRow(
-                id=uuid4(), epic_id=epic_id, key=key, request_digest=digest, response=response
+                id=uuid4(),
+                epic_id=epic_id,
+                key=self._key_digest(key),
+                request_digest=digest,
+                response=stored,
             )
         )
         await self.session.flush()
+
+    @staticmethod
+    def _key_digest(key: str) -> str:
+        return sha256(key.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _valid_key(key: str) -> None:
+        # Reject recognized credential forms even though all durable keys are hashed.
+        if not isinstance(key, str) or not key or len(key) > 255 or redact_durable_text(key) != key:
+            raise ValueError("invalid idempotency key")
 
     async def audit(
         self,

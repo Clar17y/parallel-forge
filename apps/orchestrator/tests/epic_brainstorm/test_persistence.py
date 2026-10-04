@@ -329,8 +329,104 @@ async def test_sibling_outcome_marks_unreserved_unknown_cumulative_dimensions(
         failure="invalid_output",
     )
     outcome = await repository.outcome(row)
-    assert outcome.usage_known is True
+    assert outcome.usage_known is (bad_value is None)
+    if bad_value is not None:
+        assert outcome.usage is not None
+        assert outcome.usage.estimated_api_cost_minor is None
+        assert "estimated_api_cost_minor" in outcome.unknown_usage_fields
     assert outcome.cumulative_usage.input_tokens == 0
     assert outcome.held_reservations.input_tokens == 0
     for field in ("input_tokens", "output_tokens", "estimated_api_cost_minor"):
         assert getattr(outcome.held_reasons, field) == "unsettled_or_unknown"
+
+
+@pytest.mark.asyncio
+async def test_queued_sibling_reports_prior_cost_currency_without_current_attempt() -> None:
+    prior_job_id = uuid4()
+    prior = SimpleNamespace(
+        id=uuid4(),
+        job_id=prior_job_id,
+        usage_known=True,
+        usage={
+            "duration_ms": 10,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_api_cost_minor": 7,
+            "currency": "USD",
+        },
+        reservation={},
+        process_settled=True,
+        tool_calls_used=0,
+    )
+    repository = PostgresBrainstormRepository(SimpleNamespace())
+    repository._epic_attempts = AsyncMock(return_value=[prior])
+    repository._attempt_routes = AsyncMock(
+        return_value={prior_job_id: RouteSpec(provider="fake", client="fake", model="fixture")}
+    )
+    row = SimpleNamespace(
+        id=uuid4(),
+        epic_id=uuid4(),
+        current_attempt_id=None,
+        version=1,
+        state="queued",
+        proposal_digest=None,
+        proposal=None,
+        adopted_revision_id=None,
+        failure=None,
+    )
+    outcome = await repository.outcome(row)
+    assert outcome.currency == "USD"
+    assert outcome.cumulative_usage.estimated_api_cost_minor == 7
+
+
+@pytest.mark.asyncio
+async def test_mixed_legacy_costs_do_not_report_a_false_single_currency() -> None:
+    prior_job_id = uuid4()
+    attempts = [
+        SimpleNamespace(
+            id=uuid4(),
+            job_id=prior_job_id,
+            usage_known=True,
+            usage={
+                "duration_ms": 10,
+                "tool_call_count": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "estimated_api_cost_minor": amount,
+                "currency": currency,
+            },
+            reservation={},
+            process_settled=True,
+            tool_calls_used=0,
+        )
+        for amount, currency in ((7, "USD"), (11, "EUR"))
+    ]
+    repository = PostgresBrainstormRepository(SimpleNamespace())
+    repository._epic_attempts = AsyncMock(return_value=attempts)
+    repository._attempt_routes = AsyncMock(
+        return_value={prior_job_id: RouteSpec(provider="fake", client="fake", model="fixture")}
+    )
+    row = SimpleNamespace(
+        id=uuid4(),
+        epic_id=uuid4(),
+        current_attempt_id=None,
+        version=1,
+        state="queued",
+        proposal_digest=None,
+        proposal=None,
+        adopted_revision_id=None,
+        failure=None,
+    )
+    outcome = await repository.outcome(row)
+    assert outcome.currency is None
+    assert outcome.cumulative_usage.estimated_api_cost_minor == 0
+    assert outcome.held_reasons.estimated_api_cost_minor == "unsettled_or_unknown"
+    repository.session = SimpleNamespace(get=AsyncMock(return_value=attempts[1]))
+    row.current_attempt_id = attempts[1].id
+    current = await repository.outcome(row)
+    assert current.currency is None
+    assert current.usage_known is False
+    assert current.usage is not None
+    assert current.usage.estimated_api_cost_minor is None
+    assert "estimated_api_cost_minor" in current.unknown_usage_fields

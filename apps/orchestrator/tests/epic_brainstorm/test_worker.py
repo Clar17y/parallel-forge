@@ -670,7 +670,14 @@ async def test_unknown_cost_holds_epic_reservation_across_jobs(brainstorm_sessio
     first_outcome = await service.observe(
         epic_id=epic_id, project_id=project_id, job_id=first.job_id
     )
-    assert first_outcome.held_reservations.estimated_api_cost_minor == 9
+    assert first_outcome.currency is None
+    assert first_outcome.held_reservations.estimated_api_cost_minor == 0
+    assert first_outcome.held_reasons.estimated_api_cost_minor == "unsettled_or_unknown"
+    async with brainstorm_session_factory() as session:
+        row = await session.get(BrainstormJobRow, first.job_id)
+        assert row is not None and row.current_attempt_id is not None
+        attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+        assert attempt is not None and attempt.reservation["estimated_api_cost_minor"] == 9
     conversation_id, version = await service.create(
         epic_id=epic_id,
         project_id=project_id,
@@ -1521,9 +1528,12 @@ async def test_invalid_gateway_currency_keeps_numeric_charges_without_persisting
     assert await worker.run_once() == receipt.job_id
     outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
     assert outcome.state == "failed" and outcome.failure == "invalid_output"
-    assert outcome.cumulative_usage.estimated_api_cost_minor == 5
-    assert outcome.held_reservations.estimated_api_cost_minor == 15
+    assert outcome.cumulative_usage.estimated_api_cost_minor == 0
+    assert outcome.held_reservations.estimated_api_cost_minor == 0
+    assert outcome.held_reasons.estimated_api_cost_minor == "unsettled_or_unknown"
     assert outcome.currency is None and outcome.usage_known is False
+    assert outcome.usage is not None and outcome.usage.estimated_api_cost_minor is None
+    assert "estimated_api_cost_minor" in outcome.unknown_usage_fields
     async with brainstorm_session_factory() as session:
         row = await session.get(BrainstormJobRow, receipt.job_id)
         assert row is not None and row.current_attempt_id is not None
@@ -1531,6 +1541,8 @@ async def test_invalid_gateway_currency_keeps_numeric_charges_without_persisting
         assert attempt is not None
         assert attempt.usage["input_tokens"] == 7
         assert attempt.usage["output_tokens"] == 8
+        assert attempt.usage["estimated_api_cost_minor"] == 5
+        assert attempt.reservation["estimated_api_cost_minor"] == 20
         assert attempt.usage["currency"] is None
         assert "secret-provider-value" not in str(attempt.usage)
 
@@ -1583,12 +1595,19 @@ async def test_oversized_gateway_measurement_is_unknown_but_status_remains_reada
         assert outcome.held_reservations.duration_ms > 0
     else:
         assert getattr(outcome.usage, dimension) is None
-        assert getattr(outcome.held_reservations, dimension) > 0
+        if dimension == "estimated_api_cost_minor":
+            assert outcome.held_reservations.estimated_api_cost_minor == 0
+            assert outcome.held_reasons.estimated_api_cost_minor == "unsettled_or_unknown"
+            assert "estimated_api_cost_minor" in outcome.unknown_usage_fields
+        else:
+            assert getattr(outcome.held_reservations, dimension) > 0
     async with brainstorm_session_factory() as session:
         row = await session.get(BrainstormJobRow, receipt.job_id)
         assert row is not None and row.current_attempt_id is not None
         attempt = await session.get(BrainstormAttemptRow, row.current_attempt_id)
         assert attempt is not None and str(limit + 1) not in str(attempt.usage)
+        if dimension == "estimated_api_cost_minor":
+            assert attempt.reservation["estimated_api_cost_minor"] == 100
     if dimension == "input_tokens":
         second = await submit_second_on_epic(
             service, epic_id, project_id, actor, prefix="oversized-input"
