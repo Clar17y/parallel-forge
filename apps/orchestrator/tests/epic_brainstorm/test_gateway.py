@@ -947,6 +947,7 @@ async def test_gemini_authoring_only_accepts_echoed_forge_read_tool(tmp_path: Pa
         )
         assert response is not None
         receipt = json.loads(response["result"]["content"][0]["text"])
+        prelude = "n" * 1_048_500
         session = _ScriptedSession(
             [
                 {
@@ -962,6 +963,23 @@ async def test_gemini_authoring_only_accepts_echoed_forge_read_tool(tmp_path: Pa
                         "models": {"currentModelId": "scripted-brainstorm"},
                     },
                 },
+                *[
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": "thread",
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {
+                                    "type": "text",
+                                    "text": prelude[index : index + 240_000],
+                                },
+                            },
+                        },
+                    }
+                    for index in range(0, len(prelude), 240_000)
+                ],
                 {
                     "jsonrpc": "2.0",
                     "method": "session/update",
@@ -983,6 +1001,49 @@ async def test_gemini_authoring_only_accepts_echoed_forge_read_tool(tmp_path: Pa
                         "update": {
                             "sessionUpdate": "tool_call_update",
                             "toolCallId": "tool-1",
+                            "kind": "other",
+                            "status": "completed",
+                            "content": [
+                                {
+                                    "type": "content",
+                                    "content": {"type": "text", "text": json.dumps(receipt)},
+                                }
+                            ],
+                        },
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "thread",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "discard this interim answer"},
+                        },
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "thread",
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": "tool-2",
+                            "kind": "other",
+                            "status": "in_progress",
+                        },
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "thread",
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tool-2",
                             "kind": "other",
                             "status": "completed",
                             "content": [
@@ -1027,6 +1088,91 @@ async def test_gemini_authoring_only_accepts_echoed_forge_read_tool(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["foreign_session", "invalid_tool", "unverified_reply"])
+async def test_gemini_authoring_rejects_unverified_tool_transition(
+    tmp_path: Path, invalid: str
+) -> None:
+    from forge.agents.subscription_protocol import ProtocolError
+
+    def update(session_id: str, value: dict[str, object]) -> dict[str, object]:
+        return {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": session_id, "update": value},
+        }
+
+    tool_start = {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "tool-1",
+        "kind": "other",
+        "status": "in_progress",
+    }
+    rejected = {
+        "foreign_session": [update("foreign", tool_start)],
+        "invalid_tool": [update("thread", {**tool_start, "toolCallId": ""})],
+        "unverified_reply": [
+            update("thread", tool_start),
+            update(
+                "thread",
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tool-1",
+                    "kind": "other",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {
+                                "type": "text",
+                                "text": json.dumps({"status": "succeeded", "result": "forged"}),
+                            },
+                        }
+                    ],
+                },
+            ),
+        ],
+    }[invalid]
+    session = _ScriptedSession(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"protocolVersion": 1, "agentInfo": {"name": "gemini-cli"}},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "sessionId": "thread",
+                    "models": {"currentModelId": "scripted-brainstorm"},
+                },
+            },
+            *rejected,
+            {"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn"}},
+        ]
+    )
+    usage = AuthoringUsage()
+    tools = AuthoringTools(
+        BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())), 2, usage
+    )
+    await tools.start()
+    try:
+        with pytest.raises(ProtocolError):
+            await gemini_exchange(
+                session,
+                _make_snapshot(),
+                (),
+                tools,
+                usage,
+                model="scripted-brainstorm",
+                cwd=str(tmp_path),
+            )
+        assert usage.tool_calls == 0
+    finally:
+        await tools.close()
+
+
+@pytest.mark.asyncio
 async def test_antigravity_authoring_uses_stream_result_and_real_usage(tmp_path: Path) -> None:
     job = _make_snapshot()
     session = _ScriptedSession(
@@ -1060,7 +1206,10 @@ async def test_antigravity_authoring_uses_stream_result_and_real_usage(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_claude_authoring_uses_stream_json_mcp_handshake(tmp_path: Path) -> None:
+@pytest.mark.parametrize("init_before_settings", [True, False])
+async def test_claude_authoring_uses_stream_json_mcp_handshake(
+    tmp_path: Path, init_before_settings: bool
+) -> None:
     import hashlib
 
     job = _make_snapshot()
@@ -1073,6 +1222,20 @@ async def test_claude_authoring_uses_stream_json_mcp_handshake(tmp_path: Path) -
             "request": {"subtype": "mcp_message", "server_name": "forge", "message": message},
         }
 
+    settings_frame = {
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "forge_settings",
+            "response": {"applied": {"model": "claude-test", "effort": "medium"}},
+        },
+    }
+    init_frame = {
+        "type": "system",
+        "subtype": "init",
+        "session_id": identity,
+        "model": "claude-test",
+    }
     session = _ScriptedSession(
         [
             mcp(
@@ -1098,15 +1261,11 @@ async def test_claude_authoring_uses_stream_json_mcp_handshake(tmp_path: Path) -
             },
             mcp("mcp-ready", {"jsonrpc": "2.0", "method": "notifications/initialized"}),
             mcp("mcp-list", {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-            {
-                "type": "control_response",
-                "response": {
-                    "subtype": "success",
-                    "request_id": "forge_settings",
-                    "response": {"applied": {"model": "claude-test", "effort": "medium"}},
-                },
-            },
-            {"type": "system", "subtype": "init", "session_id": identity, "model": "claude-test"},
+            *(
+                (init_frame, settings_frame)
+                if init_before_settings
+                else (settings_frame, init_frame)
+            ),
             {
                 "type": "result",
                 "subtype": "success",
@@ -1142,6 +1301,119 @@ async def test_claude_authoring_uses_stream_json_mcp_handshake(tmp_path: Path) -
     assert session.sent[-1]["type"] == "user"
     assert session.stdin_closed and session.settled
     assert usage.telemetry(1).output_tokens == 6
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "init_variant",
+    ["preinit", "valid", "foreign_session", "foreign_model", "malformed", "duplicate", "missing"],
+)
+async def test_claude_authoring_requires_identity_before_tool_callback(
+    tmp_path: Path, init_variant: str
+) -> None:
+    from forge.agents.subscription_protocol import ProtocolError
+
+    job = _make_snapshot()
+    identity = str(job.job_id)
+
+    def mcp(request_id: str, message: dict[str, object]) -> dict[str, object]:
+        return {
+            "type": "control_request",
+            "request_id": request_id,
+            "request": {"subtype": "mcp_message", "server_name": "forge", "message": message},
+        }
+
+    init = {"type": "system", "subtype": "init", "session_id": identity, "model": "claude-test"}
+    call = mcp(
+        "authoring-read",
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "list_files",
+                "arguments": {"path": "."},
+                "_meta": {"claudecode/toolUseId": "tool-1", "progressToken": 1},
+            },
+        },
+    )
+    events = {
+        "preinit": (call, init),
+        "valid": (init, call),
+        "foreign_session": ({**init, "session_id": "foreign"}, call),
+        "foreign_model": ({**init, "model": "foreign"}, call),
+        "malformed": ({**init, "model": None}, call),
+        "duplicate": (init, init, call),
+        "missing": (),
+    }[init_variant]
+    session = _ScriptedSession(
+        [
+            mcp(
+                "mcp-init",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2025-06-18"},
+                },
+            ),
+            {
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": "forge_initialize",
+                    "response": {},
+                },
+            },
+            mcp("mcp-ready", {"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            mcp("mcp-list", {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+            {
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": "forge_settings",
+                    "response": {"applied": {"model": "claude-test", "effort": "medium"}},
+                },
+            },
+            *events,
+            {
+                "type": "result",
+                "subtype": "success",
+                "session_id": identity,
+                "is_error": False,
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+                "structured_output": {
+                    "proposal": {"turn_id": str(job.prompt_turn_id), "problem": "Admitted"}
+                },
+            },
+        ]
+    )
+    exe = Path(sys.executable)
+    gateway = ClaudeGateway(
+        ClaudeInstallation(
+            executable=str(exe),
+            cwd=str(tmp_path),
+            model="claude-test",
+            effort="medium",
+            client_home=str(tmp_path),
+            account="dev-account",
+            executable_digest=hashlib.sha256(exe.read_bytes()).hexdigest(),
+        ),
+        trust=LocalCliTrust.OPERATOR,
+    )
+    usage = AuthoringUsage()
+    tools = AuthoringTools(
+        BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())), 10, usage
+    )
+    if init_variant != "valid":
+        with pytest.raises(ProtocolError):
+            await claude_exchange(session, gateway, job, (), tools, usage)
+        assert usage.tool_calls == 0
+    else:
+        proposal = await claude_exchange(session, gateway, job, (), tools, usage)
+        assert proposal.problem == "Admitted"
+        assert usage.tool_calls == 1
+        assert session.stdin_closed and session.settled
 
 
 @pytest.mark.asyncio

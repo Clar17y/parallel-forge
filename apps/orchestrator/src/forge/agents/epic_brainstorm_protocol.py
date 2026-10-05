@@ -18,6 +18,7 @@ from forge.agents.claude_gateway import (
     ClaudeGateway,
     _QuotaState,
     claude_initialize_request,
+    claude_preinit_handshake_frame_is,
     claude_setup_handshake_frame_is,
 )
 from forge.agents.claude_protocol import ClaudeStreamCodec
@@ -620,11 +621,21 @@ async def claude_exchange(
         frame = await session.receive()
         if frame is None:
             break
+        if not init_received:
+            if claude_preinit_handshake_frame_is(frame):
+                reply = await codec.receive(json.dumps(frame, allow_nan=False))
+                if reply is None:
+                    raise ProtocolError("invalid Claude authoring preinit handshake")
+                await session.send(reply)
+                continue
+            if frame.get("type") != "system" or frame.get("subtype") != "init":
+                raise ProtocolError("Claude authoring callback before identity")
         if frame.get("type") == "system" and frame.get("subtype") == "init":
             if (
                 init_received
                 or frame.get("session_id") != identity
                 or frame.get("model") != gateway._installation.model
+                or not codec.handshake_complete
             ):
                 raise ProtocolError("foreign Claude authoring initialization")
             init_received = True
@@ -780,6 +791,8 @@ async def gemini_exchange(
                     or len(pending_tools) >= job.budget.max_tool_calls
                 ):
                     raise ProtocolError("unregistered Gemini authoring tool")
+                parts.clear()
+                size = 0
                 pending_tools.add(native_id)
             elif kind == "tool_call_update":
                 native_id = update.get("toolCallId")
