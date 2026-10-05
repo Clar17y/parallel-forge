@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "baseline": "a08ec70c367aeba1b4ef23598a0a630d1d8e5f8e",
+  "prerequisites": {
+    "manifest": "apps/orchestrator/tests/epic_brainstorm/integration_proposals/manifest.json",
+    "manifest_sha256": "758089925546dccec687b689462af8ce2698c5fc1aca6d2c2cc1c0559369f47b",
+    "base": "1e444af79bf654b78e2f805ff01723cdeb937352",
+    "application_order": [
+      {
+        "path": "apps/orchestrator/tests/epic_brainstorm/integration_proposals/epic_brief_source.patch",
+        "sha256": "a096555b63cda75ed3695aab6b5714e1560a51d381689ea4c26c380ab1865ab8",
+        "bytes": 1931
+      },
+      {
+        "path": "apps/orchestrator/tests/epic_brainstorm/integration_proposals/registration.patch",
+        "sha256": "2b6b0eaebea312ae9fa5b21c39dbf0f9670c3d1a5861b8f467ab7b8f2deb47e9",
+        "bytes": 10436
+      },
+      {
+        "path": "apps/orchestrator/tests/epic_brainstorm/integration_proposals/epic_brainstorm_migration.patch",
+        "sha256": "5baf047007b24026f1d2502be9d83d7176a8c4cd70330a3226266d9fa0780c4c",
+        "bytes": 6626
+      },
+      {
+        "path": "apps/orchestrator/tests/epic_brainstorm/integration_proposals/generated_contracts.patch",
+        "sha256": "5631b00b752335fc9409f1e20cf2f6b1114aa53501e8ef48ce80c1fcb4ea3f7e",
+        "bytes": 72390
+      }
+    ],
+    "migration_predecessor": "20261003_0032",
+    "migration_revision": "20261004_0033"
+  },
+  "application_order": [
+    "shared_authoring_compatibility.patch",
+    "registration.patch",
+    "generated_contracts.patch"
+  ],
+  "patches": [
+    {
+      "path": "shared_authoring_compatibility.patch",
+      "sha256": "2151b98ade57b3b8091ea383a73237b110dfa17742725a2fd9e1b3c4add770e8",
+      "bytes": 15591
+    },
+    {
+      "path": "registration.patch",
+      "sha256": "aba36b800499e3e24b170300b999a36ecb2a1c7142f1db375f810c2da71b31fc",
+      "bytes": 9820
+    },
+    {
+      "path": "generated_contracts.patch",
+      "sha256": "abd210dc0e132c4bf4e2f2151c535261443886d0930acb6dc3326bd789995d84",
+      "bytes": 50104
+    }
+  ]
+}

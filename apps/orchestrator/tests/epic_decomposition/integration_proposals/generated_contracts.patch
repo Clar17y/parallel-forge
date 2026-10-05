@@ -1,0 +1,1742 @@
+--- a/apps/web/openapi.json
++++ b/apps/web/openapi.json
+@@ -1158,9 +1158,13 @@
+                 "$ref": "#/components/schemas/BrainstormProposal"
+               },
+               {
+-                "type": "null"
+-              }
+-            ]
++                "$ref": "#/components/schemas/DecompositionProposal"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Proposal"
+           },
+           "proposal_digest": {
+             "anyOf": [
+@@ -1927,9 +1931,13 @@
+                 "$ref": "#/components/schemas/BrainstormProposal"
+               },
+               {
+-                "type": "null"
+-              }
+-            ]
++                "$ref": "#/components/schemas/DecompositionProposal"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Proposal"
+           },
+           "role": {
+             "enum": [
+@@ -2761,6 +2769,358 @@
+           }
+         },
+         "title": "DatabaseProvisioningPolicy",
++        "type": "object"
++      },
++      "DecompositionAdoptionResponse": {
++        "additionalProperties": false,
++        "properties": {
++          "epic_version": {
++            "title": "Epic Version",
++            "type": "integer"
++          },
++          "graph_digest": {
++            "title": "Graph Digest",
++            "type": "string"
++          },
++          "graph_revision_id": {
++            "format": "uuid",
++            "title": "Graph Revision Id",
++            "type": "string"
++          },
++          "job_version": {
++            "title": "Job Version",
++            "type": "integer"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "graph_revision_id",
++          "graph_digest",
++          "epic_version",
++          "job_version"
++        ],
++        "title": "DecompositionAdoptionResponse",
++        "type": "object"
++      },
++      "DecompositionConversationCreate": {
++        "additionalProperties": false,
++        "properties": {
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "text": {
++            "maxLength": 8000,
++            "minLength": 1,
++            "title": "Text",
++            "type": "string"
++          }
++        },
++        "required": [
++          "project_id",
++          "text"
++        ],
++        "title": "DecompositionConversationCreate",
++        "type": "object"
++      },
++      "DecompositionEvidence": {
++        "additionalProperties": false,
++        "properties": {
++          "content_digest": {
++            "title": "Content Digest",
++            "type": "string"
++          },
++          "excerpt": {
++            "title": "Excerpt",
++            "type": "string"
++          },
++          "path": {
++            "title": "Path",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "path",
++          "content_digest",
++          "excerpt"
++        ],
++        "title": "DecompositionEvidence",
++        "type": "object"
++      },
++      "DecompositionJobControl": {
++        "additionalProperties": false,
++        "properties": {
++          "expected_job_version": {
++            "minimum": 1.0,
++            "title": "Expected Job Version",
++            "type": "integer"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "project_id",
++          "expected_job_version"
++        ],
++        "title": "DecompositionJobControl",
++        "type": "object"
++      },
++      "DecompositionJobSubmit": {
++        "additionalProperties": false,
++        "properties": {
++          "expected_conversation_version": {
++            "minimum": 1.0,
++            "title": "Expected Conversation Version",
++            "type": "integer"
++          },
++          "expected_epic_version": {
++            "minimum": 1.0,
++            "title": "Expected Epic Version",
++            "type": "integer"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "prompt_turn_id": {
++            "format": "uuid",
++            "title": "Prompt Turn Id",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "project_id",
++          "prompt_turn_id",
++          "expected_epic_version",
++          "expected_conversation_version"
++        ],
++        "title": "DecompositionJobSubmit",
++        "type": "object"
++      },
++      "DecompositionProposal": {
++        "additionalProperties": false,
++        "properties": {
++          "assumptions": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 64,
++            "title": "Assumptions",
++            "type": "array"
++          },
++          "brief_digest": {
++            "title": "Brief Digest",
++            "type": "string"
++          },
++          "brief_revision_id": {
++            "format": "uuid",
++            "title": "Brief Revision Id",
++            "type": "string"
++          },
++          "epic_id": {
++            "format": "uuid",
++            "title": "Epic Id",
++            "type": "string"
++          },
++          "evidence": {
++            "default": [],
++            "items": {
++              "$ref": "#/components/schemas/DecompositionEvidence"
++            },
++            "maxItems": 16,
++            "title": "Evidence",
++            "type": "array"
++          },
++          "items": {
++            "default": [],
++            "items": {
++              "$ref": "#/components/schemas/ItemInput"
++            },
++            "maxItems": 128,
++            "title": "Items",
++            "type": "array"
++          },
++          "open_questions": {
++            "default": [],
++            "items": {
++              "type": "string"
++            },
++            "maxItems": 64,
++            "title": "Open Questions",
++            "type": "array"
++          },
++          "problem": {
++            "default": "",
++            "title": "Problem",
++            "type": "string"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "resolved_turn_ids": {
++            "default": [],
++            "items": {
++              "format": "uuid",
++              "type": "string"
++            },
++            "title": "Resolved Turn Ids",
++            "type": "array"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "summary": {
++            "default": "",
++            "title": "Summary",
++            "type": "string"
++          },
++          "turn_id": {
++            "format": "uuid",
++            "title": "Turn Id",
++            "type": "string"
++          }
++        },
++        "required": [
++          "turn_id",
++          "epic_id",
++          "project_id",
++          "brief_revision_id",
++          "brief_digest"
++        ],
++        "title": "DecompositionProposal",
++        "type": "object"
++      },
++      "DecompositionProposalAdopt": {
++        "additionalProperties": false,
++        "properties": {
++          "expected_epic_version": {
++            "minimum": 1.0,
++            "title": "Expected Epic Version",
++            "type": "integer"
++          },
++          "expected_job_version": {
++            "minimum": 1.0,
++            "title": "Expected Job Version",
++            "type": "integer"
++          },
++          "items": {
++            "anyOf": [
++              {
++                "items": {
++                  "$ref": "#/components/schemas/ItemInput"
++                },
++                "maxItems": 128,
++                "type": "array"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "title": "Items"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "proposal_digest": {
++            "pattern": "^[0-9a-f]{64}$",
++            "title": "Proposal Digest",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "project_id",
++          "expected_job_version",
++          "expected_epic_version",
++          "proposal_digest"
++        ],
++        "title": "DecompositionProposalAdopt",
++        "type": "object"
++      },
++      "DecompositionTurnAppend": {
++        "additionalProperties": false,
++        "properties": {
++          "expected_conversation_version": {
++            "minimum": 1.0,
++            "title": "Expected Conversation Version",
++            "type": "integer"
++          },
++          "pending": {
++            "default": false,
++            "title": "Pending",
++            "type": "boolean"
++          },
++          "project_id": {
++            "format": "uuid",
++            "title": "Project Id",
++            "type": "string"
++          },
++          "schema_version": {
++            "const": 1,
++            "default": 1,
++            "title": "Schema Version",
++            "type": "integer"
++          },
++          "text": {
++            "maxLength": 8000,
++            "minLength": 1,
++            "title": "Text",
++            "type": "string"
++          }
++        },
++        "required": [
++          "project_id",
++          "expected_conversation_version",
++          "text"
++        ],
++        "title": "DecompositionTurnAppend",
+         "type": "object"
+       },
+       "EpicCreateRequest": {
+@@ -11570,6 +11930,649 @@
+         "summary": "Get Brief Revision"
+       }
+     },
++    "/api/epics/{epic_id}/decomposition-conversations": {
++      "get": {
++        "operationId": "threads_api_epics__epic_id__decomposition_conversations_get",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "query",
++            "name": "project_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Project Id",
++              "type": "string"
++            }
++          }
++        ],
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "title": "Response Threads Api Epics  Epic Id  Decomposition Conversations Get"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Threads"
++      },
++      "post": {
++        "operationId": "create_api_epics__epic_id__decomposition_conversations_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/DecompositionConversationCreate"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "additionalProperties": {
++                    "anyOf": [
++                      {
++                        "format": "uuid",
++                        "type": "string"
++                      },
++                      {
++                        "type": "integer"
++                      }
++                    ]
++                  },
++                  "title": "Response Create Api Epics  Epic Id  Decomposition Conversations Post",
++                  "type": "object"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Create"
++      }
++    },
++    "/api/epics/{epic_id}/decomposition-conversations/{conversation_id}/jobs": {
++      "post": {
++        "operationId": "submit_api_epics__epic_id__decomposition_conversations__conversation_id__jobs_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "conversation_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Conversation Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/DecompositionJobSubmit"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/AuthoringReceipt"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Submit"
++      }
++    },
++    "/api/epics/{epic_id}/decomposition-conversations/{conversation_id}/turns": {
++      "get": {
++        "operationId": "turns_api_epics__epic_id__decomposition_conversations__conversation_id__turns_get",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "conversation_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Conversation Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "query",
++            "name": "project_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Project Id",
++              "type": "string"
++            }
++          }
++        ],
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "title": "Response Turns Api Epics  Epic Id  Decomposition Conversations  Conversation Id  Turns Get"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Turns"
++      },
++      "post": {
++        "operationId": "append_api_epics__epic_id__decomposition_conversations__conversation_id__turns_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "conversation_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Conversation Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/DecompositionTurnAppend"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "additionalProperties": {
++                    "type": "integer"
++                  },
++                  "title": "Response Append Api Epics  Epic Id  Decomposition Conversations  Conversation Id  Turns Post",
++                  "type": "object"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Append"
++      }
++    },
++    "/api/epics/{epic_id}/decomposition-jobs/{job_id}": {
++      "get": {
++        "operationId": "observe_api_epics__epic_id__decomposition_jobs__job_id__get",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "job_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Job Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "query",
++            "name": "project_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Project Id",
++              "type": "string"
++            }
++          }
++        ],
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/AuthoringOutcome"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Observe"
++      }
++    },
++    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/adopt": {
++      "post": {
++        "operationId": "adopt_api_epics__epic_id__decomposition_jobs__job_id__adopt_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "job_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Job Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/DecompositionProposalAdopt"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/DecompositionAdoptionResponse"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Adopt"
++      }
++    },
++    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/cancel": {
++      "post": {
++        "operationId": "cancel_api_epics__epic_id__decomposition_jobs__job_id__cancel_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "job_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Job Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/DecompositionJobControl"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/AuthoringReceipt"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Cancel"
++      }
++    },
++    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/retry": {
++      "post": {
++        "operationId": "retry_api_epics__epic_id__decomposition_jobs__job_id__retry_post",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "epic_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Epic Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "path",
++            "name": "job_id",
++            "required": true,
++            "schema": {
++              "format": "uuid",
++              "title": "Job Id",
++              "type": "string"
++            }
++          },
++          {
++            "in": "header",
++            "name": "Idempotency-Key",
++            "required": true,
++            "schema": {
++              "maxLength": 255,
++              "minLength": 1,
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/DecompositionJobControl"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/AuthoringReceipt"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "security": [
++          {
++            "CSRF": [],
++            "OperatorSession": []
++          }
++        ],
++        "summary": "Retry"
++      }
++    },
+     "/api/epics/{epic_id}/graph-adoptions": {
+       "post": {
+         "operationId": "adopt_graph_revision_api_epics__epic_id__graph_adoptions_post",
+--- a/apps/web/src/lib/api/schema.d.ts
++++ b/apps/web/src/lib/api/schema.d.ts
+@@ -533,6 +533,127 @@
+         get: operations["get_brief_revision_api_epics__epic_id__brief_revisions__brief_revision_id__get"];
+         put?: never;
+         post?: never;
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/decomposition-conversations": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        /** Threads */
++        get: operations["threads_api_epics__epic_id__decomposition_conversations_get"];
++        put?: never;
++        /** Create */
++        post: operations["create_api_epics__epic_id__decomposition_conversations_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/decomposition-conversations/{conversation_id}/jobs": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        get?: never;
++        put?: never;
++        /** Submit */
++        post: operations["submit_api_epics__epic_id__decomposition_conversations__conversation_id__jobs_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/decomposition-conversations/{conversation_id}/turns": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        /** Turns */
++        get: operations["turns_api_epics__epic_id__decomposition_conversations__conversation_id__turns_get"];
++        put?: never;
++        /** Append */
++        post: operations["append_api_epics__epic_id__decomposition_conversations__conversation_id__turns_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/decomposition-jobs/{job_id}": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        /** Observe */
++        get: operations["observe_api_epics__epic_id__decomposition_jobs__job_id__get"];
++        put?: never;
++        post?: never;
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/adopt": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        get?: never;
++        put?: never;
++        /** Adopt */
++        post: operations["adopt_api_epics__epic_id__decomposition_jobs__job_id__adopt_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/cancel": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        get?: never;
++        put?: never;
++        /** Cancel */
++        post: operations["cancel_api_epics__epic_id__decomposition_jobs__job_id__cancel_post"];
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/retry": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        get?: never;
++        put?: never;
++        /** Retry */
++        post: operations["retry_api_epics__epic_id__decomposition_jobs__job_id__retry_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+@@ -1743,7 +1864,8 @@
+              * @default false
+              */
+             process_settled: boolean;
+-            proposal?: components["schemas"]["BrainstormProposal"] | null;
++            /** Proposal */
++            proposal?: components["schemas"]["BrainstormProposal"] | components["schemas"]["DecompositionProposal"] | null;
+             /** Proposal Digest */
+             proposal_digest?: string | null;
+             reservation?: components["schemas"]["BrainstormReservation"] | null;
+@@ -2046,7 +2168,8 @@
+              * @default false
+              */
+             pending: boolean;
+-            proposal?: components["schemas"]["BrainstormProposal"] | null;
++            /** Proposal */
++            proposal?: components["schemas"]["BrainstormProposal"] | components["schemas"]["DecompositionProposal"] | null;
+             /**
+              * Role
+              * @enum {string}
+@@ -2378,6 +2501,207 @@
+              * @default DATABASE_URL
+              */
+             injected_environment_key: string;
++        };
++        /** DecompositionAdoptionResponse */
++        DecompositionAdoptionResponse: {
++            /** Epic Version */
++            epic_version: number;
++            /** Graph Digest */
++            graph_digest: string;
++            /**
++             * Graph Revision Id
++             * Format: uuid
++             */
++            graph_revision_id: string;
++            /** Job Version */
++            job_version: number;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
++        /** DecompositionConversationCreate */
++        DecompositionConversationCreate: {
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /** Text */
++            text: string;
++        };
++        /** DecompositionEvidence */
++        DecompositionEvidence: {
++            /** Content Digest */
++            content_digest: string;
++            /** Excerpt */
++            excerpt: string;
++            /** Path */
++            path: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
++        /** DecompositionJobControl */
++        DecompositionJobControl: {
++            /** Expected Job Version */
++            expected_job_version: number;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
++        /** DecompositionJobSubmit */
++        DecompositionJobSubmit: {
++            /** Expected Conversation Version */
++            expected_conversation_version: number;
++            /** Expected Epic Version */
++            expected_epic_version: number;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Prompt Turn Id
++             * Format: uuid
++             */
++            prompt_turn_id: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
++        /** DecompositionProposal */
++        DecompositionProposal: {
++            /**
++             * Assumptions
++             * @default []
++             */
++            assumptions: string[];
++            /** Brief Digest */
++            brief_digest: string;
++            /**
++             * Brief Revision Id
++             * Format: uuid
++             */
++            brief_revision_id: string;
++            /**
++             * Epic Id
++             * Format: uuid
++             */
++            epic_id: string;
++            /**
++             * Evidence
++             * @default []
++             */
++            evidence: components["schemas"]["DecompositionEvidence"][];
++            /**
++             * Items
++             * @default []
++             */
++            items: components["schemas"]["ItemInput"][];
++            /**
++             * Open Questions
++             * @default []
++             */
++            open_questions: string[];
++            /**
++             * Problem
++             * @default
++             */
++            problem: string;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Resolved Turn Ids
++             * @default []
++             */
++            resolved_turn_ids: string[];
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /**
++             * Summary
++             * @default
++             */
++            summary: string;
++            /**
++             * Turn Id
++             * Format: uuid
++             */
++            turn_id: string;
++        };
++        /** DecompositionProposalAdopt */
++        DecompositionProposalAdopt: {
++            /** Expected Epic Version */
++            expected_epic_version: number;
++            /** Expected Job Version */
++            expected_job_version: number;
++            /** Items */
++            items?: components["schemas"]["ItemInput"][] | null;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /** Proposal Digest */
++            proposal_digest: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++        };
++        /** DecompositionTurnAppend */
++        DecompositionTurnAppend: {
++            /** Expected Conversation Version */
++            expected_conversation_version: number;
++            /**
++             * Pending
++             * @default false
++             */
++            pending: boolean;
++            /**
++             * Project Id
++             * Format: uuid
++             */
++            project_id: string;
++            /**
++             * Schema Version
++             * @default 1
++             * @constant
++             */
++            schema_version: 1;
++            /** Text */
++            text: string;
+         };
+         /**
+          * EpicCreateRequest
+@@ -6046,6 +6370,338 @@
+             };
+         };
+     };
++    threads_api_epics__epic_id__decomposition_conversations_get: {
++        parameters: {
++            query: {
++                project_id: string;
++            };
++            header?: never;
++            path: {
++                epic_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody?: never;
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": unknown;
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    create_api_epics__epic_id__decomposition_conversations_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["DecompositionConversationCreate"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": {
++                        [key: string]: string | number;
++                    };
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    submit_api_epics__epic_id__decomposition_conversations__conversation_id__jobs_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                conversation_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["DecompositionJobSubmit"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["AuthoringReceipt"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    turns_api_epics__epic_id__decomposition_conversations__conversation_id__turns_get: {
++        parameters: {
++            query: {
++                project_id: string;
++            };
++            header?: never;
++            path: {
++                epic_id: string;
++                conversation_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody?: never;
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": unknown;
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    append_api_epics__epic_id__decomposition_conversations__conversation_id__turns_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                conversation_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["DecompositionTurnAppend"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": {
++                        [key: string]: number;
++                    };
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    observe_api_epics__epic_id__decomposition_jobs__job_id__get: {
++        parameters: {
++            query: {
++                project_id: string;
++            };
++            header?: never;
++            path: {
++                epic_id: string;
++                job_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody?: never;
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["AuthoringOutcome"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    adopt_api_epics__epic_id__decomposition_jobs__job_id__adopt_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                job_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["DecompositionProposalAdopt"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["DecompositionAdoptionResponse"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    cancel_api_epics__epic_id__decomposition_jobs__job_id__cancel_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                job_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["DecompositionJobControl"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["AuthoringReceipt"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
++    retry_api_epics__epic_id__decomposition_jobs__job_id__retry_post: {
++        parameters: {
++            query?: never;
++            header: {
++                "Idempotency-Key": string;
++            };
++            path: {
++                epic_id: string;
++                job_id: string;
++            };
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["DecompositionJobControl"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["AuthoringReceipt"];
++                };
++            };
++            /** @description Validation Error */
++            422: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["HTTPValidationError"];
++                };
++            };
++        };
++    };
+     adopt_graph_revision_api_epics__epic_id__graph_adoptions_post: {
+         parameters: {
+             query?: never;
