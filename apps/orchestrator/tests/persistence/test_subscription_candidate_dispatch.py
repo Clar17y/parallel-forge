@@ -18,8 +18,11 @@ from forge.domain.subscription_recovery import (
     RecoveryApplyRequest,
     RecoveryPreviewRequest,
 )
-from forge.persistence.models.subscription import SubscriptionAttempt
-from forge.persistence.models.subscription_recovery import SubscriptionRecoveryWorker
+from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionTask
+from forge.persistence.models.subscription_recovery import (
+    SubscriptionApplicationDiagnostic,
+    SubscriptionRecoveryWorker,
+)
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from sqlalchemy import func, select
 from test_scheduler_acceptance import (
@@ -34,7 +37,9 @@ from test_subscription_review_selection import selection_case
 async def test_recovery_resumes_review_selection_from_every_durable_phase(
     session_factory, tmp_path, phase
 ):
-    snapshot = GitWorkingTreeSnapshot(head_sha="b" * 40, base_sha="a" * 40, files=(), changed_paths=())
+    snapshot = GitWorkingTreeSnapshot(
+        head_sha="b" * 40, base_sha="a" * 40, files=(), changed_paths=()
+    )
     factory, primary, _ = await selection_case(
         session_factory, tmp_path, tree_digest=snapshot.candidate_tree_digest
     )
@@ -43,7 +48,9 @@ async def test_recovery_resumes_review_selection_from_every_durable_phase(
         return snapshot
 
     if phase == "prepared":
-        await SubscriptionDecisionApplication(factory).prepare_review_selection(primary.attempt.attempt_id)
+        await SubscriptionDecisionApplication(factory).prepare_review_selection(
+            primary.attempt.attempt_id
+        )
     elif phase == "observed":
         await SubscriptionCandidateInspection(factory, capture).inspect(primary.attempt.attempt_id)
     async with factory() as work:
@@ -55,7 +62,10 @@ async def test_recovery_resumes_review_selection_from_every_durable_phase(
     unsupported = await SubscriptionDecisionRecovery(factory, object()).reconcile_all()
     assert (unsupported.applied, unsupported.deferred, unsupported.unsupported) == (0, 0, 1)
     recovery = SubscriptionDecisionRecovery(
-        factory, object(), page_size=1, candidates=SubscriptionCandidateApplication(factory, capture)
+        factory,
+        object(),
+        page_size=1,
+        candidates=SubscriptionCandidateApplication(factory, capture),
     )
     report = await recovery.reconcile_all()
     assert (report.applied, report.deferred, report.unsupported) == (1, 0, 0)
@@ -63,12 +73,19 @@ async def test_recovery_resumes_review_selection_from_every_durable_phase(
     async with factory() as work:
         result = await work.session.get(SubscriptionAttemptResult, primary.attempt.attempt_id)
         assert result.disposition == "review_selected"
-        assert await work.session.scalar(select(func.count()).select_from(SubscriptionAttempt)) == count
+        assert (
+            await work.session.scalar(select(func.count()).select_from(SubscriptionAttempt))
+            == count
+        )
 
 
 @pytest.mark.integration
-async def test_candidate_recovery_defers_failed_git_and_resumes_after_restart(session_factory, tmp_path):
-    snapshot = GitWorkingTreeSnapshot(head_sha="b" * 40, base_sha="a" * 40, files=(), changed_paths=())
+async def test_candidate_recovery_defers_failed_git_and_resumes_after_restart(
+    session_factory, tmp_path
+):
+    snapshot = GitWorkingTreeSnapshot(
+        head_sha="b" * 40, base_sha="a" * 40, files=(), changed_paths=()
+    )
     factory, primary, _ = await selection_case(
         session_factory, tmp_path, tree_digest=snapshot.candidate_tree_digest
     )
@@ -96,6 +113,7 @@ async def test_candidate_recovery_defers_failed_git_and_resumes_after_restart(se
         diagnostic = await work.session.get(
             SubscriptionApplicationDiagnostic, primary.attempt.attempt_id
         )
+        assert diagnostic is not None and diagnostic.classification == "temporary"
         diagnostic.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
         await work.commit()
 
@@ -107,6 +125,46 @@ async def test_candidate_recovery_defers_failed_git_and_resumes_after_restart(se
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("changed", ["version", "receipt", "contract"])
+async def test_prepared_candidate_does_not_accept_stale_failure_from_changed_source(
+    session_factory, tmp_path, changed
+):
+    snapshot = GitWorkingTreeSnapshot(
+        head_sha="b" * 40, base_sha="a" * 40, files=(), changed_paths=()
+    )
+    factory, primary, _ = await selection_case(
+        session_factory, tmp_path, tree_digest=snapshot.candidate_tree_digest
+    )
+    attempt_id = primary.attempt.attempt_id
+    async with factory() as work:
+        observed = await work.subscription_recovery.due_version(attempt_id)
+        assert observed is not None
+    await SubscriptionDecisionApplication(factory).prepare_review_selection(attempt_id)
+    async with factory() as work:
+        task = await work.session.get(SubscriptionTask, primary.task.task_id)
+        result = await work.session.get(SubscriptionAttemptResult, attempt_id)
+        assert task.version == observed + 1
+        assert result.accepted and result.disposition == "candidate_prepared"
+        if changed == "version":
+            task.version += 1
+        elif changed == "receipt":
+            result.application_digest = "0" * 64
+        else:
+            task.payload = {**task.payload, "objective": "A revised task contract"}
+        await work.commit()
+    async with factory() as work:
+        await work.subscription_recovery.record_failure(
+            attempt_id,
+            classification="unsupported",
+            reason_code="application_invariant",
+            observed_task_version=observed,
+        )
+        await work.commit()
+    async with factory() as work:
+        assert await work.session.get(SubscriptionApplicationDiagnostic, attempt_id) is None
+
+
+@pytest.mark.integration
 async def test_prepared_candidate_exhaustion_retries_remaining_application_stage(
     session_factory, tmp_path
 ):
@@ -114,17 +172,23 @@ async def test_prepared_candidate_exhaustion_retries_remaining_application_stage
 
     from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
 
-    snapshot = GitWorkingTreeSnapshot(head_sha="b" * 40, base_sha="a" * 40, files=(), changed_paths=())
+    snapshot = GitWorkingTreeSnapshot(
+        head_sha="b" * 40, base_sha="a" * 40, files=(), changed_paths=()
+    )
     factory, primary, _ = await selection_case(
         session_factory, tmp_path, tree_digest=snapshot.candidate_tree_digest
     )
     async with factory() as work:
-        work.session.add(SubscriptionRecoveryWorker(
-            worker_id=f"candidate-{uuid4()}", contract_version=1, observed_at=datetime.now(UTC)
-        ))
+        work.session.add(
+            SubscriptionRecoveryWorker(
+                worker_id=f"candidate-{uuid4()}", contract_version=1, observed_at=datetime.now(UTC)
+            )
+        )
         await work.commit()
+
     async def unavailable(proposal):
         raise OSError("temporary snapshot failure")
+
     recovery = SubscriptionDecisionRecovery(
         factory, object(), candidates=SubscriptionCandidateApplication(factory, unavailable)
     )
@@ -146,21 +210,29 @@ async def test_prepared_candidate_exhaustion_retries_remaining_application_stage
     actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
     service = SubscriptionRecoveryService(factory)
     preview = await service.preview(
-        run_id=primary.attempt.run_id, task_id=primary.attempt.task_id,
-        attempt_id=primary.attempt.attempt_id, actor=actor,
+        run_id=primary.attempt.run_id,
+        task_id=primary.attempt.task_id,
+        attempt_id=primary.attempt.attempt_id,
+        actor=actor,
         request=RecoveryPreviewRequest(action=RecoveryAction.RETRY_APPLICATION),
     )
     assert preview.eligible, preview.reason_code
     await service.apply(
-        run_id=primary.attempt.run_id, task_id=primary.attempt.task_id,
-        attempt_id=primary.attempt.attempt_id, actor=actor, idempotency_key="candidate-stage",
+        run_id=primary.attempt.run_id,
+        task_id=primary.attempt.task_id,
+        attempt_id=primary.attempt.attempt_id,
+        actor=actor,
+        idempotency_key="candidate-stage",
         request=RecoveryApplyRequest(
-            action=preview.action, preview_token=preview.preview_token,
+            action=preview.action,
+            preview_token=preview.preview_token,
             reason="Snapshot service recovered",
         ),
     )
+
     async def capture(proposal):
         return snapshot
+
     resumed = SubscriptionDecisionRecovery(
         factory, object(), candidates=SubscriptionCandidateApplication(factory, capture)
     )
@@ -175,7 +247,9 @@ async def test_candidate_recovery_applies_bounded_route_rejection_without_git(
     session_factory, tmp_path
 ):
     factory, primary, _ = await selection_case(
-        session_factory, tmp_path, review_required=True,
+        session_factory,
+        tmp_path,
+        review_required=True,
         selection_mutate=lambda decision, admission: replace(
             decision, reviewer_route=_route("unapproved")
         ),

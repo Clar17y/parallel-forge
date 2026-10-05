@@ -15,12 +15,14 @@ from forge.domain.paths import policy_path_key
 from forge.domain.plan import decode_plan_output
 from forge.domain.run import RunState
 from forge.domain.subscription import (
+    AcceptDecision,
     BoundReassignDecision,
     BoundScopeResponseDecision,
     DelegateDecision,
     ForwardFeedbackDecision,
     HandoffStatus,
     LogicalTaskContract,
+    ReviewSelection,
     TaskHandoff,
     WaitDecision,
     decode_subscription_record,
@@ -468,9 +470,28 @@ class PostgresSubscriptionRecoveryRepository:
                     scheduled.cancel_requested,
                 )
             )
-            or (observed_task_version is not None and task.version != observed_task_version)
         ):
             return
+        if observed_task_version is not None and task.version != observed_task_version:
+            result = await self._session.get(
+                SubscriptionAttemptResult, attempt_id, with_for_update=True, populate_existing=True
+            )
+            # Preparation commits before Git/receipt IO and advances this same
+            # source exactly once. Control or unrelated version changes still
+            # cannot write a stale failure against the retained result.
+            if (
+                result is None
+                or result.disposition not in {"candidate_prepared", "acceptance_prepared"}
+                or attempt.task_version is None
+                or observed_task_version != attempt.task_version + 1
+                or task.version != observed_task_version + 1
+                or canonical_digest(task.payload) != attempt.task_digest
+                or not isinstance(
+                    await self._verified_decision(task, attempt, result),
+                    (ReviewSelection, AcceptDecision),
+                )
+            ):
+                return
         now = datetime.now(UTC)
         row = await self._session.get(
             SubscriptionApplicationDiagnostic, attempt_id, with_for_update=True
