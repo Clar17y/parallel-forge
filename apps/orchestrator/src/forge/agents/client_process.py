@@ -837,6 +837,9 @@ class ClientProcessSession:
         try:
             self.process.terminate_tree()
             code = await asyncio.to_thread(self.process.wait, 2)
+            wait_tree = getattr(self.process, "wait_tree", None)
+            if wait_tree is not None:
+                await asyncio.to_thread(wait_tree, self.spec.settlement_seconds)
         except OSError, TimeoutError:
             confirmed = False
         # Kill releases inherited pipe ends; collect readers before closing handles.

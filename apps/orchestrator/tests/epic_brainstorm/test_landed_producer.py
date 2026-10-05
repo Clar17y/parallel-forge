@@ -5,15 +5,12 @@ import inspect
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, text
-from sqlalchemy import inspect as inspect_database
 
 pytest.importorskip("forge.domain.epic_brief")
 
 from forge.application.services.epic_brainstorm import EpicBriefBrainstormAdapter
 from forge.domain.epic_brainstorm import BrainstormConflict, BrainstormProposal
 from forge.domain.epic_brief import BriefContent, BriefRequirement
-from forge.persistence.models.base import Base
 from forge.persistence.models.project import Project
 from forge.persistence.repositories.epic_brief import PostgresEpicBriefRepository
 
@@ -25,18 +22,6 @@ async def test_landed_brief_revision_preserves_ids_criteria_and_pending_choices(
         not in inspect.signature(PostgresEpicBriefRepository.save_revision).parameters
     ):
         pytest.skip("PostgresEpicBriefRepository.save_revision lacks proposed source_job_id hook")
-    engine = session_factory.kw["bind"]
-    tables = [
-        table
-        for table in Base.metadata.sorted_tables
-        if table.name == "epics" or table.name.startswith("epic_")
-    ]
-    async with engine.begin() as connection:
-        existing = await connection.run_sync(
-            lambda sync: set(inspect_database(sync).get_table_names())
-        )
-        created_tables = [table for table in tables if table.name not in existing]
-        await connection.run_sync(lambda sync: Base.metadata.create_all(sync, tables=tables))
     project_id, epic_id, requirement_id, source_job_id = (uuid4() for _ in range(4))
     draft = BriefContent(
         problem="Original",
@@ -126,13 +111,6 @@ async def test_landed_brief_revision_preserves_ids_criteria_and_pending_choices(
             )
         fresh = await PostgresEpicBriefRepository(session).get(epic_id)
         assert fresh.draft.open_questions == ["Human choice pending"]
-    # The shared disposable fixture downgrades after this test. Remove only the
-    # disposable test data; immutable revision triggers reject ordinary DELETE.
-    async with session_factory() as session, session.begin():
-        await session.execute(text("TRUNCATE TABLE epic_brief_revisions, epics CASCADE"))
-        await session.execute(delete(Project).where(Project.id == project_id))
-    async with engine.begin() as connection:
-        await connection.run_sync(lambda sync: Base.metadata.drop_all(sync, tables=created_tables))
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,6 @@ import json
 from uuid import uuid4
 
 import pytest
-from alembic import command
 from fastapi import FastAPI
 from forge.api.routes.epic_run_bridge import router_for as bridge_router_for
 from forge.api.schemas.epic_run_bridge import EpicAttemptResponse
@@ -83,25 +82,8 @@ class BridgeWork(PostgresUnitOfWork):
 
 
 @pytest.fixture
-def migrated_database_url(test_database_url, alembic_config_factory):
-    # The disposable database is dropped by test_database_url. The retained
-    # graph migration intentionally refuses downgrading accepted graph data.
-    command.upgrade(alembic_config_factory(test_database_url), "head")
-    yield test_database_url
-
-
-@pytest.fixture
 def bridge_factory(session_factory):
     return lambda: BridgeWork(session_factory)
-
-
-@pytest.fixture
-async def bridge_tables(session_factory):
-    engine = session_factory.kw["bind"]
-    async with engine.begin() as connection:
-        await connection.run_sync(EpicExecution.__table__.create)
-        await connection.run_sync(EpicItemAttempt.__table__.create)
-    yield
 
 
 async def setup(session_factory, bridge_factory, *, dependencies=False, deferred=False):
@@ -228,9 +210,7 @@ async def setup(session_factory, bridge_factory, *, dependencies=False, deferred
 
 
 @pytest.mark.asyncio
-async def test_concurrent_replay_and_fenced_default_launch(
-    session_factory, bridge_factory, bridge_tables
-):
+async def test_concurrent_replay_and_fenced_default_launch(session_factory, bridge_factory):
     service, inspector, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     first, replay = await asyncio.gather(
         *[
@@ -306,9 +286,7 @@ async def test_concurrent_replay_and_fenced_default_launch(
 
 
 @pytest.mark.asyncio
-async def test_dependency_and_deferred_need_explicit_override(
-    session_factory, bridge_factory, bridge_tables
-):
+async def test_dependency_and_deferred_need_explicit_override(session_factory, bridge_factory):
     service, _, actor, epic_id, _, second_id, request = await setup(
         session_factory, bridge_factory, dependencies=True
     )
@@ -329,7 +307,7 @@ async def test_dependency_and_deferred_need_explicit_override(
 
 @pytest.mark.asyncio
 async def test_distinct_keys_race_and_invalid_binding_cannot_create_source(
-    session_factory, bridge_factory, bridge_tables
+    session_factory, bridge_factory
 ):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     results = await asyncio.gather(
@@ -354,7 +332,7 @@ async def test_distinct_keys_race_and_invalid_binding_cannot_create_source(
 
 
 @pytest.mark.asyncio
-async def test_deferred_item_is_readable_blocker(session_factory, bridge_factory, bridge_tables):
+async def test_deferred_item_is_readable_blocker(session_factory, bridge_factory):
     service, _, actor, epic_id, _, second_id, request = await setup(
         session_factory, bridge_factory, deferred=True
     )
@@ -372,9 +350,7 @@ async def test_deferred_item_is_readable_blocker(session_factory, bridge_factory
 
 
 @pytest.mark.asyncio
-async def test_active_child_blocks_new_accepted_graph_too(
-    session_factory, bridge_factory, bridge_tables
-):
+async def test_active_child_blocks_new_accepted_graph_too(session_factory, bridge_factory):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     first = await service.launch(
         actor=actor, epic_id=epic_id, idempotency_key="first", request=request()
@@ -432,7 +408,7 @@ async def test_active_child_blocks_new_accepted_graph_too(
 
 @pytest.mark.asyncio
 async def test_real_unaccepted_graph_requires_explicit_owner_action(
-    session_factory, bridge_factory, bridge_tables
+    session_factory, bridge_factory
 ):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     graph_service = EpicItemsService(bridge_factory)
@@ -474,7 +450,7 @@ async def test_real_unaccepted_graph_requires_explicit_owner_action(
 
 @pytest.mark.asyncio
 async def test_combined_controls_preserve_requested_actual_versions_and_unknown_proof(
-    session_factory, bridge_factory, bridge_tables
+    session_factory, bridge_factory
 ):
     service, _, actor, epic_id, _, second_id, request = await setup(
         session_factory, bridge_factory, dependencies=True, deferred=True
@@ -517,9 +493,7 @@ async def test_combined_controls_preserve_requested_actual_versions_and_unknown_
 
 
 @pytest.mark.asyncio
-async def test_explicit_execution_reuse_and_same_source_new_epoch(
-    session_factory, bridge_factory, bridge_tables
-):
+async def test_explicit_execution_reuse_and_same_source_new_epoch(session_factory, bridge_factory):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     first = await service.launch(
         actor=actor, epic_id=epic_id, idempotency_key="first", request=request()
@@ -543,7 +517,7 @@ async def test_explicit_execution_reuse_and_same_source_new_epoch(
 
 @pytest.mark.asyncio
 async def test_real_old_brief_graph_pair_can_be_explicitly_selected(
-    session_factory, bridge_factory, bridge_tables
+    session_factory, bridge_factory
 ):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     brief_service = EpicBriefService(bridge_factory)
@@ -593,7 +567,7 @@ async def test_real_old_brief_graph_pair_can_be_explicitly_selected(
 
 @pytest.mark.asyncio
 async def test_cross_epic_or_mismatched_execution_cannot_fabricate_source(
-    session_factory, bridge_factory, bridge_tables
+    session_factory, bridge_factory
 ):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     _, _, other_actor, other_epic_id, _, _, other_request = await setup(
@@ -629,7 +603,7 @@ async def test_cross_epic_or_mismatched_execution_cannot_fabricate_source(
 
 @pytest.mark.asyncio
 async def test_base_moves_while_eligibility_awaits_and_proof_is_rechecked(
-    session_factory, bridge_factory, bridge_tables
+    session_factory, bridge_factory
 ):
     _, inspector, actor, epic_id, _, second_id, request = await setup(
         session_factory, bridge_factory, dependencies=True
@@ -683,7 +657,7 @@ async def test_base_moves_while_eligibility_awaits_and_proof_is_rechecked(
 
 @pytest.mark.asyncio
 async def test_continuously_moving_base_requires_explicit_owner_action_and_forgets_stale_proof(
-    session_factory, bridge_factory, bridge_tables
+    session_factory, bridge_factory
 ):
     _, inspector, actor, epic_id, first_id, second_id, request = await setup(
         session_factory, bridge_factory, dependencies=True
@@ -768,9 +742,7 @@ async def test_continuously_moving_base_requires_explicit_owner_action_and_forge
 
 
 @pytest.mark.asyncio
-async def test_unsafe_note_or_malformed_evidence_cannot_persist(
-    session_factory, bridge_factory, bridge_tables
-):
+async def test_unsafe_note_or_malformed_evidence_cannot_persist(session_factory, bridge_factory):
     service, inspector, actor, epic_id, _, second_id, request = await setup(
         session_factory, bridge_factory, dependencies=True
     )
@@ -812,7 +784,7 @@ async def test_unsafe_note_or_malformed_evidence_cannot_persist(
 
 @pytest.mark.asyncio
 async def test_http_requires_operator_csrf_idempotency_and_exposes_owner_action(
-    session_factory, bridge_factory, bridge_tables
+    session_factory, bridge_factory
 ):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
 
@@ -875,7 +847,7 @@ async def test_http_requires_operator_csrf_idempotency_and_exposes_owner_action(
 
 @pytest.mark.asyncio
 async def test_rollback_and_retry_after_receipt_failure(
-    session_factory, bridge_factory, bridge_tables, monkeypatch
+    session_factory, bridge_factory, monkeypatch
 ):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
 
@@ -898,9 +870,7 @@ async def test_rollback_and_retry_after_receipt_failure(
 
 
 @pytest.mark.asyncio
-async def test_profile_is_frozen_for_epic_run_and_replay(
-    session_factory, bridge_factory, bridge_tables
-):
+async def test_profile_is_frozen_for_epic_run_and_replay(session_factory, bridge_factory):
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     profile = OperatorProfile(
         profile_id=uuid4(),

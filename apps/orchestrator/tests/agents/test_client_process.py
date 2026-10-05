@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import hashlib
 import os
 import sys
@@ -489,6 +490,66 @@ async def test_descendant_is_terminated_even_after_parent_exit() -> None:
         assert ClientProcessSupervisor.identity_status(child) is ProcessIdentityStatus.GONE
     finally:
         await session.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object accounting")
+@pytest.mark.asyncio
+async def test_windows_stop_confirmation_waits_for_all_job_members(monkeypatch) -> None:
+    from forge.agents import client_process_win32 as native
+    from forge.agents.client_process import ClientProcessSupervisor
+
+    queries = 0
+
+    def observe(_job, _kind, pointer, _size, _returned):
+        nonlocal queries
+        queries += 1
+        accounting = ctypes.cast(pointer, ctypes.POINTER(native.BasicAccounting)).contents
+        accounting.active_processes = 1 if queries < 3 else 0
+        return True
+
+    monkeypatch.setattr(native, "_query_job", observe, raising=False)
+    session = await ClientProcessSupervisor().start(_spec("import time; time.sleep(30)"))
+    result = await session.close()
+    assert result.stop_confirmed and queries >= 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object accounting")
+@pytest.mark.asyncio
+async def test_windows_job_observation_failure_is_not_confirmed(monkeypatch) -> None:
+    from forge.agents import client_process_win32 as native
+    from forge.agents.client_process import ClientProcessSupervisor
+
+    def unavailable(*_args):
+        raise OSError("untrusted query detail")
+
+    monkeypatch.setattr(native, "_query_job", unavailable, raising=False)
+    session = await ClientProcessSupervisor().start(_spec("import time; time.sleep(30)"))
+    result = await session.close()
+    assert result.outcome == "stop_uncertain" and not result.stop_confirmed
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object accounting")
+@pytest.mark.asyncio
+async def test_windows_active_job_timeout_is_not_confirmed(monkeypatch) -> None:
+    from forge.agents import client_process_win32 as native
+    from forge.agents.client_process import ClientProcessSupervisor
+
+    queries = 0
+
+    def still_active(_job, _kind, pointer, _size, _returned):
+        nonlocal queries
+        queries += 1
+        accounting = ctypes.cast(pointer, ctypes.POINTER(native.BasicAccounting)).contents
+        accounting.active_processes = 1
+        return True
+
+    monkeypatch.setattr(native, "_query_job", still_active)
+    session = await ClientProcessSupervisor().start(
+        _spec("import time; time.sleep(30)", settlement_seconds=0.02)
+    )
+    result = await asyncio.wait_for(session.close(), 2)
+    assert queries >= 1
+    assert result.outcome == "stop_uncertain" and not result.stop_confirmed
 
 
 @pytest.mark.asyncio
