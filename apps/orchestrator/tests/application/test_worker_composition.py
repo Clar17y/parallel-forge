@@ -215,10 +215,10 @@ async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypat
     async def commit():
         pass
 
-    async def due(attempt_id):
+    async def due_version(attempt_id):
         assert active
         assert attempt_id == identity
-        return True
+        return 1
 
     async def role_violation(attempt_id):
         assert active
@@ -235,7 +235,7 @@ async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypat
             yield SimpleNamespace(
                 subscription_decisions=SimpleNamespace(pending_applications=pending),
                 subscription_recovery=SimpleNamespace(
-                    due=due,
+                    due_version=due_version,
                     role_violation=role_violation,
                     record_success=record_success,
                 ),
