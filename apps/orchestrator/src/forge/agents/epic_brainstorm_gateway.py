@@ -21,6 +21,7 @@ from forge.agents.claude_gateway import (
 from forge.agents.client_process import (
     ClientLaunchSpec,
     ClientProcessError,
+    ClientProcessSession,
     ClientProcessSupervisor,
     ClientProcessTimeout,
     ClientSettlementUncertain,
@@ -30,6 +31,7 @@ from forge.agents.codex_gateway import (
     CodexInstallation,
 )
 from forge.agents.epic_brainstorm_protocol import (
+    AUTHORING_TOOL_NAMES,
     AuthoringProviderFailure,
     AuthoringTools,
     AuthoringUsage,
@@ -93,37 +95,6 @@ class EpicBrainstormGateway:
         self.launch_spec = launch_spec
         self.trust = trust
 
-    def _resolve_spec(self, job: AuthoringJobSnapshot) -> ClientLaunchSpec | None:
-        if self.launch_spec is not None:
-            return self.launch_spec
-        if self.installation is None:
-            return None
-
-        inst = self.installation
-        script = getattr(inst, "script", ())
-        argv = (inst.executable, *script) if script else (inst.executable,)
-        duration = min(
-            float(job.budget.max_duration_seconds),
-            float(getattr(inst, "duration_seconds", 300.0)),
-        )
-        if duration <= 0:
-            duration = 1.0
-
-        env: dict[str, str] = dict(getattr(inst, "environment", {}))
-        if hasattr(inst, "client_home") and inst.client_home:
-            env["CODEX_HOME"] = inst.client_home
-        if hasattr(inst, "home") and inst.home:
-            env["HOME"] = inst.home
-
-        return ClientLaunchSpec(
-            argv=argv,
-            cwd=inst.cwd,
-            environment=env,
-            allowed_environment=frozenset(env.keys()),
-            executable_digest=inst.executable_digest,
-            duration_seconds=duration,
-        )
-
     async def execute(
         self,
         job: AuthoringJobSnapshot,
@@ -174,6 +145,7 @@ class EpicBrainstormGateway:
         interrupted = False
         use_bridge = False
         try:
+            exchange: Callable[[ClientProcessSession], Awaitable[BrainstormProposal]]
             if isinstance(installation, CodexInstallationSpec):
                 codex_runtime = CodexInstallation(
                     executable=installation.executable,
@@ -199,6 +171,9 @@ class EpicBrainstormGateway:
                     executable_digest=codex_runtime.executable_digest,
                     duration_seconds=duration,
                 )
+                exchange = lambda session: codex_exchange(
+                    session, codex_gateway, job, turns, tools, usage
+                )
             elif isinstance(installation, ClaudeInstallationSpec):
                 claude_runtime = ClaudeInstallation(
                     executable=installation.executable,
@@ -222,12 +197,7 @@ class EpicBrainstormGateway:
                     session_id=str(job.job_id),
                     system_prompt="You are a read-only epic brief authoring assistant. Use only Forge read tools.",
                     schema_json=json.dumps(authoring_schema(), separators=(",", ":")),
-                    allowed_tools=",".join(
-                        "mcp__forge__" + name
-                        for name in sorted(
-                            ("list_files", "read_file", "search", "read_instructions")
-                        )
-                    ),
+                    allowed_tools=",".join("mcp__forge__" + name for name in AUTHORING_TOOL_NAMES),
                 )
                 environment = {
                     "CLAUDE_CONFIG_DIR": claude_runtime.client_home,
@@ -240,6 +210,9 @@ class EpicBrainstormGateway:
                     allowed_environment=frozenset(environment),
                     executable_digest=claude_runtime.executable_digest,
                     duration_seconds=duration,
+                )
+                exchange = lambda session: claude_exchange(
+                    session, claude_gateway, job, turns, tools, usage
                 )
             elif isinstance(installation, GeminiInstallationSpec):
                 use_bridge = True
@@ -265,6 +238,18 @@ class EpicBrainstormGateway:
                     executable_digest=actual_digest,
                     duration_seconds=duration,
                 )
+                gemini_model = installation.model
+                gemini_cwd = str(launch_files.path)
+                exchange = lambda session: gemini_exchange(
+                    session,
+                    job,
+                    turns,
+                    tools,
+                    usage,
+                    model=gemini_model,
+                    cwd=gemini_cwd,
+                )
+                await tools.start()
             elif isinstance(installation, AntigravityInstallationSpec):
                 use_bridge = True
                 antigravity_runtime = AntigravityInstallation(
@@ -317,37 +302,23 @@ class EpicBrainstormGateway:
                     executable_digest=antigravity_runtime.executable_digest,
                     duration_seconds=duration,
                 )
+                antigravity_model = installation.model
+                exchange = lambda session: antigravity_exchange(
+                    session,
+                    job,
+                    turns,
+                    tools,
+                    usage,
+                    model=antigravity_model,
+                )
             else:
                 return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
-            if use_bridge and not isinstance(installation, AntigravityInstallationSpec):
-                await tools.start()
+
             async with asyncio.timeout(duration):
                 session = await self.supervisor.start(
                     spec, lifecycle=lifecycle, before_stop=tools.revoke
                 )
-                if isinstance(installation, CodexInstallationSpec):
-                    proposal = await codex_exchange(
-                        session, codex_gateway, job, turns, tools, usage
-                    )
-                elif isinstance(installation, ClaudeInstallationSpec):
-                    proposal = await claude_exchange(
-                        session, claude_gateway, job, turns, tools, usage
-                    )
-                elif isinstance(installation, GeminiInstallationSpec):
-                    assert isinstance(launch_files, GeminiLaunchDirectory)
-                    proposal = await gemini_exchange(
-                        session,
-                        job,
-                        turns,
-                        tools,
-                        usage,
-                        model=installation.model,
-                        cwd=str(launch_files.path),
-                    )
-                else:
-                    proposal = await antigravity_exchange(
-                        session, job, turns, tools, usage, model=installation.model
-                    )
+                proposal = await exchange(session)
         except asyncio.CancelledError:
             interrupted = True
             failure = "cancelled"
@@ -413,7 +384,7 @@ class EpicBrainstormGateway:
         if await cancelled():
             return BrainstormGatewayResult(proposal=None, telemetry=None, failure="cancelled")
 
-        spec = self._resolve_spec(job)
+        spec = self.launch_spec
         if spec is None:
             return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
 

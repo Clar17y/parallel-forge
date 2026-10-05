@@ -65,6 +65,7 @@ _SCHEMAS: dict[str, dict[str, object]] = {
     },
     "read_instructions": {"type": "object", "properties": {}, "additionalProperties": False},
 }
+AUTHORING_TOOL_NAMES: tuple[str, ...] = tuple(sorted(_SCHEMAS))
 
 
 class AuthoringProviderFailure(Exception):

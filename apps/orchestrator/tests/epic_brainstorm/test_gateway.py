@@ -303,36 +303,6 @@ async def test_gateway_unavailable_when_no_spec(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_gateway_resolves_installation_spec(tmp_path: Path) -> None:
-    import hashlib
-
-    from forge.domain.subscription_installations import InstallationQuota
-
-    exe_path = Path(sys.executable)
-    exe_digest = hashlib.sha256(exe_path.read_bytes()).hexdigest()
-    inst = GeminiInstallationSpec(
-        client="gemini_cli",
-        account="dev-account",
-        model="scripted-brainstorm",
-        effort="low",
-        executable=str(exe_path),
-        executable_digest=exe_digest,
-        client_version="1.0.0",
-        cwd=str(tmp_path),
-        home=str(tmp_path),
-        quota=InstallationQuota(account="dev-account", pool="default-pool"),
-    )
-    gateway = EpicBrainstormGateway(installation=inst)
-    job = _make_snapshot()
-    spec = gateway._resolve_spec(job)
-    assert spec is not None
-    assert spec.argv == (str(exe_path),)
-    assert spec.cwd == str(tmp_path)
-    assert spec.executable_digest == exe_digest
-    assert spec.duration_seconds == 10.0
-
-
-@pytest.mark.asyncio
 async def test_gateway_dispatches_tool_calls(tmp_path: Path) -> None:
     sub_file = tmp_path / "hello.txt"
     sub_file.write_text("Hello from repository!\nSecond line.\n", encoding="utf-8")
