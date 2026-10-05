@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-CURRENT_REVISION = "20261003_0032"
+CURRENT_REVISION = "20261004_0034"
 V01_TABLES = {
     "recovery_barrier",
     "api_mutations",
@@ -61,6 +61,16 @@ EXPECTED_TABLES = V01_TABLES | {
     "epics",
     "epic_brief_revisions",
     "epic_graph_revisions",
+    "epic_brainstorm_conversations",
+    "epic_brainstorm_turns",
+    "epic_brainstorm_jobs",
+    "epic_brainstorm_attempts",
+    "epic_brainstorm_receipts",
+    "epic_brainstorm_audit",
+    "epic_brainstorm_quota_admissions",
+    "epic_brainstorm_budget_ledgers",
+    "epic_executions",
+    "epic_item_attempts",
     "jev_evaluations",
     "capability_evidence",
     "capability_probe_diagnostics",
@@ -224,7 +234,7 @@ async def _rejects(database_url: str, statement: str, parameters: dict[str, obje
 
 
 @pytest.mark.integration
-def test_current_migrations_create_the_complete_v02_schema(
+def test_current_migrations_create_the_complete_schema(
     migrated_database_url: str,
 ) -> None:
     assert _table_names(migrated_database_url) == EXPECTED_TABLES
@@ -702,6 +712,16 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
     # than the legacy companion version columns. Keep their inventory explicit;
     # repository/codec tests cover their payload versions and round trips.
     subscription_json_columns = {
+        ("epic_brainstorm_jobs", "snapshot"),
+        ("epic_brainstorm_jobs", "proposal"),
+        ("epic_brainstorm_attempts", "terminal_proof"),
+        ("epic_brainstorm_attempts", "usage"),
+        ("epic_brainstorm_attempts", "reservation"),
+        ("epic_brainstorm_receipts", "response"),
+        ("epic_brainstorm_audit", "detail"),
+        ("epic_brainstorm_budget_ledgers", "ceiling"),
+        ("epic_item_attempts", "blocker_codes"),
+        ("epic_item_attempts", "dependency_evidence"),
         ("subscription_profile_versions", "payload"),
         ("subscription_envelopes", "payload"),
         ("subscription_tasks", "payload"),
@@ -731,6 +751,8 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
         ("jev_evaluations", "scores"),
     }
     alternate_primary_keys = {
+        "epic_brainstorm_quota_admissions": {"attempt_id": Uuid},
+        "epic_brainstorm_budget_ledgers": {"epic_id": Uuid},
         "subscription_application_diagnostics": {"attempt_id": Uuid},
         "subscription_recovery_signing_keys": {"id": Integer},
         "subscription_recovery_workers": {"worker_id": String},

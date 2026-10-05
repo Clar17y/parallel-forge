@@ -1,8 +1,9 @@
 """A7: composed stopped results survive controls and restart without another client."""
 
 import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from forge.application.services.subscription_profiles import LocalOperatorProfileActor
@@ -16,6 +17,7 @@ from forge.domain.subscription_task_controls import (
 from forge.domain.tool import ToolName
 from forge.evaluations.check_evidence import read_check_evidence
 from forge.persistence.models.subscription import SubscriptionTask
+from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
 from forge.worker.composition import compose_worker_handlers
@@ -41,6 +43,36 @@ async def test_stored_counter_result_respects_control_across_worker_restart(
         assert worked.attempt.settlement.disposition == "decision_pending"
         task_id = worked.admission.task.task_id
         attempt_id = worked.admission.attempt.attempt_id
+
+        async def recovery_state():
+            async with case.factory() as work:
+                pending = await work.subscription_decisions.pending_applications(
+                    after_id=UUID(int=attempt_id.int - 1), limit=1
+                )
+                diagnostic = await work.session.get(SubscriptionApplicationDiagnostic, attempt_id)
+                stored = await work.session.get(SubscriptionAttemptResult, attempt_id)
+                task = await work.session.get(SubscriptionTask, task_id)
+                return {
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "pending": bool(pending and pending[0].attempt_id == attempt_id),
+                    "due": await work.subscription_recovery.due(attempt_id),
+                    "disposition": stored.disposition if stored else None,
+                    "accepted": stored.accepted if stored else None,
+                    "task_state": task.state,
+                    "pause_requested": task.pause_requested,
+                    "cancel_requested": task.cancel_requested,
+                    "diagnostic": {
+                        "classification": diagnostic.classification,
+                        "reason_code": diagnostic.reason_code,
+                        "resolution": diagnostic.resolution,
+                        "failed_applications": diagnostic.failed_applications,
+                        "next_retry_at": diagnostic.next_retry_at.isoformat()
+                        if diagnostic.next_retry_at
+                        else None,
+                    }
+                    if diagnostic
+                    else None,
+                }
 
         async def request(action, pause_id=None):
             async with case.factory() as work:
@@ -88,8 +120,10 @@ async def test_stored_counter_result_respects_control_across_worker_restart(
             session_factory,
             subscription_adapters=(script.adapter(PRIMARY), script.adapter(WRITER)),
         )
+        recovery_states = {"before_blocked": await recovery_state()}
         blocked = await handlers.subscription_decision_recovery.reconcile_all()
-        assert blocked.applied == 0
+        recovery_states["after_blocked"] = await recovery_state()
+        assert blocked.applied == 0, recovery_states
         before_resume = await SubscriptionTaskQuery(session_factory).tasks(case.run.id)
         projected = next(row for row in before_resume["tasks"] if row["task_id"] == task_id)
         assert projected["pause_requested"] if action == "pause" else projected["cancel_requested"]
@@ -102,8 +136,12 @@ async def test_stored_counter_result_respects_control_across_worker_restart(
                 await control(body, str(uuid4()))
             resumed = await control(await request("resume", receipt.receipt_id), str(uuid4()))
             assert resumed.status == "decision_pending"
+            recovery_states["after_resume"] = await recovery_state()
             recovered = await handlers.subscription_decision_recovery.reconcile_all()
-            assert recovered.applied == 1 and recovered.deferred == recovered.unsupported == 0
+            recovery_states["after_recovery"] = await recovery_state()
+            assert recovered.applied == 1 and recovered.deferred == recovered.unsupported == 0, (
+                recovery_states
+            )
             async with case.factory() as work:
                 replay = await work.subscription_decisions.handoff_replay(attempt_id)
                 assert replay.accepted and replay.disposition == "handoff_completed"

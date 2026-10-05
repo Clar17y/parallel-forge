@@ -187,18 +187,19 @@ async def test_search_fails_closed_when_reader_prefix_cannot_bind_match(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("force_python", (False, True))
 @pytest.mark.parametrize("kind", ("PGP PRIVATE KEY BLOCK", "SSH2 ENCRYPTED PRIVATE KEY"))
+@pytest.mark.parametrize("line_ending", ("\n", "\r\n"))
 async def test_multitoken_key_markers_are_hidden_in_all_read_surfaces(
-    tmp_path: Path, force_python: bool, kind: str
+    tmp_path: Path, force_python: bool, kind: str, line_ending: str
 ) -> None:
     body = "FAKE_KEY_BODY"
-    content = "safe\n" + _other_private_key_text(kind, body)
-    (tmp_path / "notes.txt").write_text(content, encoding="utf-8")
-    (tmp_path / "AGENTS.md").write_text(content, encoding="utf-8")
+    content = ("safe\n" + _other_private_key_text(kind, body)).replace("\n", line_ending)
+    for name in ("notes.txt", "AGENTS.md"):
+        (tmp_path / name).write_bytes(content.encode("utf-8"))
     reader = RepositoryReader(tmp_path, force_python_search=force_python)
     if not force_python:
         assert reader._select_rg_executable() is not None
     tools = BrainstormReadOnlyTools(reader)
-    assert (await tools.read_file("notes.txt")).content.startswith("safe\r\n")
+    assert (await tools.read_file("notes.txt")).content.startswith("safe" + line_ending)
     assert body not in (await tools.read_file("notes.txt")).content
     assert all(body not in item.content for item in await tools.read_instructions())
     assert all(item.line_text == "[REDACTED]" for item in await tools.search(body))

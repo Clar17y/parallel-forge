@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import hashlib
 import os
 import sys
@@ -491,6 +492,66 @@ async def test_descendant_is_terminated_even_after_parent_exit() -> None:
         await session.close()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object accounting")
+@pytest.mark.asyncio
+async def test_windows_stop_confirmation_waits_for_all_job_members(monkeypatch) -> None:
+    from forge.agents import client_process_win32 as native
+    from forge.agents.client_process import ClientProcessSupervisor
+
+    queries = 0
+
+    def observe(_job, _kind, pointer, _size, _returned):
+        nonlocal queries
+        queries += 1
+        accounting = ctypes.cast(pointer, ctypes.POINTER(native.BasicAccounting)).contents
+        accounting.active_processes = 1 if queries < 3 else 0
+        return True
+
+    monkeypatch.setattr(native, "_query_job", observe, raising=False)
+    session = await ClientProcessSupervisor().start(_spec("import time; time.sleep(30)"))
+    result = await session.close()
+    assert result.stop_confirmed and queries >= 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object accounting")
+@pytest.mark.asyncio
+async def test_windows_job_observation_failure_is_not_confirmed(monkeypatch) -> None:
+    from forge.agents import client_process_win32 as native
+    from forge.agents.client_process import ClientProcessSupervisor
+
+    def unavailable(*_args):
+        raise OSError("untrusted query detail")
+
+    monkeypatch.setattr(native, "_query_job", unavailable, raising=False)
+    session = await ClientProcessSupervisor().start(_spec("import time; time.sleep(30)"))
+    result = await session.close()
+    assert result.outcome == "stop_uncertain" and not result.stop_confirmed
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object accounting")
+@pytest.mark.asyncio
+async def test_windows_active_job_timeout_is_not_confirmed(monkeypatch) -> None:
+    from forge.agents import client_process_win32 as native
+    from forge.agents.client_process import ClientProcessSupervisor
+
+    queries = 0
+
+    def still_active(_job, _kind, pointer, _size, _returned):
+        nonlocal queries
+        queries += 1
+        accounting = ctypes.cast(pointer, ctypes.POINTER(native.BasicAccounting)).contents
+        accounting.active_processes = 1
+        return True
+
+    monkeypatch.setattr(native, "_query_job", still_active)
+    session = await ClientProcessSupervisor().start(
+        _spec("import time; time.sleep(30)", settlement_seconds=0.02)
+    )
+    result = await asyncio.wait_for(session.close(), 2)
+    assert queries >= 1
+    assert result.outcome == "stop_uncertain" and not result.stop_confirmed
+
+
 @pytest.mark.asyncio
 async def test_concurrent_sends_are_complete_frames() -> None:
     from forge.agents.client_process import ClientProcessSupervisor
@@ -722,21 +783,51 @@ def test_linux_operational_pinning_rejects_non_linux():
     assert not linux_operational_pinning_supported() or sys.platform == "linux"
 
 
-def test_linux_operational_pinning_rejects_missing_memfd_or_proc_dir(monkeypatch):
+def test_linux_operational_pinning_rejects_missing_proc_dir(monkeypatch):
     from forge.agents import client_process as transport
 
     monkeypatch.setattr(transport.sys, "platform", "linux")
-    monkeypatch.delattr(transport.os, "memfd_create", raising=False)
-    monkeypatch.setattr(transport.Path, "is_dir", lambda self: True)
-    assert not transport.linux_operational_pinning_supported()
-
-    monkeypatch.setattr(transport.os, "memfd_create", lambda *args, **kwargs: 1, raising=False)
     monkeypatch.setattr(
         transport.Path,
         "is_dir",
         lambda self: self.as_posix() != "/proc/self/fd",
     )
     assert not transport.linux_operational_pinning_supported()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux memfd execution")
+def test_linux_operational_pinning_works_without_optional_python_names(monkeypatch):
+    import fcntl
+
+    from forge.agents import client_process as transport
+
+    monkeypatch.delattr(transport.os, "memfd_create", raising=False)
+    for name in ("F_ADD_SEALS", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_GROW", "F_SEAL_WRITE"):
+        monkeypatch.delattr(fcntl, name, raising=False)
+    assert transport.linux_operational_pinning_supported()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux memfd seals")
+def test_portable_memfd_copy_is_sealed_without_optional_python_names(tmp_path, monkeypatch):
+    import fcntl
+
+    from forge.agents import client_process as transport
+
+    source = tmp_path / "policy.json"
+    source.write_bytes(b"verified policy")
+    monkeypatch.delattr(transport.os, "memfd_create", raising=False)
+    for name in ("F_ADD_SEALS", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_GROW", "F_SEAL_WRITE"):
+        monkeypatch.delattr(fcntl, name, raising=False)
+    descriptor = transport._sealed_verified_file(
+        str(source), hashlib.sha256(source.read_bytes()).hexdigest(), executable=False
+    )
+    try:
+        assert fcntl.fcntl(descriptor, 1034) & 0x000F == 0x000F
+        assert os.read(descriptor, 100) == b"verified policy"
+        with pytest.raises(OSError):
+            os.write(descriptor, b"changed")
+    finally:
+        os.close(descriptor)
 
 
 def test_linux_operational_pinning_success_mechanics(monkeypatch):

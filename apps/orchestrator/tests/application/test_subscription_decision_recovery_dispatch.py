@@ -28,6 +28,9 @@ class RecoveryProjectionStub:
     async def due(self, attempt_id):
         return True
 
+    async def due_version(self, attempt_id):
+        return 1
+
     async def role_violation(self, attempt_id):
         return None
 
@@ -37,7 +40,9 @@ class RecoveryProjectionStub:
     async def attempt_run_id(self, attempt_id):
         return UUID(int=1)
 
-    async def record_failure(self, attempt_id, *, classification, reason_code):
+    async def record_failure(
+        self, attempt_id, *, classification, reason_code, observed_task_version=None
+    ):
         pass
 
 
@@ -130,20 +135,28 @@ async def test_recovery_does_not_swallow_cancellation():
         await recovery.reconcile_all()
 
 
-@pytest.mark.parametrize("error, classification", [
-    (OperationalError("statement", {}, OSError("outage")), "temporary"),
-    (PoolTimeoutError("pool unavailable"), "temporary"),
-    (DisconnectionError("connection lost"), "temporary"),
-    (DBAPIError("statement", {}, RuntimeError("connection lost"), connection_invalidated=True), "temporary"),
-    (DBAPIError("statement", {}, SimpleNamespace(sqlstate="40001")), "temporary"),
-    (DBAPIError("statement", {}, SimpleNamespace(sqlstate="40P01")), "temporary"),
-    (DBAPIError("statement", {}, SimpleNamespace(sqlstate="55P03")), "temporary"),
-    (ValueError("domain invariant"), "unsupported"),
-    (ProgrammingError("statement", {}, RuntimeError("schema differs")), "fatal"),
-    (IntegrityError("statement", {}, RuntimeError("constraint violated")), "fatal"),
-    (DataError("statement", {}, RuntimeError("invalid data")), "fatal"),
-    (DBAPIError("statement", {}, RuntimeError("unknown failure")), "fatal"),
-])
+@pytest.mark.parametrize(
+    "error, classification",
+    [
+        (OperationalError("statement", {}, OSError("outage")), "temporary"),
+        (PoolTimeoutError("pool unavailable"), "temporary"),
+        (DisconnectionError("connection lost"), "temporary"),
+        (
+            DBAPIError(
+                "statement", {}, RuntimeError("connection lost"), connection_invalidated=True
+            ),
+            "temporary",
+        ),
+        (DBAPIError("statement", {}, SimpleNamespace(sqlstate="40001")), "temporary"),
+        (DBAPIError("statement", {}, SimpleNamespace(sqlstate="40P01")), "temporary"),
+        (DBAPIError("statement", {}, SimpleNamespace(sqlstate="55P03")), "temporary"),
+        (ValueError("domain invariant"), "unsupported"),
+        (ProgrammingError("statement", {}, RuntimeError("schema differs")), "fatal"),
+        (IntegrityError("statement", {}, RuntimeError("constraint violated")), "fatal"),
+        (DataError("statement", {}, RuntimeError("invalid data")), "fatal"),
+        (DBAPIError("statement", {}, RuntimeError("unknown failure")), "fatal"),
+    ],
+)
 async def test_recovery_classifies_database_failures_consistently(error, classification):
     identity = UUID(int=1)
     projection = RecoveryProjectionStub()
@@ -159,8 +172,10 @@ async def test_recovery_classifies_database_failures_consistently(error, classif
         factory_calls += 1
         yield SimpleNamespace(
             subscription_decisions=SimpleNamespace(pending_applications=pending),
-            subscription_recovery=projection, runs=SimpleNamespace(get=_run),
-            commit=_commit, rollback=_commit,
+            subscription_recovery=projection,
+            runs=SimpleNamespace(get=_run),
+            commit=_commit,
+            rollback=_commit,
         )
 
     async def apply(_attempt_id):
@@ -177,9 +192,14 @@ async def test_recovery_classifies_database_failures_consistently(error, classif
         return
     report = await recovery.reconcile_all()
     assert report.deferred == 1 and report.applied == 0
-    reason = "application_infrastructure" if classification == "temporary" else "application_invariant"
+    reason = (
+        "application_infrastructure" if classification == "temporary" else "application_invariant"
+    )
     projection.record_failure.assert_awaited_once_with(
-        identity, classification=classification, reason_code=reason
+        identity,
+        classification=classification,
+        reason_code=reason,
+        observed_task_version=1,
     )
 
 
@@ -213,6 +233,65 @@ async def test_recovery_dispatches_handoff_only_when_observer_is_configured():
         factory, object(), handoffs=SimpleNamespace(apply=apply)
     ).reconcile_all()
     assert available.applied == 1 and applied == [identity]
+
+
+async def test_recovery_does_not_record_failure_from_changed_task_version():
+    identity = UUID(int=10)
+    projection = RecoveryProjectionStub()
+    projection.due_version = AsyncMock(return_value=7)
+    projection.record_failure = AsyncMock()
+
+    async def pending(cursor, _limit):
+        return () if cursor else (PendingSubscriptionDecision(identity, PendingDecisionKind.WAIT),)
+
+    @asynccontextmanager
+    async def factory():
+        yield SimpleNamespace(
+            subscription_decisions=SimpleNamespace(pending_applications=pending),
+            subscription_recovery=projection,
+            runs=SimpleNamespace(get=_run),
+            commit=_commit,
+            rollback=_commit,
+        )
+
+    async def apply(_attempt_id):
+        raise ValueError("application read a task control transition")
+
+    recovery = SubscriptionDecisionRecovery(factory, object())
+    recovery._decisions = SimpleNamespace(apply_wait=apply)
+    await recovery.reconcile_all()
+    projection.record_failure.assert_awaited_once_with(
+        identity,
+        classification="unsupported",
+        reason_code="application_invariant",
+        observed_task_version=7,
+    )
+
+
+async def test_recovery_role_rejection_uses_observed_task_version():
+    identity = UUID(int=11)
+    projection = RecoveryProjectionStub()
+    projection.due_version = AsyncMock(return_value=9)
+    projection.role_violation = AsyncMock(return_value="invalid_role")
+    projection.reject_role_violation = AsyncMock()
+
+    async def pending(cursor, _limit):
+        return () if cursor else (PendingSubscriptionDecision(identity, PendingDecisionKind.WAIT),)
+
+    @asynccontextmanager
+    async def factory():
+        yield SimpleNamespace(
+            subscription_decisions=SimpleNamespace(pending_applications=pending),
+            subscription_recovery=projection,
+            commit=_commit,
+            rollback=_commit,
+        )
+
+    report = await SubscriptionDecisionRecovery(factory, object()).reconcile_all()
+    assert report.deferred == 1
+    projection.reject_role_violation.assert_awaited_once_with(
+        identity, "invalid_role", observed_task_version=9
+    )
 
 
 @pytest.mark.parametrize("size", [0, 101, True, 1.5])

@@ -206,6 +206,67 @@ async def test_concurrent_gateways_keep_separate_configuration_and_shared_auth(t
     assert (tmp_path / "account-home").is_dir()
 
 
+async def test_concurrent_gateways_with_active_tools_settle_and_clean_launch_paths(tmp_path):
+    specs = []
+    ready = asyncio.Event()
+    both_tools = asyncio.Event()
+    tool_arrivals = 0
+
+    class ConcurrentSupervisor(ClientProcessSupervisor):
+        async def start(self, spec, **kwargs):
+            specs.append(spec)
+            if len(specs) == 2:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), 3)
+            return await super().start(spec, **kwargs)
+
+    class ConcurrentBroker(_Broker):
+        async def __call__(self, call):
+            nonlocal tool_arrivals
+            tool_arrivals += 1
+            if tool_arrivals == 2:
+                both_tools.set()
+            await asyncio.wait_for(both_tools.wait(), 3)
+            return await super().__call__(call)
+
+    brokers = [ConcurrentBroker(), ConcurrentBroker()]
+    lifecycles = [_Lifecycle(), _Lifecycle()]
+    first = _gateway(tmp_path, "tool", broker=brokers[0], lifecycle=lifecycles[0])
+    second = _gateway(tmp_path, "tool", broker=brokers[1], lifecycle=lifecycles[1])
+    first._supervisor = second._supervisor = ConcurrentSupervisor()
+    requests = [_google_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE})) for _ in range(2)]
+    results = await asyncio.gather(first.execute(requests[0]), second.execute(requests[1]))
+    assert all(
+        result.failure is None
+        and result.launch_proof.stop_confirmed
+        and result.launch_proof.permits_decision
+        for result in results
+    ), [result.failure_detail for result in results]
+    assert len({spec.cwd for spec in specs}) == 2
+    assert tool_arrivals == 2
+    assert all(not Path(spec.cwd).exists() for spec in specs)
+    assert all(len(broker.calls) == 1 and broker.revoked for broker in brokers)
+    assert all(
+        len(lifecycle.results) == 1 and lifecycle.results[0].stop_confirmed
+        for lifecycle in lifecycles
+    )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_error_keeps_failure_detail_closed(tmp_path, monkeypatch):
+    from forge.agents.gemini_configuration import GeminiLaunchDirectory
+
+    def cannot_remove(_self):
+        raise OSError("credential=private-value C:/operator/path")
+
+    monkeypatch.setattr(GeminiLaunchDirectory, "cleanup", cannot_remove)
+    gateway = _gateway(tmp_path, "tool")
+    result = await gateway.execute(_google_request())
+    assert result.failure is SubscriptionFailure.UNCERTAIN
+    assert result.failure_detail == "Gemini attempt uncertain"
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+
+
 def _google_request(*, tools=frozenset()):
     request = _request(tools=tools)
     route = replace(

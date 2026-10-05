@@ -102,8 +102,11 @@ try {
   await lostProfile.remove();
   await staleEdit.getByRole('button', { name: 'Append version 2' }).click();
   await expect(second.getByRole('alert').filter({ hasText: 'This profile changed in another tab.' })).toBeVisible();
-  await expect(staleEdit).toBeHidden();
+  await expect(staleEdit).toBeVisible();
+  await expect(staleEdit.getByLabel('Preferred route model', { exact: true })).toHaveValue('gpt-5.6-terra');
+  await expect(staleEdit.getByRole('button', { name: 'Append version 2' })).toBeDisabled();
   await second.getByRole('button', { name: 'Reload profile history' }).click();
+  await expect(staleEdit).toBeHidden();
   await expect(second.getByRole('heading', { name: `Profile ${profile.profile_id} · version 2`, exact: true })).toBeVisible();
   expect((await api(first, '/subscription-profiles')).length).toBe(2);
   expect((await bridge('/snapshot')).envelopes[original]).toEqual(frozen.envelopes[original]);

@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
+from uuid import UUID
 
 from forge.agents.antigravity_configuration import (
     antigravity_launch_environment,
@@ -179,6 +180,62 @@ class _AttemptHome:
             raise OSError("Antigravity attempt directory changed")
         # Only the exclusive attempt directory, after its supervised tree stops.
         # rmtree removes nested links rather than following their targets.
+        shutil.rmtree(self.path)
+        self._identity = None
+
+
+class AntigravityAuthoringHome:
+    """Private official-client settings for a read-only subject-authoring job."""
+
+    def __init__(self, installation: AntigravityInstallation, attempt_id: UUID) -> None:
+        self.installation = installation
+        self.path = Path(tempfile.gettempdir()).resolve() / ("forge-agy-author-" + attempt_id.hex)
+        self._identity: tuple[int, int] | None = None
+
+    def prepare(
+        self, mcp_name: str, mcp_config: Mapping[str, object], prompt: str
+    ) -> dict[str, str]:
+        if self.path.is_relative_to(Path(self.installation.cwd)) or any(
+            (parent / ".git").exists() for parent in self.path.parents
+        ):
+            raise OSError("Antigravity private home must be outside repositories")
+        self.path.mkdir(mode=0o700)
+        info = self.path.lstat()
+        self._identity = (info.st_dev, info.st_ino)
+        settings = antigravity_settings()
+        settings["toolPermission"] = "request-review"
+        settings["permissions"] = {"allow": [f"mcp({mcp_name}/*)"]}
+        payloads = {
+            ".gemini/config/mcp_config.json": json.dumps(mcp_config),
+            ".gemini/antigravity-cli/settings.json": json.dumps(settings),
+            ".gemini/antigravity-cli/hooks.json": "{}",
+            ".gemini/GEMINI.md": prompt
+            + "\nUse only Forge read-only MCP tools. Do not use native filesystem, shell, edit or subagent tools.\n",
+        }
+        for name, contents in payloads.items():
+            target = self.path / name
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with target.open("x", encoding="utf-8") as output:
+                output.write(contents)
+        state = Path(self.installation.home) / ".gemini/antigravity-cli/jetski_state.pbtxt"
+        if state.is_file():
+            source = state.resolve(strict=True)
+            target = self.path / ".gemini/antigravity-cli/jetski_state.pbtxt"
+            try:
+                target.symlink_to(source)
+            except OSError:
+                os.link(source, target)
+        return antigravity_launch_environment(self.path)
+
+    def cleanup(self) -> None:
+        if self._identity is None:
+            return
+        info = self.path.lstat()
+        if (
+            self.path.resolve(strict=True) != self.path
+            or (info.st_dev, info.st_ino) != self._identity
+        ):
+            raise OSError("Antigravity authoring directory changed")
         shutil.rmtree(self.path)
         self._identity = None
 

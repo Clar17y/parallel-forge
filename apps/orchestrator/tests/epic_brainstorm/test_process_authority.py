@@ -8,7 +8,7 @@ from forge.persistence.models.epic_brainstorm import BrainstormAttemptRow, Brain
 from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRepository
 from forge.worker.epic_brainstorm import DurableBrainstormProcessLifecycle
 
-from apps.orchestrator.tests.epic_brainstorm.test_worker import prepared
+from apps.orchestrator.tests.epic_brainstorm.test_brainstorm_worker import prepared
 
 
 @pytest.mark.asyncio

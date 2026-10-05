@@ -10,6 +10,7 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from ctypes import wintypes as w
 from pathlib import Path
 from types import MappingProxyType
@@ -85,6 +86,19 @@ class ExtendedLimits(ctypes.Structure):
     ]
 
 
+class BasicAccounting(ctypes.Structure):
+    _fields_ = [
+        ("total_user_time", ctypes.c_int64),
+        ("total_kernel_time", ctypes.c_int64),
+        ("period_user_time", ctypes.c_int64),
+        ("period_kernel_time", ctypes.c_int64),
+        ("total_page_faults", w.DWORD),
+        ("total_processes", w.DWORD),
+        ("active_processes", w.DWORD),
+        ("total_terminated_processes", w.DWORD),
+    ]
+
+
 def _api(name: str, args: tuple[object, ...], result: object) -> Any:
     fn = getattr(K, name)
     fn.argtypes = args
@@ -97,6 +111,9 @@ _create_job = _api("CreateJobObjectW", (P, w.LPCWSTR), H)
 _set_job = _api("SetInformationJobObject", (H, ctypes.c_int, P, w.DWORD), w.BOOL)
 _assign = _api("AssignProcessToJobObject", (H, H), w.BOOL)
 _kill_job = _api("TerminateJobObject", (H, w.UINT), w.BOOL)
+_query_job = _api(
+    "QueryInformationJobObject", (H, ctypes.c_int, P, w.DWORD, ctypes.POINTER(w.DWORD)), w.BOOL
+)
 _kill_process = _api("TerminateProcess", (H, w.UINT), w.BOOL)
 _pipe = _api("CreatePipe", (ctypes.POINTER(H), ctypes.POINTER(H), P, w.DWORD), w.BOOL)
 _handle_flags = _api("SetHandleInformation", (H, w.DWORD, w.DWORD), w.BOOL)
@@ -247,6 +264,25 @@ class OwnedWindowsProcess:
     def terminate_tree(self) -> None:
         if self.job:
             _check(_kill_job(self.job, 1), "TerminateJobObject")
+
+    def wait_tree(self, seconds: float) -> None:
+        """Confirm every member of the controlled Job has exited before cleanup."""
+
+        if not self.job:
+            raise OSError("client job is unavailable")
+        deadline = time.monotonic() + max(0, seconds)
+        while True:
+            accounting = BasicAccounting()
+            _check(
+                _query_job(self.job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None),
+                "QueryInformationJobObject",
+            )
+            if accounting.active_processes == 0:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("process tree settlement deadline")
+            time.sleep(min(0.01, remaining))
 
     def close(self) -> None:
         # Closing the job first guarantees descendants release inherited pipe ends.

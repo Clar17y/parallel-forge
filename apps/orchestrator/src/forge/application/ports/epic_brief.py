@@ -23,7 +23,13 @@ class EpicBriefRepository(EpicBriefPort, Protocol):
         self, epic_id: UUID, *, version: int, title: str, draft: BriefContent
     ) -> EpicRecord: ...
     async def save_revision(
-        self, epic_id: UUID, *, version: int, content: BriefContent, content_digest: str
+        self,
+        epic_id: UUID,
+        *,
+        version: int,
+        content: BriefContent,
+        content_digest: str,
+        source_job_id: UUID | None = None,
     ) -> BriefRevisionRecord: ...
     async def get_revision(self, epic_id: UUID, brief_revision_id: UUID) -> BriefRevisionRecord: ...
     async def list_revisions(self, epic_id: UUID) -> Sequence[BriefRevisionRecord]: ...

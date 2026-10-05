@@ -295,10 +295,30 @@ def _write_all(fd: int, payload: bytes) -> None:
         remaining = remaining[count:]
 
 
+def _linux_memfd_create(name: str, flags: int) -> int:
+    """Use the Linux libc ABI when a portable Python build omits os.memfd_create."""
+
+    native = getattr(os, "memfd_create", None)
+    if native is not None:
+        return int(native(name, flags))
+    try:
+        import ctypes
+
+        creator = ctypes.CDLL(None, use_errno=True).memfd_create
+    except AttributeError, ImportError, OSError:
+        raise OSError("identity-stable pinned files are unavailable") from None
+    creator.argtypes = (ctypes.c_char_p, ctypes.c_uint)
+    creator.restype = ctypes.c_int
+    descriptor = int(creator(name.encode("ascii"), flags))
+    if descriptor < 0:
+        raise OSError(ctypes.get_errno(), "memfd creation failed")
+    return descriptor
+
+
 def _sealed_verified_file(path: str, digest: str, *, executable: bool) -> int:
     """Copy exact source bytes into a sealed Linux descriptor and verify the copy."""
 
-    if not hasattr(os, "memfd_create") or not Path("/proc/self/fd").is_dir():
+    if sys.platform != "linux" or not Path("/proc/self/fd").is_dir():
         raise OSError("identity-stable pinned files are unavailable")
     source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     source = os.open(path, source_flags)
@@ -306,10 +326,14 @@ def _sealed_verified_file(path: str, digest: str, *, executable: bool) -> int:
     try:
         if not stat.S_ISREG(os.fstat(source).st_mode):
             raise OSError("pinned source is not regular")
-        flags = getattr(os, "MFD_CLOEXEC", 0) | getattr(os, "MFD_ALLOW_SEALING", 0)
+        # These Linux ABI values are stable even when a portable CPython build
+        # omits their optional Python-level names.
+        flags = getattr(os, "MFD_CLOEXEC", 0x0001) | getattr(os, "MFD_ALLOW_SEALING", 0x0002)
         if executable:
             flags |= getattr(os, "MFD_EXEC", 0)
-        target = os.memfd_create("forge-client-image" if executable else "forge-client-file", flags)
+        target = _linux_memfd_create(
+            "forge-client-image" if executable else "forge-client-file", flags
+        )
         observed = hashlib.sha256()
         while payload := os.read(source, 1024 * 1024):
             observed.update(payload)
@@ -317,9 +341,17 @@ def _sealed_verified_file(path: str, digest: str, *, executable: bool) -> int:
         if not hmac.compare_digest(observed.hexdigest(), digest):
             raise OSError("pinned file identity differs")
         os.fchmod(target, 0o500 if executable else 0o400)
-        fcntl = cast(Any, __import__("fcntl"))
-        seals = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
-        fcntl.fcntl(target, fcntl.F_ADD_SEALS, seals)
+        try:
+            fcntl = cast(Any, __import__("fcntl"))
+        except ImportError:
+            raise OSError("identity-stable pinned files are unavailable") from None
+        seals = (
+            getattr(fcntl, "F_SEAL_SEAL", 0x0001)
+            | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
+            | getattr(fcntl, "F_SEAL_GROW", 0x0004)
+            | getattr(fcntl, "F_SEAL_WRITE", 0x0008)
+        )
+        fcntl.fcntl(target, getattr(fcntl, "F_ADD_SEALS", 1033), seals)
         os.lseek(target, 0, os.SEEK_SET)
         result = int(target)
         target = -1
@@ -339,7 +371,7 @@ def linux_operational_pinning_supported() -> bool:
     """
     if sys.platform != "linux":
         return False
-    if not hasattr(os, "memfd_create") or not Path("/proc/self/fd").is_dir():
+    if not Path("/proc/self/fd").is_dir():
         return False
 
     descriptor = -1
@@ -805,6 +837,9 @@ class ClientProcessSession:
         try:
             self.process.terminate_tree()
             code = await asyncio.to_thread(self.process.wait, 2)
+            wait_tree = getattr(self.process, "wait_tree", None)
+            if wait_tree is not None:
+                await asyncio.to_thread(wait_tree, self.spec.settlement_seconds)
         except OSError, TimeoutError:
             confirmed = False
         # Kill releases inherited pipe ends; collect readers before closing handles.

@@ -167,6 +167,8 @@ async def test_repeated_process_shutdown_drains_subscription_owner_before_resour
     class FakeSettings:
         database_url = "postgresql+asyncpg://unused/forge"
         subscription_worker_concurrency = 1
+        subscription_installations_path = None
+        subscription_client_trust = LocalCliTrust.OPERATOR
 
     class Engine:
         async def dispose(self):
@@ -480,6 +482,8 @@ async def test_worker_default_handlers_none_constructs_real_handlers(
 
     class FakeSettings:
         database_url = "postgresql+asyncpg://unused/forge"
+        subscription_installations_path = None
+        subscription_client_trust = LocalCliTrust.OPERATOR
 
     class FakeEngine:
         async def dispose(self) -> None:
@@ -566,6 +570,8 @@ async def test_worker_engine_disposal_on_composition_failure(monkeypatch) -> Non
 
     class FakeSettings:
         database_url = "postgresql+asyncpg://unused/forge"
+        subscription_installations_path = None
+        subscription_client_trust = LocalCliTrust.OPERATOR
 
     class FakeEngine:
         async def dispose(self) -> None:
@@ -643,6 +649,8 @@ async def test_handler_cleanup_ownership_and_failure_disposal(
 
     class Settings:
         database_url = "unused"
+        subscription_installations_path = None
+        subscription_client_trust = LocalCliTrust.OPERATOR
 
     stop = asyncio.Event()
     monkeypatch.setattr(main, "create_engine", lambda _: Engine())

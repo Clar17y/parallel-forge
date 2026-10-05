@@ -863,6 +863,14 @@ class PostgresSubscriptionTaskControlRepository:
             source.result.application_digest = canonical_digest(source.result.application_payload)
         task.pause_requested = scheduled.pause_requested = False
         task.version += 1
+        if pending:
+            from forge.persistence.repositories.subscription_recovery import (
+                PostgresSubscriptionRecoveryRepository,
+            )
+
+            await PostgresSubscriptionRecoveryRepository(self._session).schedule_pending_resume(
+                attempt.id
+            )
         stop.state, stop.resume_receipt_id, stop.resumed_task_version = (
             "resumed",
             receipt_id,

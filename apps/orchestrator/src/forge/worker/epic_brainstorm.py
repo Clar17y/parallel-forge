@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import os
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -225,7 +226,9 @@ class EpicBrainstormWorker:
         *,
         owner: str,
         gateway_factory: Callable[[AuthoringJobSnapshot], BrainstormGateway],
-        reader_factory: Callable[[AuthoringJobSnapshot], RepositoryReader],
+        reader_factory: Callable[
+            [AuthoringJobSnapshot], RepositoryReader | Awaitable[RepositoryReader]
+        ],
         lease_seconds: int = 30,
         quota_policy: QuotaPolicy | None = None,
     ) -> None:
@@ -528,12 +531,24 @@ class EpicBrainstormWorker:
                         raise BrainstormConflict("tool budget exhausted")
                     active.tool_calls_used += 1
 
-            reader = BrainstormReadOnlyTools(
-                self.reader_factory(snapshot), authorize=authorize_tool
-            )
-            operation = asyncio.create_task(
-                gateway.execute(invocation, turns, reader, cancelled=cancelled, lifecycle=lifecycle)
-            )
+            async def invoke() -> BrainstormGatewayResult:
+                constructed = self.reader_factory(snapshot)
+                asynchronous_reader = inspect.isawaitable(constructed)
+                repository_reader = (
+                    await cast(Awaitable[RepositoryReader], constructed)
+                    if asynchronous_reader
+                    else cast(RepositoryReader, constructed)
+                )
+                if asynchronous_reader and await cancelled():
+                    return BrainstormGatewayResult(
+                        proposal=None, telemetry=None, failure="cancelled"
+                    )
+                reader = BrainstormReadOnlyTools(repository_reader, authorize=authorize_tool)
+                return await gateway.execute(
+                    invocation, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+                )
+
+            operation = asyncio.create_task(invoke())
             self._track_operation(operation)
             while not operation.done():
                 remaining = (

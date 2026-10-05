@@ -86,19 +86,21 @@ class SubscriptionDecisionRecovery:
                 )
             for candidate in candidates:
                 async with self._factory() as work:
-                    due = await work.subscription_recovery.due(candidate.attempt_id)
+                    due_version = await work.subscription_recovery.due_version(candidate.attempt_id)
                     violation = (
                         await work.subscription_recovery.role_violation(candidate.attempt_id)
-                        if due
+                        if due_version is not None
                         else None
                     )
                     await work.rollback()
-                if not due:
+                if due_version is None:
                     continue
                 if violation is not None:
                     async with self._factory() as work:
                         await work.subscription_recovery.reject_role_violation(
-                            candidate.attempt_id, violation
+                            candidate.attempt_id,
+                            violation,
+                            observed_task_version=due_version,
                         )
                         await work.commit()
                     deferred += 1
@@ -147,11 +149,23 @@ class SubscriptionDecisionRecovery:
                         run = await work.runs.get(run_id)
                         if run.state in {RunState.PAUSED, RunState.CANCELLED}:
                             classification, reason = "prerequisite", "run_controlled"
-                        elif isinstance(error, SubscriptionDecisionError) and str(error) == "acceptance receipt verification is unavailable":
-                            classification, reason = "prerequisite", "acceptance_receipt_unavailable"
-                        elif isinstance(error, SubscriptionDecisionError) and str(error) == "handoff evidence or observation is no longer current":
+                        elif (
+                            isinstance(error, SubscriptionDecisionError)
+                            and str(error) == "acceptance receipt verification is unavailable"
+                        ):
+                            classification, reason = (
+                                "prerequisite",
+                                "acceptance_receipt_unavailable",
+                            )
+                        elif (
+                            isinstance(error, SubscriptionDecisionError)
+                            and str(error) == "handoff evidence or observation is no longer current"
+                        ):
                             classification, reason = "prerequisite", "handoff_observation_changed"
-                        elif isinstance(error, ValueError) and str(error) == "prepared candidate observation is required":
+                        elif (
+                            isinstance(error, ValueError)
+                            and str(error) == "prepared candidate observation is required"
+                        ):
                             classification, reason = "prerequisite", "candidate_observation_missing"
                         elif is_transient_recovery_error(error):
                             classification, reason = "temporary", "application_infrastructure"
@@ -161,6 +175,7 @@ class SubscriptionDecisionRecovery:
                             candidate.attempt_id,
                             classification=classification,
                             reason_code=reason,
+                            observed_task_version=due_version,
                         )
                         await work.commit()
                     deferred += 1

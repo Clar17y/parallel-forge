@@ -200,6 +200,7 @@ async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypat
         session_factory=object(),
     )
     identity, applied, active = uuid4(), [], []
+    recorded_success = []
 
     async def pending(cursor, limit):
         return (
@@ -211,13 +212,35 @@ async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypat
     async def rollback():
         pass
 
+    async def commit():
+        pass
+
+    async def due_version(attempt_id):
+        assert active
+        assert attempt_id == identity
+        return 1
+
+    async def role_violation(attempt_id):
+        assert active
+        assert attempt_id == identity
+
+    async def record_success(attempt_id):
+        assert active
+        recorded_success.append(attempt_id)
+
     @asynccontextmanager
     async def factory():
         active.append(True)
         try:
             yield SimpleNamespace(
                 subscription_decisions=SimpleNamespace(pending_applications=pending),
+                subscription_recovery=SimpleNamespace(
+                    due_version=due_version,
+                    role_violation=role_violation,
+                    record_success=record_success,
+                ),
                 rollback=rollback,
+                commit=commit,
             )
         finally:
             active.pop()
@@ -248,6 +271,7 @@ async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypat
         report = await recovery.reconcile_all()
         assert (report.applied, report.deferred, report.unsupported) == (1, 0, 0)
         assert applied == [identity]
+        assert recorded_success == [identity]
     finally:
         await handlers.aclose()
 

@@ -28,6 +28,13 @@ from sqlalchemy.exc import (
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 
+@pytest.fixture(autouse=True)
+def _enable_worker_logger(monkeypatch):
+    # In-process Alembic tests disable existing loggers through fileConfig.
+    # Recreate the standalone worker condition where main.logger is enabled.
+    monkeypatch.setattr(main.logger, "disabled", False)
+
+
 async def test_decision_poll_retries_deferred_source_without_overlap():
     stop = asyncio.Event()
     calls, active = 0, 0
@@ -119,10 +126,20 @@ async def test_decision_poll_retries_database_and_io_failures(error, caplog):
     assert all(record.exc_info is None for record in caplog.records)
 
 
-@pytest.mark.parametrize("failure_stage", [
-    "pending_applications", "due", "role_violation", "diagnostic_open",
-    "attempt_run_id", "run", "record_failure", "commit", "record_success",
-])
+@pytest.mark.parametrize(
+    "failure_stage",
+    [
+        "pending_applications",
+        "due_version",
+        "role_violation",
+        "diagnostic_open",
+        "attempt_run_id",
+        "run",
+        "record_failure",
+        "commit",
+        "record_success",
+    ],
+)
 async def test_decision_poll_contains_recovery_database_failure_and_retries_source(failure_stage):
     stop = asyncio.Event()
     attempt_id = uuid4()
@@ -145,9 +162,11 @@ async def test_decision_poll_contains_recovery_database_failure_and_retries_sour
         return (candidate,) if cursor is None else ()
 
     diagnostics = SimpleNamespace(
-        due=operation("due", True), role_violation=operation("role_violation"),
+        due_version=operation("due_version", 1),
+        role_violation=operation("role_violation"),
         attempt_run_id=operation("attempt_run_id", uuid4()),
-        record_failure=operation("record_failure"), record_success=operation("record_success"),
+        record_failure=operation("record_failure"),
+        record_success=operation("record_success"),
     )
 
     @asynccontextmanager
@@ -208,7 +227,9 @@ async def test_decision_poll_contains_recovery_database_failure_and_retries_sour
         peer_polling.cancel()
         await asyncio.gather(polling, peer_polling, return_exceptions=True)
     assert scans == 2 and active == 0 and closed >= 4 and peer_ticks > 1
-    expected_applications = 1 if failure_stage in {"pending_applications", "due", "role_violation"} else 2
+    expected_applications = (
+        1 if failure_stage in {"pending_applications", "due_version", "role_violation"} else 2
+    )
     assert application.await_count == expected_applications
     assert all(call.args == (attempt_id,) for call in application.await_args_list)
     assert diagnostics.record_success.await_args.args == (attempt_id,)

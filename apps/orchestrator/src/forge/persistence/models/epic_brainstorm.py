@@ -25,7 +25,9 @@ class BrainstormConversation(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("id", "epic_id", "project_id"),)
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     epic_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
-    project_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("projects.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
@@ -34,7 +36,7 @@ class BrainstormTurnRow(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("conversation_id", "ordinal"),)
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     conversation_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey("epic_brainstorm_conversations.id"), nullable=False
+        Uuid, ForeignKey("epic_brainstorm_conversations.id", ondelete="RESTRICT"), nullable=False
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -53,6 +55,7 @@ class BrainstormJobRow(Base, TimestampMixin):
                 "epic_brainstorm_conversations.epic_id",
                 "epic_brainstorm_conversations.project_id",
             ),
+            ondelete="RESTRICT",
         ),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -76,7 +79,7 @@ class BrainstormAttemptRow(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("job_id", "number"),)
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     job_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey("epic_brainstorm_jobs.id"), nullable=False
+        Uuid, ForeignKey("epic_brainstorm_jobs.id", ondelete="RESTRICT"), nullable=False
     )
     number: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -121,7 +124,7 @@ class BrainstormAuditRow(Base, TimestampMixin):
 class BrainstormQuotaAdmission(Base, TimestampMixin):
     __tablename__ = "epic_brainstorm_quota_admissions"
     attempt_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey("epic_brainstorm_attempts.id"), primary_key=True
+        Uuid, ForeignKey("epic_brainstorm_attempts.id", ondelete="RESTRICT"), primary_key=True
     )
     provider: Mapped[str] = mapped_column(String(96), nullable=False)
     account: Mapped[str] = mapped_column(String(96), nullable=False)
