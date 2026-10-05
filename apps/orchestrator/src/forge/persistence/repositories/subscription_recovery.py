@@ -388,32 +388,89 @@ class PostgresSubscriptionRecoveryRepository:
         return run_id
 
     async def due(self, attempt_id: UUID) -> bool:
+        return await self.due_version(attempt_id) is not None
+
+    async def due_version(self, attempt_id: UUID) -> int | None:
         if not await self._application_pending(attempt_id):
-            return False
+            return None
+        attempt = await self._session.get(SubscriptionAttempt, attempt_id)
+        assert attempt is not None
+        task = await self._session.get(SubscriptionTask, attempt.task_row_id)
+        scheduled = await self._session.get(SubscriptionScheduledTask, attempt.task_row_id)
+        if (
+            task is None
+            or scheduled is None
+            or any(
+                (
+                    task.pause_requested,
+                    task.cancel_requested,
+                    scheduled.pause_requested,
+                    scheduled.cancel_requested,
+                )
+            )
+        ):
+            return None
         row = await self._session.get(SubscriptionApplicationDiagnostic, attempt_id)
         if row is None:
-            return True
+            return task.version
         if row.resolution == "waiting" and row.reason_code == "run_controlled":
             run = await self._session.get(Run, row.run_id)
-            return run is not None and run.state not in {
-                RunState.PAUSED.value,
-                RunState.CANCELLED.value,
-            }
+            return (
+                task.version
+                if run is not None
+                and run.state
+                not in {
+                    RunState.PAUSED.value,
+                    RunState.CANCELLED.value,
+                }
+                else None
+            )
         if row.resolution == "waiting":
             # Older persisted prerequisite waits had no due time. Re-enter the
             # bounded retry schedule instead of leaving them invisible forever.
-            return True
-        return row.resolution == "scheduled" and (
-            row.next_retry_at is None or row.next_retry_at <= datetime.now(UTC)
+            return task.version
+        return (
+            task.version
+            if row.resolution == "scheduled"
+            and (row.next_retry_at is None or row.next_retry_at <= datetime.now(UTC))
+            else None
         )
 
     async def record_failure(
-        self, attempt_id: UUID, *, classification: str, reason_code: str
+        self,
+        attempt_id: UUID,
+        *,
+        classification: str,
+        reason_code: str,
+        observed_task_version: int | None = None,
     ) -> None:
         attempt = await self._session.get(SubscriptionAttempt, attempt_id)
         if attempt is None:
             raise RecoveryConflict("application diagnostic source is missing")
         await self._session.get(Run, attempt.run_id, with_for_update=True)
+        task = await self._session.get(
+            SubscriptionTask, attempt.task_row_id, with_for_update=True, populate_existing=True
+        )
+        scheduled = await self._session.get(
+            SubscriptionScheduledTask,
+            attempt.task_row_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        if (
+            task is None
+            or scheduled is None
+            or any(
+                (
+                    task.pause_requested,
+                    task.cancel_requested,
+                    scheduled.pause_requested,
+                    scheduled.cancel_requested,
+                )
+            )
+            or (observed_task_version is not None and task.version != observed_task_version)
+        ):
+            return
         now = datetime.now(UTC)
         row = await self._session.get(
             SubscriptionApplicationDiagnostic, attempt_id, with_for_update=True
@@ -456,9 +513,13 @@ class PostgresSubscriptionRecoveryRepository:
             row.resolution = "attention"
             row.next_retry_at = None
         await self._attention_changed(
-            attempt.run_id, attempt.task_row_id, attempt_id,
-            was_attention=was_attention, is_attention=row.resolution == "attention",
-            reason_code=reason_code, previous_reason=previous_reason,
+            attempt.run_id,
+            attempt.task_row_id,
+            attempt_id,
+            was_attention=was_attention,
+            is_attention=row.resolution == "attention",
+            reason_code=reason_code,
+            previous_reason=previous_reason,
         )
         await self._session.flush()
 
@@ -477,6 +538,17 @@ class PostgresSubscriptionRecoveryRepository:
                 )
             else:
                 await self._resolve_diagnostic(row, resolution="applied", next_retry_at=None)
+            await self._session.flush()
+
+    async def schedule_pending_resume(self, attempt_id: UUID) -> None:
+        """Retry a verified resumed source now while keeping diagnostic history."""
+        row = await self._session.get(
+            SubscriptionApplicationDiagnostic, attempt_id, with_for_update=True
+        )
+        if row is not None and await self._application_pending(attempt_id, locked=True):
+            await self._resolve_diagnostic(
+                row, resolution="scheduled", next_retry_at=datetime.now(UTC)
+            )
             await self._session.flush()
 
     async def _application_pending(self, attempt_id: UUID, *, locked: bool = False) -> bool:
@@ -571,7 +643,9 @@ class PostgresSubscriptionRecoveryRepository:
         except KeyError, TypeError, ValueError:
             return "decision_source_invalid"
 
-    async def reject_role_violation(self, attempt_id: UUID, reason_code: str) -> None:
+    async def reject_role_violation(
+        self, attempt_id: UUID, reason_code: str, *, observed_task_version: int | None = None
+    ) -> None:
         attempt = await self._session.get(SubscriptionAttempt, attempt_id)
         if attempt is None:
             raise RecoveryConflict("invalid decision source is missing")
@@ -585,6 +659,14 @@ class PostgresSubscriptionRecoveryRepository:
         )
         if run is None or result is None or task is None or scheduled is None:
             raise RecoveryConflict("invalid decision source differs")
+        if (
+            task.pause_requested
+            or task.cancel_requested
+            or scheduled.pause_requested
+            or scheduled.cancel_requested
+            or (observed_task_version is not None and task.version != observed_task_version)
+        ):
+            return
         if result.disposition == "role_rejected":
             return
         if result.disposition != "decision_pending" or result.application_payload is not None:
