@@ -9,6 +9,7 @@ test.describe("keyboard and accessibility contract", () => {
     for (const url of ["/runs", "/projects/new", `/runs/${encodeURIComponent(runId)}`]) {
       await page.goto(url);
       await expect(page.getByRole("navigation", { name: "Primary", exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       const result = await new AxeBuilder({ page }).analyze();
       expect(result.violations, `${url} has accessibility violations`).toEqual([]);
     }
@@ -54,7 +55,7 @@ test.describe("keyboard and accessibility contract", () => {
       await expedite(runId);
     }
 
-    await expect(page.getByRole("status")).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: /^Events:/ })).toBeVisible();
     await expect.poll(() => page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
     const motion = await page.locator("* ").evaluateAll(elements => elements.every(element => {
       const style = getComputedStyle(element);
