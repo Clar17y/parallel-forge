@@ -3,28 +3,17 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useApi } from '@/hooks/use-api';
 import { normalizeEpicId, useEpicMutations } from './use-epic-mutations';
-import type {
-  AcceptedBriefResponse,
-  AcceptedGraphResponse,
-  BriefContent,
-  BriefRequirement,
-  BriefRevisionResponse,
-  EpicResponse,
-  GraphRevisionResponse,
-  ItemInput,
+import {
+  EMPTY_BRIEF,
+  type AcceptedBriefResponse,
+  type AcceptedGraphResponse,
+  type BriefContent,
+  type BriefRequirement,
+  type BriefRevisionResponse,
+  type EpicResponse,
+  type GraphRevisionResponse,
+  type ItemInput,
 } from './types';
-
-const EMPTY_BRIEF: BriefContent = {
-  schema_version: 1,
-  problem: '',
-  outcomes: [],
-  scope: [],
-  exclusions: [],
-  requirements: [],
-  decisions: [],
-  assumptions: [],
-  open_questions: [],
-};
 
 function useLocalEpicWorkspace(epicId: string, enabled = true) {
   const epicPath = enabled && epicId ? `/epics/${epicId}` : null;
@@ -152,56 +141,57 @@ function useLocalEpicWorkspace(epicId: string, enabled = true) {
   }, [enabled, acceptReceipt, registerCompletion, refreshEpic, refreshBriefRevisions, refreshGraphRevisions, refreshProjections]);
 
   // Draft update helpers
+  const editContent = useCallback(
+    (next: BriefContent) => {
+      setUserContent(next);
+      if (!isDirty) setUserBaseVersion(serverVersion);
+    },
+    [isDirty, serverVersion]
+  );
+
   const updateDraftTitle = useCallback(
     (title: string) => {
       setUserTitle(title);
-      if (!isDirty) setUserBaseVersion(epic?.version ?? 1);
+      if (!isDirty) setUserBaseVersion(serverVersion);
     },
-    [epic?.version, isDirty]
+    [isDirty, serverVersion]
   );
 
   const updateDraftProblem = useCallback(
     (problem: string) => {
-      const current = userContent !== null ? userContent : (epic?.draft ?? EMPTY_BRIEF);
-      setUserContent({ ...current, problem });
-      if (!isDirty) setUserBaseVersion(epic?.version ?? 1);
+      editContent({ ...draftContent, problem });
     },
-    [epic?.draft, epic?.version, isDirty, userContent]
+    [draftContent, editContent]
   );
 
   const updateDraftContent = useCallback(
     (updater: (prev: BriefContent) => BriefContent) => {
-      const current = userContent !== null ? userContent : (epic?.draft ?? EMPTY_BRIEF);
-      setUserContent(updater(current));
-      if (!isDirty) setUserBaseVersion(epic?.version ?? 1);
+      editContent(updater(draftContent));
     },
-    [epic?.draft, epic?.version, isDirty, userContent]
+    [draftContent, editContent]
   );
 
   const addRequirement = useCallback(
     (text = '', criteria: string[] = ['']) => {
-      const current = userContent !== null ? userContent : (epic?.draft ?? EMPTY_BRIEF);
       const newReq: BriefRequirement = {
         requirement_id: crypto.randomUUID(),
         text,
         acceptance_criteria: criteria,
       };
-      setUserContent({
-        ...current,
-        requirements: [...(current.requirements ?? []), newReq],
+      editContent({
+        ...draftContent,
+        requirements: [...(draftContent.requirements ?? []), newReq],
       });
-      if (!isDirty) setUserBaseVersion(epic?.version ?? 1);
       return newReq.requirement_id;
     },
-    [epic?.draft, epic?.version, isDirty, userContent]
+    [draftContent, editContent]
   );
 
   const updateRequirement = useCallback(
     (id: string, text: string, criteria?: string[]) => {
-      const current = userContent !== null ? userContent : (epic?.draft ?? EMPTY_BRIEF);
-      setUserContent({
-        ...current,
-        requirements: (current.requirements ?? []).map(req => {
+      editContent({
+        ...draftContent,
+        requirements: (draftContent.requirements ?? []).map(req => {
           if (req.requirement_id !== id) return req;
           return {
             ...req,
@@ -210,21 +200,18 @@ function useLocalEpicWorkspace(epicId: string, enabled = true) {
           };
         }),
       });
-      if (!isDirty) setUserBaseVersion(epic?.version ?? 1);
     },
-    [epic?.draft, epic?.version, isDirty, userContent]
+    [draftContent, editContent]
   );
 
   const removeRequirement = useCallback(
     (id: string) => {
-      const current = userContent !== null ? userContent : (epic?.draft ?? EMPTY_BRIEF);
-      setUserContent({
-        ...current,
-        requirements: (current.requirements ?? []).filter(req => req.requirement_id !== id),
+      editContent({
+        ...draftContent,
+        requirements: (draftContent.requirements ?? []).filter(req => req.requirement_id !== id),
       });
-      if (!isDirty) setUserBaseVersion(epic?.version ?? 1);
     },
-    [epic?.draft, epic?.version, isDirty, userContent]
+    [draftContent, editContent]
   );
 
   const revertLocalDraft = useCallback(() => {

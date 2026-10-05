@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { useEpicMutations } from '@/hooks/epics/use-epic-mutations';
 import type { components } from '@/lib/api/schema';
-import type { EpicResponse } from '@/hooks/epics/types';
+import { EMPTY_BRIEF, type EpicResponse } from '@/hooks/epics/types';
 
 export function EpicCreateForm({
   projects,
@@ -47,15 +47,8 @@ export function EpicCreateForm({
       };
       if (problem.trim()) {
         payload.draft = {
-          schema_version: 1,
+          ...EMPTY_BRIEF,
           problem: problem.trim(),
-          outcomes: [],
-          scope: [],
-          exclusions: [],
-          requirements: [],
-          decisions: [],
-          assumptions: [],
-          open_questions: [],
         };
       }
 
@@ -70,8 +63,8 @@ export function EpicCreateForm({
       {mutations.hasPendingRetry && !mutations.loading && (
         <div role="alert" className="p-3 bg-[var(--warning-soft)] text-[var(--warning)] rounded text-sm space-y-2">
           <p className="font-semibold">Network error. Mutation outcome uncertain.</p>
-          <Button type="button" variant="primary" disabled={mutations.loading} onClick={() => { void mutations.retryPending().catch(() => undefined); }}>
-            {mutations.loading ? 'Retrying…' : 'Retry original request'}
+          <Button type="button" variant="primary" onClick={() => { void mutations.retryPending().catch(() => undefined); }}>
+            Retry original request
           </Button>
         </div>
       )}

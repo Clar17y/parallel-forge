@@ -139,6 +139,15 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
   }, [urlJobThread, urlSelection.conversationId, urlSelection.jobId]);
 
   useEffect(() => {
+    const onJobSettled = (value: unknown, request: { path: string }) => {
+      const receipt = value as AuthoringReceipt;
+      const requestJobId = jobIdFromPath(request.path) ?? receipt.job_id;
+      const conversationId = resolveJobConversation(requestJobId);
+      selectCompletedJob(receipt.job_id, conversationId);
+      refreshOutcome();
+      refreshThreads();
+    };
+
     const registrations = [
       registerCompletion('conversation-start', value => {
         const conversationId = (value as { conversation_id: string }).conversation_id;
@@ -162,22 +171,8 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
         selectCompletedJob(receipt.job_id, conversationId);
         refreshThreads();
       }),
-      registerCompletion('job-cancel', (value, request) => {
-        const receipt = value as AuthoringReceipt;
-        const requestJobId = jobIdFromPath(request.path) ?? receipt.job_id;
-        const conversationId = resolveJobConversation(requestJobId);
-        selectCompletedJob(receipt.job_id, conversationId);
-        refreshOutcome();
-        refreshThreads();
-      }),
-      registerCompletion('job-retry', (value, request) => {
-        const receipt = value as AuthoringReceipt;
-        const requestJobId = jobIdFromPath(request.path) ?? receipt.job_id;
-        const conversationId = resolveJobConversation(requestJobId);
-        selectCompletedJob(receipt.job_id, conversationId);
-        refreshOutcome();
-        refreshThreads();
-      }),
+      registerCompletion('job-cancel', onJobSettled),
+      registerCompletion('job-retry', onJobSettled),
       registerCompletion('proposal-adopt', (value, request) => {
         const requestJobId = jobIdFromPath(request.path);
         const conversationId = requestJobId ? resolveJobConversation(requestJobId) : null;

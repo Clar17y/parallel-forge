@@ -18,6 +18,18 @@ export type ItemInput = components['schemas']['ItemInput'];
 export type ItemSnapshot = components['schemas']['ItemSnapshot'];
 export type ItemReadiness = components['schemas']['ItemReadiness'];
 
+export const EMPTY_BRIEF: BriefContent = {
+  schema_version: 1,
+  problem: '',
+  outcomes: [],
+  scope: [],
+  exclusions: [],
+  requirements: [],
+  decisions: [],
+  assumptions: [],
+  open_questions: [],
+};
+
 // Brainstorming / Authoring Schemas
 export type BrainstormRole = 'operator' | 'assistant';
 

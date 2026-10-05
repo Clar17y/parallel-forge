@@ -197,8 +197,8 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
         <div role="alert" className="p-4 bg-[var(--warning-soft)] text-[var(--warning)] rounded border border-[var(--border)] space-y-2">
           <p className="font-semibold">Network or server error. Mutation outcome uncertain.</p>
           <div className="flex space-x-2">
-            <Button variant="primary" disabled={mutations.loading} onClick={() => { void mutations.retryPending().catch(() => undefined); }}>
-              {mutations.loading ? 'Retrying…' : 'Retry original request'}
+            <Button variant="primary" onClick={() => { void mutations.retryPending().catch(() => undefined); }}>
+              Retry original request
             </Button>
           </div>
         </div>

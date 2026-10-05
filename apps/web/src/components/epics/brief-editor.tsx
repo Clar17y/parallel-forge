@@ -8,6 +8,60 @@ import { useEpicWorkspace } from '@/hooks/epics/use-epic-workspace';
 import { EvidenceDetails } from './evidence-details';
 import type { BriefRequirement } from '@/hooks/epics/types';
 
+export type BriefListField = 'outcomes' | 'scope' | 'exclusions' | 'decisions' | 'assumptions' | 'open_questions';
+
+function getBriefItemLabel(field: BriefListField, idx: number): string {
+  switch (field) {
+    case 'outcomes':
+      return `Outcome ${idx + 1}`;
+    case 'scope':
+      return `Scope item ${idx + 1}`;
+    case 'exclusions':
+      return `Exclusion item ${idx + 1}`;
+    case 'decisions':
+      return `Decision ${idx + 1}`;
+    case 'assumptions':
+      return `Assumption ${idx + 1}`;
+    case 'open_questions':
+      return `Open question ${idx + 1}`;
+  }
+}
+
+interface BriefListRowsProps {
+  rows: string[];
+  field: BriefListField;
+  inputClassName?: string;
+  update: (index: number, value: string) => void;
+  remove: (index: number) => void;
+}
+
+function BriefListRows({
+  rows,
+  field,
+  inputClassName = 'flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded',
+  update,
+  remove,
+}: BriefListRowsProps) {
+  return (
+    <div className="space-y-2">
+      {rows.map((item, idx) => (
+        <div key={idx} className="flex items-center space-x-2">
+          <input
+            type="text"
+            aria-label={getBriefItemLabel(field, idx)}
+            className={inputClassName}
+            value={item}
+            onChange={e => update(idx, e.target.value)}
+          />
+          <Button type="button" variant="quiet" onClick={() => remove(idx)}>
+            ×
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function BriefEditor({ epicId }: { epicId: string }) {
   const workspace = useEpicWorkspace(epicId);
   const [viewTab, setViewTab] = useState<'editor' | 'accepted' | 'history'>('editor');
@@ -79,7 +133,7 @@ export function BriefEditor({ epicId }: { epicId: string }) {
   }
 
   // Helper to add item to array in draftContent
-  const addItem = (field: 'outcomes' | 'scope' | 'exclusions' | 'decisions' | 'assumptions' | 'open_questions') => {
+  const addItem = (field: BriefListField) => {
     updateDraftContent(prev => ({
       ...prev,
       [field]: [...(prev[field] ?? []), ''],
@@ -87,7 +141,7 @@ export function BriefEditor({ epicId }: { epicId: string }) {
   };
 
   const updateItem = (
-    field: 'outcomes' | 'scope' | 'exclusions' | 'decisions' | 'assumptions' | 'open_questions',
+    field: BriefListField,
     index: number,
     value: string
   ) => {
@@ -99,7 +153,7 @@ export function BriefEditor({ epicId }: { epicId: string }) {
   };
 
   const removeItem = (
-    field: 'outcomes' | 'scope' | 'exclusions' | 'decisions' | 'assumptions' | 'open_questions',
+    field: BriefListField,
     index: number
   ) => {
     updateDraftContent(prev => {
@@ -172,8 +226,8 @@ export function BriefEditor({ epicId }: { epicId: string }) {
             The previous mutation request may have succeeded or failed on the server. To avoid duplicate side-effects, you can retry the original request with its frozen key and body.
           </p>
           <div className="flex space-x-2">
-            <Button variant="primary" disabled={mutations.loading} onClick={() => { void mutations.retryPending().catch(() => undefined); }}>
-              {mutations.loading ? 'Retrying…' : 'Retry original request'}
+            <Button variant="primary" onClick={() => { void mutations.retryPending().catch(() => undefined); }}>
+              Retry original request
             </Button>
           </div>
         </div>
@@ -397,22 +451,12 @@ export function BriefEditor({ epicId }: { epicId: string }) {
                 </Button>
               }
             >
-              <div className="space-y-2">
-                {(draftContent.outcomes ?? []).map((out, idx) => (
-                  <div key={idx} className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      aria-label={`Outcome ${idx + 1}`}
-                      className="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded"
-                      value={out}
-                      onChange={e => updateItem('outcomes', idx, e.target.value)}
-                    />
-                    <Button type="button" variant="quiet" onClick={() => removeItem('outcomes', idx)}>
-                      ×
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              <BriefListRows
+                rows={draftContent.outcomes ?? []}
+                field="outcomes"
+                update={(idx, val) => updateItem('outcomes', idx, val)}
+                remove={idx => removeItem('outcomes', idx)}
+              />
             </Panel>
 
             <Panel
@@ -423,22 +467,12 @@ export function BriefEditor({ epicId }: { epicId: string }) {
                 </Button>
               }
             >
-              <div className="space-y-2">
-                {(draftContent.scope ?? []).map((sc, idx) => (
-                  <div key={idx} className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      aria-label={`Scope item ${idx + 1}`}
-                      className="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded"
-                      value={sc}
-                      onChange={e => updateItem('scope', idx, e.target.value)}
-                    />
-                    <Button type="button" variant="quiet" onClick={() => removeItem('scope', idx)}>
-                      ×
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              <BriefListRows
+                rows={draftContent.scope ?? []}
+                field="scope"
+                update={(idx, val) => updateItem('scope', idx, val)}
+                remove={idx => removeItem('scope', idx)}
+              />
             </Panel>
 
             <Panel
@@ -449,22 +483,12 @@ export function BriefEditor({ epicId }: { epicId: string }) {
                 </Button>
               }
             >
-              <div className="space-y-2">
-                {(draftContent.exclusions ?? []).map((ex, idx) => (
-                  <div key={idx} className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      aria-label={`Exclusion item ${idx + 1}`}
-                      className="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded"
-                      value={ex}
-                      onChange={e => updateItem('exclusions', idx, e.target.value)}
-                    />
-                    <Button type="button" variant="quiet" onClick={() => removeItem('exclusions', idx)}>
-                      ×
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              <BriefListRows
+                rows={draftContent.exclusions ?? []}
+                field="exclusions"
+                update={(idx, val) => updateItem('exclusions', idx, val)}
+                remove={idx => removeItem('exclusions', idx)}
+              />
             </Panel>
           </div>
 
@@ -478,22 +502,13 @@ export function BriefEditor({ epicId }: { epicId: string }) {
                 </Button>
               </div>
               <p className="text-xs text-[var(--muted)]">Recorded immutable commitments and architectural choices.</p>
-              <div className="space-y-2">
-                {(draftContent.decisions ?? []).map((dec, idx) => (
-                  <div key={idx} className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      aria-label={`Decision ${idx + 1}`}
-                      className="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
-                      value={dec}
-                      onChange={e => updateItem('decisions', idx, e.target.value)}
-                    />
-                    <Button type="button" variant="quiet" onClick={() => removeItem('decisions', idx)}>
-                      ×
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              <BriefListRows
+                rows={draftContent.decisions ?? []}
+                field="decisions"
+                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
+                update={(idx, val) => updateItem('decisions', idx, val)}
+                remove={idx => removeItem('decisions', idx)}
+              />
             </div>
 
             <div data-testid="brief-assumptions" className="p-4 rounded border-2 border-[var(--info)] bg-[var(--info-soft)] space-y-3">
@@ -504,22 +519,13 @@ export function BriefEditor({ epicId }: { epicId: string }) {
                 </Button>
               </div>
               <p className="text-xs text-[var(--muted)]">Presumed facts or dependencies subject to verification.</p>
-              <div className="space-y-2">
-                {(draftContent.assumptions ?? []).map((asmp, idx) => (
-                  <div key={idx} className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      aria-label={`Assumption ${idx + 1}`}
-                      className="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
-                      value={asmp}
-                      onChange={e => updateItem('assumptions', idx, e.target.value)}
-                    />
-                    <Button type="button" variant="quiet" onClick={() => removeItem('assumptions', idx)}>
-                      ×
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              <BriefListRows
+                rows={draftContent.assumptions ?? []}
+                field="assumptions"
+                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
+                update={(idx, val) => updateItem('assumptions', idx, val)}
+                remove={idx => removeItem('assumptions', idx)}
+              />
             </div>
 
             <div data-testid="brief-open-questions" className="p-4 rounded border-2 border-[var(--warning)] bg-[var(--warning-soft)] space-y-3">
@@ -530,22 +536,13 @@ export function BriefEditor({ epicId }: { epicId: string }) {
                 </Button>
               </div>
               <p className="text-xs text-[var(--muted)]">Unresolved requirements or architectural inquiries.</p>
-              <div className="space-y-2">
-                {(draftContent.open_questions ?? []).map((oq, idx) => (
-                  <div key={idx} className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      aria-label={`Open question ${idx + 1}`}
-                      className="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
-                      value={oq}
-                      onChange={e => updateItem('open_questions', idx, e.target.value)}
-                    />
-                    <Button type="button" variant="quiet" onClick={() => removeItem('open_questions', idx)}>
-                      ×
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              <BriefListRows
+                rows={draftContent.open_questions ?? []}
+                field="open_questions"
+                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
+                update={(idx, val) => updateItem('open_questions', idx, val)}
+                remove={idx => removeItem('open_questions', idx)}
+              />
             </div>
           </div>
           </fieldset>

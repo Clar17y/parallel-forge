@@ -61,11 +61,9 @@ function freeze<T>(value: T): T {
 function loadPending(key: string): { pending: FrozenMutation | null; protected: boolean } {
   try {
     let raw = window.sessionStorage.getItem(key);
-    if (!raw && typeof key === 'string') {
+    if (!raw) {
       const lowerKey = key.toLowerCase();
-      const upperKey = key.toUpperCase();
-      raw = (lowerKey !== key ? window.sessionStorage.getItem(lowerKey) : null) ||
-            (upperKey !== key ? window.sessionStorage.getItem(upperKey) : null);
+      raw = lowerKey !== key ? window.sessionStorage.getItem(lowerKey) : null;
     }
     if (!raw) return { pending: null, protected: true };
     const value = JSON.parse(raw) as FrozenMutation;
@@ -118,11 +116,9 @@ class EpicMutationStore {
     });
   }
 
-  private publish() {
-    for (const scope of this.scopes.values()) scope.snapshot = undefined;
-    for (const scope of this.scopes.values()) {
-      for (const [listener, consumer] of scope.listeners) if (consumer.isActive()) listener();
-    }
+  private publish(scope: Scope) {
+    scope.snapshot = undefined;
+    for (const [listener, consumer] of scope.listeners) if (consumer.isActive()) listener();
   }
 
   restore(storageKey: string) {
@@ -132,7 +128,7 @@ class EpicMutationStore {
       scope.pending = saved.pending;
       scope.reloadProtected = saved.protected;
       scope.loaded = true;
-      this.publish();
+      this.publish(scope);
     }
   }
 
@@ -153,7 +149,6 @@ class EpicMutationStore {
     try {
       window.sessionStorage.removeItem(storageKey);
       if (storageKey.toLowerCase() !== storageKey) window.sessionStorage.removeItem(storageKey.toLowerCase());
-      if (storageKey.toUpperCase() !== storageKey) window.sessionStorage.removeItem(storageKey.toUpperCase());
     } catch {
       // A retained storage entry safely replays the known receipt.
     }
@@ -164,7 +159,7 @@ class EpicMutationStore {
     scope.error = null;
     scope.conflict = false;
     scope.actionKind = null;
-    this.publish();
+    this.publish(scope);
   }
 
   private async runMutation<T>(storageKey: string, mutation: FrozenMutation): Promise<T> {
@@ -177,7 +172,7 @@ class EpicMutationStore {
     try { window.sessionStorage.setItem(storageKey, JSON.stringify(mutation)); } catch {
       scope.reloadProtected = false;
     }
-    this.publish();
+    this.publish(scope);
     try {
       const response = await api<T>(mutation.path, {
         method: mutation.method,
@@ -226,7 +221,7 @@ class EpicMutationStore {
       throw err;
     } finally {
       scope.inFlight = false;
-      this.publish();
+      this.publish(scope);
     }
   }
 

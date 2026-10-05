@@ -644,4 +644,28 @@ describe('useEpicMutations', () => {
       await expect(hookLower.result.current.execute('PATCH', `/epics/${lowercaseId}`, {})).rejects.toThrow(/competing mutation/i);
     });
   });
+
+  test('action in scope A does not rerender or notify independent scope B', async () => {
+    const epicA = '11111111-1111-4111-8111-111111111111';
+    const epicB = '22222222-2222-4222-8222-222222222222';
+
+    let rendersB = 0;
+    const hookA = renderHook(() => useEpicMutations(epicA));
+    const hookB = renderHook(() => {
+      rendersB++;
+      return useEpicMutations(epicB);
+    });
+
+    const snapshotBBeforeMutation = hookB.result.current;
+    const rendersBBeforeMutation = rendersB;
+
+    vi.mocked(api).mockResolvedValueOnce({ version: 2 });
+
+    await act(async () => {
+      await hookA.result.current.execute('PATCH', `/epics/${epicA}`, { title: 'Scope A update' });
+    });
+
+    expect(rendersB).toBe(rendersBBeforeMutation);
+    expect(hookB.result.current).toBe(snapshotBBeforeMutation);
+  });
 });
