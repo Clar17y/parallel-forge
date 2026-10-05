@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Full verification or focused recovery regression
+        description: Full verification, focused recovery or stored-result controls
         type: choice
-        options: [full, recovery]
+        options: [full, recovery, counter-controls]
         default: full
 
 permissions:
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   secret-patterns:
-    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -37,7 +37,7 @@ jobs:
           "$RUNNER_TEMP/gitleaks" dir --redact=100 --no-banner --ignore-gitleaks-allow "$RUNNER_TEMP/forge-secret-scan"
 
   python-contract:
-    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'full'
     strategy:
       fail-fast: false
       matrix:
@@ -108,7 +108,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends ripgrep
           rg --version
       - name: Deterministic backend, evaluations and migration round trips
-        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'full'
         run: uv run --frozen python -m pytest -q -ra --maxfail=1 -m "not live_provider and not live_github and not docker"
       - name: Focused recovery crash boundary
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'recovery'
@@ -117,8 +117,14 @@ jobs:
           tests/recovery_process/test_harness_waits.py
           tests/integration/test_worker_restart.py::test_worker_crash_and_restart_during_development
           -q -ra
+      - name: Focused stored-result controls
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'counter-controls'
+        run: >-
+          uv run --frozen python -m pytest
+          apps/orchestrator/tests/persistence/test_subscription_counter_controls_acceptance.py
+          -q -ra
       - name: Docker runner contract
-        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'full'
         run: >-
           uv run --frozen python -m pytest
           tests/integration/test_runner_container.py
