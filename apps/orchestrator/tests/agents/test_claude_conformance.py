@@ -421,9 +421,14 @@ async def test_loopback_shutdown_closes_stalled_connections(partial: bytes) -> N
         await asyncio.wait_for(asyncio.shield(closing), timeout=0.5)
     finally:
         writer.close()
-        await writer.wait_closed()
-        if not closing.done():
-            await asyncio.wait_for(closing, timeout=1)
+        try:
+            await writer.wait_closed()
+        except ConnectionResetError:
+            # The bounded server close may reset a partially sent request.
+            pass
+        finally:
+            if not closing.done():
+                await asyncio.wait_for(closing, timeout=1)
 
 
 @pytest.mark.official_client

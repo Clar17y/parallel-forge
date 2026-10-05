@@ -722,21 +722,51 @@ def test_linux_operational_pinning_rejects_non_linux():
     assert not linux_operational_pinning_supported() or sys.platform == "linux"
 
 
-def test_linux_operational_pinning_rejects_missing_memfd_or_proc_dir(monkeypatch):
+def test_linux_operational_pinning_rejects_missing_proc_dir(monkeypatch):
     from forge.agents import client_process as transport
 
     monkeypatch.setattr(transport.sys, "platform", "linux")
-    monkeypatch.delattr(transport.os, "memfd_create", raising=False)
-    monkeypatch.setattr(transport.Path, "is_dir", lambda self: True)
-    assert not transport.linux_operational_pinning_supported()
-
-    monkeypatch.setattr(transport.os, "memfd_create", lambda *args, **kwargs: 1, raising=False)
     monkeypatch.setattr(
         transport.Path,
         "is_dir",
         lambda self: self.as_posix() != "/proc/self/fd",
     )
     assert not transport.linux_operational_pinning_supported()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux memfd execution")
+def test_linux_operational_pinning_works_without_optional_python_names(monkeypatch):
+    import fcntl
+
+    from forge.agents import client_process as transport
+
+    monkeypatch.delattr(transport.os, "memfd_create", raising=False)
+    for name in ("F_ADD_SEALS", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_GROW", "F_SEAL_WRITE"):
+        monkeypatch.delattr(fcntl, name, raising=False)
+    assert transport.linux_operational_pinning_supported()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux memfd seals")
+def test_portable_memfd_copy_is_sealed_without_optional_python_names(tmp_path, monkeypatch):
+    import fcntl
+
+    from forge.agents import client_process as transport
+
+    source = tmp_path / "policy.json"
+    source.write_bytes(b"verified policy")
+    monkeypatch.delattr(transport.os, "memfd_create", raising=False)
+    for name in ("F_ADD_SEALS", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_GROW", "F_SEAL_WRITE"):
+        monkeypatch.delattr(fcntl, name, raising=False)
+    descriptor = transport._sealed_verified_file(
+        str(source), hashlib.sha256(source.read_bytes()).hexdigest(), executable=False
+    )
+    try:
+        assert fcntl.fcntl(descriptor, 1034) & 0x000F == 0x000F
+        assert os.read(descriptor, 100) == b"verified policy"
+        with pytest.raises(OSError):
+            os.write(descriptor, b"changed")
+    finally:
+        os.close(descriptor)
 
 
 def test_linux_operational_pinning_success_mechanics(monkeypatch):

@@ -121,7 +121,7 @@ def test_a_new_version_needs_its_own_evidence_identity(tmp_path: Path) -> None:
     assert older != newer
 
 
-def test_the_manifest_carries_the_version_beside_the_digest() -> None:
+def test_the_manifest_carries_the_version_beside_the_digest(tmp_path: Path) -> None:
     manifest = SubscriptionInstallationManifest.model_validate_json(
         json.dumps(
             {
@@ -129,9 +129,9 @@ def test_the_manifest_carries_the_version_beside_the_digest() -> None:
                 "installations": [
                     {
                         "client": "claude_code",
-                        "executable": "C:/clients/claude-2.1.268/claude.cmd",
-                        "cwd": "C:/work/isolated",
-                        "home": "C:/clients/claude-home",
+                        "executable": str(tmp_path / "clients" / "claude-2.1.268" / "claude.cmd"),
+                        "cwd": str(tmp_path / "work" / "isolated"),
+                        "home": str(tmp_path / "clients" / "claude-home"),
                         "model": "claude-opus-5",
                         "effort": "medium",
                         "account": "personal",
@@ -147,6 +147,7 @@ def test_the_manifest_carries_the_version_beside_the_digest() -> None:
     (spec,) = manifest.installations
     assert isinstance(spec, ClaudeInstallationSpec)
     assert spec.client_version == NEWER
+    assert spec.executable_digest == "b" * 64
 
 
 def test_codex_installations_declare_their_version_the_same_way(tmp_path: Path) -> None:

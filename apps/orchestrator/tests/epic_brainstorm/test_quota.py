@@ -19,7 +19,11 @@ from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRep
 from forge.worker.epic_brainstorm import EpicBrainstormWorker
 from sqlalchemy import delete, select
 
-from apps.orchestrator.tests.epic_brainstorm.test_worker import BriefFixture, FakeGateway, prepared
+from apps.orchestrator.tests.epic_brainstorm.test_brainstorm_worker import (
+    BriefFixture,
+    FakeGateway,
+    prepared,
+)
 
 
 async def _submit_route_job(factory, epic_id, project_id, actor, budget, model, suffix):

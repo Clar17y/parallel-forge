@@ -18,7 +18,7 @@ from forge.worker.epic_brainstorm import (
 )
 from sqlalchemy import select
 
-from apps.orchestrator.tests.epic_brainstorm.test_worker import prepared
+from apps.orchestrator.tests.epic_brainstorm.test_brainstorm_worker import prepared
 
 
 async def second_job(service, epic, project, actor):
