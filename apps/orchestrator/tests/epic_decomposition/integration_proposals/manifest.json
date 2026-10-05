@@ -38,8 +38,8 @@
   "patches": [
     {
       "path": "shared_authoring_compatibility.patch",
-      "sha256": "4775275bcda7822ecdd1aad6758f9b7a4d7f211e303926801a63c870eb5e7d92",
-      "bytes": 14990
+      "sha256": "2151b98ade57b3b8091ea383a73237b110dfa17742725a2fd9e1b3c4add770e8",
+      "bytes": 15591
     },
     {
       "path": "registration.patch",

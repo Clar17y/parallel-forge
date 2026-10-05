@@ -8,17 +8,10 @@
  from forge.domain.subscription import AttemptTelemetry
  from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
  
-@@ -55,10 +56,26 @@
- 
- @dataclass(frozen=True, slots=True)
- class BrainstormGatewayResult:
--    proposal: BrainstormProposal | None
-+    proposal: BrainstormProposal | DecompositionProposal | None
-     telemetry: AttemptTelemetry | None
-     failure: str | None = None
+@@ -61,6 +62,22 @@
      quota_reset_at: str | None = None
-+
-+
+ 
+ 
 +class AuthoringGatewayResult(Protocol):
 +    """Fields the shared worker consumes from either subject's gateway result."""
 +
@@ -33,9 +26,11 @@
 +
 +    @property
 +    def quota_reset_at(self) -> str | None: ...
- 
- 
++
++
  class BrainstormGateway(Protocol):
+     async def execute(
+         self,
 @@ -70,7 +87,7 @@
          *,
          cancelled: Callable[[], Awaitable[bool]],
@@ -126,7 +121,28 @@
                  input_brief_revision_id=brief.accepted_revision_id,
                  input_brief_digest=brief.accepted_digest,
                  input_draft_digest=brief.draft_digest,
-@@ -449,6 +469,8 @@
+@@ -298,10 +318,19 @@
+             )
+             return receipt
+ 
+-    async def observe(self, *, epic_id: UUID, project_id: UUID, job_id: UUID) -> AuthoringOutcome:
++    async def observe(
++        self,
++        *,
++        epic_id: UUID,
++        project_id: UUID,
++        job_id: UUID,
++        kind: Literal["brainstorm", "decomposition"] | None = None,
++    ) -> AuthoringOutcome:
+         async with self.sessions() as session:
+             repository = PostgresBrainstormRepository(session)
+             row = await repository.job(epic_id, project_id, job_id)
++            if kind is not None and repository.decode_snapshot(row).kind != kind:
++                raise BrainstormConflict("authoring job kind conflicts with route")
+             return await repository.outcome(row)
+ 
+     async def turns(
+@@ -449,6 +478,8 @@
              brief = await self.briefs(session).input(epic_id, for_update=True)
              row = await repository.job(epic_id, project_id, job_id, lock=True)
              snapshot = repository.decode_snapshot(row)
@@ -135,7 +151,7 @@
              if (
                  brief.project_id != project_id
                  or brief.epic_version != expected_epic_version
-@@ -535,7 +557,7 @@
+@@ -535,7 +566,7 @@
  
      async def submit(self, job: AuthoringJobSnapshot) -> AuthoringReceipt:
          if (

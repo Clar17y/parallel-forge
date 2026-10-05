@@ -13,7 +13,10 @@ from forge.application.services.epic_brainstorm import (
 from forge.application.services.epic_decomposition import EpicDecompositionService
 from forge.domain.epic_brainstorm import BrainstormConflict, BrainstormNotFound
 from forge.domain.epic_brief import BriefContent, BriefRequirement
-from forge.domain.epic_decomposition import DecompositionConflict
+from forge.domain.epic_decomposition import (
+    DecompositionConflict,
+    DecompositionValidationError,
+)
 from forge.domain.epic_items import ItemInput, make_snapshot
 from forge.domain.operation import canonical_digest
 from forge.domain.subscription import RouteBinding, RouteSpec, TaskBudget
@@ -535,4 +538,34 @@ async def test_subject_routes_reject_other_job_kind(decomposition_session_factor
             proposal_digest=outcome.proposal_digest,
             expected_job_version=outcome.job_version, expected_epic_version=1,
             actor=actor, key="brainstorm-adopt-decomposition",
+        )
+
+
+@pytest.mark.asyncio
+async def test_adopt_rejects_edited_invalid_source_and_empty_graph(decomposition_session_factory) -> None:
+    factory = decomposition_session_factory
+    service, actor, epic_id, project_id = await prepared(factory)
+    _, _, _, receipt = await submit(service, actor, epic_id, project_id)
+    await settle(factory, receipt.job_id)
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.proposal is not None
+    item = outcome.proposal.items[0]
+
+    with pytest.raises(DecompositionValidationError, match="^graph item count is invalid$"):
+        await service.adopt(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id,
+            proposal_digest=outcome.proposal_digest, expected_job_version=outcome.job_version,
+            expected_epic_version=1, actor=actor, key="empty-adopt", items=[],
+        )
+
+    bad_req_id = uuid4()
+    bad_item = item.model_copy(update={"source_requirement_ids": [bad_req_id]})
+    with pytest.raises(
+        DecompositionValidationError,
+        match=f"^source requirement is missing from accepted brief: {bad_req_id}$",
+    ):
+        await service.adopt(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id,
+            proposal_digest=outcome.proposal_digest, expected_job_version=outcome.job_version,
+            expected_epic_version=1, actor=actor, key="bad-source-adopt", items=[bad_item],
         )

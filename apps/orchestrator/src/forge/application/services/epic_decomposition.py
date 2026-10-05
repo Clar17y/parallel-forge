@@ -20,6 +20,7 @@ from forge.domain.epic_brainstorm import (
 from forge.domain.epic_decomposition import (
     DecompositionConflict,
     DecompositionValidationError,
+    require_brief_sources,
     validate_decomposition_proposal,
 )
 from forge.domain.epic_items import (
@@ -127,12 +128,11 @@ class EpicDecompositionService:
         project_id: UUID,
         job_id: UUID,
     ) -> AuthoringOutcome:
-        await self._authoring.require_kind(
-            epic_id=epic_id, project_id=project_id, job_id=job_id,
-            kind="decomposition",
-        )
         return await self._authoring.observe(
-            epic_id=epic_id, project_id=project_id, job_id=job_id
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+            kind="decomposition",
         )
 
     async def cancel(
@@ -262,24 +262,13 @@ class EpicDecompositionService:
                 raise DecompositionConflict("brief revision digest mismatch")
             validate_decomposition_proposal(proposal, brief_revision.content)
 
-            allowed_requirements = {req.requirement_id for req in brief_revision.content.requirements}
-
             # Step 5: Determine items to adopt
             items_to_adopt: list[ItemInput]
             if items is not None:
                 items_to_adopt = list(items)
+                require_brief_sources(items_to_adopt, brief_revision.content)
             else:
                 items_to_adopt = list(proposal.items)
-
-            if not items_to_adopt:
-                raise DecompositionValidationError("graph item count is invalid")
-
-            for item in items_to_adopt:
-                for ref in item.source_requirement_ids:
-                    if ref not in allowed_requirements:
-                        raise DecompositionValidationError(
-                            f"source requirement is missing from accepted brief: {ref}"
-                        )
 
             # Step 6: Validate graph for adoption (acyclic, required cannot depend on deferred)
             try:

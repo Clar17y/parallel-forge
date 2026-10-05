@@ -7,6 +7,7 @@ from forge.domain.epic_brief import BriefContent, BriefRequirement
 from forge.domain.epic_decomposition import (
     DecompositionProposal,
     DecompositionValidationError,
+    require_brief_sources,
     validate_decomposition_proposal,
 )
 from forge.domain.epic_items import GraphValidationError, ItemInput, validate_graph
@@ -81,12 +82,47 @@ def test_valid_decomposition_proposal_round_trip() -> None:
         open_questions=tuple(brief.open_questions),
     )
 
-    validate_decomposition_proposal(proposal, brief)
+    validated = validate_decomposition_proposal(proposal, brief)
+    assert validated == proposal
+    assert isinstance(validated, DecompositionProposal)
     assert proposal.schema_version == 1
     assert proposal.digest is not None
     assert len(proposal.digest) == 64
     assert proposal.assumptions == ("Assumption 1",)
     assert proposal.open_questions == ("Open question 1?",)
+
+
+def test_require_brief_sources_accepts_valid_and_rejects_missing() -> None:
+    req_id = uuid4()
+    unknown_req_id = uuid4()
+    brief, _ = _make_brief([req_id])
+    valid_item = ItemInput(
+        item_id=uuid4(),
+        disposition="required",
+        ordinal=0,
+        title="Valid item",
+        outcome="Outcome",
+        acceptance_criteria=["Criterion"],
+        source_requirement_ids=[req_id],
+        dependency_item_ids=[],
+    )
+    require_brief_sources([valid_item], brief)
+
+    invalid_item = ItemInput(
+        item_id=uuid4(),
+        disposition="required",
+        ordinal=1,
+        title="Invalid item",
+        outcome="Outcome",
+        acceptance_criteria=["Criterion"],
+        source_requirement_ids=[unknown_req_id],
+        dependency_item_ids=[],
+    )
+    with pytest.raises(
+        DecompositionValidationError,
+        match=f"^source requirement is missing from accepted brief: {unknown_req_id}$",
+    ):
+        require_brief_sources([valid_item, invalid_item], brief)
 
 
 def test_reject_proposal_with_unknown_requirement_reference() -> None:

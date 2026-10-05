@@ -4,12 +4,14 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from forge.application.ports.epic_decomposition import DecompositionGatewayResult
 from forge.domain.epic_brainstorm import AuthoringJobSnapshot, FrozenBriefContent, FrozenRequirement
-from forge.domain.subscription import RouteBinding, RouteSpec, TaskBudget
+from forge.domain.epic_decomposition import DecompositionProposal
+from forge.domain.subscription import AttemptTelemetry, RouteBinding, RouteSpec, TaskBudget
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 from forge.worker.epic_decomposition import ValidatedDecompositionGateway
 
-from .support import SupervisedGateway
+from .support import SupervisedGateway, proposal_for
 
 
 def _snapshot() -> AuthoringJobSnapshot:
@@ -39,9 +41,33 @@ async def test_actual_gateway_result_is_validated_after_supervised_process() -> 
     )
     assert result.failure is None
     assert result.proposal is not None
+    assert isinstance(result.proposal, DecompositionProposal)
     assert result.proposal.assumptions == job.accepted_content.assumptions
     assert lifecycle.started.called and lifecycle.finished.called
     assert lifecycle.finished.call_args.args[1].stop_confirmed
+
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_missing_accepted_content() -> None:
+    job = _snapshot()
+    proposal = proposal_for(job)
+    job_without_content = job.model_copy(update={"accepted_content": None})
+    mock_inner = AsyncMock()
+    mock_inner.execute.return_value = DecompositionGatewayResult(
+        proposal=proposal,
+        telemetry=AttemptTelemetry(
+            input_tokens=10, output_tokens=10, tool_call_count=1, duration_ms=100
+        ),
+    )
+    gateway = ValidatedDecompositionGateway(mock_inner)
+    lifecycle = AsyncMock()
+    result = await gateway.execute(
+        job_without_content, (), BrainstormReadOnlyTools(AsyncMock()),
+        cancelled=AsyncMock(return_value=False), lifecycle=lifecycle,
+    )
+    assert result.proposal is None
+    assert result.failure == "invalid_output"
+    assert result.telemetry is not None
 
 
 @pytest.mark.asyncio

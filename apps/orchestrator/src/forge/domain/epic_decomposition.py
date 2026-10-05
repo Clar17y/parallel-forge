@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
@@ -81,9 +82,6 @@ class DecompositionEvidence(_Closed):
         return value
 
 
-class DecompositionError(RuntimeError):
-    """Base error for epic decomposition."""
-
 
 class DecompositionConflict(ValueError):
     """The request conflicts with existing epic or job state."""
@@ -149,10 +147,24 @@ class DecompositionProposal(_Closed):
         return canonical_digest(self.model_dump(mode="json"))
 
 
+def require_brief_sources(
+    items: Iterable[ItemInput],
+    brief: BriefContent | FrozenBriefContent,
+) -> None:
+    """Validate that all items reference only source requirements present in the accepted brief."""
+    allowed_req_ids = {req.requirement_id for req in brief.requirements}
+    for item in items:
+        for ref in item.source_requirement_ids:
+            if ref not in allowed_req_ids:
+                raise DecompositionValidationError(
+                    f"source requirement is missing from accepted brief: {ref}"
+                )
+
+
 def validate_decomposition_proposal(
     proposal: DecompositionProposal,
     brief: BriefContent | FrozenBriefContent,
-) -> None:
+) -> DecompositionProposal:
     """Validate a decomposition proposal against graph invariants and the accepted brief."""
     try:
         proposal = DecompositionProposal.model_validate(proposal.model_dump(mode="json"))
@@ -172,21 +184,16 @@ def validate_decomposition_proposal(
         raise DecompositionValidationError(str(err)) from err
 
     # Validate source requirements against accepted brief
-    allowed_req_ids = {req.requirement_id for req in brief.requirements}
-    for item in proposal.items:
-        for ref in item.source_requirement_ids:
-            if ref not in allowed_req_ids:
-                raise DecompositionValidationError(
-                    f"source requirement is missing from accepted brief: {ref}"
-                )
+    require_brief_sources(proposal.items, brief)
+    return proposal
 
 
 __all__ = [
     "DecompositionConflict",
-    "DecompositionError",
     "DecompositionEvidence",
     "DecompositionNotFound",
     "DecompositionProposal",
     "DecompositionValidationError",
+    "require_brief_sources",
     "validate_decomposition_proposal",
 ]

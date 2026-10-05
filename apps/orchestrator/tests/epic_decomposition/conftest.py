@@ -31,6 +31,7 @@ def _shared_authoring_ready() -> bool:
         "decomposition" in get_args(AuthoringJobSnapshot.model_fields["kind"].annotation)
         and "kind" in inspect.signature(EpicBrainstormService.submit).parameters
         and hasattr(EpicBrainstormService, "require_kind")
+        and "kind" in inspect.signature(EpicBrainstormService.observe).parameters
         and "epic_decomposition_budget" in inspect.signature(create_app).parameters
         and "decomposition_gateway_factory" in inspect.signature(run_worker).parameters
     )

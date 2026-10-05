@@ -10,7 +10,6 @@ from uuid import UUID
 from forge.application.ports.audit import AuditRepository
 from forge.application.ports.epic_brainstorm import (
     BrainstormProcessLifecycle,
-    BriefInput,
 )
 from forge.application.ports.epic_brief import EpicBriefRepository
 from forge.application.ports.epic_items import EpicItemsRepository
@@ -84,6 +83,7 @@ class DecompositionAuthoringPort(Protocol):
 
     async def observe(
         self, *, epic_id: UUID, project_id: UUID, job_id: UUID,
+        kind: Literal["brainstorm", "decomposition"] | None = None,
     ) -> AuthoringOutcome: ...
 
     async def cancel(
@@ -95,12 +95,6 @@ class DecompositionAuthoringPort(Protocol):
         self, *, epic_id: UUID, project_id: UUID, job_id: UUID,
         expected_job_version: int, actor: AuthenticatedActor, key: str,
     ) -> AuthoringReceipt: ...
-
-
-class DecompositionBriefPort(Protocol):
-    """Adapter to epic brief repository for decomposition inputs."""
-
-    async def input(self, epic_id: UUID, *, for_update: bool = False) -> BriefInput: ...
 
 
 class EpicDecompositionJobRepository(Protocol):
@@ -154,7 +148,6 @@ class LockedDecompositionProposal:
 __all__ = [
     "DecompositionAdoptionResult",
     "DecompositionAuthoringPort",
-    "DecompositionBriefPort",
     "DecompositionGateway",
     "DecompositionGatewayResult",
     "EpicDecompositionJobRepository",
