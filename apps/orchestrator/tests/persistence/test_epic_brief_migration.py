@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from forge.persistence.database import create_engine
 from sqlalchemy import text
 
@@ -211,7 +212,7 @@ def test_downgrade_refuses_to_discard_saved_epic_records(
                 )
                 assert (
                     await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "20261003_0032"
+                    == ScriptDirectory.from_config(config).get_current_head()
                 )
         finally:
             await engine.dispose()

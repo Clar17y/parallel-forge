@@ -28,6 +28,13 @@ from sqlalchemy.exc import (
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 
+@pytest.fixture(autouse=True)
+def _enable_worker_logger(monkeypatch):
+    # In-process Alembic tests disable existing loggers through fileConfig.
+    # Recreate the standalone worker condition where main.logger is enabled.
+    monkeypatch.setattr(main.logger, "disabled", False)
+
+
 async def test_decision_poll_retries_deferred_source_without_overlap():
     stop = asyncio.Event()
     calls, active = 0, 0

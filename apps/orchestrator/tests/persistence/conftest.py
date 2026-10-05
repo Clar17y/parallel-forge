@@ -6,6 +6,7 @@ import asyncio
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 import asyncpg
@@ -14,6 +15,8 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 TEST_DATABASE_NAME = re.compile(r"\Aforge_test_[0-9a-f]{32}\Z")
@@ -56,6 +59,33 @@ async def _drop_database(admin_url: URL, database_name: str) -> None:
             name,
         )
         await connection.execute(f'DROP DATABASE "{name}"')
+    finally:
+        await connection.close()
+
+
+async def _clear_disposable_database(database_url: str) -> None:
+    """Remove test rows, leaving the complete migrated schema for real downgrade."""
+
+    url = make_url(database_url)
+    database_name = validated_test_database_name(url.database or "")
+    connection = await asyncpg.connect(**_connection_kwargs(url, database_name))
+    try:
+        deadline = monotonic() + 10
+        while await connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+            "WHERE datname = $1 AND pid <> pg_backend_pid())",
+            database_name,
+        ):
+            if monotonic() >= deadline:
+                raise RuntimeError("disposable database still has active connections")
+            await asyncio.sleep(0.1)
+        tables = await connection.fetch(
+            "SELECT quote_ident(tablename) AS name FROM pg_tables "
+            "WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
+        )
+        if tables:
+            names = ", ".join("public." + row["name"] for row in tables)
+            await connection.execute(f"TRUNCATE TABLE {names} RESTART IDENTITY CASCADE")
     finally:
         await connection.close()
 
@@ -106,6 +136,7 @@ def migrated_database_url(test_database_url: str) -> Iterator[str]:
     try:
         yield test_database_url
     finally:
+        asyncio.run(_clear_disposable_database(test_database_url))
         command.downgrade(config, "base")
 
 
@@ -113,9 +144,11 @@ def migrated_database_url(test_database_url: str) -> Iterator[str]:
 def session_factory(migrated_database_url: str):
     """Provide one async-session factory backed by the disposable database."""
 
-    from forge.persistence.database import create_engine, create_session_factory
+    from forge.persistence.database import create_session_factory
 
-    engine = create_engine(migrated_database_url)
+    # Connections opened by async tests or TestClient are closed on their own
+    # loops. A queue pool would retain them until this synchronous finalizer.
+    engine = create_async_engine(migrated_database_url, pool_pre_ping=True, poolclass=NullPool)
     factory = create_session_factory(engine)
     try:
         yield factory
