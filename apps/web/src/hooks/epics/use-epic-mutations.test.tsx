@@ -140,7 +140,7 @@ describe('useEpicMutations', () => {
         brief_revision_id: 'rev-3',
         brief_digest: 'a'.repeat(64),
       },
-      idempotencyKey: 'frozen-key-12345',
+      idempotencyKey: 'test-key',
       timestamp: Date.now(),
     };
     sessionStorage.setItem(`epic_pending_mutation_${epicId}`, JSON.stringify(frozenPayload));
@@ -166,7 +166,7 @@ describe('useEpicMutations', () => {
     expect(api).toHaveBeenCalledTimes(1);
     const callArgs = vi.mocked(api).mock.calls[0];
     expect(callArgs[0]).toBe(`/epics/${epicId}/brief-adoptions`);
-    expect((callArgs[1]?.headers as Record<string, string>)['Idempotency-Key']).toBe('frozen-key-12345');
+    expect((callArgs[1]?.headers as Record<string, string>)['Idempotency-Key']).toBe('test-key');
     expect(JSON.parse(callArgs[1]?.body as string)).toEqual(frozenPayload.body);
     expect(sessionStorage.getItem(`epic_pending_mutation_${epicId}`)).toBeNull();
     expect(result.current.hasPendingRetry).toBe(false);
