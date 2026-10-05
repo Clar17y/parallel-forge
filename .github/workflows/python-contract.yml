@@ -101,6 +101,12 @@ jobs:
           python-version: '3.14.5'
           enable-cache: false
       - run: uv sync --frozen --extra dev
+      - name: Install native repository search test backend
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ripgrep
+          rg --version
       - name: Deterministic backend, evaluations and migration round trips
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'recovery'
         run: uv run --frozen python -m pytest -q -ra --maxfail=1 -m "not live_provider and not live_github and not docker"
