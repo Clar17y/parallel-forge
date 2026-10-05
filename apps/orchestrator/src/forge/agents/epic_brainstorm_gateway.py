@@ -334,26 +334,53 @@ class EpicBrainstormGateway:
         except Exception:  # noqa: BLE001 - provider and repository errors stay private
             failure = "unavailable"
         finally:
-            try:
-                await tools.revoke()
+
+            async def settle() -> None:
+                nonlocal failure
+                cleanup_failed = False
+                try:
+                    await tools.revoke()
+                except asyncio.CancelledError, Exception:  # noqa: BLE001 - cleanup must continue
+                    cleanup_failed = True
                 if use_bridge:
-                    await tools.close()
+                    try:
+                        await tools.close()
+                    except asyncio.CancelledError, Exception:  # noqa: BLE001 - still stop client
+                        cleanup_failed = True
                 if session is not None:
-                    receipt = await session.close(
-                        completed=proposal is not None and failure is None and not interrupted
-                    )
-                    if not receipt.stop_confirmed:
-                        failure = "process_unsettled"
-                    elif proposal is not None and (
-                        receipt.return_code != 0 or receipt.outcome not in {"exited", "completed"}
-                    ):
-                        failure = "process_failed"
+                    try:
+                        receipt = await session.close(
+                            completed=proposal is not None
+                            and failure is None
+                            and not interrupted
+                            and not cleanup_failed
+                        )
+                        if not receipt.stop_confirmed:
+                            cleanup_failed = True
+                        elif proposal is not None and (
+                            receipt.return_code != 0
+                            or receipt.outcome not in {"exited", "completed"}
+                        ):
+                            failure = "process_failed"
+                    except asyncio.CancelledError, Exception:  # noqa: BLE001 - uncertain stop
+                        cleanup_failed = True
+                if cleanup_failed:
+                    failure = "process_unsettled"
                 if launch_files is not None and failure != "process_unsettled":
-                    launch_files.cleanup()
-            except ClientSettlementUncertain:
-                failure = "process_unsettled"
-            except Exception:  # noqa: BLE001 - cleanup failure denies proposal
-                failure = "process_unsettled"
+                    try:
+                        launch_files.cleanup()
+                    except asyncio.CancelledError, Exception:  # noqa: BLE001 - private scratch
+                        failure = "process_unsettled"
+
+            cleanup = asyncio.create_task(settle())
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    interrupted = True
+            cleanup.result()
+            if interrupted and failure != "process_unsettled":
+                failure = "cancelled"
         if failure is not None:
             proposal = None
         elapsed_ms = max(1, int((time.monotonic() - started) * 1000))

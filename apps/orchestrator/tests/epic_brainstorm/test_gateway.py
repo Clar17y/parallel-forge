@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,7 +19,9 @@ from forge.agents.client_process import (
     ClientProcessError,
     ClientProcessReceipt,
     ClientProcessResult,
+    ClientProcessSupervisor,
     ClientSettlementUncertain,
+    ProcessIdentityStatus,
 )
 from forge.agents.codex_gateway import CodexGateway, codex_account_identity
 from forge.agents.epic_brainstorm_gateway import EpicBrainstormGateway
@@ -29,6 +34,7 @@ from forge.agents.epic_brainstorm_protocol import (
 )
 from forge.domain.epic_brainstorm import (
     AuthoringJobSnapshot,
+    BrainstormProposal,
     FrozenBriefContent,
 )
 from forge.domain.local_cli import LocalCliTrust
@@ -90,6 +96,41 @@ class _RejectingSupervisor:
             )
             raise ClientSettlementUncertain(result)
         raise self.error("scripted prelaunch failure")
+
+
+class _CapturingSupervisor(ClientProcessSupervisor):
+    def __init__(self, *, sleeping_peer: bool = False) -> None:
+        self.sleeping_peer = sleeping_peer
+        self.session = None
+        self.original_spec: ClientLaunchSpec | None = None
+        self.launched_spec: ClientLaunchSpec | None = None
+
+    async def start(self, spec: ClientLaunchSpec, **kwargs):
+        self.original_spec = spec
+        if self.sleeping_peer:
+            spec = replace(spec, argv=(spec.argv[0], "-u", "-c", "import time;time.sleep(30)"))
+        self.launched_spec = spec
+        self.session = await super().start(spec, **kwargs)
+        return self.session
+
+
+def _sleeping_codex_installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        CodexGateway, "_command", lambda self: ("-u", "-c", "import time;time.sleep(30)")
+    )
+    exe = Path(sys.executable)
+    return CodexInstallationSpec(
+        client="codex_app_server",
+        account=codex_account_identity("codex@example.invalid"),
+        model="gpt-5.6-luna",
+        effort="medium",
+        executable=str(exe),
+        executable_digest=hashlib.sha256(exe.read_bytes()).hexdigest(),
+        client_version="0.153.4",
+        cwd=str(tmp_path),
+        home=str(tmp_path),
+        quota={"account": "dev-account", "pool": "default-pool"},
+    )
 
 
 @pytest.mark.asyncio
@@ -577,6 +618,218 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
     assert result.telemetry.input_tokens == (7 if outcome in {"success", "nonzero"} else None)
     assert result.telemetry.output_tokens == (9 if outcome in {"success", "nonzero"} else None)
     assert len(lifecycle.receipts) == len(lifecycle.results) == 1
+
+
+@pytest.mark.asyncio
+async def test_official_cleanup_revoke_failure_still_settles_real_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import forge.agents.epic_brainstorm_gateway as gateway_module
+
+    async def exchange(_session, _gateway, job, *_args):
+        return BrainstormProposal(
+            turn_id=job.prompt_turn_id, problem="Settled proposal", requirements=("One",)
+        )
+
+    async def failed_revoke(_self):
+        raise OSError("credential=private-revoke-error")
+
+    monkeypatch.setattr(gateway_module, "codex_exchange", exchange)
+    monkeypatch.setattr(AuthoringTools, "revoke", failed_revoke)
+    installation = _sleeping_codex_installation(tmp_path, monkeypatch)
+    supervisor = _CapturingSupervisor()
+    lifecycle = MockLifecycle()
+    reader = BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=()))
+
+    async def active() -> bool:
+        return False
+
+    try:
+        result = await EpicBrainstormGateway(
+            installation=installation, supervisor=supervisor
+        ).execute(_make_snapshot(), (), reader, cancelled=active, lifecycle=lifecycle)
+        assert result.failure == "process_unsettled" and result.proposal is None
+        assert len(lifecycle.results) == 1
+        assert lifecycle.results[0][1].stop_confirmed is False
+        assert (
+            ClientProcessSupervisor.identity_status(lifecycle.receipts[0])
+            is ProcessIdentityStatus.GONE
+        )
+        assert "private-revoke-error" not in str(result)
+    finally:
+        if supervisor.session is not None:
+            await supervisor.session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client", ["gemini", "antigravity"])
+@pytest.mark.parametrize("close_error", [OSError, asyncio.CancelledError])
+async def test_bridge_cleanup_failure_still_settles_real_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client: str, close_error: type[BaseException]
+) -> None:
+    import forge.agents.epic_brainstorm_gateway as gateway_module
+
+    async def exchange(_session, job, *_args, **_kwargs):
+        return BrainstormProposal(
+            turn_id=job.prompt_turn_id, problem="Settled bridge proposal", requirements=("One",)
+        )
+
+    original_close = AuthoringTools.close
+    status_at_close: list[ProcessIdentityStatus] = []
+
+    async def failed_close(self):
+        await original_close(self)
+        status_at_close.append(ClientProcessSupervisor.identity_status(lifecycle.receipts[0]))
+        raise close_error("credential=private-bridge-error")
+
+    monkeypatch.setattr(AuthoringTools, "close", failed_close)
+    monkeypatch.setattr(
+        gateway_module,
+        "gemini_exchange" if client == "gemini" else "antigravity_exchange",
+        exchange,
+    )
+    exe = Path(sys.executable)
+    common = {
+        "account": "dev-account",
+        "model": "gemini-test",
+        "effort": "low",
+        "executable": str(exe),
+        "executable_digest": hashlib.sha256(exe.read_bytes()).hexdigest(),
+        "client_version": "1.0.0",
+        "cwd": str(tmp_path),
+        "home": str(tmp_path),
+        "quota": {"account": "dev-account", "pool": "default-pool"},
+    }
+    installation = (
+        GeminiInstallationSpec(client="gemini_cli", **common)
+        if client == "gemini"
+        else AntigravityInstallationSpec(client="antigravity_cli", **common)
+    )
+    supervisor = _CapturingSupervisor(sleeping_peer=True)
+    lifecycle = MockLifecycle()
+
+    async def active() -> bool:
+        return False
+
+    try:
+        result = await EpicBrainstormGateway(
+            installation=installation, supervisor=supervisor
+        ).execute(
+            _make_snapshot(),
+            (),
+            BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+            cancelled=active,
+            lifecycle=lifecycle,
+        )
+        assert result.failure == "process_unsettled" and result.proposal is None
+        assert status_at_close == [ProcessIdentityStatus.MATCH]
+        assert supervisor.original_spec is not None and supervisor.launched_spec is not None
+        assert supervisor.original_spec.cwd == supervisor.launched_spec.cwd
+        assert supervisor.original_spec.environment == supervisor.launched_spec.environment
+        assert (
+            supervisor.original_spec.executable_digest == supervisor.launched_spec.executable_digest
+        )
+        assert len(lifecycle.receipts) == len(lifecycle.results) == 1
+        assert (
+            ClientProcessSupervisor.identity_status(lifecycle.receipts[0])
+            is ProcessIdentityStatus.GONE
+        )
+        assert "private-bridge-error" not in str(result)
+    finally:
+        if supervisor.session is not None:
+            await supervisor.session.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_during_official_cleanup_settles_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import forge.agents.epic_brainstorm_gateway as gateway_module
+
+    exchanging, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def exchange(_session, *_args):
+        exchanging.set()
+        await asyncio.Event().wait()
+
+    async def delayed_revoke(self):
+        cleaning.set()
+        await release.wait()
+        self.closed = True
+
+    monkeypatch.setattr(gateway_module, "codex_exchange", exchange)
+    monkeypatch.setattr(AuthoringTools, "revoke", delayed_revoke)
+    installation = _sleeping_codex_installation(tmp_path, monkeypatch)
+    supervisor = _CapturingSupervisor()
+    lifecycle = MockLifecycle()
+
+    async def active() -> bool:
+        return False
+
+    task = asyncio.create_task(
+        EpicBrainstormGateway(installation=installation, supervisor=supervisor).execute(
+            _make_snapshot(),
+            (),
+            BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+            cancelled=active,
+            lifecycle=lifecycle,
+        )
+    )
+    try:
+        await asyncio.wait_for(exchanging.wait(), 5)
+        task.cancel()
+        await asyncio.wait_for(cleaning.wait(), 5)
+        task.cancel()
+        release.set()
+        result = await asyncio.wait_for(task, 5)
+        assert result.failure == "cancelled" and result.proposal is None
+        assert len(lifecycle.receipts) == len(lifecycle.results) == 1
+        assert (
+            ClientProcessSupervisor.identity_status(lifecycle.receipts[0])
+            is ProcessIdentityStatus.GONE
+        )
+    finally:
+        release.set()
+        if supervisor.session is not None:
+            await supervisor.session.close()
+
+
+@pytest.mark.asyncio
+async def test_official_exchange_timeout_still_settles_real_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import forge.agents.epic_brainstorm_gateway as gateway_module
+
+    async def exchange(_session, *_args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gateway_module, "codex_exchange", exchange)
+    installation = _sleeping_codex_installation(tmp_path, monkeypatch)
+    supervisor = _CapturingSupervisor()
+    lifecycle = MockLifecycle()
+
+    async def active() -> bool:
+        return False
+
+    try:
+        result = await EpicBrainstormGateway(
+            installation=installation, supervisor=supervisor
+        ).execute(
+            _make_snapshot(TaskBudget(max_provider_attempts=2, max_duration_seconds=1)),
+            (),
+            BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+            cancelled=active,
+            lifecycle=lifecycle,
+        )
+        assert result.failure == "timeout" and result.proposal is None
+        assert len(lifecycle.receipts) == len(lifecycle.results) == 1
+        assert (
+            ClientProcessSupervisor.identity_status(lifecycle.receipts[0])
+            is ProcessIdentityStatus.GONE
+        )
+    finally:
+        if supervisor.session is not None:
+            await supervisor.session.close()
 
 
 class _ScriptedSession:

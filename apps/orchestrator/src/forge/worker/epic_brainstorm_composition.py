@@ -18,6 +18,7 @@ from forge.domain.policy import ProjectPolicy
 from forge.domain.subscription_installations import (
     SubscriptionInstallationSpec,
     load_subscription_installation_manifest,
+    quota_route_for,
 )
 from forge.persistence.repositories.projects import PostgresProjectRepository
 from forge.settings import Settings
@@ -26,7 +27,11 @@ from forge.tools.repository import RepositoryReader
 
 def _matches_route(spec: SubscriptionInstallationSpec, snapshot: AuthoringJobSnapshot) -> bool:
     route = snapshot.route.effective
-    if spec.client != route.client or spec.model != route.model:
+    if (
+        quota_route_for(spec).provider != route.provider
+        or spec.client != route.client
+        or spec.model != route.model
+    ):
         return False
     return not (route.effort is not None and spec.effort != route.effort.value)
 
