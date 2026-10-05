@@ -20,17 +20,21 @@ from forge.domain.subscription_installations import (
     load_subscription_installation_manifest,
     quota_route_for,
 )
+from forge.domain.subscription_quota import QuotaPoolKey
 from forge.persistence.repositories.projects import PostgresProjectRepository
 from forge.settings import Settings
 from forge.tools.repository import RepositoryReader
 
 
-def _matches_route(spec: SubscriptionInstallationSpec, snapshot: AuthoringJobSnapshot) -> bool:
+def _matches_route(
+    spec: SubscriptionInstallationSpec,
+    snapshot: AuthoringJobSnapshot,
+    quota_key: QuotaPoolKey,
+) -> bool:
     route = snapshot.route.effective
-    if (
-        quota_route_for(spec).provider != route.provider
-        or spec.client != route.client
-        or spec.model != route.model
+    expected = quota_route_for(spec)
+    if not expected.matches(route) or quota_key != QuotaPoolKey(
+        expected.provider, expected.account, expected.pool
     ):
         return False
     return not (route.effort is not None and spec.effort != route.effort.value)
@@ -52,8 +56,10 @@ def make_brainstorm_gateway_factory(
     frozen_installations = tuple(installations)
 
     def gateway_factory(snapshot: AuthoringJobSnapshot) -> BrainstormGateway:
+        quota_key = settings.subscription_quota_policy.key_for(snapshot.route.effective)
         matched = next(
-            (item for item in frozen_installations if _matches_route(item, snapshot)), None
+            (item for item in frozen_installations if _matches_route(item, snapshot, quota_key)),
+            None,
         )
         return EpicBrainstormGateway(
             installation=matched,
