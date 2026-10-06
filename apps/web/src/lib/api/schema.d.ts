@@ -539,6 +539,214 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/epics/{epic_id}/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Budget */
+        get: operations["get_budget_api_epics__epic_id__budget_get"];
+        /** Edit Budget */
+        put: operations["edit_budget_api_epics__epic_id__budget_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/budget/admissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Permit Budget Admission */
+        post: operations["permit_budget_admission_api_epics__epic_id__budget_admissions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Threads */
+        get: operations["threads_api_epics__epic_id__decomposition_conversations_get"];
+        put?: never;
+        /** Create */
+        post: operations["create_api_epics__epic_id__decomposition_conversations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-conversations/{conversation_id}/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit */
+        post: operations["submit_api_epics__epic_id__decomposition_conversations__conversation_id__jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-conversations/{conversation_id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Turns */
+        get: operations["turns_api_epics__epic_id__decomposition_conversations__conversation_id__turns_get"];
+        put?: never;
+        /** Append */
+        post: operations["append_api_epics__epic_id__decomposition_conversations__conversation_id__turns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Observe */
+        get: operations["observe_api_epics__epic_id__decomposition_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adopt */
+        post: operations["adopt_api_epics__epic_id__decomposition_jobs__job_id__adopt_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel */
+        post: operations["cancel_api_epics__epic_id__decomposition_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry */
+        post: operations["retry_api_epics__epic_id__decomposition_jobs__job_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Executions */
+        get: operations["list_executions_api_epics__epic_id__executions_get"];
+        put?: never;
+        /** Start */
+        post: operations["start_api_epics__epic_id__executions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/executions/{execution_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Execution */
+        get: operations["get_execution_api_epics__epic_id__executions__execution_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/executions/{execution_id}/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Control */
+        post: operations["control_api_epics__epic_id__executions__execution_id__commands_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/epics/{epic_id}/graph-adoptions": {
         parameters: {
             query?: never;
@@ -1517,6 +1725,12 @@ export interface components {
             /** Token */
             token: string;
         };
+        /**
+         * ApprovalGate
+         * @description The human gate an approval record authorizes.
+         * @enum {string}
+         */
+        ApprovalGate: "plan" | "pr" | "merge";
         /** ApprovalHistoryItem */
         ApprovalHistoryItem: {
             /**
@@ -1778,7 +1992,8 @@ export interface components {
              * @default false
              */
             process_settled: boolean;
-            proposal?: components["schemas"]["BrainstormProposal"] | null;
+            /** Proposal */
+            proposal?: components["schemas"]["BrainstormProposal"] | components["schemas"]["DecompositionProposal"] | null;
             /** Proposal Digest */
             proposal_digest?: string | null;
             reservation?: components["schemas"]["BrainstormReservation"] | null;
@@ -2081,7 +2296,8 @@ export interface components {
              * @default false
              */
             pending: boolean;
-            proposal?: components["schemas"]["BrainstormProposal"] | null;
+            /** Proposal */
+            proposal?: components["schemas"]["BrainstormProposal"] | components["schemas"]["DecompositionProposal"] | null;
             /**
              * Role
              * @enum {string}
@@ -2414,6 +2630,230 @@ export interface components {
              */
             injected_environment_key: string;
         };
+        /** DecompositionAdoptionResponse */
+        DecompositionAdoptionResponse: {
+            /** Epic Version */
+            epic_version: number;
+            /** Graph Digest */
+            graph_digest: string;
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+            /** Job Version */
+            job_version: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** DecompositionConversationCreate */
+        DecompositionConversationCreate: {
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Text */
+            text: string;
+        };
+        /** DecompositionEvidence */
+        DecompositionEvidence: {
+            /** Content Digest */
+            content_digest: string;
+            /** Excerpt */
+            excerpt: string;
+            /** Path */
+            path: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** DecompositionJobControl */
+        DecompositionJobControl: {
+            /** Expected Job Version */
+            expected_job_version: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** DecompositionJobRetry */
+        DecompositionJobRetry: {
+            /** Expected Job Version */
+            expected_job_version: number;
+            /** Override Note */
+            override_note?: string | null;
+            /**
+             * Owner Override
+             * @default false
+             */
+            owner_override: boolean;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** DecompositionJobSubmit */
+        DecompositionJobSubmit: {
+            /** Expected Conversation Version */
+            expected_conversation_version: number;
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Prompt Turn Id
+             * Format: uuid
+             */
+            prompt_turn_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** DecompositionProposal */
+        DecompositionProposal: {
+            /**
+             * Assumptions
+             * @default []
+             */
+            assumptions: string[];
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /**
+             * Evidence
+             * @default []
+             */
+            evidence: components["schemas"]["DecompositionEvidence"][];
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["ItemInput"][];
+            /**
+             * Open Questions
+             * @default []
+             */
+            open_questions: string[];
+            /**
+             * Problem
+             * @default
+             */
+            problem: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Resolved Turn Ids
+             * @default []
+             */
+            resolved_turn_ids: string[];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /**
+             * Turn Id
+             * Format: uuid
+             */
+            turn_id: string;
+        };
+        /** DecompositionProposalAdopt */
+        DecompositionProposalAdopt: {
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /** Expected Job Version */
+            expected_job_version: number;
+            /** Items */
+            items?: components["schemas"]["ItemInput"][] | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Proposal Digest */
+            proposal_digest: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** DecompositionTurnAppend */
+        DecompositionTurnAppend: {
+            /** Expected Conversation Version */
+            expected_conversation_version: number;
+            /**
+             * Pending
+             * @default false
+             */
+            pending: boolean;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Text */
+            text: string;
+        };
         /** DependencyEvidence */
         DependencyEvidence: {
             /** Integrated Sha */
@@ -2430,6 +2870,92 @@ export interface components {
              * @enum {string}
              */
             status: "verified" | "unknown" | "unverified";
+        };
+        /** EpicAttempt */
+        EpicAttempt: {
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Actual Epic Version */
+            actual_epic_version: number;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /** Base Ref */
+            base_ref: string;
+            /** Base Sha */
+            base_sha: string;
+            /** Blocker Codes */
+            blocker_codes: string[];
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /** Context Digest */
+            context_digest: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Dependency Evidence */
+            dependency_evidence: components["schemas"]["DependencyEvidence"][];
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /** Graph Digest */
+            graph_digest: string;
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+            /** Item Digest */
+            item_digest: string;
+            /**
+             * Item Disposition
+             * @enum {string}
+             */
+            item_disposition: "required" | "deferred";
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Override Note */
+            override_note: string | null;
+            /** Owner Override */
+            owner_override: boolean;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Task Digest */
+            task_digest: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
         };
         /** EpicAttemptResponse */
         EpicAttemptResponse: {
@@ -2517,6 +3043,199 @@ export interface components {
              */
             task_id: string;
         };
+        /** EpicBudgetEdit */
+        EpicBudgetEdit: {
+            ceiling: components["schemas"]["TaskBudget"];
+            /**
+             * Disabled Dimensions
+             * @default []
+             */
+            disabled_dimensions: string[];
+            /** Expected Version */
+            expected_version: number;
+            /** Note */
+            note?: string | null;
+        };
+        /** EpicBudgetOwnerAction */
+        EpicBudgetOwnerAction: {
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Event Type */
+            event_type: string;
+            /** Note */
+            note: string | null;
+            /** Version */
+            version: number | null;
+        };
+        /** EpicBudgetPermitProjection */
+        EpicBudgetPermitProjection: {
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Consumed Attempt Id */
+            consumed_attempt_id: string | null;
+            /** Note */
+            note: string | null;
+            /**
+             * Permit Id
+             * Format: uuid
+             */
+            permit_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /** EpicBudgetPermitReceipt */
+        EpicBudgetPermitReceipt: {
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Budget Version */
+            budget_version: number;
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /**
+             * Permit Id
+             * Format: uuid
+             */
+            permit_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /** EpicBudgetPermitRequest */
+        EpicBudgetPermitRequest: {
+            /** Expected Version */
+            expected_version: number;
+            /** Note */
+            note?: string | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+        };
+        /** EpicBudgetProjection */
+        EpicBudgetProjection: {
+            ceiling: components["schemas"]["TaskBudget"];
+            /** Currency */
+            currency: string | null;
+            /** Disabled Dimensions */
+            disabled_dimensions: string[];
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /** Held */
+            held: {
+                [key: string]: number;
+            };
+            /** Initialized */
+            initialized: boolean;
+            /** Known */
+            known: {
+                [key: string]: number;
+            };
+            /** Owner Actions */
+            owner_actions: components["schemas"]["EpicBudgetOwnerAction"][];
+            /** Permits */
+            permits: components["schemas"]["EpicBudgetPermitProjection"][];
+            /** Unknown */
+            unknown: boolean;
+            /** Version */
+            version: number;
+            /** Warnings */
+            warnings: string[];
+        };
+        /** EpicBudgetReceipt */
+        EpicBudgetReceipt: {
+            ceiling: components["schemas"]["TaskBudget"];
+            /**
+             * Disabled Dimensions
+             * @default []
+             */
+            disabled_dimensions: string[];
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /** Version */
+            version: number;
+        };
+        /** EpicChildProjection */
+        EpicChildProjection: {
+            attempt: components["schemas"]["EpicAttempt"];
+            /** Effects Settled */
+            effects_settled: boolean;
+            pending_gate: components["schemas"]["ApprovalGate"] | null;
+            retained_gate: components["schemas"]["ApprovalGate"] | null;
+            run_state: components["schemas"]["RunState"];
+            /** Run Version */
+            run_version: number;
+        };
+        /** EpicControlReceipt */
+        EpicControlReceipt: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "pause" | "resume" | "cancel";
+            /** Blocker Code */
+            blocker_code?: string | null;
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /** Execution Version */
+            execution_version: number;
+            /** Intent Ids */
+            intent_ids: string[];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** State */
+            state: string;
+        };
+        /** EpicControlRequest */
+        EpicControlRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "pause" | "resume" | "cancel";
+            /** Expected Execution Version */
+            expected_execution_version: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /**
          * EpicCreateRequest
          * @description Closed epic creation request body.
@@ -2553,6 +3272,77 @@ export interface components {
             schema_version: 1;
             /** Title */
             title: string;
+        };
+        /** EpicExecutionProjection */
+        EpicExecutionProjection: {
+            /** Blocker Code */
+            blocker_code: string | null;
+            /** Children */
+            children: components["schemas"]["EpicChildProjection"][];
+            /** Control State */
+            control_state: string | null;
+            /** Control Version */
+            control_version: number | null;
+            execution: components["schemas"]["EpicExecutionSnapshot"];
+            /** Intents */
+            intents: components["schemas"]["EpicIntentProjection"][];
+            /** Owner Actions */
+            owner_actions: components["schemas"]["EpicOwnerActionProjection"][];
+        };
+        /** EpicExecutionSnapshot */
+        EpicExecutionSnapshot: {
+            /** Brief Digest */
+            brief_digest: string;
+            /**
+             * Brief Revision Id
+             * Format: uuid
+             */
+            brief_revision_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Epic Id
+             * Format: uuid
+             */
+            epic_id: string;
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /** Graph Digest */
+            graph_digest: string;
+            /**
+             * Graph Revision Id
+             * Format: uuid
+             */
+            graph_revision_id: string;
+        };
+        /** EpicIntentProjection */
+        EpicIntentProjection: {
+            /** Action */
+            action: string;
+            /** Command Id */
+            command_id: string | null;
+            /** Control Version */
+            control_version: number;
+            /**
+             * Intent Id
+             * Format: uuid
+             */
+            intent_id: string;
+            /** Refusal */
+            refusal: string | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Status */
+            status: string;
         };
         /** EpicLaunchRequest */
         EpicLaunchRequest: {
@@ -2596,6 +3386,20 @@ export interface components {
              * @constant
              */
             schema_version: 1;
+        };
+        /** EpicOwnerActionProjection */
+        EpicOwnerActionProjection: {
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Event Type */
+            event_type: string;
+            /** Note */
+            note: string | null;
+            /** Warnings */
+            warnings: string[];
         };
         /**
          * EpicResponse
@@ -2738,6 +3542,35 @@ export interface components {
             revision: number;
             /** Scope */
             scope: string;
+        };
+        /**
+         * ExecutionStartRequest
+         * @description Select and freeze one existing matching brief/graph pair.
+         */
+        ExecutionStartRequest: {
+            /** Brief Digest */
+            brief_digest?: string | null;
+            /** Brief Revision Id */
+            brief_revision_id?: string | null;
+            /** Expected Epic Version */
+            expected_epic_version: number;
+            /** Graph Digest */
+            graph_digest?: string | null;
+            /** Graph Revision Id */
+            graph_revision_id?: string | null;
+            /** Override Note */
+            override_note?: string | null;
+            /**
+             * Owner Override
+             * @default false
+             */
+            owner_override: boolean;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
         };
         /** FindingItem */
         FindingItem: {
@@ -3085,6 +3918,29 @@ export interface components {
         JobControl: {
             /** Expected Job Version */
             expected_job_version: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** JobRetry */
+        JobRetry: {
+            /** Expected Job Version */
+            expected_job_version: number;
+            /** Override Note */
+            override_note?: string | null;
+            /**
+             * Owner Override
+             * @default false
+             */
+            owner_override: boolean;
             /**
              * Project Id
              * Format: uuid
@@ -4808,6 +5664,46 @@ export interface components {
          * @enum {string}
          */
         SuspensionKind: "PAUSE" | "INTERVENTION";
+        /**
+         * TaskBudget
+         * @description Budget limits for task execution, retries, and concurrent reservations.
+         */
+        TaskBudget: {
+            /** @default allowance_only */
+            billing_mode: components["schemas"]["BillingMode"];
+            /** Max Cost Minor */
+            max_cost_minor?: number | null;
+            /**
+             * Max Duration Seconds
+             * @default 1800
+             */
+            max_duration_seconds: number;
+            /** Max Input Tokens */
+            max_input_tokens?: number | null;
+            /**
+             * Max Named Checks
+             * @default 10
+             */
+            max_named_checks: number;
+            /** Max Output Tokens */
+            max_output_tokens?: number | null;
+            /**
+             * Max Provider Attempts
+             * @default 3
+             */
+            max_provider_attempts: number;
+            /**
+             * Max Repairs
+             * @default 3
+             */
+            max_repairs: number;
+            /**
+             * Max Tool Calls
+             * @default 100
+             */
+            max_tool_calls: number;
+            unknown_telemetry_policy?: components["schemas"]["UnknownTelemetryPolicy"];
+        };
         /** @enum {string} */
         TaskControlAction: "pause" | "cancel" | "resume";
         /** TaskControlReceipt */
@@ -5009,6 +5905,32 @@ export interface components {
             schema_version: 1;
             /** Text */
             text: string;
+        };
+        /**
+         * UnknownTelemetryPolicy
+         * @description Policy bounding allowed unknown telemetry for billing and auditing.
+         */
+        UnknownTelemetryPolicy: {
+            /**
+             * Allow Unknown Cost
+             * @default true
+             */
+            allow_unknown_cost: boolean;
+            /**
+             * Allow Unknown Quota
+             * @default true
+             */
+            allow_unknown_quota: boolean;
+            /**
+             * Allow Unknown Tokens
+             * @default true
+             */
+            allow_unknown_tokens: boolean;
+            /**
+             * Max Uncertain Attempts
+             * @default 1
+             */
+            max_uncertain_attempts: number;
         };
         /** UsageItem */
         UsageItem: {
@@ -6066,7 +6988,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["JobControl"];
+                "application/json": components["schemas"]["JobRetry"];
             };
         };
         responses: {
@@ -6214,6 +7136,581 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BriefRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_budget_api_epics__epic_id__budget_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicBudgetProjection"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_budget_api_epics__epic_id__budget_put: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicBudgetEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicBudgetReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    permit_budget_admission_api_epics__epic_id__budget_admissions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicBudgetPermitRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicBudgetPermitReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    threads_api_epics__epic_id__decomposition_conversations_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_api_epics__epic_id__decomposition_conversations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecompositionConversationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string | number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_api_epics__epic_id__decomposition_conversations__conversation_id__jobs_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecompositionJobSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthoringReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    turns_api_epics__epic_id__decomposition_conversations__conversation_id__turns_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    append_api_epics__epic_id__decomposition_conversations__conversation_id__turns_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecompositionTurnAppend"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    observe_api_epics__epic_id__decomposition_jobs__job_id__get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthoringOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adopt_api_epics__epic_id__decomposition_jobs__job_id__adopt_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecompositionProposalAdopt"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecompositionAdoptionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_api_epics__epic_id__decomposition_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecompositionJobControl"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthoringReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_api_epics__epic_id__decomposition_jobs__job_id__retry_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecompositionJobRetry"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthoringReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_executions_api_epics__epic_id__executions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicExecutionProjection"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_api_epics__epic_id__executions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutionStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicExecutionSnapshot"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_execution_api_epics__epic_id__executions__execution_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicExecutionProjection"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    control_api_epics__epic_id__executions__execution_id__commands_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicControlRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicControlReceipt"];
                 };
             };
             /** @description Validation Error */

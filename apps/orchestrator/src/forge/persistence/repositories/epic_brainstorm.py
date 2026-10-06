@@ -31,11 +31,13 @@ from forge.domain.epic_brainstorm import (
     validate_brainstorm_budget,
     validate_invocation_context,
 )
+from forge.domain.epic_decomposition import DecompositionProposal
 from forge.domain.operation import canonical_digest
 from forge.domain.payload import redact_durable_text
 from forge.domain.subscription import (
     RouteBinding,
     RouteSpec,
+    TaskBudget,
     decode_subscription_record,
     encode_subscription_record,
 )
@@ -56,10 +58,29 @@ from forge.persistence.models.subscription_quota import (
 )
 
 
+def _parse_proposal(
+    payload: object, kind: str
+) -> BrainstormProposal | DecompositionProposal | None:
+    if payload is None:
+        return None
+    if kind == "decomposition":
+        return DecompositionProposal.model_validate(payload)
+    if kind == "brainstorm":
+        return BrainstormProposal.model_validate(payload)
+    raise BrainstormConflict("unknown authoring job kind")
+
+
 class PostgresBrainstormRepository:
-    def __init__(self, session: AsyncSession, *, quota_policy: QuotaPolicy | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        quota_policy: QuotaPolicy | None = None,
+        epic_ceiling: TaskBudget | None = None,
+    ) -> None:
         self.session = session
         self.quota_policy = quota_policy or QuotaPolicy()
+        self.epic_ceiling = epic_ceiling
 
     async def quota_pool(self, snapshot: AuthoringJobSnapshot) -> SubscriptionQuotaPool:
         key = self.quota_policy.key_for(snapshot.route.effective)
@@ -444,20 +465,26 @@ class PostgresBrainstormRepository:
         row: BrainstormJobRow,
         snapshot: AuthoringJobSnapshot,
         pool: SubscriptionQuotaPool,
+        ledger: BrainstormBudgetLedger,
+        next_number: int,
     ) -> tuple[dict[str, int | None] | None, bool]:
         validate_brainstorm_budget(snapshot.budget)
-        ceiling = encode_subscription_record(snapshot.budget)
-        await self.session.execute(
-            insert(BrainstormBudgetLedger)
-            .values(epic_id=row.epic_id, project_id=row.project_id, ceiling=ceiling)
-            .on_conflict_do_nothing()
-        )
-        ledger = await self.session.get(BrainstormBudgetLedger, row.epic_id, with_for_update=True)
-        if ledger is None or ledger.project_id != row.project_id or ledger.ceiling != ceiling:
-            raise BrainstormConflict("epic discovery ceiling changed")
+        try:
+            budget = decode_subscription_record(ledger.ceiling)
+        except (TypeError, ValueError) as error:
+            raise BrainstormConflict("epic budget ceiling is invalid") from error
+        if not isinstance(budget, TaskBudget):
+            raise BrainstormConflict("epic budget ceiling is invalid")
+        disabled = frozenset(ledger.disabled_dimensions)
         attempts = await self._epic_attempts(row.epic_id)
         charged, held, unknown = self._charges(attempts)
-        budget = snapshot.budget
+        from forge.persistence.repositories.epic_budget import PostgresEpicBudgetRepository
+
+        aggregate = await PostgresEpicBudgetRepository(
+            self.session, legacy_hold=self.epic_ceiling or snapshot.budget
+        ).totals(row.epic_id)
+        charged, held = aggregate.known, aggregate.held
+        aggregate_unknown = aggregate.shared_unknown and not row.override_unknown_usage
         if attempts:
             scopes = await self._attempt_scopes(attempts)
             unit, unsafe_money, compatible, pending, has_money, unknown_hold = self._money_evidence(
@@ -470,28 +497,51 @@ class PostgresBrainstormRepository:
             candidate = snapshot.route.effective, candidate_key
             if candidate_key.provider != candidate[0].provider:
                 raise BrainstormConflict("epic discovery quota scope is invalid")
-            if (
+            if not row.override_unknown_usage and (
                 unsafe_money
-                or (unknown_hold and budget.max_cost_minor is not None)
+                or (
+                    unit is not None
+                    and aggregate.currency is not None
+                    and unit != aggregate.currency
+                )
+                or (
+                    unknown_hold
+                    and budget.max_cost_minor is not None
+                    and "estimated_api_cost_minor" not in disabled
+                )
                 or (
                     has_money
                     and budget.max_cost_minor != 0
+                    and "estimated_api_cost_minor" not in disabled
                     and (
                         candidate not in compatible if unit is not None else pending != {candidate}
                     )
                 )
             ):
-                raise BrainstormConflict("epic discovery cost currency is unproved or conflicting")
-        if len(attempts) >= budget.max_provider_attempts or (
-            unknown > 0 and unknown >= budget.unknown_telemetry_policy.max_uncertain_attempts
+                return None, any(not attempt.process_settled for attempt in attempts)
+        owner_retry = (
+            row.retry_authorized_until is not None and next_number <= row.retry_authorized_until
+        )
+        if (
+            charged["provider_attempts"] + held["provider_attempts"] >= budget.max_provider_attempts
+            and "provider_attempts" not in disabled
+            and not owner_retry
+        ) or (
+            unknown > 0
+            and unknown >= budget.unknown_telemetry_policy.max_uncertain_attempts
+            and not row.override_unknown_usage
         ):
             return None, False
         limits = {
-            "duration_ms": budget.max_duration_seconds * 1000,
-            "tool_call_count": budget.max_tool_calls,
-            "input_tokens": budget.max_input_tokens,
-            "output_tokens": budget.max_output_tokens,
-            "estimated_api_cost_minor": budget.max_cost_minor,
+            "duration_ms": None
+            if "duration_ms" in disabled
+            else budget.max_duration_seconds * 1000,
+            "tool_call_count": None if "tool_call_count" in disabled else budget.max_tool_calls,
+            "input_tokens": None if "input_tokens" in disabled else budget.max_input_tokens,
+            "output_tokens": None if "output_tokens" in disabled else budget.max_output_tokens,
+            "estimated_api_cost_minor": None
+            if "estimated_api_cost_minor" in disabled
+            else budget.max_cost_minor,
         }
         remaining = {
             key: None if limit is None else limit - charged[key] - held[key]
@@ -502,7 +552,7 @@ class PostgresBrainstormRepository:
             for key, value in remaining.items()
             if value is not None and value < (1000 if key == "duration_ms" else 1)
         }
-        if blocked:
+        if blocked and not owner_retry:
             active_held = dict.fromkeys(charged, 0)
             for attempt in attempts:
                 if attempt.process_settled:
@@ -519,7 +569,44 @@ class PostgresBrainstormRepository:
                 for key in blocked
             )
             return None, waitable
-        return remaining, False
+        if aggregate_unknown:
+            return None, any(not attempt.process_settled for attempt in attempts)
+        # The shared epic ceiling grants capacity, while the frozen job budget
+        # still caps one provider invocation independently.
+        attempt_limits = {
+            "duration_ms": snapshot.budget.max_duration_seconds * 1000,
+            "tool_call_count": snapshot.budget.max_tool_calls,
+            "input_tokens": snapshot.budget.max_input_tokens,
+            "output_tokens": snapshot.budget.max_output_tokens,
+            "estimated_api_cost_minor": snapshot.budget.max_cost_minor,
+        }
+
+        def narrower(value: int | None, local: int | None) -> int | None:
+            if value is None:
+                return local
+            if local is None:
+                return value
+            return min(value, local)
+
+        return {
+            key: attempt_limits[key]
+            if owner_retry and key in blocked
+            else narrower(value, attempt_limits[key])
+            for key, value in remaining.items()
+        }, False
+
+    async def _lock_epic_ledger(
+        self, row: BrainstormJobRow, ceiling: dict[str, object]
+    ) -> BrainstormBudgetLedger:
+        await self.session.execute(
+            insert(BrainstormBudgetLedger)
+            .values(epic_id=row.epic_id, project_id=row.project_id, ceiling=ceiling)
+            .on_conflict_do_nothing()
+        )
+        ledger = await self.session.get(BrainstormBudgetLedger, row.epic_id, with_for_update=True)
+        if ledger is None or ledger.project_id != row.project_id:
+            raise BrainstormConflict("epic budget ledger conflicts with project")
+        return ledger
 
     async def conversation(
         self, epic_id: UUID, project_id: UUID, conversation_id: UUID, *, lock: bool = False
@@ -559,7 +646,7 @@ class PostgresBrainstormRepository:
         ).all()
         proposals = (
             await self.session.scalars(
-                select(BrainstormJobRow.proposal).where(
+                select(BrainstormJobRow).where(
                     BrainstormJobRow.conversation_id == conversation_id,
                     BrainstormJobRow.proposal.is_not(None),
                 )
@@ -567,9 +654,9 @@ class PostgresBrainstormRepository:
         ).all()
         by_turn = {
             proposal.turn_id: proposal
-            for payload in proposals
-            if payload is not None
-            for proposal in (BrainstormProposal.model_validate(payload),)
+            for job in proposals
+            for proposal in (_parse_proposal(job.proposal, self.decode_snapshot(job).kind),)
+            if proposal is not None
         }
         return tuple(
             BrainstormTurn.model_validate(
@@ -796,9 +883,11 @@ class PostgresBrainstormRepository:
                 "job_version": row.version,
                 "state": row.state,
                 "proposal_digest": row.proposal_digest,
-                "proposal": BrainstormProposal.model_validate(row.proposal)
-                if row.proposal
-                else None,
+                "proposal": (
+                    _parse_proposal(row.proposal, self.decode_snapshot(row).kind)
+                    if row.proposal
+                    else None
+                ),
                 "adopted_revision_id": row.adopted_revision_id,
                 "failure": row.failure,
                 "usage_known": attempt.usage_known
@@ -806,7 +895,9 @@ class PostgresBrainstormRepository:
                 and not current_money_conflict
                 if attempt
                 else None,
-                "process_settled": attempt.process_settled if attempt else False,
+                # No admitted attempt means there is no provider process to
+                # settle. A first admission refusal is therefore recoverable.
+                "process_settled": attempt.process_settled if attempt else True,
                 "usage": usage,
                 "reservation": reservation,
                 # A saturated public amount is a lower bound, never used for admission.
@@ -905,7 +996,11 @@ class PostgresBrainstormRepository:
         await self.session.flush()
 
     async def claim(
-        self, owner: str, lease_seconds: int = 30
+        self,
+        owner: str,
+        lease_seconds: int = 30,
+        *,
+        kinds: frozenset[str] = frozenset(("brainstorm",)),
     ) -> tuple[BrainstormJobRow, BrainstormAttemptRow] | None:
         now = datetime.now(UTC)
         seen: list[UUID] = []
@@ -920,6 +1015,7 @@ class PostgresBrainstormRepository:
                         | (BrainstormJobRow.next_eligible_at <= now)
                     ),
                     BrainstormJobRow.id.not_in(seen),
+                    BrainstormJobRow.snapshot["kind"].astext.in_(kinds),
                 )
                 .order_by(BrainstormJobRow.created_at, BrainstormJobRow.id)
                 .with_for_update(skip_locked=True)
@@ -966,6 +1062,11 @@ class PostgresBrainstormRepository:
                 process_started=False,
                 process_settled=False,
             )
+            # Claims retain the ledger before quota. Delivery prepares the same
+            # ledger before it reaches a pool, so neither path can invert them.
+            ledger = await self._lock_epic_ledger(
+                row, encode_subscription_record(self.epic_ceiling or snapshot.budget)
+            )
             pool = await self.quota_pool(snapshot)
             if pool.blocked and (
                 pool.probe_attempt_id is not None
@@ -986,7 +1087,7 @@ class PostgresBrainstormRepository:
                 await self.session.flush()
                 continue
             try:
-                reservation, waitable = await self._reservation(row, snapshot, pool)
+                reservation, waitable = await self._reservation(row, snapshot, pool, ledger, number)
             except BrainstormConflict:
                 row.state, row.failure = "failed", "input_conflict"
                 row.version += 1
@@ -1019,6 +1120,10 @@ class PostgresBrainstormRepository:
                 pool.probe_attempt_id = attempt.id
             row.current_attempt_id = attempt.id
             row.state, row.next_eligible_at = "running", None
+            # An owner retry grants one concrete next admission, not a sticky
+            # waiver for later invocations or independently queued work.
+            row.retry_authorized_until = None
+            row.override_unknown_usage = False
             row.wait_pool_revision = None
             row.version += 1
             await self.session.flush()

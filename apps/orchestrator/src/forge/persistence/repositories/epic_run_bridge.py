@@ -5,6 +5,7 @@ from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.domain.epic_run_bridge import (
@@ -14,12 +15,93 @@ from forge.domain.epic_run_bridge import (
     EpicExecutionNotFound,
     EpicExecutionSnapshot,
 )
-from forge.persistence.models.epic_run_bridge import EpicExecution, EpicItemAttempt
+from forge.domain.subscription import (
+    TaskBudget,
+    decode_subscription_record,
+    encode_subscription_record,
+)
+from forge.persistence.models.epic_brainstorm import BrainstormBudgetLedger
+from forge.persistence.models.epic_run_bridge import (
+    EpicChildBudgetHold,
+    EpicExecution,
+    EpicExecutionControl,
+    EpicItemAttempt,
+)
+from forge.persistence.repositories.epic_budget import PostgresEpicBudgetRepository
 
 
 class PostgresEpicRunBridgeRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def has_active_execution(self, epic_id: UUID) -> bool:
+        return (
+            await self._session.scalar(
+                select(EpicExecution.id)
+                .outerjoin(
+                    EpicExecutionControl, EpicExecutionControl.execution_id == EpicExecution.id
+                )
+                .where(
+                    EpicExecution.epic_id == epic_id,
+                    (EpicExecutionControl.execution_id.is_(None))
+                    | EpicExecutionControl.state.not_in(("SUCCEEDED", "CANCELLED")),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    async def control_state(self, execution_id: UUID) -> str | None:
+        row = await self._session.get(EpicExecutionControl, execution_id)
+        return row.state if row is not None else None
+
+    async def note_owner_child_admission(self, execution_id: UUID) -> None:
+        """A late manual child revokes a previously settled control projection."""
+        row = await self._session.get(EpicExecutionControl, execution_id, with_for_update=True)
+        if row is not None and row.state not in (
+            "ACTIVE",
+            "PAUSE_REQUESTED",
+            "RESUME_REQUESTED",
+            "CANCEL_REQUESTED",
+        ):
+            row.version += 1
+            row.state = "BLOCKED"
+            row.blocker_code = "uncontrolled_child"
+            await self._session.flush()
+
+    async def child_budget_blockers(
+        self, epic_id: UUID, project_id: UUID, *, ceiling: TaskBudget, hold: TaskBudget
+    ) -> list[str]:
+        await self._session.execute(
+            insert(BrainstormBudgetLedger)
+            .values(
+                epic_id=epic_id,
+                project_id=project_id,
+                ceiling=encode_subscription_record(ceiling),
+                version=1,
+            )
+            .on_conflict_do_nothing()
+        )
+        ledger = await self._session.get(BrainstormBudgetLedger, epic_id, with_for_update=True)
+        if ledger is None or ledger.project_id != project_id:
+            raise ValueError("epic budget project binding conflicts")
+        current = decode_subscription_record(ledger.ceiling)
+        if not isinstance(current, TaskBudget):
+            raise TypeError("epic budget ceiling is invalid")
+        totals = await PostgresEpicBudgetRepository(self._session, legacy_hold=hold).totals(epic_id)
+        return totals.blockers(current, hold, frozenset(ledger.disabled_dimensions))
+
+    async def create_child_hold(self, attempt: EpicAttempt, budget: TaskBudget) -> None:
+        self._session.add(
+            EpicChildBudgetHold(
+                attempt_id=attempt.attempt_id,
+                epic_id=attempt.epic_id,
+                run_id=attempt.run_id,
+                budget_payload=encode_subscription_record(budget),
+                effects_settled=False,
+            )
+        )
+        await self._session.flush()
 
     async def create_execution(
         self,
@@ -39,6 +121,8 @@ class PostgresEpicRunBridgeRepository:
             graph_digest=graph_digest,
         )
         self._session.add(row)
+        await self._session.flush()
+        self._session.add(EpicExecutionControl(execution_id=row.id, epic_id=epic_id))
         await self._session.flush()
         await self._session.refresh(row)
         return _execution(row)

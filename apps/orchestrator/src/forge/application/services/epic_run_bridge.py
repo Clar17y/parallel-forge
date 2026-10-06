@@ -19,12 +19,15 @@ from forge.domain.epic_run_bridge import (
     DependencyEvidence,
     EpicAttempt,
     EpicExecutionBindingConflict,
+    EpicExecutionSnapshot,
     EpicLaunchConflict,
+    ExecutionStartRequest,
     LaunchRequest,
 )
 from forge.domain.operation import canonical_digest
 from forge.domain.payload import validate_durable_payload
 from forge.domain.run import RunState
+from forge.domain.subscription import TaskBudget
 from forge.persistence.repositories.tasks import MAX_BODY_BYTES
 
 _TERMINAL = {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
@@ -45,10 +48,130 @@ class EpicRunBridgeService:
         *,
         run_service: RunService,
         eligibility: EligibilityPort | None = None,
+        epic_ceiling: TaskBudget | None = None,
+        child_hold: TaskBudget | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._runs = run_service
         self._eligibility = eligibility
+        self._epic_ceiling = epic_ceiling or TaskBudget(
+            max_provider_attempts=12, max_duration_seconds=3600, max_tool_calls=300
+        )
+        self._child_hold = child_hold or TaskBudget(
+            max_provider_attempts=1, max_duration_seconds=300, max_tool_calls=25
+        )
+
+    async def start(
+        self,
+        *,
+        actor: AuthenticatedActor,
+        epic_id: UUID,
+        idempotency_key: str,
+        expected_epic_version: int,
+        brief_revision_id: UUID | None = None,
+        brief_digest: str | None = None,
+        graph_revision_id: UUID | None = None,
+        graph_digest: str | None = None,
+        owner_override: bool = False,
+        override_note: str | None = None,
+    ) -> EpicExecutionSnapshot:
+        """Freeze one saved pair without admitting a task or child run."""
+        request = ExecutionStartRequest(
+            expected_epic_version=expected_epic_version,
+            brief_revision_id=brief_revision_id,
+            brief_digest=brief_digest,
+            graph_revision_id=graph_revision_id,
+            graph_digest=graph_digest,
+            owner_override=owner_override,
+            override_note=override_note,
+        )
+        digest = canonical_digest(
+            {"epic_id": str(epic_id), "request": request.model_dump(mode="json")}
+        )
+        async with self._unit_of_work_factory() as work:
+            receipt = await work.mutations.reserve(
+                actor_id=actor.actor_id,
+                action="epic.execution.start",
+                scope=f"epic:{epic_id}",
+                idempotency_key=idempotency_key,
+                request_digest=digest,
+            )
+            if receipt.is_replay:
+                if receipt.response_payload is None:
+                    raise EpicExecutionBindingConflict("start receipt has no response")
+                result = EpicExecutionSnapshot.model_validate(receipt.response_payload)
+                await work.commit()
+                return result
+            epic = await work.epics.get(epic_id, for_update=True)
+            if epic.version != request.expected_epic_version:
+                raise EpicLaunchConflict(["epic_version_stale"], actual_epic_version=epic.version)
+            selected = (
+                request.brief_revision_id or epic.accepted_brief_revision_id,
+                request.brief_digest or epic.accepted_brief_digest,
+                request.graph_revision_id or epic.accepted_graph_revision_id,
+                request.graph_digest or epic.accepted_graph_digest,
+            )
+            brief_id, selected_brief_digest, graph_id, selected_graph_digest = selected
+            if (
+                brief_id is None
+                or selected_brief_digest is None
+                or graph_id is None
+                or selected_graph_digest is None
+            ):
+                raise EpicExecutionBindingConflict("matching saved brief and graph are required")
+            brief = await work.epics.get_revision(epic_id, brief_id)
+            graph = await work.epic_items.get_revision(epic_id, graph_id)
+            if brief.content_digest != selected_brief_digest:
+                raise EpicExecutionBindingConflict("brief revision digest mismatch")
+            if (
+                graph.graph_digest != selected_graph_digest
+                or graph.brief_revision_id != brief_id
+                or graph.brief_digest != selected_brief_digest
+            ):
+                raise EpicExecutionBindingConflict("graph revision does not match brief")
+            warnings: list[str] = []
+            if selected != (
+                epic.accepted_brief_revision_id,
+                epic.accepted_brief_digest,
+                epic.accepted_graph_revision_id,
+                epic.accepted_graph_digest,
+            ):
+                warnings.append("source_not_accepted")
+            if await work.epic_run_bridge.has_active_execution(epic_id):
+                warnings.append("active_execution")
+            if warnings and not request.owner_override:
+                raise EpicLaunchConflict(warnings, actual_epic_version=epic.version)
+            result = await work.epic_run_bridge.create_execution(
+                epic_id=epic_id,
+                brief_revision_id=brief_id,
+                brief_digest=selected_brief_digest,
+                graph_revision_id=graph_id,
+                graph_digest=selected_graph_digest,
+            )
+            await work.audit.append(
+                actor_id=actor.actor_id,
+                event_type="epic.execution_started",
+                subject_type="epic",
+                subject_id=epic_id,
+                correlation_id=receipt.id,
+                payload={
+                    "execution_id": str(result.execution_id),
+                    "brief_revision_id": str(brief_id),
+                    "graph_revision_id": str(graph_id),
+                    "owner_override": request.owner_override,
+                    "override_note": request.override_note,
+                    "warnings": warnings,
+                },
+            )
+            await work.mutations.complete(
+                receipt.id,
+                response_status=201,
+                response_payload=result.model_dump(mode="json"),
+                resource_kind="epic_execution",
+                resource_id=result.execution_id,
+            )
+            await work.commit()
+            return result
 
     async def launch(
         self,
@@ -106,6 +229,10 @@ class EpicRunBridgeService:
                 epic.accepted_graph_digest,
             ):
                 blockers.append("graph_not_accepted")
+            budget_blockers = await work.epic_run_bridge.child_budget_blockers(
+                epic_id, epic.project_id, ceiling=self._epic_ceiling, hold=self._child_hold
+            )
+            blockers.extend(budget_blockers)
             project = await work.projects.get(epic.project_id, for_update=True)
             inspection = self._runs.inspect_base(project)
             if request.execution_id is None:
@@ -133,13 +260,18 @@ class EpicRunBridgeService:
                 ):
                     raise EpicExecutionBindingConflict("execution source binding does not match")
             execution_id = execution.execution_id
+            control_state = await work.epic_run_bridge.control_state(execution_id)
+            if control_state is not None and control_state != "ACTIVE":
+                blockers.append("execution_not_active")
             prior = await work.epic_run_bridge.list_attempts(epic_id)
             if item.disposition == "deferred":
                 blockers.append("item_deferred")
             for value in prior:
-                if (await work.runs.get(value.run_id)).state not in _TERMINAL:
+                previous_run = await work.runs.get_for_update(value.run_id)
+                if previous_run.state not in _TERMINAL:
                     blockers.append("active_child")
-                    break
+                elif not (await work.runs.prove_quiescent(value.run_id)).is_quiescent:
+                    blockers.append("child_effects_unsettled")
             # A trusted producer can provide positive proof. With none, each
             # dependency stays unknown and default progression remains blocked.
             for _ in range(3):
@@ -256,6 +388,9 @@ class EpicRunBridgeService:
                 created_at=datetime.now(UTC),
             )
             await work.epic_run_bridge.create_attempt(attempt)
+            await work.epic_run_bridge.create_child_hold(attempt, self._child_hold)
+            if request.owner_override and control_state is not None and control_state != "ACTIVE":
+                await work.epic_run_bridge.note_owner_child_admission(execution_id)
             await work.audit.append(
                 actor_id=actor.actor_id,
                 event_type="epic.item_launched",

@@ -5,9 +5,17 @@ from typing import Protocol
 from uuid import UUID
 
 from forge.domain.epic_run_bridge import DependencyEvidence, EpicAttempt, EpicExecutionSnapshot
+from forge.domain.subscription import TaskBudget
 
 
 class EpicRunBridgeRepository(Protocol):
+    async def has_active_execution(self, epic_id: UUID) -> bool: ...
+    async def control_state(self, execution_id: UUID) -> str | None: ...
+    async def note_owner_child_admission(self, execution_id: UUID) -> None: ...
+    async def child_budget_blockers(
+        self, epic_id: UUID, project_id: UUID, *, ceiling: TaskBudget, hold: TaskBudget
+    ) -> list[str]: ...
+    async def create_child_hold(self, attempt: EpicAttempt, budget: TaskBudget) -> None: ...
     async def create_execution(
         self,
         *,

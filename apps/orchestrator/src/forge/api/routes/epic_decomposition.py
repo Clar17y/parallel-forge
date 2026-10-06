@@ -16,6 +16,7 @@ from forge.api.schemas.epic_decomposition import (
     DecompositionAdoptionResponse,
     DecompositionConversationCreate,
     DecompositionJobControl,
+    DecompositionJobRetry,
     DecompositionJobSubmit,
     DecompositionProposalAdopt,
     DecompositionTurnAppend,
@@ -197,7 +198,7 @@ def router_for() -> APIRouter:
     async def retry(
         epic_id: UUID,
         job_id: UUID,
-        body: DecompositionJobControl,
+        body: DecompositionJobRetry,
         request: Request,
         key: str = Depends(require_idempotency_key),
         actor: AuthenticatedActor = Depends(require_operator_mutation),
@@ -210,6 +211,8 @@ def router_for() -> APIRouter:
                 expected_job_version=body.expected_job_version,
                 actor=actor,
                 key=key,
+                owner_override=body.owner_override,
+                override_note=body.override_note,
             )
         except Exception as error:  # noqa: BLE001
             raise _error(error) from None

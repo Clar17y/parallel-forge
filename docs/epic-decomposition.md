@@ -72,25 +72,31 @@ Issue #73 introduces an assisted decomposition lane for epics in Forge. The deco
 
 ---
 
-## Integration Proposals
+## Production Integration Status
 
-Shared integration is delivered as patches in `apps/orchestrator/tests/epic_decomposition/integration_proposals/`. From the active `a08ec70` baseline, apply all #72 prerequisites in their manifest order: `epic_brief_source.patch`, `registration.patch`, `epic_brainstorm_migration.patch`, then `generated_contracts.patch`. The #72 Alembic `20261004_0033` migration follows `20261003_0032`; recheck the active head when integrating. Then apply the three #73 patches below in manifest order. The authoring API requires an explicit `TaskBudget`; the worker requires a configured subject gateway and controlled repository reader factory. Live provider registration remains an integration-owned setting.
+Assisted decomposition (#73) is integrated into Forge's production runtime alongside brainstorming (#72) and the epic run bridge (#71):
 
-The normal baseline test collection runs seven pure-domain cases and explicitly skips the 38 integration cases until the declared shared hooks are present. To exercise the entire lane before integration, apply the ordered patches in a disposable source overlay and run from the worktree root with `PYTHONPATH=<overlay>/apps/orchestrator/src python -m pytest apps/orchestrator/tests/epic_decomposition -q -rs`. The composed lane must run all 45 cases without readiness skips.
+1. **Shared Authoring Runtime**:
+   - `AuthoringJobSnapshot` supports `kind="decomposition"` alongside `kind="brainstorm"`.
+   - `AuthoringOutcome.proposal` and `BrainstormTurn.proposal` accept `DecompositionProposal`.
+   - `BoundEpicAuthoringAdapter.submit` handles decomposition job kinds.
+   - Authoring repository and worker filter claims to configured kinds and preserve fail-closed process supervision, lease tracking, and budget accounting.
 
-1. `shared_authoring_compatibility.patch`:
-   - Enables `AuthoringJobSnapshot` to accept `kind: Literal["brainstorm", "decomposition"]`.
-   - Extends `AuthoringOutcome.proposal` and `BrainstormTurn.proposal` to accept `DecompositionProposal`.
-   - Updates `BoundEpicAuthoringAdapter.submit` to allow decomposition job kinds.
-   - Dispatches and parses proposals by frozen job kind, validates actual gateway output, and limits claims to configured kinds.
+2. **API & Worker Composition**:
+   - `forge.api.app.create_app` composes `epic_decomposition_budget` and `epic_decomposition_service` with `PostgresEpicDecompositionUnitOfWork` and mounts the `/api/epics/{id}/decomposition-*` router.
+   - `forge.worker.main.run_worker` accepts `decomposition_gateway_factory`, configuring both authoring kinds with shared worker polling, drain handling, and cancellation.
 
-2. `registration.patch`:
-   - Adds decomposition service and router registration to `forge.api.app.create_app`.
-   - Composes the real decomposition unit of work and shared authoring service with an explicit budget.
-   - Wires decomposition gateway dispatch, polling, and drain through the shared authoring worker.
+3. **Supervised Local CLI Provider Protocols**:
+   - `epic_brainstorm_protocol.py` dynamically selects schema and prompt actions based on `job.kind` (`brainstorm` vs `decomposition`), preserving brief and project binding.
+   - Provider exchange functions (`codex_exchange`, `claude_exchange`, `gemini_exchange`, `antigravity_exchange`) and `epic_brainstorm_gateway.py` wire decomposition schemas and system prompts across all four supported local CLI providers.
+   - Output validation enforces schema integrity, brief digest matching, requirement ID containment, and turn ID matching before any proposal becomes adoptable.
 
-3. `generated_contracts.patch`:
-   - Updates `apps/web/openapi.json` and `apps/web/src/lib/api/schema.d.ts` for the registered decomposition routes.
+4. **Discoverability & Web Navigation**:
+   - Epics navigation link added under `Operate -> Epics` (`/epics`) in `apps/web/src/components/layout/navigation.tsx`.
+   - Project detail page (`/projects/[projectId]`) includes an entry point to the project's epics list (`/epics?project_id=...`).
+   - OpenAPI specifications and generated TypeScript bindings (`apps/web/openapi.json`, `apps/web/src/lib/api/schema.d.ts`) reflect all decomposition routes and schema models with zero drift.
 
-4. `manifest.json`:
-   - Lists baseline commit `a08ec70c367aeba1b4ef23598a0a630d1d8e5f8e`, full #72 prerequisite order and hashes, then the #73 application order, SHA-256 checksums, and byte lengths.
+5. **Verification & Smoke Testing**:
+   - Comprehensive test suite in `apps/orchestrator/tests/epic_decomposition`: 56 unit/integration tests running with zero skips.
+   - Dedicated protocol suite (`test_protocols.py`): validates schema selection, prompt generation, proposal parsing, turn matching, and provider exchanges for Codex, Claude, Gemini, and Antigravity.
+   - Providerless production smoke test (`test_smoke.py`): exercises complete flow from project creation, brief adoption, decomposition submission, supervised worker execution, proposal observation, atomic graph adoption, to child item launch via `EpicRunBridgeService`, asserting ordinary `Task`, `Run`, and `start_planning` `RunCommand` creation with human approval gates intact.

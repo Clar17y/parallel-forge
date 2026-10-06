@@ -3,10 +3,29 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useApi } from '@/hooks/use-api';
 import { useEpicMutations } from './use-epic-mutations';
-import type { ActiveChild, ExecutionProgress, ExecutionState } from './types';
+import type {
+  EpicChildProjection,
+  EpicControlReceipt,
+  EpicControlRequest,
+  EpicExecutionProjection,
+  EpicExecutionSnapshot,
+  EpicIntentProjection,
+  EpicOwnerActionProjection,
+  ExecutionStartRequest,
+} from './types';
 
 function executionIdFromCommandPath(path: string): string | null {
   return path.match(/\/executions\/([^/?]+)\/commands(?:[/?]|$)/)?.[1] ?? null;
+}
+
+export interface StartExecutionOptions {
+  expectedEpicVersion: number;
+  briefRevisionId?: string | null;
+  briefDigest?: string | null;
+  graphRevisionId?: string | null;
+  graphDigest?: string | null;
+  ownerOverride?: boolean;
+  overrideNote?: string | null;
 }
 
 export function useEpicExecution(epicId: string, initialExecutionId?: string | null) {
@@ -31,10 +50,22 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
     }
   }, []);
 
-  const executionPath =
-    epicId && executionId ? `/epics/${epicId}/executions/${executionId}` : null;
+  // Execution discovery
+  const executionsPath = epicId ? `/epics/${epicId}/executions` : null;
+  const executionsApi = useApi<EpicExecutionProjection[]>(executionsPath, {
+    refreshIntervalMs: 5000,
+    keepPreviousOnRefresh: true,
+  });
 
-  const executionApi = useApi<ExecutionProgress>(executionPath, {
+  const discoveredId = (!initialExecutionId && !executionId && executionsApi.value && executionsApi.value.length > 0)
+    ? (executionsApi.value[executionsApi.value.length - 1]?.execution?.execution_id ?? null)
+    : null;
+  const activeExecutionId = executionId ?? discoveredId;
+
+  const executionPath =
+    epicId && activeExecutionId ? `/epics/${epicId}/executions/${activeExecutionId}` : null;
+
+  const executionApi = useApi<EpicExecutionProjection>(executionPath, {
     refreshIntervalMs: 3000,
     keepPreviousOnRefresh: true,
     keepPreviousOnError: true,
@@ -43,12 +74,19 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
   const mutations = useEpicMutations(epicId);
   const { execute, registerCompletion } = mutations;
   const refreshExecution = executionApi.refresh;
+  const refreshExecutions = executionsApi.refresh;
+
+  const refreshAll = useCallback(() => {
+    refreshExecutions();
+    refreshExecution();
+  }, [refreshExecution, refreshExecutions]);
 
   const rememberExecution = useCallback((value: unknown) => {
     const id = (value as { execution_id?: string }).execution_id;
     if (!id) return;
     setExecutionId(id);
-  }, [setExecutionId]);
+    refreshExecutions();
+  }, [refreshExecutions, setExecutionId]);
 
   useEffect(() => registerCompletion('execution-start', rememberExecution), [registerCompletion, rememberExecution]);
   useEffect(() => registerCompletion('execution-command', (value, request) => {
@@ -56,62 +94,90 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
     const receiptExecutionId = (value as { execution_id?: string }).execution_id;
     if (!requestedExecutionId || (receiptExecutionId && receiptExecutionId !== requestedExecutionId)) return;
     setExecutionId(requestedExecutionId);
-    // A changed ID triggers useApi for that frozen projection. Refresh directly
-    // only when it is already the selected projection.
     if (requestedExecutionId === executionId) refreshExecution();
-  }), [executionId, refreshExecution, registerCompletion, setExecutionId]);
+    refreshExecutions();
+  }), [executionId, refreshExecution, refreshExecutions, registerCompletion, setExecutionId]);
 
   const startExecution = useCallback(
-    async (expectedEpicVersion: number) => {
-      const res = await execute<{
-        schema_version: 1;
-        execution_id: string;
-        execution_version: number;
-        state: ExecutionState;
-      }>('POST', `/epics/${epicId}/executions`, {
+    async (options: StartExecutionOptions | number) => {
+      const opts = typeof options === 'number' ? { expectedEpicVersion: options } : options;
+      const body: ExecutionStartRequest = {
         schema_version: 1,
-        expected_epic_version: expectedEpicVersion,
-      }, { kind: 'execution-start' });
+        expected_epic_version: opts.expectedEpicVersion,
+        owner_override: opts.ownerOverride ?? false,
+        ...(opts.briefRevisionId ? { brief_revision_id: opts.briefRevisionId } : {}),
+        ...(opts.briefDigest ? { brief_digest: opts.briefDigest } : {}),
+        ...(opts.graphRevisionId ? { graph_revision_id: opts.graphRevisionId } : {}),
+        ...(opts.graphDigest ? { graph_digest: opts.graphDigest } : {}),
+        ...(opts.overrideNote !== undefined ? { override_note: opts.overrideNote } : {}),
+      };
+      const res = await execute<EpicExecutionSnapshot>(
+        'POST',
+        `/epics/${epicId}/executions`,
+        body as unknown as Record<string, unknown>,
+        { kind: 'execution-start' }
+      );
+      if (res && typeof res === 'object' && 'execution_id' in res) {
+        setExecutionId(res.execution_id);
+      }
       return res;
     },
-    [epicId, execute]
+    [epicId, execute, setExecutionId]
   );
 
   const sendCommand = useCallback(
     async (action: 'pause' | 'resume' | 'cancel', expectedExecutionVersion: number) => {
-      if (!executionId) {
+      if (!activeExecutionId) {
         throw new Error('Cannot send command without an active execution ID.');
       }
-      const res = await execute<{
-        schema_version: 1;
-        action: string;
-        execution_version: number;
-        state: ExecutionState;
-      }>('POST', `/epics/${epicId}/executions/${executionId}/commands`, {
+      const body: EpicControlRequest = {
         schema_version: 1,
         action,
         expected_execution_version: expectedExecutionVersion,
-      }, { kind: 'execution-command' });
+      };
+      const res = await execute<EpicControlReceipt>(
+        'POST',
+        `/epics/${epicId}/executions/${activeExecutionId}/commands`,
+        body as unknown as Record<string, unknown>,
+        { kind: 'execution-command' }
+      );
       return res;
     },
-    [epicId, executionId, execute]
+    [epicId, activeExecutionId, execute]
   );
 
   const execution = executionApi.value ?? null;
-  const isPendingDiscovery = !executionId;
-  const state: ExecutionState | null = execution?.state ?? null;
-  const childRuns: ActiveChild[] = execution?.active_child ? [execution.active_child] : [];
+  const isPendingDiscovery = !activeExecutionId;
+
+  // Exact generated EpicExecutionProjection fields - no Record casts, no guessed fallbacks
+  const controlState: string | null = execution?.control_state ?? null;
+  const state: string | null = controlState;
+  const controlVersion: number | null = execution?.control_version ?? null;
+  const blockerCode: string | null = execution?.blocker_code ?? null;
+  const children: EpicChildProjection[] = execution?.children ?? [];
+  const intents: EpicIntentProjection[] = execution?.intents ?? [];
+  const ownerActions: EpicOwnerActionProjection[] = execution?.owner_actions ?? [];
+  const snapshot: EpicExecutionSnapshot | null = execution?.execution ?? null;
 
   return {
-    executionId,
+    executionId: activeExecutionId,
     setExecutionId,
+    executions: executionsApi.value ?? [],
+    executionsLoading: executionsApi.loading,
+    executionsFailed: executionsApi.failed,
     execution,
-    loading: executionApi.loading,
+    snapshot,
+    loading: executionApi.loading || (!executionId && executionsApi.loading),
     failed: executionApi.failed,
-    refresh: executionApi.refresh,
+    refresh: refreshAll,
     isPendingDiscovery,
+    controlState,
+    controlVersion,
     state,
-    childRuns,
+    children,
+    intents,
+    ownerActions,
+    blockerCode,
     startExecution,
     sendCommand,
     mutations,

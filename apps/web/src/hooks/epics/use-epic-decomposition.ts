@@ -13,7 +13,7 @@ import type {
 function readSelection() {
   if (typeof window === 'undefined') return { conversationId: null, jobId: null };
   const params = new URL(window.location.href).searchParams;
-  return { conversationId: params.get('conversation_id'), jobId: params.get('job_id') };
+  return { conversationId: params.get('decomp_conversation_id'), jobId: params.get('decomp_job_id') };
 }
 
 const subscribeHydration = () => () => undefined;
@@ -23,32 +23,31 @@ const serverHydrated = () => false;
 function writeSelection(conversationId: string | null, jobId: string | null) {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  if (conversationId) url.searchParams.set('conversation_id', conversationId);
-  else url.searchParams.delete('conversation_id');
-  if (jobId) url.searchParams.set('job_id', jobId);
-  else url.searchParams.delete('job_id');
+  if (conversationId) url.searchParams.set('decomp_conversation_id', conversationId);
+  else url.searchParams.delete('decomp_conversation_id');
+  if (jobId) url.searchParams.set('decomp_job_id', jobId);
+  else url.searchParams.delete('decomp_job_id');
   window.history.replaceState(window.history.state, '', url);
 }
 
 function conversationIdFromPath(path: string): string | null {
-  return path.match(/\/brainstorm-conversations\/([^/?]+)\/(?:turns|jobs)(?:[/?]|$)/)?.[1] ?? null;
+  return path.match(/\/decomposition-conversations\/([^/?]+)\/(?:turns|jobs)(?:[/?]|$)/)?.[1] ?? null;
 }
 
 function jobIdFromPath(path: string): string | null {
-  return path.match(/\/brainstorm-jobs\/([^/?]+)/)?.[1] ?? null;
+  return path.match(/\/decomposition-jobs\/([^/?]+)/)?.[1] ?? null;
 }
 
-export function useEpicBrainstorm(epicId: string, projectId: string) {
+export function useEpicDecomposition(epicId: string, projectId: string) {
   const threadsPath = epicId && projectId
-    ? `/epics/${epicId}/brainstorm-conversations?project_id=${encodeURIComponent(projectId)}`
+    ? `/epics/${epicId}/decomposition-conversations?project_id=${encodeURIComponent(projectId)}`
     : null;
   const threadsApi = useApi<BrainstormThread[]>(threadsPath, { refreshIntervalMs: 5000, keepPreviousOnRefresh: true });
   const refreshThreads = threadsApi.refresh;
   const [activeConversationState, setActiveConversationState] = useState<string | null>(null);
   const [selectedJobState, setSelectedJobState] = useState<{ id: string; conversationId: string | null } | null>(null);
-  const [adoptedRevisionId, setAdoptedRevisionId] = useState<string | null>(null);
+  const [adoptedGraphRevisionId, setAdoptedGraphRevisionId] = useState<string | null>(null);
 
-  // Browser URL selection becomes available after the server markup hydrates.
   const hydrated = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);
   const urlSelection = hydrated ? readSelection() : { conversationId: null, jobId: null };
   const urlJobThread = urlSelection.jobId
@@ -71,14 +70,14 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
       : null;
 
   const turnsPath = epicId && projectId && selectedConversationId
-    ? `/epics/${epicId}/brainstorm-conversations/${selectedConversationId}/turns?project_id=${encodeURIComponent(projectId)}`
+    ? `/epics/${epicId}/decomposition-conversations/${selectedConversationId}/turns?project_id=${encodeURIComponent(projectId)}`
     : null;
   const turnsApi = useApi<BrainstormTurn[]>(turnsPath, { refreshIntervalMs: 3000, keepPreviousOnRefresh: true });
   const refreshTurns = turnsApi.refresh;
   const activeThread = threadsApi.value?.find(thread => thread.conversation_id === selectedConversationId);
   const jobId = selectedJobId ?? (!urlSelection.jobId ? activeThread?.job_ids.at(-1) ?? null : null);
   const outcomePath = jobId
-    ? `/epics/${epicId}/brainstorm-jobs/${jobId}?project_id=${encodeURIComponent(projectId)}`
+    ? `/epics/${epicId}/decomposition-jobs/${jobId}?project_id=${encodeURIComponent(projectId)}`
     : null;
   const outcomeApi = useApi<AuthoringOutcome>(outcomePath, {
     refreshIntervalMs: 3000,
@@ -94,14 +93,14 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
     if (mutationLoading || hasPendingRetry) return;
     setActiveConversationState(conversationId);
     setSelectedJobState(null);
-    setAdoptedRevisionId(null);
+    setAdoptedGraphRevisionId(null);
     writeSelection(conversationId, null);
   }, [mutationLoading, hasPendingRetry]);
 
   const selectCompletedJob = useCallback((jobIdValue: string, conversationId: string | null) => {
     setActiveConversationState(conversationId);
     setSelectedJobState({ id: jobIdValue, conversationId });
-    setAdoptedRevisionId(null);
+    setAdoptedGraphRevisionId(null);
     writeSelection(conversationId, jobIdValue);
   }, []);
 
@@ -114,7 +113,7 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
     }
     if (!selectedConversationId) return;
     setSelectedJobState({ id: jobIdValue, conversationId: selectedConversationId });
-    setAdoptedRevisionId(null);
+    setAdoptedGraphRevisionId(null);
     writeSelection(selectedConversationId, jobIdValue);
   }, [hasPendingRetry, mutationLoading, selectedConversationId]);
 
@@ -149,14 +148,14 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
     };
 
     const registrations = [
-      registerCompletion('conversation-start', value => {
+      registerCompletion('decomp-conversation-start', value => {
         const conversationId = (value as { conversation_id: string }).conversation_id;
         setActiveConversationState(conversationId);
         setSelectedJobState(null);
         writeSelection(conversationId, null);
         refreshThreads();
       }),
-      registerCompletion('conversation-turn', (_value, request) => {
+      registerCompletion('decomp-conversation-turn', (_value, request) => {
         const conversationId = conversationIdFromPath(request.path);
         if (conversationId) {
           setActiveConversationState(conversationId);
@@ -165,19 +164,19 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
         refreshTurns();
         refreshThreads();
       }),
-      registerCompletion('job-submit', (value, request) => {
+      registerCompletion('decomp-job-submit', (value, request) => {
         const conversationId = conversationIdFromPath(request.path);
         const receipt = value as AuthoringReceipt;
         selectCompletedJob(receipt.job_id, conversationId);
         refreshThreads();
       }),
-      registerCompletion('job-cancel', onJobSettled),
-      registerCompletion('job-retry', onJobSettled),
-      registerCompletion('proposal-adopt', (value, request) => {
+      registerCompletion('decomp-job-cancel', onJobSettled),
+      registerCompletion('decomp-job-retry', onJobSettled),
+      registerCompletion('decomp-proposal-adopt', (value, request) => {
         const requestJobId = jobIdFromPath(request.path);
         const conversationId = requestJobId ? resolveJobConversation(requestJobId) : null;
         if (requestJobId) selectCompletedJob(requestJobId, conversationId);
-        setAdoptedRevisionId((value as { brief_revision_id: string }).brief_revision_id);
+        setAdoptedGraphRevisionId((value as { graph_revision_id: string }).graph_revision_id);
         refreshOutcome();
         refreshThreads();
       }),
@@ -193,57 +192,56 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
   ]);
 
   const startConversation = useCallback((text: string) => execute<{ conversation_id: string; version: number }>(
-    'POST', `/epics/${epicId}/brainstorm-conversations`,
-    { schema_version: 1, project_id: projectId, text }, { kind: 'conversation-start' },
+    'POST', `/epics/${epicId}/decomposition-conversations`,
+    { schema_version: 1, project_id: projectId, text }, { kind: 'decomp-conversation-start' },
   ), [epicId, execute, projectId]);
 
   const appendTurn = useCallback((conversationId: string, expectedConvVersion: number, text: string) => execute<{ version: number }>(
-    'POST', `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns`,
+    'POST', `/epics/${epicId}/decomposition-conversations/${conversationId}/turns`,
     {
       schema_version: 1,
       project_id: projectId,
       expected_conversation_version: expectedConvVersion,
       text,
       pending: false,
-    }, { kind: 'conversation-turn' },
+    }, { kind: 'decomp-conversation-turn' },
   ), [epicId, execute, projectId]);
 
   const submitJob = useCallback((conversationId: string, promptTurnId: string, expectedEpicVersion: number, expectedConvVersion: number) => execute<AuthoringReceipt>(
-    'POST', `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs`,
+    'POST', `/epics/${epicId}/decomposition-conversations/${conversationId}/jobs`,
     {
       schema_version: 1,
       project_id: projectId,
       prompt_turn_id: promptTurnId,
       expected_epic_version: expectedEpicVersion,
       expected_conversation_version: expectedConvVersion,
-    }, { kind: 'job-submit' },
+    }, { kind: 'decomp-job-submit' },
   ), [epicId, execute, projectId]);
 
-  const adoptProposal = useCallback((jobIdValue: string, proposalDigest: string, expectedJobVersion: number, expectedEpicVersion: number) => execute<{ brief_revision_id: string }>(
-    'POST', `/epics/${epicId}/brainstorm-jobs/${jobIdValue}/adopt`,
+  const adoptProposal = useCallback((jobIdValue: string, proposalDigest: string, expectedJobVersion: number, expectedEpicVersion: number) => execute<{ graph_revision_id: string }>(
+    'POST', `/epics/${epicId}/decomposition-jobs/${jobIdValue}/adopt`,
     {
       schema_version: 1,
       project_id: projectId,
       expected_job_version: expectedJobVersion,
       expected_epic_version: expectedEpicVersion,
       proposal_digest: proposalDigest,
-    }, { kind: 'proposal-adopt' },
+    }, { kind: 'decomp-proposal-adopt' },
   ), [epicId, execute, projectId]);
 
   const cancelJob = useCallback((jobIdValue: string, expectedJobVersion: number) => execute<AuthoringReceipt>(
-    'POST', `/epics/${epicId}/brainstorm-jobs/${jobIdValue}/cancel`,
-    { schema_version: 1, project_id: projectId, expected_job_version: expectedJobVersion }, { kind: 'job-cancel' },
+    'POST', `/epics/${epicId}/decomposition-jobs/${jobIdValue}/cancel`,
+    { schema_version: 1, project_id: projectId, expected_job_version: expectedJobVersion }, { kind: 'decomp-job-cancel' },
   ), [epicId, execute, projectId]);
 
-  const retryJob = useCallback((jobIdValue: string, expectedJobVersion: number, ownerOverride?: boolean, overrideNote?: string | null) => execute<AuthoringReceipt>(
-    'POST', `/epics/${epicId}/brainstorm-jobs/${jobIdValue}/retry`,
+  const retryJob = useCallback((jobIdValue: string, expectedJobVersion: number, ownerOverride = false, overrideNote?: string | null) => execute<AuthoringReceipt>(
+    'POST', `/epics/${epicId}/decomposition-jobs/${jobIdValue}/retry`,
     {
-      schema_version: 1,
       project_id: projectId,
       expected_job_version: expectedJobVersion,
-      ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
+      owner_override: ownerOverride,
       ...(overrideNote ? { override_note: overrideNote } : {}),
-    }, { kind: 'job-retry' },
+    }, { kind: 'decomp-job-retry' },
   ), [epicId, execute, projectId]);
 
   return {
@@ -255,7 +253,7 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
     selectedJobId: jobId,
     setSelectedJobId,
     jobs: [...new Set([...(activeThread?.job_ids ?? []), ...(selectedJobId ? [selectedJobId] : [])])],
-    adoptedRevisionId,
+    adoptedGraphRevisionId,
     loading: threadsApi.loading || turnsApi.loading || outcomeApi.loading,
     isUnavailable,
     refresh,

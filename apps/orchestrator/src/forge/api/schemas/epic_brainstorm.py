@@ -35,6 +35,11 @@ class JobControl(_Request):
     expected_job_version: int = Field(ge=1)
 
 
+class JobRetry(JobControl):
+    owner_override: bool = False
+    override_note: str | None = Field(default=None, max_length=2048)
+
+
 class ProposalAdopt(JobControl):
     expected_epic_version: int = Field(ge=1)
     proposal_digest: str = Field(pattern=r"^[0-9a-f]{64}$")

@@ -179,6 +179,34 @@ describe('AuthoringWorkspace', () => {
     }));
   });
 
+  test('submits owner override and note when retrying a failed assistant job', async () => {
+    const failed = { ...proposedOutcome, state: 'failed', proposal: null, proposal_digest: null, failure: 'quota_exhausted', process_settled: true };
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [thread] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return turns as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job?project_id=${projectId}`) return failed as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job/retry` && init?.method === 'POST') return { schema_version: 1, job_id: 'current-job', job_version: 8, state: 'queued', replay_key: 'key' } as T;
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await screen.findByRole('button', { name: 'Retry assistant job' });
+
+    await userEvent.click(screen.getByLabelText('Owner override retry policy'));
+    await userEvent.type(screen.getByPlaceholderText('Optional override note...'), 'Emergency operator override');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry assistant job' }));
+
+    expect(api).toHaveBeenCalledWith(`/epics/${epicId}/brainstorm-jobs/current-job/retry`, expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        schema_version: 1,
+        project_id: projectId,
+        expected_job_version: 7,
+        owner_override: true,
+        override_note: 'Emergency operator override',
+      }),
+    }));
+  });
+
   test('keeps a restored request retry available when authoring reads are unavailable', async () => {
     const pending = {
       kind: 'conversation-start',
@@ -305,5 +333,14 @@ describe('AuthoringWorkspace', () => {
     render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
     expect(await screen.findByText('No process settlement reported')).toBeInTheDocument();
     expect(screen.queryByText('Process settlement pending')).not.toBeInTheDocument();
+  });
+
+  test('mounts decomposition workspace and removes obsolete unavailable contract placeholder', async () => {
+    mockAuthoring();
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+
+    expect(await screen.findByText('Authentication is difficult to audit.')).toBeInTheDocument();
+    expect(screen.queryByText('There is no available graph decomposition request contract yet.')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Decomposition conversations', level: 3 })).toBeInTheDocument();
   });
 });

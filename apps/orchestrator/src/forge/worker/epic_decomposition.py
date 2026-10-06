@@ -10,7 +10,10 @@ from forge.application.ports.epic_decomposition import (
     DecompositionGatewayResult,
 )
 from forge.domain.epic_brainstorm import AuthoringJobSnapshot, BrainstormTurn
-from forge.domain.epic_decomposition import validate_decomposition_proposal
+from forge.domain.epic_decomposition import (
+    DecompositionProposal,
+    validate_decomposition_proposal,
+)
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 
 
@@ -45,6 +48,7 @@ class ValidatedDecompositionGateway:
                 or job.accepted_content is None
                 or job.input_brief_revision_id is None
                 or job.input_brief_digest is None
+                or not isinstance(result.proposal, DecompositionProposal)
             ):
                 raise ValueError("decomposition binding conflicts")
             proposal = validate_decomposition_proposal(result.proposal, job.accepted_content)
@@ -55,7 +59,7 @@ class ValidatedDecompositionGateway:
                 or proposal.brief_digest != job.input_brief_digest
             ):
                 raise ValueError("decomposition binding conflicts")
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return DecompositionGatewayResult(
                 proposal=None, telemetry=result.telemetry, failure="invalid_output"
             )

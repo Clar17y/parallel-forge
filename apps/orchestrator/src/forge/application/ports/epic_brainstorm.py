@@ -16,6 +16,7 @@ from forge.domain.epic_brainstorm import (
     BrainstormTurn,
     FrozenBriefContent,
 )
+from forge.domain.epic_decomposition import DecompositionProposal
 from forge.domain.subscription import AttemptTelemetry
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 
@@ -55,10 +56,26 @@ class BrainstormBriefPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class BrainstormGatewayResult:
-    proposal: BrainstormProposal | None
+    proposal: BrainstormProposal | DecompositionProposal | None
     telemetry: AttemptTelemetry | None
     failure: str | None = None
     quota_reset_at: str | None = None
+
+
+class AuthoringGatewayResult(Protocol):
+    """Fields the shared worker consumes from either subject's gateway result."""
+
+    @property
+    def proposal(self) -> BrainstormProposal | DecompositionProposal | None: ...
+
+    @property
+    def telemetry(self) -> AttemptTelemetry | None: ...
+
+    @property
+    def failure(self) -> str | None: ...
+
+    @property
+    def quota_reset_at(self) -> str | None: ...
 
 
 class BrainstormGateway(Protocol):
@@ -70,7 +87,7 @@ class BrainstormGateway(Protocol):
         *,
         cancelled: Callable[[], Awaitable[bool]],
         lifecycle: BrainstormProcessLifecycle,
-    ) -> BrainstormGatewayResult: ...
+    ) -> AuthoringGatewayResult: ...
 
 
 class BrainstormProcessLifecycle(Protocol):
@@ -82,6 +99,7 @@ class BrainstormProcessLifecycle(Protocol):
 
 
 __all__ = [
+    "AuthoringGatewayResult",
     "BrainstormBriefPort",
     "BrainstormGateway",
     "BrainstormGatewayResult",

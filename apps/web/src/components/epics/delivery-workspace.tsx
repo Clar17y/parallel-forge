@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { useEpicExecution } from '@/hooks/epics/use-epic-execution';
 import { useEpicWorkspace } from '@/hooks/epics/use-epic-workspace';
 import { EvidenceDetails } from './evidence-details';
+import { EpicBudgetPanel } from './epic-budget-panel';
 
 export function DeliveryWorkspace({
   epicId,
@@ -23,16 +24,30 @@ export function DeliveryWorkspace({
   const [manualIdInput, setManualIdInput] = useState('');
   const [actionNotice, setActionNotice] = useState<string | null>(null);
 
+  // Owner override start controls
+  const [isStartingNew, setIsStartingNew] = useState(false);
+  const [useOwnerOverride, setUseOwnerOverride] = useState(false);
+  const [selectedBriefId, setSelectedBriefId] = useState('');
+  const [selectedGraphId, setSelectedGraphId] = useState('');
+  const [overrideNote, setOverrideNote] = useState('');
+
   const {
     executionId,
     setExecutionId,
+    executions,
+    executionsLoading,
+    executionsFailed,
     execution,
     loading,
     failed,
     refresh,
     isPendingDiscovery,
-    state,
-    childRuns,
+    controlState,
+    controlVersion,
+    children,
+    intents,
+    ownerActions,
+    blockerCode,
     startExecution,
     sendCommand,
     mutations,
@@ -48,7 +63,7 @@ export function DeliveryWorkspace({
     const unregisterCommand = registerCompletion('execution-command', (_value, request) => {
       const action = request.body.action;
       if (action === 'pause' || action === 'resume' || action === 'cancel') {
-        const label = action[0].toUpperCase() + action.slice(1);
+        const label = (action as string)[0].toUpperCase() + (action as string).slice(1);
         setActionNotice(`${label} requested; waiting for server confirmation.`);
       }
     });
@@ -57,16 +72,38 @@ export function DeliveryWorkspace({
 
   const handleStart = async () => {
     try {
-      await startExecution(epicVersion);
+      if (useOwnerOverride) {
+        const chosenBrief = workspace.briefRevisions.find(b => b.brief_revision_id === selectedBriefId);
+        const chosenGraph = workspace.graphRevisions.find(g => g.graph_revision_id === selectedGraphId);
+        await startExecution({
+          expectedEpicVersion: epicVersion,
+          briefRevisionId: chosenBrief?.brief_revision_id ?? workspace.acceptedBrief?.brief_revision_id,
+          briefDigest: chosenBrief?.content_digest ?? workspace.acceptedBrief?.brief_digest,
+          graphRevisionId: chosenGraph?.graph_revision_id ?? workspace.acceptedGraph?.graph_revision_id,
+          graphDigest: chosenGraph?.graph_digest ?? workspace.acceptedGraph?.graph_digest,
+          ownerOverride: true,
+          overrideNote: overrideNote.trim() || undefined,
+        });
+      } else {
+        await startExecution({
+          expectedEpicVersion: epicVersion,
+          briefRevisionId: workspace.acceptedBrief?.brief_revision_id,
+          briefDigest: workspace.acceptedBrief?.brief_digest,
+          graphRevisionId: workspace.acceptedGraph?.graph_revision_id,
+          graphDigest: workspace.acceptedGraph?.graph_digest,
+          ownerOverride: false,
+        });
+      }
+      setIsStartingNew(false);
     } catch {
       // Mutations hook captures errors
     }
   };
 
   const handleCommand = async (action: 'pause' | 'resume' | 'cancel') => {
-    if (!execution) return;
+    if (!execution || controlVersion === null) return;
     try {
-      await sendCommand(action, execution.execution_version);
+      await sendCommand(action, controlVersion);
     } catch {
       // Mutations hook captures errors
     }
@@ -80,12 +117,29 @@ export function DeliveryWorkspace({
     }
   };
 
-  const frozenGraph = execution
-    ? workspace.graphRevisions.find(revision => revision.graph_revision_id === execution.graph_revision_id)
+  const executionSnapshot = execution?.execution ?? null;
+  const briefRevId = executionSnapshot?.brief_revision_id ?? null;
+  const graphRevId = executionSnapshot?.graph_revision_id ?? null;
+  const briefDigest = executionSnapshot?.brief_digest ?? null;
+  const graphDigest = executionSnapshot?.graph_digest ?? null;
+
+  const frozenGraph = graphRevId
+    ? workspace.graphRevisions.find(revision => revision.graph_revision_id === graphRevId)
     : undefined;
   const frozenItems = new Map((frozenGraph?.items ?? []).map(item => [item.item_id, item]));
   const mutationPending = mutations.loading || mutations.hasPendingRetry;
   const isDeliveryAction = !mutations.actionKind || ['execution-start', 'execution-command'].includes(mutations.actionKind);
+
+  const effectiveState = (controlState ?? '').toUpperCase();
+  const isSucceeded = effectiveState === 'SUCCEEDED';
+  const isPaused = effectiveState === 'PAUSED';
+  const isActive = effectiveState === 'ACTIVE';
+  const isBlocked = effectiveState === 'BLOCKED';
+  const isCancelled = effectiveState === 'CANCELLED';
+  const isRequested = effectiveState.includes('REQUESTED');
+
+  const hasUnsettledChildren = children.some(c => !c.effects_settled);
+  const hasControlVersion = controlVersion !== null;
 
   return (
     <div className="delivery-workspace space-y-6">
@@ -127,21 +181,66 @@ export function DeliveryWorkspace({
         </div>
       )}
 
-      {/* Discovery Pending Limits Disclosure */}
-      {isPendingDiscovery && (
+      {/* Discovered Executions Bar */}
+      {executions.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 bg-[var(--surface-muted)] border border-[var(--border)] rounded text-sm">
+          <div className="flex items-center gap-2">
+            <label htmlFor="select-execution" className="font-medium text-xs text-[var(--muted)] uppercase">
+              Discovered Executions:
+            </label>
+            <select
+              id="select-execution"
+              aria-label="Select Execution"
+              className="px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"
+              value={executionId ?? ''}
+              disabled={mutationPending}
+              onChange={e => {
+                setActionNotice(null);
+                setExecutionId(e.target.value || null);
+              }}
+            >
+              <option value="">Select an execution...</option>
+              {executions.map(ex => (
+                <option key={ex.execution.execution_id} value={ex.execution.execution_id}>
+                  {ex.execution.execution_id.slice(0, 8)}... ({ex.control_state ?? 'legacy'}) • {ex.execution.created_at}
+                </option>
+              ))}
+            </select>
+          </div>
+          {!isStartingNew && (
+            <Button
+              variant="secondary"
+              disabled={mutationPending}
+              onClick={() => setIsStartingNew(true)}
+            >
+              Start New Execution
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Discovery / Start Form (shown when pending discovery OR explicitly requested) */}
+      {(isPendingDiscovery || isStartingNew) && (
         <Panel
-          title="Execution Discovery"
-          description="Load a known execution or start one from the current accepted graph."
+          title={isPendingDiscovery ? 'Execution Discovery & Start' : 'Start New Execution Epoch'}
+          description="Start an execution from current accepted sources or custom revisions, or load by ID."
         >
           <div className="space-y-4">
             <div className="p-4 bg-[var(--surface-muted)] border border-[var(--border)] rounded text-sm text-[var(--muted)] space-y-2">
               <p>
-                Execution discovery is unavailable until an execution ID is supplied or returned by a start request.
+                {executionsLoading
+                  ? 'Discovering executions from server…'
+                  : executionsFailed
+                  ? 'Failed to discover executions. You can retry discovery, enter an execution ID, or start a new execution.'
+                  : executions.length === 0
+                  ? 'No executions discovered for this epic yet. You can start an execution using the current accepted pair or alternate saved sources, or load an execution by ID.'
+                  : 'Start a new execution epoch. Previous frozen executions will remain available in history.'}
               </p>
             </div>
 
             <form onSubmit={handleManualIdSubmit} className="flex flex-col sm:flex-row gap-2">
-              <label className="sr-only" htmlFor="execution-id">Execution ID</label><input
+              <label className="sr-only" htmlFor="execution-id">Execution ID</label>
+              <input
                 id="execution-id"
                 type="text"
                 className="flex-1 px-3 py-2 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"
@@ -156,7 +255,83 @@ export function DeliveryWorkspace({
               <Button type="button" variant="primary" disabled={mutationPending} onClick={handleStart}>
                 Start Execution
               </Button>
+              {isStartingNew && !isPendingDiscovery && (
+                <Button type="button" variant="quiet" onClick={() => setIsStartingNew(false)}>
+                  Cancel
+                </Button>
+              )}
             </form>
+
+            {/* Direct Owner Source Selection / Override */}
+            <div className="pt-2 border-t border-[var(--border)] space-y-3 text-sm">
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-[var(--muted)]">
+                <input
+                  type="checkbox"
+                  checked={useOwnerOverride}
+                  disabled={mutationPending}
+                  onChange={e => setUseOwnerOverride(e.target.checked)}
+                />
+                <span>Owner Override: Select custom saved brief / graph sources</span>
+              </label>
+
+              {useOwnerOverride && (
+                <div className="p-3 border border-[var(--warning)] bg-[var(--warning-soft)] rounded space-y-3">
+                  <p className="text-xs font-semibold text-[var(--warning)]">
+                    Warning: Starting execution with non-default or non-accepted sources.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="override-brief" className="block text-xs font-medium">Brief Revision</label>
+                      <select
+                        id="override-brief"
+                        className="w-full mt-1 px-2 py-1 border border-[var(--control-border)] rounded text-xs bg-[var(--surface)]"
+                        value={selectedBriefId}
+                        onChange={e => setSelectedBriefId(e.target.value)}
+                        disabled={mutationPending}
+                      >
+                        <option value="">Accepted brief (default)</option>
+                        {workspace.briefRevisions.map(b => (
+                          <option key={b.brief_revision_id} value={b.brief_revision_id}>
+                            Rev #{b.revision_number} ({b.brief_revision_id.slice(0, 8)}...)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label htmlFor="override-graph" className="block text-xs font-medium">Graph Revision</label>
+                      <select
+                        id="override-graph"
+                        className="w-full mt-1 px-2 py-1 border border-[var(--control-border)] rounded text-xs bg-[var(--surface)]"
+                        value={selectedGraphId}
+                        onChange={e => setSelectedGraphId(e.target.value)}
+                        disabled={mutationPending}
+                      >
+                        <option value="">Accepted graph (default)</option>
+                        {workspace.graphRevisions.map(g => (
+                          <option key={g.graph_revision_id} value={g.graph_revision_id}>
+                            Rev #{g.revision_number} ({g.graph_revision_id.slice(0, 8)}...)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="override-note" className="block text-xs font-medium">Override Note (optional)</label>
+                    <input
+                      id="override-note"
+                      type="text"
+                      className="w-full mt-1 px-2 py-1 border border-[var(--control-border)] rounded text-xs bg-[var(--surface)]"
+                      placeholder="Reason for starting with non-accepted sources..."
+                      value={overrideNote}
+                      onChange={e => setOverrideNote(e.target.value)}
+                      disabled={mutationPending}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </Panel>
       )}
@@ -184,61 +359,74 @@ export function DeliveryWorkspace({
           {/* Header Panel */}
           <Panel
             title="Frozen Execution Progress"
-            description={`Execution Version ${execution.execution_version} • Bound to Epic Version ${execution.epic_version}`}
+            description={`${hasControlVersion ? `Execution Version ${controlVersion}` : 'Legacy execution (control version unavailable)'} • Bound to Epic Version ${epicVersion}`}
             className="[&_.panel-heading]:flex-col [&_.panel-heading]:items-start"
             action={undefined}
           >
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge
-                  label={state?.replaceAll('_', ' ') ?? 'Unknown'}
+                  label={effectiveState.replaceAll('_', ' ') || 'Unknown'}
                   tone={
-                    state === 'SUCCEEDED'
+                    isSucceeded
                       ? 'success'
-                      : state === 'BLOCKED' || state === 'CANCELLED'
+                      : isBlocked || isCancelled
                       ? 'danger'
-                      : state === 'PAUSED' || state?.includes('REQUESTED')
+                      : isPaused || isRequested
                       ? 'warning'
                       : 'info'
                   }
                 />
+                {!hasControlVersion && (
+                  <StatusBadge label="Legacy (control unavailable)" tone="neutral" />
+                )}
               </div>
+
               <EvidenceDetails summary="Inspect Execution ID">
-                <span>execution_id: {execution.execution_id}</span>
+                <span>execution_id: {executionId}</span>
               </EvidenceDetails>
               <EvidenceDetails summary="Inspect frozen brief and graph revisions">
-                <span>brief_revision_id: {execution.brief_revision_id}</span>
-                <span>graph_revision_id: {execution.graph_revision_id}</span>
+                <span>brief_revision_id: {briefRevId}</span>
+                {briefDigest && <span>brief_digest: {briefDigest}</span>}
+                <span>graph_revision_id: {graphRevId}</span>
+                {graphDigest && <span>graph_digest: {graphDigest}</span>}
               </EvidenceDetails>
 
-              {/* Verified Success Display */}
-              {state === 'SUCCEEDED' && (
+              {/* Truthful Success Display (only when server state is SUCCEEDED) */}
+              {isSucceeded && (
                 <div role="status" className="p-4 bg-[var(--success-soft)] border border-[var(--success)] rounded text-sm space-y-2">
                   <p className="font-semibold text-[var(--success)]">
-                    ✓ Overall Verified Success: Validated from server state and merge/completion evidence.
+                    Execution completed with status: SUCCEEDED.
                   </p>
                 </div>
               )}
 
-              {/* Execution Controls */}
+              {/* Unsettled cancellation warning */}
+              {(isCancelled || effectiveState === 'CANCEL_REQUESTED') && hasUnsettledChildren && (
+                <div role="status" className="p-3 bg-[var(--warning-soft)] border border-[var(--warning)] rounded text-sm text-[var(--warning)]">
+                  Unsettled child runs remain. Effects not yet settled.
+                </div>
+              )}
+
+              {/* Execution Controls: Pause, Resume, Cancel */}
               <div className="pt-2 flex flex-wrap gap-2 border-t border-[var(--border)]">
                 <Button
                   variant="secondary"
-                  disabled={mutationPending || state !== 'ACTIVE'}
+                  disabled={mutationPending || !hasControlVersion || isRequested || (!isActive && !isBlocked)}
                   onClick={() => handleCommand('pause')}
                 >
                   Pause Execution
                 </Button>
                 <Button
                   variant="secondary"
-                  disabled={mutationPending || state !== 'PAUSED'}
+                  disabled={mutationPending || !hasControlVersion || isRequested || (!isPaused && !isBlocked)}
                   onClick={() => handleCommand('resume')}
                 >
                   Resume Execution
                 </Button>
                 <Button
                   variant="danger"
-                  disabled={mutationPending || !['ACTIVE', 'PAUSED', 'BLOCKED'].includes(state ?? '')}
+                  disabled={mutationPending || !hasControlVersion || isRequested || (!isActive && !isPaused && !isBlocked)}
                   onClick={() => handleCommand('cancel')}
                 >
                   Cancel Execution
@@ -253,62 +441,145 @@ export function DeliveryWorkspace({
           {/* Next Actions & Blockers */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Panel title="Next Actions">
-              <p className="text-sm">{state === 'SUCCEEDED' ? 'All required work is verified complete.' : state === 'BLOCKED' ? 'Resolve the reported blockers before continuing.' : state === 'CANCELLED' ? 'The execution is cancelled.' : state?.includes('REQUESTED') ? 'The requested change is still being processed.' : state === 'PAUSED' ? 'The execution is paused. Resume it when ready; any active child gate remains in place.' : execution.active_child?.pending_gate ? `Review the ${execution.active_child.pending_gate} gate for the active child run.` : 'The server is evaluating the next eligible work item.'}</p>
+              <p className="text-sm">
+                {isSucceeded
+                  ? 'Execution completed (status SUCCEEDED).'
+                  : isBlocked
+                  ? 'Resolve the reported blockers before continuing, or perform owner recovery.'
+                  : isCancelled
+                  ? 'The execution is cancelled.'
+                  : isRequested
+                  ? 'The requested change is still being processed.'
+                  : isPaused
+                  ? 'The execution is paused. Resume it when ready; any active child gate remains in place.'
+                  : children.some(c => c.pending_gate || c.retained_gate)
+                  ? `Review the ${children.find(c => c.pending_gate || c.retained_gate)?.pending_gate ?? children.find(c => c.pending_gate || c.retained_gate)?.retained_gate} gate for the active child run.`
+                  : 'Execution is active.'}
+              </p>
             </Panel>
 
             <Panel title="Active Blockers">
-              {!execution.items.some(item => item.blocker_code) ? (
+              {!blockerCode && !children.some(c => c.attempt.blocker_codes?.length) ? (
                 <p className="text-sm text-[var(--muted)]">No active blockers.</p>
               ) : (
                 <ul className="list-disc pl-5 text-sm text-[var(--danger)] space-y-1">
-                  {execution.items.filter(item => item.blocker_code).map(item => (
-                    <li key={item.item_id}>{item.blocker_code}</li>
+                  {blockerCode && <li>{blockerCode}</li>}
+                  {children.flatMap(c => c.attempt.blocker_codes ?? []).map((code, idx) => (
+                    <li key={`child-${idx}`}>{code}</li>
                   ))}
                 </ul>
               )}
             </Panel>
           </div>
 
+          {/* Recent Intents & Refusals */}
+          {intents.length > 0 ? (
+            <Panel title="Recent Control Intents & Refusals" description="Tracks requested and processed execution controls.">
+              <div className="space-y-2 text-sm">
+                {intents.map(intent => (
+                  <div key={intent.intent_id} className="p-3 border border-[var(--border)] rounded flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold uppercase text-xs">{intent.action}</span>
+                      <StatusBadge label={intent.status} tone={intent.status === 'refused' ? 'danger' : intent.status === 'executed' ? 'success' : 'warning'} />
+                      <span className="text-xs text-[var(--muted)]">v{intent.control_version}</span>
+                    </div>
+                    {intent.refusal && (
+                      <p className="text-xs text-[var(--danger)] font-medium">Refusal: {intent.refusal}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          ) : null}
+
+          {/* Owner Actions & Audit Warnings */}
+          {ownerActions.length > 0 && (
+            <Panel title="Owner Actions & Audit Warnings" description="Authoritative history of owner interventions and warnings.">
+              <div className="space-y-2 text-sm">
+                {ownerActions.map((oa, idx) => (
+                  <div key={idx} className="p-3 border border-[var(--border)] rounded space-y-1 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold">{oa.event_type}</span>
+                      <span className="text-xs text-[var(--muted)]">Actor: {oa.actor_id}</span>
+                    </div>
+                    {oa.note && <p className="text-xs text-[var(--foreground)]">Note: {oa.note}</p>}
+                    {oa.warnings.length > 0 && (
+                      <ul className="list-disc pl-5 text-xs text-[var(--warning)]">
+                        {oa.warnings.map((w, wIdx) => <li key={wIdx}>{w}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
+
           {/* Child Runs & Approval Gates */}
           <Panel
             title="Linked Child Runs & Human Approval Gates"
             description="Child runs executed within Forge retain independent review and human approval boundaries."
           >
-            {childRuns.length === 0 ? (
+            {children.length === 0 ? (
               <p className="text-sm text-[var(--muted)]">No child run is currently active.</p>
             ) : (
               <div className="space-y-3">
-                {childRuns.map(run => (
-                  <div
-                    key={run.run_id}
-                    className="p-3 border border-[var(--border)] rounded bg-[var(--surface)] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm"
-                  >
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2 min-w-0">
-                        <Link href={`/runs/${run.run_id}`} className="min-w-0 break-words font-medium text-[var(--focus)] hover:underline">
-                          Run for {frozenItems.get(run.item_id)?.title ?? 'active work item'}
-                        </Link>
-                        <StatusBadge label={run.run_state.replaceAll('_', ' ')} tone="neutral" />
-                        {run.pending_gate && (
-                          <StatusBadge label={run.pending_gate} tone="warning" />
+                {children.map(run => {
+                  const effectiveGate = run.pending_gate ?? run.retained_gate ?? null;
+                  return (
+                    <div
+                      key={run.attempt.run_id}
+                      className="p-3 border border-[var(--border)] rounded bg-[var(--surface)] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm"
+                    >
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2 min-w-0">
+                          <Link href={`/runs/${run.attempt.run_id}`} className="min-w-0 break-words font-medium text-[var(--focus)] hover:underline">
+                            Run for {frozenItems.get(run.attempt.item_id)?.title ?? 'Child run'}
+                          </Link>
+                          <StatusBadge label={run.run_state.replaceAll('_', ' ')} tone="neutral" />
+                          {effectiveGate && (
+                            <StatusBadge
+                              label={run.pending_gate ? run.pending_gate : `${run.retained_gate} (retained)`}
+                              tone="warning"
+                            />
+                          )}
+                          <StatusBadge
+                            label={run.effects_settled ? 'Effects settled' : 'Effects unsettled'}
+                            tone={run.effects_settled ? 'neutral' : 'warning'}
+                          />
+                        </div>
+                        <p className="text-xs text-[var(--muted)] break-words">
+                          {frozenItems.get(run.attempt.item_id)?.title ?? 'Work item'} · run version {run.run_version}
+                        </p>
+                        {run.attempt.blocker_codes.length > 0 && (
+                          <p className="text-xs text-[var(--danger)]">
+                            Blockers: {run.attempt.blocker_codes.join(', ')}
+                          </p>
                         )}
+                        {run.attempt.owner_override && (
+                          <p className="text-xs text-[var(--warning)]">
+                            Owner override: {run.attempt.override_note || 'Active'}
+                          </p>
+                        )}
+                        <EvidenceDetails summary="Inspect run and work item IDs">
+                          <span>run_id: {run.attempt.run_id}</span>
+                          <span>item_id: {run.attempt.item_id}</span>
+                          <span>attempt_id: {run.attempt.attempt_id}</span>
+                          {run.retained_gate && <span>retained_gate: {run.retained_gate}</span>}
+                        </EvidenceDetails>
                       </div>
-                      <p className="text-xs text-[var(--muted)] break-words">{frozenItems.get(run.item_id)?.title ?? 'Work item'} · run version {run.run_version}</p>
-                      <EvidenceDetails summary="Inspect run and work item IDs"><span>run_id: {run.run_id}</span><span>item_id: {run.item_id}</span></EvidenceDetails>
-                      {run.pending_evidence_digest && <EvidenceDetails summary="Inspect pending gate evidence"><span>evidence_digest: {run.pending_evidence_digest}</span></EvidenceDetails>}
-                    </div>
 
-                    {run.pending_gate && (
-                      <Link
-                        href={`/runs/${run.run_id}`}
-                        className="button text-xs self-start shrink-0 sm:self-auto"
-                        data-variant="secondary"
-                      >
-                        Review Gate at {run.pending_gate}
-                      </Link>
-                    )}
-                  </div>
-                ))}
+                      {effectiveGate && (
+                        <Link
+                          href={`/runs/${run.attempt.run_id}`}
+                          className="button text-xs self-start shrink-0 sm:self-auto"
+                          data-variant="secondary"
+                        >
+                          Review Gate at {effectiveGate}
+                        </Link>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </Panel>
@@ -317,43 +588,32 @@ export function DeliveryWorkspace({
           <Panel title="Work-Item Progression">
             {!frozenGraph && <p role="status" className="mb-3 text-sm text-[var(--muted)]">Details for this frozen graph are {workspace.loadingGraphRevisions ? 'loading' : 'unavailable'}.</p>}
             <div className="space-y-2">
-              {(execution.items ?? []).map((it, idx) => (
-                <div key={it.item_id} className="p-3 border border-[var(--border)] rounded text-sm flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 min-w-0 break-words">
-                  <div className="flex flex-wrap items-center gap-2 min-w-0">
-                    <span className="font-semibold">#{idx + 1} {frozenItems.get(it.item_id)?.title ?? 'Work item details unavailable'}</span>
-                    <StatusBadge label={it.disposition} tone={it.disposition === 'deferred' ? 'warning' : 'neutral'} />
-                    <StatusBadge label={it.status} tone={it.status === 'succeeded' || it.status === 'satisfied' ? 'success' : it.status === 'active' ? 'info' : it.status === 'blocked' ? 'danger' : 'neutral'} />
+              {(frozenGraph?.items ?? []).map((it, idx) => {
+                const child = children.find(c => c.attempt.item_id === it.item_id);
+                return (
+                  <div key={it.item_id} className="p-3 border border-[var(--border)] rounded text-sm flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 min-w-0 break-words">
+                    <div className="flex flex-wrap items-center gap-2 min-w-0">
+                      <span className="font-semibold">#{idx + 1} {it.title}</span>
+                      <StatusBadge label={it.disposition ?? 'required'} tone={it.disposition === 'deferred' ? 'warning' : 'neutral'} />
+                      {child && <StatusBadge label={child.run_state.replaceAll('_', ' ')} tone="info" />}
+                    </div>
+                    {child && (
+                      <Link href={`/runs/${child.attempt.run_id}`} className="text-xs text-[var(--focus)] hover:underline">
+                        Open run
+                      </Link>
+                    )}
+                    <EvidenceDetails summary="Inspect work item identity and digest">
+                      <span>item_id: {it.item_id}</span>
+                      {it.item_digest && <span>item_digest: {it.item_digest}</span>}
+                    </EvidenceDetails>
                   </div>
-                  {it.run_id && (
-                    <Link href={`/runs/${it.run_id}`} className="text-xs text-[var(--focus)] hover:underline">
-                      Open run
-                    </Link>
-                  )}
-                  {it.blocker_code && <p className="text-xs text-[var(--danger)]">Blocker: {it.blocker_code}</p>}
-                  <EvidenceDetails summary="Inspect work item identity and digest"><span>item_id: {it.item_id}</span>{frozenItems.get(it.item_id)?.item_digest && <span>item_digest: {frozenItems.get(it.item_id)?.item_digest}</span>}</EvidenceDetails>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </Panel>
 
-          {/* Resource Usage & Unknown Dimensions */}
-          <Panel
-            title="Execution Usage & Resource Dimensions"
-            description="Known, reserved, and explicit unknown dimensions (unknown is never zero)."
-          >
-            <div className="space-y-3 text-sm">
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <div className="p-3 bg-[var(--surface-muted)] rounded">
-                  <span className="text-xs text-[var(--muted)] block">Known cost</span><span className="font-semibold">{execution.aggregate_usage.known_cost_minor} minor units</span>
-                </div>
-                <div className="p-3 bg-[var(--surface-muted)] rounded">
-                  <span className="text-xs text-[var(--muted)] block">Reserved cost</span><span className="font-semibold">{execution.aggregate_usage.reserved_cost_minor} minor units</span>
-                </div>
-              </div>
-
-              <p className="text-xs text-[var(--muted)]">{execution.aggregate_usage.unknown_usage ? 'Some usage is unknown. Unknown usage is not zero.' : 'All reported usage is accounted for.'}</p>
-            </div>
-          </Panel>
+          {/* Shared Epic Budget Panel */}
+          <EpicBudgetPanel epicId={epicId} />
         </div>
       )}
     </div>

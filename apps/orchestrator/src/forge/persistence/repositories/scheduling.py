@@ -42,8 +42,12 @@ from forge.domain.subscription import (
 from forge.domain.subscription_decision_policy import is_approved_plan_primary_contract
 from forge.domain.subscription_execution import run_allows_subscription_attempt
 from forge.domain.tool import ToolName
+from forge.persistence.models.epic_brainstorm import BrainstormBudgetLedger
+from forge.persistence.models.epic_brief import Epic
+from forge.persistence.models.epic_run_bridge import EpicItemAttempt
 from forge.persistence.models.run import Run
 from forge.persistence.models.scheduling import (
+    EpicAdmissionScanCursor,
     SubscriptionScheduledEffect,
     SubscriptionScheduledTask,
     SubscriptionSchedulerCapacityPolicy,
@@ -60,6 +64,7 @@ from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedb
 from forge.persistence.models.subscription_handoff import SubscriptionHandoffFence
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.models.subscription_usage import SubscriptionAttemptConsumption
+from forge.persistence.repositories.epic_budget import PostgresEpicBudgetRepository
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
 from forge.persistence.repositories.subscription_quota import PostgresSubscriptionQuotaRepository
 
@@ -174,6 +179,7 @@ class PostgresSchedulingRepository:
         *,
         eligible_routes: frozenset[RouteSpec] | None = None,
         reservation_ceiling: TaskBudget | None = None,
+        prepared_run_ids: frozenset[UUID] | None = None,
     ) -> TaskLease | None:
         """Claim only tasks eligible for a new accounted provider attempt."""
         return await self._claim_ready(
@@ -182,7 +188,84 @@ class PostgresSchedulingRepository:
             fresh_attempt=True,
             eligible_routes=eligible_routes,
             reservation_ceiling=reservation_ceiling,
+            prepared_run_ids=prepared_run_ids,
         )
+
+    async def prepare_epic_claim(self) -> frozenset[UUID]:
+        """Bound and rotate the run set before any epic/advisory/run lock."""
+        now = self._quota.now()
+        await self._session.execute(
+            insert(EpicAdmissionScanCursor).values(id=1).on_conflict_do_nothing()
+        )
+        cursor = await self._session.get(EpicAdmissionScanCursor, 1, with_for_update=True)
+        if cursor is None:
+            raise RuntimeError("epic admission scan cursor is unavailable")
+        eligible = or_(
+            SubscriptionScheduledTask.state == "queued",
+            (SubscriptionScheduledTask.state == "leased")
+            & (SubscriptionScheduledTask.lease_expires_at < now),
+        )
+        base = select(SubscriptionScheduledTask.run_id).where(eligible).distinct()
+        first = base
+        if cursor.last_run_id is not None:
+            first = first.where(SubscriptionScheduledTask.run_id > cursor.last_run_id)
+        selected = list(
+            (
+                await self._session.scalars(
+                    first.order_by(SubscriptionScheduledTask.run_id).limit(128)
+                )
+            ).all()
+        )
+        if len(selected) < 128 and cursor.last_run_id is not None:
+            selected.extend(
+                (
+                    await self._session.scalars(
+                        base.where(SubscriptionScheduledTask.run_id <= cursor.last_run_id)
+                        .order_by(SubscriptionScheduledTask.run_id)
+                        .limit(128 - len(selected))
+                    )
+                ).all()
+            )
+        run_ids = frozenset(selected)
+        cursor.last_run_id = selected[-1] if selected else None
+        if not run_ids:
+            return run_ids
+        epic_ids = sorted(
+            set(
+                (
+                    await self._session.scalars(
+                        select(EpicItemAttempt.epic_id).where(EpicItemAttempt.run_id.in_(run_ids))
+                    )
+                ).all()
+            ),
+            key=str,
+        )
+        for epic_id in epic_ids:
+            await self._session.scalar(select(Epic.id).where(Epic.id == epic_id).with_for_update())
+        for epic_id in epic_ids:
+            await self._session.scalar(
+                select(BrainstormBudgetLedger.epic_id)
+                .where(BrainstormBudgetLedger.epic_id == epic_id)
+                .with_for_update()
+            )
+        return run_ids
+
+    async def epic_admission_blockers(self, run_id: UUID, reservation: TaskBudget) -> list[str]:
+        return await PostgresEpicBudgetRepository(
+            self._session, legacy_hold=reservation
+        ).internal_blockers(run_id, reservation)
+
+    async def consume_epic_permit(
+        self, run_id: UUID, attempt_id: UUID, blockers: list[str]
+    ) -> None:
+        if "execution_not_active" in blockers:
+            raise SchedulingConflict("epic execution has no admission authority")
+        budget = PostgresEpicBudgetRepository(self._session, legacy_hold=TaskBudget())
+        permit = await budget.available_permit(run_id)
+        if permit is not None:
+            await budget.consume_permit(run_id, attempt_id, blockers)
+        elif blockers:
+            raise SchedulingConflict("epic budget admission is blocked")
 
     async def _feedback_priority_fence(self, run_id: UUID) -> frozenset[UUID]:
         """Protect accepted feedback from lower-priority work until it settles."""
@@ -237,6 +320,7 @@ class PostgresSchedulingRepository:
         fresh_attempt: bool,
         eligible_routes: frozenset[RouteSpec] | None = None,
         reservation_ceiling: TaskBudget | None = None,
+        prepared_run_ids: frozenset[UUID] | None = None,
     ) -> TaskLease | None:
         if not owner.strip() or lease_for.total_seconds() < 1:
             raise ValueError("valid owner and lease required")
@@ -245,16 +329,21 @@ class PostgresSchedulingRepository:
         # Serializes only the brief admission decision.  The provider call happens
         # after the UoW closes, so this cannot turn into a provider-wide lock.
         await self._session.execute(text("SELECT pg_advisory_xact_lock(91827364)"))
-        expired_runs = (
-            await self._session.scalars(
-                select(SubscriptionScheduledTask.run_id)
-                .where(
-                    SubscriptionScheduledTask.state == "leased",
-                    SubscriptionScheduledTask.lease_expires_at < now,
-                )
-                .distinct()
+        if prepared_run_ids == frozenset():
+            return None
+        expired_query = (
+            select(SubscriptionScheduledTask.run_id)
+            .where(
+                SubscriptionScheduledTask.state == "leased",
+                SubscriptionScheduledTask.lease_expires_at < now,
             )
-        ).all()
+            .distinct()
+        )
+        if prepared_run_ids is not None:
+            expired_query = expired_query.where(
+                SubscriptionScheduledTask.run_id.in_(prepared_run_ids)
+            )
+        expired_runs = (await self._session.scalars(expired_query)).all()
         for run_id in expired_runs:
             locked = await self._session.scalar(
                 select(Run.id).where(Run.id == run_id).with_for_update(skip_locked=True)
@@ -270,30 +359,29 @@ class PostgresSchedulingRepository:
                     .values(state="reconciling")
                 )
         # Parents wait durably: dependencies must be terminal before admission.
-        candidates = (
-            (
-                await self._session.execute(
-                    select(SubscriptionScheduledTask)
-                    .join(
-                        SubscriptionSchedulerRun,
-                        SubscriptionSchedulerRun.run_id == SubscriptionScheduledTask.run_id,
-                    )
-                    .where(
-                        SubscriptionSchedulerRun.admitted.is_(True),
-                        SubscriptionSchedulerRun.candidate_state.in_(("open", "closed")),
-                        SubscriptionScheduledTask.state == "queued",
-                        SubscriptionScheduledTask.pause_requested.is_(False),
-                        SubscriptionScheduledTask.cancel_requested.is_(False),
-                    )
-                    .order_by(
-                        SubscriptionSchedulerRun.last_claimed_at.nullsfirst(),
-                        SubscriptionScheduledTask.created_at,
-                    )
-                )
+        candidate_query = (
+            select(SubscriptionScheduledTask)
+            .join(
+                SubscriptionSchedulerRun,
+                SubscriptionSchedulerRun.run_id == SubscriptionScheduledTask.run_id,
             )
-            .scalars()
-            .all()
+            .where(
+                SubscriptionSchedulerRun.admitted.is_(True),
+                SubscriptionSchedulerRun.candidate_state.in_(("open", "closed")),
+                SubscriptionScheduledTask.state == "queued",
+                SubscriptionScheduledTask.pause_requested.is_(False),
+                SubscriptionScheduledTask.cancel_requested.is_(False),
+            )
+            .order_by(
+                SubscriptionSchedulerRun.last_claimed_at.nullsfirst(),
+                SubscriptionScheduledTask.created_at,
+            )
         )
+        if prepared_run_ids is not None:
+            candidate_query = candidate_query.where(
+                SubscriptionScheduledTask.run_id.in_(prepared_run_ids)
+            )
+        candidates = (await self._session.execute(candidate_query)).scalars().all()
         row = None
         policy = await self._current_policy()
         global_active = await self._active_count()
@@ -392,21 +480,26 @@ class PostgresSchedulingRepository:
                         PostgresSubscriptionRecoveryRepository,
                     )
 
-                    await PostgresSubscriptionRecoveryRepository(self._session).block_stale_queued_contract(
-                        candidate.run_id, logical, candidate
-                    )
+                    await PostgresSubscriptionRecoveryRepository(
+                        self._session
+                    ).block_stale_queued_contract(candidate.run_id, logical, candidate)
                     continue
                 route = await self._quota.route_for_task(logical, eligible_routes=eligible_routes)
                 if route is None:
                     continue
-                if (
-                    reservation_ceiling is not None
-                    and await PostgresSubscriptionBudgetRepository(self._session).fit_reservation(
-                        candidate.run_id, candidate.task_id, reservation_ceiling
-                    )
-                    is None
-                ):
-                    continue
+                if reservation_ceiling is not None:
+                    fitted = await PostgresSubscriptionBudgetRepository(
+                        self._session
+                    ).fit_reservation(candidate.run_id, candidate.task_id, reservation_ceiling)
+                    if fitted is None:
+                        continue
+                    epic_budget = PostgresEpicBudgetRepository(self._session, legacy_hold=fitted)
+                    blockers = await epic_budget.internal_blockers(candidate.run_id, fitted)
+                    if blockers and (
+                        "execution_not_active" in blockers
+                        or await epic_budget.available_permit(candidate.run_id) is None
+                    ):
+                        continue
             if run is None or global_active >= policy.global_limit:
                 continue
             if await self._active_count(run_id=candidate.run_id) >= run.effective_run_limit:

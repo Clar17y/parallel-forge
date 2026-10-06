@@ -668,4 +668,27 @@ describe('useEpicMutations', () => {
     expect(rendersB).toBe(rendersBBeforeMutation);
     expect(hookB.result.current).toBe(snapshotBBeforeMutation);
   });
+
+  test('supports PUT mutations and formats budget version conflict message', async () => {
+    vi.mocked(api).mockRejectedValueOnce(new ApiError(409, 'stale-projection'));
+
+    const { result } = renderHook(() => useEpicMutations(epicId));
+
+    await act(async () => {
+      try {
+        await result.current.execute('PUT', `/epics/${epicId}/budget`, {
+          expected_version: 1,
+          ceiling: { billing_mode: 'allowance_only', max_duration_seconds: 1800 },
+          disabled_dimensions: [],
+        }, { kind: 'budget-edit' });
+      } catch {
+        // Expected
+      }
+    });
+
+    expect(result.current.conflict).toBe(true);
+    expect(result.current.error).toBe('Budget version conflict: The budget version changed on the server before saving.');
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api).mock.calls[0][1]?.method).toBe('PUT');
+  });
 });

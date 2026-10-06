@@ -71,3 +71,16 @@ test('422 recognition maps exact invalid-run-profile detail and keeps other 422s
   await expect(api('/runs')).rejects.toMatchObject({ status: 422, code: 'request-failed', fields: {} });
   await expect(api('/runs')).rejects.toMatchObject({ status: 422, code: 'request-failed', fields: {} });
 });
+
+test('mutation supports PUT method for budget and idempotency header', async () => {
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ version: 2 }), { status: 200 }));
+  const result = await mutate<{ version: number }>('/epics/one/budget', { expected_version: 1 }, {
+    idempotencyKey: 'put-key',
+    method: 'PUT',
+  });
+  expect(result).toEqual({ version: 2 });
+  const options = fetcher.mock.calls[0][1]!;
+  expect(options.method).toBe('PUT');
+  const headers = new Headers(options.headers);
+  expect(headers.get('Idempotency-Key')).toBe('put-key');
+});
