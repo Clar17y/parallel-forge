@@ -54,6 +54,14 @@ class LaunchRequest(BaseModel):
             raise ValueError("digest is invalid")
         return value
 
+    @field_validator("override_note")
+    @classmethod
+    def note_is_safe(cls, value: str | None) -> str | None:
+        if value is not None and (not value.strip() or "\x00" in value):
+            raise ValueError("note is invalid")
+        validate_durable_payload(value)
+        return value
+
 
 class ExecutionStartRequest(BaseModel):
     """Select and freeze one existing matching brief/graph pair."""
@@ -85,10 +93,6 @@ class ExecutionStartRequest(BaseModel):
                 len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
             ):
                 raise ValueError("digest is invalid")
-        if self.override_note is not None:
-            if not self.override_note.strip() or "\x00" in self.override_note:
-                raise ValueError("note is invalid")
-            validate_durable_payload(self.override_note)
         return self
 
     @field_validator("override_note")

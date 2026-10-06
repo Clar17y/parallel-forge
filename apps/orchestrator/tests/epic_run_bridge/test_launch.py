@@ -2962,3 +2962,108 @@ async def test_child_gate_pause_resume_settles_only_after_command_observation(
     assert projection.children[0].run_version == restored.version
     assert projection.children[0].pending_gate is ApprovalGate.PLAN
     assert projection.children[0].retained_gate is None
+
+
+@pytest.mark.asyncio
+async def test_execution_scoped_reads_and_epic_wide_default(session_factory, bridge_factory):
+    bridge, _, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, dependencies=True
+    )
+    # Epoch 1
+    execution_1 = await bridge.start(
+        actor=actor, epic_id=epic_id, idempotency_key="start-epoch-1", expected_epic_version=5
+    )
+    child_1 = await bridge.launch(
+        actor=actor,
+        epic_id=epic_id,
+        idempotency_key="launch-child-1",
+        request=request(item_id=first_id, execution_id=execution_1.execution_id),
+    )
+    # Epoch 2
+    execution_2 = await bridge.start(
+        actor=actor,
+        epic_id=epic_id,
+        idempotency_key="start-epoch-2",
+        expected_epic_version=5,
+        owner_override=True,
+        override_note="epoch 2 override",
+    )
+    child_2 = await bridge.launch(
+        actor=actor,
+        epic_id=epic_id,
+        idempotency_key="launch-child-2",
+        request=request(
+            item_id=second_id,
+            execution_id=execution_2.execution_id,
+            owner_override=True,
+            override_note="launch 2",
+        ),
+    )
+
+    from forge.persistence.models.epic_run_bridge import EpicExecutionControl
+
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, execution_1.execution_id)
+        assert control is not None
+        await work.session.delete(control)
+        for execution_fields in ({}, {"execution_id": None}, {"execution_id": str(uuid4())}):
+            await work.audit.append(
+                actor_id=actor.actor_id,
+                event_type="epic.execution_started",
+                subject_type="epic",
+                subject_id=epic_id,
+                correlation_id=uuid4(),
+                payload={**execution_fields, "warnings": [], "override_note": "unbound audit"},
+            )
+        await work.audit.append(
+            actor_id=actor.actor_id,
+            event_type="epic.execution_control_requested",
+            subject_type="epic",
+            subject_id=epic_id,
+            correlation_id=uuid4(),
+            payload={
+                "execution_id": str(execution_2.execution_id),
+                "warnings": ["historical"],
+                "override_note": "later owner note",
+            },
+        )
+        await work.commit()
+
+    # Verify repository list_attempts with and without execution_id
+    async with bridge_factory() as work:
+        scoped_1 = await work.epic_run_bridge.list_attempts(
+            epic_id, execution_id=execution_1.execution_id
+        )
+        assert [a.attempt_id for a in scoped_1] == [child_1.attempt_id]
+
+        scoped_2 = await work.epic_run_bridge.list_attempts(
+            epic_id, execution_id=execution_2.execution_id
+        )
+        assert [a.attempt_id for a in scoped_2] == [child_2.attempt_id]
+
+        complete_epic_wide = await work.epic_run_bridge.list_attempts(epic_id)
+        assert [a.attempt_id for a in complete_epic_wide] == [
+            child_1.attempt_id,
+            child_2.attempt_id,
+        ]
+
+    # Verify lifecycle service projections
+    controls = EpicLifecycleService(bridge_factory, commands=RunCommandService(bridge_factory))
+    proj_1 = await controls.get(epic_id, execution_1.execution_id)
+    assert [c.attempt.attempt_id for c in proj_1.children] == [child_1.attempt_id]
+    assert len(proj_1.owner_actions) == 1
+    assert proj_1.owner_actions[0].actor_id == actor.actor_id
+    assert proj_1.owner_actions[0].note is None
+    assert proj_1.control_version is None
+    assert proj_1.control_state is None
+    assert proj_1.blocker_code is None
+
+    proj_2 = await controls.get(epic_id, execution_2.execution_id)
+    assert [c.attempt.attempt_id for c in proj_2.children] == [child_2.attempt_id]
+    assert [action.note for action in proj_2.owner_actions] == [
+        "epoch 2 override",
+        "later owner note",
+    ]
+    assert all(action.actor_id == actor.actor_id for action in proj_2.owner_actions)
+    assert proj_2.owner_actions[1].warnings == ("historical",)
+    assert await controls.list(epic_id) == (proj_1, proj_2)

@@ -478,7 +478,10 @@ class PostgresBrainstormRepository:
         disabled = frozenset(ledger.disabled_dimensions)
         attempts = await self._epic_attempts(row.epic_id)
         charged, held, unknown = self._charges(attempts)
-        from forge.persistence.repositories.epic_budget import PostgresEpicBudgetRepository
+        from forge.persistence.repositories.epic_budget import (
+            PostgresEpicBudgetRepository,
+            budget_amounts,
+        )
 
         aggregate = await PostgresEpicBudgetRepository(
             self.session, legacy_hold=self.epic_ceiling or snapshot.budget
@@ -533,15 +536,9 @@ class PostgresBrainstormRepository:
         ):
             return None, False
         limits = {
-            "duration_ms": None
-            if "duration_ms" in disabled
-            else budget.max_duration_seconds * 1000,
-            "tool_call_count": None if "tool_call_count" in disabled else budget.max_tool_calls,
-            "input_tokens": None if "input_tokens" in disabled else budget.max_input_tokens,
-            "output_tokens": None if "output_tokens" in disabled else budget.max_output_tokens,
-            "estimated_api_cost_minor": None
-            if "estimated_api_cost_minor" in disabled
-            else budget.max_cost_minor,
+            key: None if key in disabled else value
+            for key, value in budget_amounts(budget).items()
+            if key != "provider_attempts"
         }
         remaining = {
             key: None if limit is None else limit - charged[key] - held[key]
@@ -574,11 +571,9 @@ class PostgresBrainstormRepository:
         # The shared epic ceiling grants capacity, while the frozen job budget
         # still caps one provider invocation independently.
         attempt_limits = {
-            "duration_ms": snapshot.budget.max_duration_seconds * 1000,
-            "tool_call_count": snapshot.budget.max_tool_calls,
-            "input_tokens": snapshot.budget.max_input_tokens,
-            "output_tokens": snapshot.budget.max_output_tokens,
-            "estimated_api_cost_minor": snapshot.budget.max_cost_minor,
+            key: value
+            for key, value in budget_amounts(snapshot.budget).items()
+            if key != "provider_attempts"
         }
 
         def narrower(value: int | None, local: int | None) -> int | None:

@@ -138,11 +138,7 @@ class EpicLifecycleService:
     ) -> EpicExecutionProjection:
         source = await work.epic_run_bridge.get_execution(row.id)
         control = await work.session.get(EpicExecutionControl, row.id)
-        attempts = [
-            value
-            for value in await work.epic_run_bridge.list_attempts(row.epic_id)
-            if value.execution_id == row.id
-        ]
+        attempts = await work.epic_run_bridge.list_attempts(row.epic_id, execution_id=row.id)
         children = []
         for attempt in attempts:
             run = await work.runs.get(attempt.run_id)
@@ -180,6 +176,7 @@ class EpicLifecycleService:
                             "epic.execution_control_requested",
                         )
                     ),
+                    OperatorAuditEvent.payload["execution_id"].astext == str(row.id),
                 )
                 .order_by(OperatorAuditEvent.created_at, OperatorAuditEvent.id)
             )
@@ -210,7 +207,6 @@ class EpicLifecycleService:
                     note=value.payload.get("override_note"),
                 )
                 for value in audit
-                if value.payload.get("execution_id") == str(row.id)
             ),
         )
 
@@ -264,11 +260,7 @@ class EpicLifecycleService:
                 raise EpicLaunchConflict(
                     ["cancel_state_invalid"], actual_epic_version=control.version
                 )
-            attempts = [
-                attempt
-                for attempt in await work.epic_run_bridge.list_attempts(epic_id)
-                if attempt.execution_id == execution_id
-            ]
+            attempts = await work.epic_run_bridge.list_attempts(epic_id, execution_id=execution_id)
             live = []
             observing = []
             for attempt in attempts:
@@ -611,11 +603,9 @@ class EpicLifecycleService:
                     .limit(1)
                 )
                 if pending is None:
-                    bound = [
-                        attempt
-                        for attempt in await work.epic_run_bridge.list_attempts(control.epic_id)
-                        if attempt.execution_id == row.execution_id
-                    ]
+                    bound = await work.epic_run_bridge.list_attempts(
+                        control.epic_id, execution_id=row.execution_id
+                    )
                     uncontrolled = False
                     for attempt in bound:
                         sibling = await work.runs.get_for_update(attempt.run_id)

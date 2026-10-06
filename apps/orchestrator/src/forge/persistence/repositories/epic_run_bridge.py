@@ -156,14 +156,17 @@ class PostgresEpicRunBridgeRepository:
             raise EpicAttemptNotFound("epic attempt was not found")
         return _attempt(row)
 
-    async def list_attempts(self, epic_id: UUID) -> Sequence[EpicAttempt]:
-        rows = (
-            await self._session.scalars(
-                select(EpicItemAttempt)
-                .where(EpicItemAttempt.epic_id == epic_id)
-                .order_by(EpicItemAttempt.created_at, EpicItemAttempt.id)
-            )
-        ).all()
+    async def list_attempts(
+        self, epic_id: UUID, *, execution_id: UUID | None = None
+    ) -> Sequence[EpicAttempt]:
+        stmt = (
+            select(EpicItemAttempt)
+            .where(EpicItemAttempt.epic_id == epic_id)
+            .order_by(EpicItemAttempt.created_at, EpicItemAttempt.id)
+        )
+        if execution_id is not None:
+            stmt = stmt.where(EpicItemAttempt.execution_id == execution_id)
+        rows = (await self._session.scalars(stmt)).all()
         return [_attempt(row) for row in rows]
 
 

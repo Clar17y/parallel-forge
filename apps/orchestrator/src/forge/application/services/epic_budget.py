@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from forge.application.services.auth import AuthenticatedActor
 from forge.domain.operation import canonical_digest
+from forge.domain.payload import validate_durable_payload
 from forge.domain.subscription import (
     TaskBudget,
     decode_subscription_record,
@@ -51,6 +52,14 @@ class EpicBudgetEdit(BaseModel):
         if len(set(value)) != len(value) or not set(value) <= EPIC_DIMENSIONS:
             raise ValueError("disabled epic budget dimensions are invalid")
         return tuple(sorted(value))
+
+    @field_validator("note")
+    @classmethod
+    def note_is_safe(cls, value: str | None) -> str | None:
+        if value is not None and "\x00" in value:
+            raise ValueError("note is invalid")
+        validate_durable_payload(value)
+        return value
 
 
 class EpicBudgetReceipt(BaseModel):
@@ -100,6 +109,14 @@ class EpicBudgetPermitRequest(BaseModel):
     expected_version: int = Field(ge=0, strict=True)
     run_id: UUID
     note: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("note")
+    @classmethod
+    def note_is_safe(cls, value: str | None) -> str | None:
+        if value is not None and "\x00" in value:
+            raise ValueError("note is invalid")
+        validate_durable_payload(value)
+        return value
 
 
 class EpicBudgetPermitReceipt(BaseModel):
