@@ -454,4 +454,121 @@ describe('EpicBudgetPanel', () => {
     expect(await screen.findByText(/Budget version conflict/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue(800);
   });
+
+  test('requires numeric cap for enabled mandatory dimensions with inline error and blocks submit on blank, while explicit zero retains zero', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) {
+        return {
+          ...mockBudget,
+          disabled_dimensions: [], // All enabled
+        } as T;
+      }
+      if (path === `/epics/${epicId}/budget` && init?.method === 'PUT') {
+        return { epic_id: epicId, version: 4 } as T;
+      }
+      return undefined as T;
+    });
+
+    render(<EpicBudgetPanel epicId={epicId} />);
+    await screen.findByText('Shared Epic Budget & Ceilings');
+
+    await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
+
+    const durationInput = screen.getByLabelText(/Duration ceiling \(seconds\)/i);
+    await userEvent.clear(durationInput);
+
+    // Should display inline error for mandatory dimension when blank and enabled
+    expect(await screen.findByText(/Numeric ceiling is required when enabled/i)).toBeInTheDocument();
+
+    // Clicking Save Ceilings must not call PUT API for blank mandatory ceiling
+    await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
+    const putCalls = vi.mocked(api).mock.calls.filter(([p, init]) => p === `/epics/${epicId}/budget` && init?.method === 'PUT');
+    expect(putCalls).toHaveLength(0);
+
+    // Explicit zero retains zero semantics
+    await userEvent.type(durationInput, '0');
+    expect(screen.queryByText(/Numeric ceiling is required when enabled/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
+    const putCallsAfterZero = vi.mocked(api).mock.calls.filter(([p, init]) => p === `/epics/${epicId}/budget` && init?.method === 'PUT');
+    expect(putCallsAfterZero).toHaveLength(1);
+    const body = JSON.parse(putCallsAfterZero[0][1]?.body as string);
+    expect(body.ceiling.max_duration_seconds).toBe(0);
+  });
+
+  test('retains stored mandatory numeric ceiling when input is blank and Unlimited is checked', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) {
+        return {
+          ...mockBudget,
+          ceiling: {
+            ...mockBudget.ceiling,
+            max_duration_seconds: 1800,
+          },
+          disabled_dimensions: [], // currently enabled with 1800
+        } as T;
+      }
+      if (path === `/epics/${epicId}/budget` && init?.method === 'PUT') {
+        return { epic_id: epicId, version: 4 } as T;
+      }
+      return undefined as T;
+    });
+
+    render(<EpicBudgetPanel epicId={epicId} />);
+    await screen.findByText('Shared Epic Budget & Ceilings');
+
+    await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
+
+    const durationInput = screen.getByLabelText(/Duration ceiling \(seconds\)/i);
+    await userEvent.clear(durationInput);
+    expect(await screen.findByText(/Numeric ceiling is required when enabled/i)).toBeInTheDocument();
+
+    // Check Unlimited duration -> disables dimension
+    await userEvent.click(screen.getByLabelText(/Unlimited duration/i));
+    // Error is dismissed because dimension is disabled
+    expect(screen.queryByText(/Numeric ceiling is required when enabled/i)).not.toBeInTheDocument();
+
+    // Save with blank input while disabled: must retain the stored mandatory ceiling (1800), not coerce to 0!
+    await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
+    const putCalls = vi.mocked(api).mock.calls.filter(([p, init]) => p === `/epics/${epicId}/budget` && init?.method === 'PUT');
+    expect(putCalls).toHaveLength(1);
+    const body = JSON.parse(putCalls[0][1]?.body as string);
+    expect(body.disabled_dimensions).toContain('duration_ms');
+    expect(body.ceiling.max_duration_seconds).toBe(1800);
+  });
+
+  test('renders truthful placeholders distinguishing mandatory from nullable dimensions', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) {
+        return {
+          ...mockBudget,
+          ceiling: {
+            ...mockBudget.ceiling,
+            max_duration_seconds: 1800,
+            max_input_tokens: null,
+          },
+          disabled_dimensions: [],
+        } as T;
+      }
+      return undefined as T;
+    });
+
+    render(<EpicBudgetPanel epicId={epicId} />);
+    await screen.findByText('Shared Epic Budget & Ceilings');
+
+    await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
+
+    const durationInput = screen.getByLabelText(/Duration ceiling \(seconds\)/i);
+    await userEvent.clear(durationInput);
+    // Mandatory duration placeholder when enabled and blank must NOT claim "Unlimited (null)"
+    expect(durationInput).toHaveAttribute('placeholder', 'Required numeric cap');
+
+    const inputTokensInput = screen.getByLabelText(/Input tokens ceiling/i);
+    // Nullable dimension placeholder when null
+    expect(inputTokensInput).toHaveAttribute('placeholder', 'Unlimited (null)');
+
+    // When disabled via Unlimited checkbox
+    await userEvent.click(screen.getByLabelText(/Unlimited duration/i));
+    expect(durationInput).toHaveAttribute('placeholder', 'Unlimited');
+  });
 });

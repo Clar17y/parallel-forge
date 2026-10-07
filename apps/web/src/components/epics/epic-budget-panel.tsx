@@ -11,6 +11,7 @@ import type { TaskBudget } from '@/hooks/epics/types';
 interface DimensionConfig {
   key: string;
   label: string;
+  mandatory?: boolean;
   formatUsage: (val: number, currency?: string | null) => string;
   formatCeiling: (val: number, currency?: string | null) => string;
   getCeilingVal: (ceiling: TaskBudget) => number | null | undefined;
@@ -23,20 +24,22 @@ const DIMENSIONS: DimensionConfig[] = [
   {
     key: 'duration_ms',
     label: 'Duration',
+    mandatory: true,
     formatUsage: val => `${Math.round(val / 1000)}s (${val}ms)`,
     formatCeiling: val => `${val}s`,
     getCeilingVal: c => c?.max_duration_seconds,
-    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_duration_seconds: val ?? 0 } as TaskBudget),
+    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_duration_seconds: val ?? c?.max_duration_seconds ?? 0 } as TaskBudget),
     inputLabel: 'Duration ceiling (seconds)',
     unlimitedLabel: 'Unlimited duration',
   },
   {
     key: 'tool_call_count',
     label: 'Tool Calls',
+    mandatory: true,
     formatUsage: val => `${val}`,
     formatCeiling: val => `${val}`,
     getCeilingVal: c => c?.max_tool_calls,
-    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_tool_calls: val ?? 0 } as TaskBudget),
+    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_tool_calls: val ?? c?.max_tool_calls ?? 0 } as TaskBudget),
     inputLabel: 'Tool calls ceiling',
     unlimitedLabel: 'Unlimited tool calls',
   },
@@ -73,10 +76,11 @@ const DIMENSIONS: DimensionConfig[] = [
   {
     key: 'provider_attempts',
     label: 'Provider Attempts',
+    mandatory: true,
     formatUsage: val => `${val}`,
     formatCeiling: val => `${val}`,
     getCeilingVal: c => c?.max_provider_attempts,
-    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_provider_attempts: val ?? 0 } as TaskBudget),
+    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_provider_attempts: val ?? c?.max_provider_attempts ?? 0 } as TaskBudget),
     inputLabel: 'Provider attempts ceiling',
     unlimitedLabel: 'Unlimited provider attempts',
   },
@@ -191,6 +195,18 @@ export function EpicBudgetPanel({
   const handleSaveCeilings = async (e: FormEvent) => {
     e.preventDefault();
     if (mutationPending || !budget || !sourceCeiling || sourceVersion === null) return;
+
+    const hasBlankMandatory = DIMENSIONS.some(dim => {
+      if (!dim.mandatory) return false;
+      const isDimUnlimited = disabledDims.includes(dim.key);
+      if (isDimUnlimited) return false;
+      const val = editCeilings[dim.key];
+      return val == null || Number.isNaN(val);
+    });
+
+    if (hasBlankMandatory) {
+      return;
+    }
 
     let updatedCeiling: TaskBudget = { ...sourceCeiling };
     for (const dim of DIMENSIONS) {
@@ -396,6 +412,9 @@ export function EpicBudgetPanel({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {DIMENSIONS.map(dim => {
                 const unlimited = disabledDims.includes(dim.key);
+                const isBlank = editCeilings[dim.key] == null || Number.isNaN(editCeilings[dim.key]);
+                const showBlankError = Boolean(dim.mandatory && !unlimited && isBlank);
+
                 return (
                   <div key={dim.key} className="space-y-1">
                     <label htmlFor={`ceiling-input-${dim.key}`} className="block font-medium text-xs">
@@ -407,10 +426,15 @@ export function EpicBudgetPanel({
                       min={0}
                       className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)] disabled:opacity-50"
                       value={editCeilings[dim.key] ?? ''}
-                      placeholder={unlimited ? 'Unlimited' : editCeilings[dim.key] == null ? 'Unlimited (null)' : '0'}
+                      placeholder={unlimited ? 'Unlimited' : dim.mandatory ? 'Required numeric cap' : 'Unlimited (null)'}
                       disabled={unlimited || mutationPending}
                       onChange={e => handleCeilingChange(dim.key, e.target.value === '' ? null : Number(e.target.value))}
                     />
+                    {showBlankError ? (
+                      <p role="alert" className="text-xs text-[var(--danger)]">
+                        Numeric ceiling is required when enabled.
+                      </p>
+                    ) : null}
                     <label className="flex items-center gap-2 text-xs text-[var(--muted)] cursor-pointer pt-1">
                       <input
                         type="checkbox"

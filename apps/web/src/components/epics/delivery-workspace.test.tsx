@@ -171,6 +171,7 @@ describe('DeliveryWorkspace', () => {
         brief_digest: 'b'.repeat(64),
       },
       acceptedGraph: {
+        ...frozenGraph,
         graph_revision_id: graphRevId,
         graph_digest: 'g'.repeat(64),
         items: [{ item_id: item1Id, title: 'Current accepted label' }],
@@ -573,7 +574,7 @@ describe('DeliveryWorkspace', () => {
   test('does not use the current graph when the frozen historical projection is missing', async () => {
     vi.mocked(useEpicWorkspace).mockReturnValue({
       graphRevisions: [],
-      acceptedGraph: { graph_revision_id: 'new-current-graph', items: [{ item_id: item1Id, title: 'Current accepted label' }] },
+      acceptedGraph: { ...frozenGraph, graph_revision_id: 'new-current-graph', items: [{ item_id: item1Id, title: 'Current accepted label' }] },
     } as unknown as ReturnType<typeof useEpicWorkspace>);
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/epics/${epicId}/executions/${executionId}` && (!init?.method || init.method === 'GET')) return defaultProjection as T;
@@ -622,5 +623,254 @@ describe('DeliveryWorkspace', () => {
     render(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
     await userEvent.click(screen.getByRole('button', { name: 'Start Execution' }));
     expect(await screen.findByText('Conflict: The epic version changed on the server before starting execution.')).toBeInTheDocument();
+  });
+
+  test('selecting graph alone binds its actual brief revision and submits coherent pair', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions` && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        expect(body.owner_override).toBe(true);
+        expect(body.brief_revision_id).toBe('alt-brief-id');
+        expect(body.graph_revision_id).toBe('alt-graph-id');
+        return { schema_version: 1, execution_id: executionId, execution_version: 1, state: 'ACTIVE' } as T;
+      }
+      if (path === `/epics/${epicId}/executions/${executionId}`) return defaultProjection as T;
+      return undefined as T;
+    });
+
+    render(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
+    await userEvent.click(screen.getByLabelText(/Owner Override: Select custom saved brief \/ graph sources/i));
+
+    // Select Graph Revision alone
+    const graphSelect = screen.getByLabelText('Graph Revision');
+    await userEvent.selectOptions(graphSelect, 'alt-graph-id');
+
+    // Selecting graph alone must bind its actual brief revision!
+    const briefSelect = screen.getByLabelText('Brief Revision');
+    expect(briefSelect).toHaveValue('alt-brief-id');
+
+    // Submitting start must send the coherent pair bound to the graph
+    await userEvent.click(screen.getByRole('button', { name: 'Start Execution' }));
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get('execution_id')).toBe(executionId));
+  });
+
+  test('selecting brief alone offers and selects matching graphs and submits coherent pair', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions` && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        expect(body.owner_override).toBe(true);
+        expect(body.brief_revision_id).toBe('alt-brief-id');
+        expect(body.graph_revision_id).toBe('alt-graph-id');
+        return { schema_version: 1, execution_id: executionId, execution_version: 1, state: 'ACTIVE' } as T;
+      }
+      if (path === `/epics/${epicId}/executions/${executionId}`) return defaultProjection as T;
+      return undefined as T;
+    });
+
+    render(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
+    await userEvent.click(screen.getByLabelText(/Owner Override: Select custom saved brief \/ graph sources/i));
+
+    // Select Brief Revision alone
+    const briefSelect = screen.getByLabelText('Brief Revision');
+    await userEvent.selectOptions(briefSelect, 'alt-brief-id');
+
+    // Selecting brief must offer/select matching graphs
+    const graphSelect = screen.getByLabelText('Graph Revision');
+    expect(graphSelect).toHaveValue('alt-graph-id');
+
+    // Submitting start sends coherent pair
+    await userEvent.click(screen.getByRole('button', { name: 'Start Execution' }));
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get('execution_id')).toBe(executionId));
+  });
+
+  test('offers multiple draft graph revisions for a brief and binds chosen pair', async () => {
+    const secondAlternateGraph: GraphRevisionResponse = {
+      ...alternateGraph,
+      graph_revision_id: 'alt-graph-2',
+      graph_digest: 'altgraphdigest2'.repeat(4).slice(0, 64),
+      revision_number: 4,
+    };
+
+    vi.mocked(useEpicWorkspace).mockReturnValue({
+      briefRevisions: [alternateBrief],
+      graphRevisions: [frozenGraph, alternateGraph, secondAlternateGraph],
+      acceptedBrief: {
+        brief_revision_id: briefRevId,
+        brief_digest: 'b'.repeat(64),
+      },
+      acceptedGraph: {
+        ...frozenGraph,
+        graph_revision_id: graphRevId,
+        graph_digest: 'g'.repeat(64),
+        items: [{ item_id: item1Id, title: 'Current accepted label' }],
+      },
+    } as unknown as ReturnType<typeof useEpicWorkspace>);
+
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions` && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        expect(body.brief_revision_id).toBe('alt-brief-id');
+        expect(body.graph_revision_id).toBe('alt-graph-2');
+        return { schema_version: 1, execution_id: executionId, execution_version: 1, state: 'ACTIVE' } as T;
+      }
+      if (path === `/epics/${epicId}/executions/${executionId}`) return defaultProjection as T;
+      return undefined as T;
+    });
+
+    render(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
+    await userEvent.click(screen.getByLabelText(/Owner Override: Select custom saved brief \/ graph sources/i));
+
+    // Select Brief Revision
+    await userEvent.selectOptions(screen.getByLabelText('Brief Revision'), 'alt-brief-id');
+
+    // Graph select should offer both matching graphs
+    const graphSelect = screen.getByLabelText('Graph Revision') as HTMLSelectElement;
+    const optionValues = Array.from(graphSelect.options).map(o => o.value);
+    expect(optionValues).toContain('alt-graph-id');
+    expect(optionValues).toContain('alt-graph-2');
+
+    // Choose the second graph
+    await userEvent.selectOptions(graphSelect, 'alt-graph-2');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Execution' }));
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get('execution_id')).toBe(executionId));
+  });
+
+  test('shows clear feedback and prevents invalid POST when brief has no matching graph', async () => {
+    const orphanBrief: BriefRevisionResponse = {
+      ...alternateBrief,
+      brief_revision_id: 'orphan-brief-id',
+      revision_number: 99,
+    };
+
+    vi.mocked(useEpicWorkspace).mockReturnValue({
+      briefRevisions: [alternateBrief, orphanBrief],
+      graphRevisions: [frozenGraph, alternateGraph], // No graph matching orphan-brief-id
+      acceptedBrief: {
+        brief_revision_id: briefRevId,
+        brief_digest: 'b'.repeat(64),
+      },
+      acceptedGraph: {
+        ...frozenGraph,
+        graph_revision_id: graphRevId,
+        graph_digest: 'g'.repeat(64),
+        items: [{ item_id: item1Id, title: 'Current accepted label' }],
+      },
+    } as unknown as ReturnType<typeof useEpicWorkspace>);
+
+    render(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
+    await userEvent.click(screen.getByLabelText(/Owner Override: Select custom saved brief \/ graph sources/i));
+
+    // Select orphan brief
+    await userEvent.selectOptions(screen.getByLabelText('Brief Revision'), 'orphan-brief-id');
+
+    // Should display clear feedback that no matching graph revision is available
+    expect(await screen.findByText(/No matching graph revision available for this brief revision/i)).toBeInTheDocument();
+
+    // Clicking Start Execution must not POST
+    await userEvent.click(screen.getByRole('button', { name: 'Start Execution' }));
+    const postCalls = vi.mocked(api).mock.calls.filter(([p, init]) => p === `/epics/${epicId}/executions` && init?.method === 'POST');
+    expect(postCalls).toHaveLength(0);
+  });
+
+  test('uses accepted graph bindings when the separate brief read is unavailable', async () => {
+    vi.mocked(useEpicWorkspace).mockReturnValue({
+      briefRevisions: [],
+      graphRevisions: [],
+      acceptedBrief: undefined,
+      acceptedGraph: frozenGraph,
+    } as unknown as ReturnType<typeof useEpicWorkspace>);
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions` && init?.method === 'POST') {
+        return { schema_version: 1, execution_id: executionId, execution_version: 1, state: 'ACTIVE' } as T;
+      }
+      if (path === `/epics/${epicId}/executions/${executionId}`) return defaultProjection as T;
+      return undefined as T;
+    });
+
+    render(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
+    await userEvent.click(screen.getByLabelText(/Owner Override: Select custom saved brief \/ graph sources/i));
+    await userEvent.click(screen.getByRole('button', { name: 'Start Execution' }));
+    await waitFor(() => {
+      const calls = vi.mocked(api).mock.calls.filter(([path, init]) => path === `/epics/${epicId}/executions` && init?.method === 'POST');
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(calls[0][1]!.body as string)).toMatchObject({
+        brief_revision_id: frozenGraph.brief_revision_id,
+        brief_digest: frozenGraph.brief_digest,
+        graph_revision_id: frozenGraph.graph_revision_id,
+        graph_digest: frozenGraph.graph_digest,
+        owner_override: true,
+      });
+    });
+  });
+
+  test('requires reselection when a graph disappears after refresh', async () => {
+    const source = {
+      briefRevisions: [alternateBrief],
+      graphRevisions: [frozenGraph, alternateGraph],
+      acceptedBrief: { brief_revision_id: briefRevId, brief_digest: frozenGraph.brief_digest },
+      acceptedGraph: frozenGraph,
+    } as unknown as ReturnType<typeof useEpicWorkspace>;
+    vi.mocked(useEpicWorkspace).mockReturnValue(source);
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions` && init?.method === 'POST') {
+        return { schema_version: 1, execution_id: executionId, execution_version: 1, state: 'ACTIVE' } as T;
+      }
+      if (path === `/epics/${epicId}/executions/${executionId}`) return defaultProjection as T;
+      return undefined as T;
+    });
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
+    await userEvent.click(screen.getByLabelText(/Owner Override: Select custom saved brief \/ graph sources/i));
+    await userEvent.selectOptions(screen.getByLabelText('Graph Revision'), alternateGraph.graph_revision_id);
+
+    const replacement = { ...alternateGraph, graph_revision_id: 'replacement-graph', graph_digest: 'r'.repeat(64), revision_number: 4 };
+    vi.mocked(useEpicWorkspace).mockReturnValue({ ...source, graphRevisions: [frozenGraph, replacement] });
+    rerender(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Selected graph revision is unavailable. Choose a saved graph revision.');
+    expect(screen.getByRole('button', { name: 'Start Execution' })).toBeDisabled();
+    expect(vi.mocked(api).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+
+    await userEvent.selectOptions(screen.getByLabelText('Graph Revision'), replacement.graph_revision_id);
+    await userEvent.click(screen.getByRole('button', { name: 'Start Execution' }));
+    await waitFor(() => {
+      const calls = vi.mocked(api).mock.calls.filter(([path, init]) => path === `/epics/${epicId}/executions` && init?.method === 'POST');
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(calls[0][1]!.body as string)).toMatchObject({
+        brief_revision_id: alternateBrief.brief_revision_id,
+        brief_digest: alternateBrief.content_digest,
+        graph_revision_id: replacement.graph_revision_id,
+        graph_digest: replacement.graph_digest,
+      });
+    });
+  });
+
+  test('truthfully displays current epic version without claiming frozen execution was bound to it across rerender', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions/${executionId}` && (!init?.method || init.method === 'GET')) return defaultProjection as T;
+      return undefined as T;
+    });
+
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+
+    // Truthful label: Current Epic Version 7, never "Bound to Epic Version"
+    expect(await screen.findByText(/Current Epic Version 7/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Bound to Epic Version/i)).not.toBeInTheDocument();
+
+    // Frozen brief/graph identity is displayed in EvidenceDetails
+    await userEvent.click(screen.getByText('Inspect frozen brief and graph revisions'));
+    expect(screen.getByText(`brief_revision_id: ${briefRevId}`)).toBeInTheDocument();
+    expect(screen.getByText(`graph_revision_id: ${graphRevId}`)).toBeInTheDocument();
+
+    // Rerender with changed current epicVersion (e.g. 9)
+    rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={9} />);
+
+    // Shows updated current epic version truthfully
+    expect(await screen.findByText(/Current Epic Version 9/i)).toBeInTheDocument();
+    // Does NOT claim old frozen execution was bound to epic version 9
+    expect(screen.queryByText(/Bound to Epic Version/i)).not.toBeInTheDocument();
+
+    // Actual frozen IDs remain unchanged
+    expect(screen.getByText(`brief_revision_id: ${briefRevId}`)).toBeInTheDocument();
+    expect(screen.getByText(`graph_revision_id: ${graphRevId}`)).toBeInTheDocument();
   });
 });

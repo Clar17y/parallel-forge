@@ -70,17 +70,56 @@ export function DeliveryWorkspace({
     return () => { unregisterStart(); unregisterCommand(); };
   }, [registerCompletion]);
 
+  const savedGraphs = workspace.acceptedGraph && !workspace.graphRevisions.some(graph => graph.graph_revision_id === workspace.acceptedGraph?.graph_revision_id)
+    ? [...workspace.graphRevisions, workspace.acceptedGraph]
+    : workspace.graphRevisions;
+  const graphsForBrief = (briefId: string) => {
+    const brief = workspace.briefRevisions.find(revision => revision.brief_revision_id === briefId);
+    return savedGraphs.filter(graph => graph.brief_revision_id === briefId && (!brief || graph.brief_digest === brief.content_digest));
+  };
+  const offeredGraphs = selectedBriefId ? graphsForBrief(selectedBriefId) : savedGraphs;
+  const chosenGraph = selectedGraphId
+    ? savedGraphs.find(graph => graph.graph_revision_id === selectedGraphId)
+    : !selectedBriefId ? workspace.acceptedGraph : undefined;
+  const sourceSelectionError = selectedBriefId && offeredGraphs.length === 0
+    ? 'No matching graph revision available for this brief revision.'
+    : !chosenGraph
+      ? selectedGraphId
+        ? 'Selected graph revision is unavailable. Choose a saved graph revision.'
+        : 'Choose a saved graph revision for this execution.'
+      : selectedBriefId && !offeredGraphs.some(graph => graph.graph_revision_id === chosenGraph.graph_revision_id)
+        ? 'The selected graph does not match this brief revision. Choose a matching graph revision.'
+        : null;
+
+  const handleBriefChange = (briefId: string) => {
+    setSelectedBriefId(briefId);
+    if (!briefId) {
+      setSelectedGraphId('');
+      return;
+    }
+    const matching = graphsForBrief(briefId);
+    if (!matching.some(graph => graph.graph_revision_id === selectedGraphId)) {
+      setSelectedGraphId(matching.at(-1)?.graph_revision_id ?? '');
+    }
+  };
+
+  const handleGraphChange = (graphId: string) => {
+    setSelectedGraphId(graphId);
+    const graph = savedGraphs.find(revision => revision.graph_revision_id === graphId);
+    setSelectedBriefId(graph?.brief_revision_id ?? '');
+  };
+
   const handleStart = async () => {
     try {
       if (useOwnerOverride) {
-        const chosenBrief = workspace.briefRevisions.find(b => b.brief_revision_id === selectedBriefId);
-        const chosenGraph = workspace.graphRevisions.find(g => g.graph_revision_id === selectedGraphId);
+        if (sourceSelectionError || !chosenGraph) return;
+
         await startExecution({
           expectedEpicVersion: epicVersion,
-          briefRevisionId: chosenBrief?.brief_revision_id ?? workspace.acceptedBrief?.brief_revision_id,
-          briefDigest: chosenBrief?.content_digest ?? workspace.acceptedBrief?.brief_digest,
-          graphRevisionId: chosenGraph?.graph_revision_id ?? workspace.acceptedGraph?.graph_revision_id,
-          graphDigest: chosenGraph?.graph_digest ?? workspace.acceptedGraph?.graph_digest,
+          briefRevisionId: chosenGraph.brief_revision_id,
+          briefDigest: chosenGraph.brief_digest,
+          graphRevisionId: chosenGraph.graph_revision_id,
+          graphDigest: chosenGraph.graph_digest,
           ownerOverride: true,
           overrideNote: overrideNote.trim() || undefined,
         });
@@ -252,7 +291,12 @@ export function DeliveryWorkspace({
               <Button type="submit" variant="secondary" disabled={mutationPending || !manualIdInput.trim()}>
                 Load Execution
               </Button>
-              <Button type="button" variant="primary" disabled={mutationPending} onClick={handleStart}>
+              <Button
+                type="button"
+                variant="primary"
+                disabled={mutationPending || (useOwnerOverride && !!sourceSelectionError)}
+                onClick={handleStart}
+              >
                 Start Execution
               </Button>
               {isStartingNew && !isPendingDiscovery && (
@@ -286,10 +330,13 @@ export function DeliveryWorkspace({
                         id="override-brief"
                         className="w-full mt-1 px-2 py-1 border border-[var(--control-border)] rounded text-xs bg-[var(--surface)]"
                         value={selectedBriefId}
-                        onChange={e => setSelectedBriefId(e.target.value)}
+                        onChange={e => handleBriefChange(e.target.value)}
                         disabled={mutationPending}
                       >
-                        <option value="">Accepted brief (default)</option>
+                        <option value="">Use graph-bound brief (default)</option>
+                        {selectedBriefId && !workspace.briefRevisions.some(brief => brief.brief_revision_id === selectedBriefId) ? (
+                          <option value={selectedBriefId}>Graph-bound brief ({selectedBriefId.slice(0, 8)}...)</option>
+                        ) : null}
                         {workspace.briefRevisions.map(b => (
                           <option key={b.brief_revision_id} value={b.brief_revision_id}>
                             Rev #{b.revision_number} ({b.brief_revision_id.slice(0, 8)}...)
@@ -304,18 +351,28 @@ export function DeliveryWorkspace({
                         id="override-graph"
                         className="w-full mt-1 px-2 py-1 border border-[var(--control-border)] rounded text-xs bg-[var(--surface)]"
                         value={selectedGraphId}
-                        onChange={e => setSelectedGraphId(e.target.value)}
-                        disabled={mutationPending}
+                        onChange={e => handleGraphChange(e.target.value)}
+                        disabled={mutationPending || offeredGraphs.length === 0}
                       >
-                        <option value="">Accepted graph (default)</option>
-                        {workspace.graphRevisions.map(g => (
+                        {!selectedBriefId ? (
+                          <option value="">Accepted graph (default)</option>
+                        ) : offeredGraphs.length === 0 ? (
+                          <option value="">No matching graph available</option>
+                        ) : null}
+                        {offeredGraphs.map(g => (
                           <option key={g.graph_revision_id} value={g.graph_revision_id}>
-                            Rev #{g.revision_number} ({g.graph_revision_id.slice(0, 8)}...)
+                            {'revision_number' in g ? `Rev #${g.revision_number}` : 'Accepted graph'} ({g.graph_revision_id.slice(0, 8)}...)
                           </option>
                         ))}
                       </select>
                     </div>
                   </div>
+
+                  {sourceSelectionError ? (
+                    <p role="alert" className="text-xs text-[var(--danger)]">
+                      {sourceSelectionError}
+                    </p>
+                  ) : null}
 
                   <div>
                     <label htmlFor="override-note" className="block text-xs font-medium">Override Note (optional)</label>
@@ -359,7 +416,7 @@ export function DeliveryWorkspace({
           {/* Header Panel */}
           <Panel
             title="Frozen Execution Progress"
-            description={`${hasControlVersion ? `Execution Version ${controlVersion}` : 'Legacy execution (control version unavailable)'} • Bound to Epic Version ${epicVersion}`}
+            description={`${hasControlVersion ? `Execution Version ${controlVersion}` : 'Legacy execution (control version unavailable)'} • Current Epic Version ${epicVersion}`}
             className="[&_.panel-heading]:flex-col [&_.panel-heading]:items-start"
             action={undefined}
           >

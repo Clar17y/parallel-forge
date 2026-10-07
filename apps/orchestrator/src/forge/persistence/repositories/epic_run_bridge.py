@@ -22,6 +22,7 @@ from forge.domain.subscription import (
 )
 from forge.persistence.models.epic_brainstorm import BrainstormBudgetLedger
 from forge.persistence.models.epic_run_bridge import (
+    EpicBudgetAdmissionPermit,
     EpicChildBudgetHold,
     EpicExecution,
     EpicExecutionControl,
@@ -102,6 +103,21 @@ class PostgresEpicRunBridgeRepository:
             )
         )
         await self._session.flush()
+
+    async def create_launch_permit(
+        self, attempt: EpicAttempt, *, note: str | None, warnings: list[str]
+    ) -> UUID:
+        permit = EpicBudgetAdmissionPermit(
+            id=uuid4(),
+            epic_id=attempt.epic_id,
+            run_id=attempt.run_id,
+            actor_id=attempt.actor_id,
+            note=note,
+            warnings=warnings,
+        )
+        self._session.add(permit)
+        await self._session.flush()
+        return permit.id
 
     async def create_execution(
         self,

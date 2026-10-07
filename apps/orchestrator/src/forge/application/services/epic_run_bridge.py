@@ -389,6 +389,25 @@ class EpicRunBridgeService:
             )
             await work.epic_run_bridge.create_attempt(attempt)
             await work.epic_run_bridge.create_child_hold(attempt, self._child_hold)
+            if request.owner_override:
+                permit_id = await work.epic_run_bridge.create_launch_permit(
+                    attempt, note=request.override_note, warnings=blockers
+                )
+                await work.audit.append(
+                    actor_id=actor.actor_id,
+                    event_type="epic.budget_admission_permitted",
+                    subject_type="epic",
+                    subject_id=epic_id,
+                    correlation_id=receipt.id,
+                    payload={
+                        "permit_id": str(permit_id),
+                        "run_id": str(run.id),
+                        "attempt_id": str(attempt.attempt_id),
+                        "source": "epic.item.launch",
+                        "warnings": blockers,
+                        "note": request.override_note,
+                    },
+                )
             if request.owner_override and control_state is not None and control_state != "ACTIVE":
                 await work.epic_run_bridge.note_owner_child_admission(execution_id)
             await work.audit.append(

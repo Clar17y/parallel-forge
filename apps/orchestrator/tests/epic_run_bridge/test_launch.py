@@ -919,10 +919,14 @@ async def test_http_requires_operator_csrf_idempotency_and_exposes_owner_action(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("owner_override", (False, True))
 async def test_rollback_and_retry_after_receipt_failure(
-    session_factory, bridge_factory, monkeypatch
+    session_factory, bridge_factory, monkeypatch, owner_override
 ):
+    from forge.persistence.models.epic_run_bridge import EpicBudgetAdmissionPermit
+
     service, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
+    launch_request = request(owner_override=owner_override)
 
     async def fail(*args, **kwargs):
         raise RuntimeError("injected completion failure")
@@ -931,15 +935,27 @@ async def test_rollback_and_retry_after_receipt_failure(
         patch.setattr(PostgresMutationRepository, "complete", fail)
         with pytest.raises(RuntimeError, match="completion failure"):
             await service.launch(
-                actor=actor, epic_id=epic_id, idempotency_key="retry", request=request()
+                actor=actor, epic_id=epic_id, idempotency_key="retry", request=launch_request
             )
     async with session_factory() as session:
-        for model in (EpicExecution, EpicItemAttempt, Task, Run, RunCommand, RunEvent):
+        for model in (
+            EpicExecution,
+            EpicItemAttempt,
+            EpicBudgetAdmissionPermit,
+            Task,
+            Run,
+            RunCommand,
+            RunEvent,
+        ):
             assert await session.scalar(select(func.count()).select_from(model)) == 0
     result = await service.launch(
-        actor=actor, epic_id=epic_id, idempotency_key="retry", request=request()
+        actor=actor, epic_id=epic_id, idempotency_key="retry", request=launch_request
     )
     assert result.run_id == (await service.get(epic_id, result.attempt_id)).run_id
+    async with session_factory() as session:
+        assert await session.scalar(
+            select(func.count()).select_from(EpicBudgetAdmissionPermit)
+        ) == int(owner_override)
 
 
 @pytest.mark.asyncio
@@ -1147,6 +1163,35 @@ async def test_owner_child_after_no_child_cancel_revokes_terminal_projection(
         ),
     )
     assert "execution_not_active" in permit.warnings
+    from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
+
+    from apps.orchestrator.tests.persistence.test_scheduler_acceptance import (
+        _admit_run,
+        _enqueue,
+        _route,
+    )
+
+    async with bridge_factory() as work:
+        run = await work.runs.get(child.run_id)
+        primary = await _admit_run(work, run, (_route("p"), _route("p")))
+        await _enqueue(
+            work,
+            child.run_id,
+            provider="p",
+            worktree="cancelled-owner-tree",
+            parent_id=primary,
+            paths=("apps",),
+        )
+        await work.commit()
+    executor = SubscriptionDecisionExecutor(lambda: PostgresUnitOfWork(session_factory))
+    assert (
+        await executor.admit_next(
+            "cancelled-owner", TaskBudget(max_provider_attempts=1, max_repairs=0)
+        )
+        is None
+    )
+    assert len((await budget.get(epic_id)).permits) == 2
+    assert all(value.consumed_attempt_id is None for value in (await budget.get(epic_id)).permits)
 
 
 @pytest.mark.integration
@@ -1570,6 +1615,170 @@ async def test_owner_can_unset_shared_cap_without_erasing_child_hold(
 
 
 @pytest.mark.integration
+async def test_owner_launch_permit_reaches_one_actual_child_admission(
+    session_factory, bridge_factory
+):
+    from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
+    from forge.domain.subscription import AttemptTelemetry, QuotaStatus
+    from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionTask
+
+    from apps.orchestrator.tests.persistence.test_scheduler_acceptance import (
+        _admit_run,
+        _enqueue,
+        _route,
+    )
+
+    bridge, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
+    budget = EpicBudgetService(bridge_factory)
+    await budget.edit(
+        actor=actor,
+        epic_id=epic_id,
+        idempotency_key="launch-zero-cap",
+        request=EpicBudgetEdit(expected_version=0, ceiling=TaskBudget(max_provider_attempts=0)),
+    )
+    with pytest.raises(EpicLaunchConflict, match="epic_budget_provider_attempts_exhausted"):
+        await bridge.launch(
+            actor=actor, epic_id=epic_id, idempotency_key="launch-default", request=request()
+        )
+    assert (await budget.get(epic_id)).permits == ()
+    owner_request = request(owner_override=True, override_note="Admit this child once")
+    child = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="launch-owner", request=owner_request
+    )
+    assert "epic_budget_provider_attempts_exhausted" in child.blocker_codes
+    before = await budget.get(epic_id)
+    assert len(before.permits) == 1
+    assert before.permits[0].run_id == child.run_id
+    assert before.permits[0].actor_id == actor.actor_id
+    assert before.permits[0].note == "Admit this child once"
+    assert before.permits[0].consumed_attempt_id is None
+    assert "epic_budget_provider_attempts_exhausted" in before.permits[0].warnings
+    assert any(
+        action.event_type == "epic.budget_admission_permitted"
+        and action.actor_id == actor.actor_id
+        and action.note == "Admit this child once"
+        for action in before.owner_actions
+    )
+
+    async with bridge_factory() as work:
+        run = await work.runs.get(child.run_id)
+        primary = await _admit_run(work, run, (_route("p"), _route("p")))
+        task = await _enqueue(
+            work,
+            child.run_id,
+            provider="p",
+            worktree="owner-launch-tree",
+            parent_id=primary,
+            paths=("apps",),
+        )
+        await work.commit()
+    reservation = TaskBudget(
+        max_duration_seconds=10,
+        max_tool_calls=8,
+        max_named_checks=2,
+        max_provider_attempts=1,
+        max_repairs=0,
+    )
+    executor = SubscriptionDecisionExecutor(lambda: PostgresUnitOfWork(session_factory))
+    admitted = await executor.admit_next("owner-launch", reservation)
+    assert admitted is not None and admitted.attempt.attempt_number == 1
+    after = await budget.get(epic_id)
+    assert len(after.permits) == 1
+    assert after.permits[0].consumed_attempt_id == admitted.attempt.attempt_id
+    replay = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="launch-owner", request=owner_request
+    )
+    assert replay == child
+    assert len((await budget.get(epic_id)).permits) == 1
+
+    async with bridge_factory() as work:
+        await work.subscription_budget.settle_attempt(
+            child.run_id,
+            task,
+            admitted.attempt.attempt_id,
+            AttemptTelemetry(
+                duration_ms=1,
+                tool_call_count=0,
+                named_check_count=0,
+                input_tokens=0,
+                output_tokens=0,
+                estimated_api_cost_minor=0,
+                quota_status=QuotaStatus.OK,
+            ),
+        )
+        assert await work.subscription_budget.try_debit_repair(
+            child.run_id, task, admitted.attempt.attempt_id
+        )
+        await work.scheduler.finish(admitted.lease, successful=False)
+        attempt = await work.session.get(SubscriptionAttempt, admitted.attempt.attempt_id)
+        assert attempt is not None
+        attempt.status = "terminal"
+        logical = await work.session.get(SubscriptionTask, task)
+        assert logical is not None
+        logical.state = "queued"
+        logical.version += 1
+        await work.commit()
+    assert await executor.admit_next("owner-launch-retry", reservation) is None
+    assert len((await budget.get(epic_id)).permits) == 1
+
+
+@pytest.mark.integration
+async def test_owner_launch_unknown_child_hold_reaches_actual_admission(
+    session_factory, bridge_factory
+):
+    from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
+
+    from apps.orchestrator.tests.persistence.test_scheduler_acceptance import (
+        _admit_run,
+        _enqueue,
+        _route,
+    )
+
+    bridge, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
+    first = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="unknown-first", request=request()
+    )
+    with pytest.raises(EpicLaunchConflict, match="child_usage_unproved"):
+        await bridge.launch(
+            actor=actor,
+            epic_id=epic_id,
+            idempotency_key="unknown-default",
+            request=request(execution_id=first.execution_id),
+        )
+    second = await bridge.launch(
+        actor=actor,
+        epic_id=epic_id,
+        idempotency_key="unknown-owner",
+        request=request(execution_id=first.execution_id, owner_override=True),
+    )
+    assert "child_usage_unproved" in second.blocker_codes
+    budget = EpicBudgetService(bridge_factory)
+    before = await budget.get(epic_id)
+    assert before.unknown and len(before.permits) == 1
+    assert before.permits[0].run_id == second.run_id
+    async with bridge_factory() as work:
+        run = await work.runs.get(second.run_id)
+        primary = await _admit_run(work, run, (_route("p"), _route("p")))
+        await _enqueue(
+            work,
+            second.run_id,
+            provider="p",
+            worktree="unknown-owner-tree",
+            parent_id=primary,
+            paths=("apps",),
+        )
+        await work.commit()
+    executor = SubscriptionDecisionExecutor(lambda: PostgresUnitOfWork(session_factory))
+    admitted = await executor.admit_next(
+        "unknown-owner", TaskBudget(max_provider_attempts=1, max_repairs=0)
+    )
+    assert admitted is not None and admitted.attempt.attempt_number == 1
+    after = await budget.get(epic_id)
+    assert after.unknown and "child_usage_unproved" in after.warnings
+    assert after.permits[0].consumed_attempt_id == admitted.attempt.attempt_id
+
+
+@pytest.mark.integration
 async def test_internal_child_claim_obeys_edited_epic_cap_and_one_owner_permit(
     session_factory, bridge_factory
 ):
@@ -1911,8 +2120,9 @@ async def test_proven_positive_child_cost_keeps_unit_until_conflicting_currency(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("permit_source", ("manual", "launch"))
 async def test_owner_epic_permit_preserves_real_provider_quota_refusal(
-    session_factory, bridge_factory
+    session_factory, bridge_factory, permit_source
 ):
     from datetime import UTC, datetime, timedelta
 
@@ -1920,6 +2130,7 @@ async def test_owner_epic_permit_preserves_real_provider_quota_refusal(
     from forge.domain.provider_quota import QuotaExhaustion
     from forge.domain.subscription_quota import QuotaPoolKey
     from forge.persistence.models.subscription import SubscriptionAttempt
+    from forge.persistence.models.subscription_quota import SubscriptionQuotaPool
 
     from apps.orchestrator.tests.persistence.test_scheduler_acceptance import (
         _admit_run,
@@ -1928,20 +2139,38 @@ async def test_owner_epic_permit_preserves_real_provider_quota_refusal(
     )
 
     bridge, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
-    child = await bridge.launch(
-        actor=actor, epic_id=epic_id, idempotency_key="quota-child", request=request()
-    )
     budget = EpicBudgetService(bridge_factory)
     before = await budget.get(epic_id)
-    lowered = await budget.edit(
-        actor=actor,
-        epic_id=epic_id,
-        idempotency_key="quota-low-cap",
-        request=EpicBudgetEdit(
-            expected_version=before.version,
-            ceiling=TaskBudget(max_provider_attempts=0),
-        ),
-    )
+    if permit_source == "launch":
+        lowered = await budget.edit(
+            actor=actor,
+            epic_id=epic_id,
+            idempotency_key="quota-low-cap",
+            request=EpicBudgetEdit(
+                expected_version=before.version,
+                ceiling=TaskBudget(max_provider_attempts=0),
+            ),
+        )
+        child = await bridge.launch(
+            actor=actor,
+            epic_id=epic_id,
+            idempotency_key="quota-owner-child",
+            request=request(owner_override=True),
+        )
+    else:
+        child = await bridge.launch(
+            actor=actor, epic_id=epic_id, idempotency_key="quota-child", request=request()
+        )
+        before = await budget.get(epic_id)
+        lowered = await budget.edit(
+            actor=actor,
+            epic_id=epic_id,
+            idempotency_key="quota-low-cap",
+            request=EpicBudgetEdit(
+                expected_version=before.version,
+                ceiling=TaskBudget(max_provider_attempts=0),
+            ),
+        )
     async with bridge_factory() as work:
         run = await work.runs.get(child.run_id)
         primary = await _admit_run(work, run, (_route("p"), _route("p")))
@@ -1961,13 +2190,16 @@ async def test_owner_epic_permit_preserves_real_provider_quota_refusal(
             idempotency_key="epic-quota-report",
         )
         await work.commit()
-    permit = await budget.permit(
-        actor=actor,
-        epic_id=epic_id,
-        idempotency_key="quota-permit",
-        request=EpicBudgetPermitRequest(expected_version=lowered.version, run_id=child.run_id),
-    )
-    assert "epic_budget_provider_attempts_exhausted" in permit.warnings
+    if permit_source == "manual":
+        permit = await budget.permit(
+            actor=actor,
+            epic_id=epic_id,
+            idempotency_key="quota-permit",
+            request=EpicBudgetPermitRequest(expected_version=lowered.version, run_id=child.run_id),
+        )
+        assert "epic_budget_provider_attempts_exhausted" in permit.warnings
+    else:
+        assert "epic_budget_provider_attempts_exhausted" in child.blocker_codes
     executor = SubscriptionDecisionExecutor(lambda: PostgresUnitOfWork(session_factory))
     assert await executor.admit_next("quota-blocked", TaskBudget()) is None
     after = await budget.get(epic_id)
@@ -1980,6 +2212,24 @@ async def test_owner_epic_permit_preserves_real_provider_quota_refusal(
                 select(SubscriptionAttempt).where(SubscriptionAttempt.task_row_id == task)
             )
         ).all()
+        pool = await work.session.get(
+            SubscriptionQuotaPool,
+            ("p", "local", "subscription-allowance_only"),
+            with_for_update=True,
+        )
+        assert pool is not None and pool.blocked
+        pool.blocked = False
+        pool.next_eligible_at = None
+        pool.reset_at = None
+        pool.revision += 1
+        await work.commit()
+    admitted = await executor.admit_next(
+        "quota-recovered", TaskBudget(max_provider_attempts=1, max_repairs=0)
+    )
+    assert admitted is not None and admitted.attempt.attempt_number == 1
+    final = await budget.get(epic_id)
+    assert len(final.permits) == 1
+    assert final.permits[0].consumed_attempt_id == admitted.attempt.attempt_id
 
 
 @pytest.mark.integration

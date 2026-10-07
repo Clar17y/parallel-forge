@@ -16,6 +16,9 @@ class EpicRunBridgeRepository(Protocol):
         self, epic_id: UUID, project_id: UUID, *, ceiling: TaskBudget, hold: TaskBudget
     ) -> list[str]: ...
     async def create_child_hold(self, attempt: EpicAttempt, budget: TaskBudget) -> None: ...
+    async def create_launch_permit(
+        self, attempt: EpicAttempt, *, note: str | None, warnings: list[str]
+    ) -> UUID: ...
     async def create_execution(
         self,
         *,
