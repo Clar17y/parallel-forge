@@ -63,6 +63,47 @@ class LaunchRequest(BaseModel):
         return value
 
 
+class ExecutionStartRequest(BaseModel):
+    """Select and freeze one existing matching brief/graph pair."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal[1] = 1
+    expected_epic_version: int = Field(ge=1, strict=True)
+    brief_revision_id: UUID | None = None
+    brief_digest: str | None = None
+    graph_revision_id: UUID | None = None
+    graph_digest: str | None = None
+    owner_override: bool = Field(default=False, strict=True)
+    override_note: str | None = Field(default=None, max_length=2048)
+
+    @model_validator(mode="after")
+    def selected_pair_is_complete(self) -> ExecutionStartRequest:
+        selected = (
+            self.brief_revision_id,
+            self.brief_digest,
+            self.graph_revision_id,
+            self.graph_digest,
+        )
+        if any(value is not None for value in selected) and not all(
+            value is not None for value in selected
+        ):
+            raise ValueError("selected source pair must be complete")
+        for digest in (self.brief_digest, self.graph_digest):
+            if digest is not None and (
+                len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+            ):
+                raise ValueError("digest is invalid")
+        return self
+
+    @field_validator("override_note")
+    @classmethod
+    def note_is_safe(cls, value: str | None) -> str | None:
+        if value is not None and (not value.strip() or "\x00" in value):
+            raise ValueError("note is invalid")
+        validate_durable_payload(value)
+        return value
+
+
 class EpicExecutionSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     execution_id: UUID

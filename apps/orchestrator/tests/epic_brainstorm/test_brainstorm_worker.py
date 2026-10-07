@@ -17,6 +17,7 @@ from forge.domain.subscription import (
     RouteSpec,
     TaskBudget,
     UnknownTelemetryPolicy,
+    encode_subscription_record,
 )
 from forge.domain.subscription_quota import QuotaPolicy
 from forge.persistence.models.epic_brainstorm import (
@@ -145,6 +146,233 @@ async def prepared(factory, *, attempts=2, budget=None, repository="example/repo
         key="submit",
     )
     return service, epic_id, project_id, actor, receipt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_override", [False, True])
+async def test_owner_retry_authority_reaches_the_next_worker_claim(
+    brainstorm_session_factory, owner_override
+):
+    service, epic_id, project_id, actor, receipt = await prepared(
+        brainstorm_session_factory, budget=TaskBudget(max_provider_attempts=1)
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("first")
+        assert claimed is not None
+        job, first = claimed
+        first.process_settled = first.usage_known = True
+        first.usage = {
+            "duration_ms": 10,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_api_cost_minor": 0,
+        }
+        job.state, job.failure = "failed", "unavailable"
+        job.version += 1
+    failed = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    with pytest.raises(BrainstormConflict, match="retry requires owner override"):
+        await service.retry(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=receipt.job_id,
+            expected_job_version=failed.job_version,
+            actor=actor,
+            key="default-retry",
+        )
+    if not owner_override:
+        async with brainstorm_session_factory() as session, session.begin():
+            ledger = await session.get(BrainstormBudgetLedger, epic_id, with_for_update=True)
+            ledger.ceiling = encode_subscription_record(TaskBudget(max_provider_attempts=2))
+            ledger.version += 1
+    retried = await service.retry(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=failed.job_version,
+        actor=actor,
+        key="raised-retry",
+        owner_override=owner_override,
+    )
+    assert retried.state == "queued"
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("second")
+        assert claimed is not None
+        job, second = claimed
+        assert second.number == 2 and second.job_id == receipt.job_id
+        assert (
+            PostgresBrainstormRepository(session).decode_snapshot(job).budget.max_provider_attempts
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lineage_gap", ("admission", "currency"))
+async def test_owner_retry_reaches_claim_after_known_authoring_cost_loses_lineage(
+    brainstorm_session_factory, lineage_gap
+):
+    from forge.persistence.repositories.epic_budget import PostgresEpicBudgetRepository
+
+    service, epic_id, project_id, actor, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(max_provider_attempts=2, max_cost_minor=10),
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("first")
+        assert claimed is not None
+        job, first = claimed
+        first.process_settled = first.usage_known = True
+        first.usage = {
+            "duration_ms": 10,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_api_cost_minor": 3,
+            "currency": "USD" if lineage_gap == "admission" else None,
+        }
+        if lineage_gap == "admission":
+            admission = await session.get(BrainstormQuotaAdmission, first.id)
+            assert admission is not None
+            await session.delete(admission)
+        job.state, job.failure = "failed", "unavailable"
+        job.version += 1
+    async with brainstorm_session_factory() as session:
+        totals = await PostgresEpicBudgetRepository(
+            session, legacy_hold=TaskBudget(max_provider_attempts=2, max_cost_minor=10)
+        ).totals(epic_id)
+        assert totals.unknown and "authoring_cost_lineage_unproved" in totals.warnings
+        assert "authoring_positive_cost_lineage_unproved" in totals.warnings
+        assert totals.known["estimated_api_cost_minor"] == 0
+        assert totals.held["estimated_api_cost_minor"] >= 3
+    failed = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    with pytest.raises(BrainstormConflict, match="retry requires owner override"):
+        await service.retry(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=receipt.job_id,
+            expected_job_version=failed.job_version,
+            actor=actor,
+            key=f"default-{lineage_gap}",
+        )
+    retried = await service.retry(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=failed.job_version,
+        actor=actor,
+        key=f"owner-{lineage_gap}",
+        owner_override=True,
+    )
+    assert retried.state == "queued"
+    async with brainstorm_session_factory() as session, session.begin():
+        admitted = await PostgresBrainstormRepository(session).claim(f"next-{lineage_gap}")
+        assert admitted is not None and admitted[0].id == receipt.job_id
+        assert admitted[1].number == 2
+        assert admitted[0].retry_authorized_until is None
+        assert not admitted[0].override_unknown_usage
+        prior = await session.get(BrainstormAttemptRow, first.id)
+        assert prior is not None and prior.usage["estimated_api_cost_minor"] == 3
+        assert prior.usage["currency"] == ("USD" if lineage_gap == "admission" else None)
+
+
+@pytest.mark.asyncio
+async def test_uncertain_authoring_money_with_proven_lineage_uses_policy_allowance(
+    brainstorm_session_factory,
+):
+    policy = UnknownTelemetryPolicy(max_uncertain_attempts=2)
+    service, epic_id, project_id, actor, receipt = await prepared(
+        brainstorm_session_factory,
+        budget=TaskBudget(
+            max_provider_attempts=3,
+            max_cost_minor=20,
+            unknown_telemetry_policy=policy,
+        ),
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("first")
+        assert claimed is not None
+        job, first = claimed
+        first.process_settled = True
+        first.usage_known = False
+        first.usage = {
+            "duration_ms": 10,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_api_cost_minor": 3,
+            "currency": "USD",
+        }
+        job.state, job.failure = "failed", "unavailable"
+        job.version += 1
+        ledger = await session.get(BrainstormBudgetLedger, epic_id, with_for_update=True)
+        assert ledger is not None
+        ledger.ceiling = encode_subscription_record(
+            TaskBudget(
+                max_provider_attempts=3,
+                max_cost_minor=40,
+                unknown_telemetry_policy=policy,
+            )
+        )
+        ledger.version += 1
+    failed = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    retried = await service.retry(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=failed.job_version,
+        actor=actor,
+        key="policy-retry",
+    )
+    assert retried.state == "queued"
+    async with brainstorm_session_factory() as session, session.begin():
+        admitted = await PostgresBrainstormRepository(session).claim("policy-next")
+        assert admitted is not None and admitted[1].number == 2
+        assert not admitted[0].override_unknown_usage
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_override", [False, True])
+async def test_first_budget_refusal_recovers_without_inventing_an_attempt(
+    brainstorm_session_factory, owner_override
+):
+    service, epic_id, project_id, actor, receipt = await prepared(brainstorm_session_factory)
+    async with brainstorm_session_factory() as session, session.begin():
+        session.add(
+            BrainstormBudgetLedger(
+                epic_id=epic_id,
+                project_id=project_id,
+                ceiling=encode_subscription_record(TaskBudget(max_provider_attempts=0)),
+            )
+        )
+    async with brainstorm_session_factory() as session, session.begin():
+        assert await PostgresBrainstormRepository(session).claim("first-refused") is None
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        assert job is not None and job.state == "failed" and job.current_attempt_id is None
+    failed = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert failed.process_settled and failed.usage_known is None
+    if not owner_override:
+        async with brainstorm_session_factory() as session, session.begin():
+            ledger = await session.get(BrainstormBudgetLedger, epic_id, with_for_update=True)
+            assert ledger is not None
+            ledger.ceiling = encode_subscription_record(TaskBudget(max_provider_attempts=1))
+            ledger.version += 1
+    retried = await service.retry(
+        epic_id=epic_id,
+        project_id=project_id,
+        job_id=receipt.job_id,
+        expected_job_version=failed.job_version,
+        actor=actor,
+        key=f"first-retry-{owner_override}",
+        owner_override=owner_override,
+    )
+    assert retried.state == "queued"
+    async with brainstorm_session_factory() as session, session.begin():
+        admitted = await PostgresBrainstormRepository(session).claim("recovered")
+        assert admitted is not None and admitted[0].id == receipt.job_id
+        assert admitted[1].number == 1
+        assert admitted[0].retry_authorized_until is None
+        assert not admitted[0].override_unknown_usage
+        assert len(await PostgresBrainstormRepository(session)._epic_attempts(epic_id)) == 1
 
 
 @pytest.mark.asyncio

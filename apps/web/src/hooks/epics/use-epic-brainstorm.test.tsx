@@ -136,4 +136,30 @@ describe('useEpicBrainstorm', () => {
     expect(api).toHaveBeenCalledWith(`/epics/${epicId}/brainstorm-conversations/thread-A/turns?project_id=${projectId}`, expect.any(Object));
     expect(result.current.activeConversationId).not.toBe('thread-B');
   });
+
+  test('retries failed brainstorm job with owner override and note', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/job-1/retry` && init?.method === 'POST') {
+        return { schema_version: 1, job_id: 'job-1', job_version: 5, state: 'queued', replay_key: 'rk' } as T;
+      }
+      return undefined as T;
+    });
+
+    const { result } = renderHook(() => useEpicBrainstorm(epicId, projectId));
+    await act(async () => {
+      await result.current.retryJob('job-1', 4, true, 'Owner override for quota exhaustion');
+    });
+
+    expect(api).toHaveBeenCalledWith(`/epics/${epicId}/brainstorm-jobs/job-1/retry`, expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        schema_version: 1,
+        project_id: projectId,
+        expected_job_version: 4,
+        owner_override: true,
+        override_note: 'Owner override for quota exhaustion',
+      }),
+    }));
+  });
 });

@@ -39,6 +39,11 @@ class DecompositionJobControl(_Request):
     expected_job_version: int = Field(ge=1)
 
 
+class DecompositionJobRetry(DecompositionJobControl):
+    owner_override: bool = False
+    override_note: str | None = Field(default=None, max_length=2048)
+
+
 class DecompositionProposalAdopt(DecompositionJobControl):
     expected_epic_version: int = Field(ge=1)
     proposal_digest: str = Field(pattern=r"^[0-9a-f]{64}$")

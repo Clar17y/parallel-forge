@@ -235,9 +235,15 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
     { schema_version: 1, project_id: projectId, expected_job_version: expectedJobVersion }, { kind: 'job-cancel' },
   ), [epicId, execute, projectId]);
 
-  const retryJob = useCallback((jobIdValue: string, expectedJobVersion: number) => execute<AuthoringReceipt>(
+  const retryJob = useCallback((jobIdValue: string, expectedJobVersion: number, ownerOverride?: boolean, overrideNote?: string | null) => execute<AuthoringReceipt>(
     'POST', `/epics/${epicId}/brainstorm-jobs/${jobIdValue}/retry`,
-    { schema_version: 1, project_id: projectId, expected_job_version: expectedJobVersion }, { kind: 'job-retry' },
+    {
+      schema_version: 1,
+      project_id: projectId,
+      expected_job_version: expectedJobVersion,
+      ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
+      ...(overrideNote ? { override_note: overrideNote } : {}),
+    }, { kind: 'job-retry' },
   ), [epicId, execute, projectId]);
 
   return {

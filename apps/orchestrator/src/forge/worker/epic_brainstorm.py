@@ -25,7 +25,11 @@ from forge.agents.client_process import (
     ProcessIdentityStatus,
     terminal_launch_proof,
 )
-from forge.application.ports.epic_brainstorm import BrainstormGateway, BrainstormGatewayResult
+from forge.application.ports.epic_brainstorm import (
+    AuthoringGatewayResult,
+    BrainstormGateway,
+    BrainstormGatewayResult,
+)
 from forge.application.ports.repository import RepositoryReader
 from forge.domain.epic_brainstorm import (
     _MAX_USAGE,
@@ -34,7 +38,7 @@ from forge.domain.epic_brainstorm import (
     BrainstormTurn,
     duration_floor,
 )
-from forge.domain.subscription import AttemptTelemetry
+from forge.domain.subscription import AttemptTelemetry, TaskBudget
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
 from forge.domain.subscription_quota import QuotaPolicy
 from forge.persistence.models.epic_brainstorm import BrainstormAttemptRow, BrainstormJobRow
@@ -231,6 +235,8 @@ class EpicBrainstormWorker:
         ],
         lease_seconds: int = 30,
         quota_policy: QuotaPolicy | None = None,
+        epic_ceiling: TaskBudget | None = None,
+        kinds: frozenset[str] = frozenset(("brainstorm",)),
     ) -> None:
         if (
             not isinstance(owner, str)
@@ -251,21 +257,36 @@ class EpicBrainstormWorker:
             reader_factory,
         )
         self.lease_seconds = lease_seconds
+        if not kinds or not kinds <= frozenset(("brainstorm", "decomposition")):
+            raise ValueError("authoring worker kinds are invalid")
+        self.kinds = kinds
         self.quota_policy = quota_policy or QuotaPolicy()
-        self._active_operations: set[asyncio.Task[BrainstormGatewayResult]] = set()
+        self.epic_ceiling = epic_ceiling
+        self._active_operations: set[asyncio.Task[AuthoringGatewayResult]] = set()
 
-    def _retire_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> None:
+    def _retire_operation(self, operation: asyncio.Task[AuthoringGatewayResult]) -> None:
         self._active_operations.discard(operation)
         if not operation.cancelled():
             # Retrieve without formatting or persisting provider exception text.
             operation.exception()
 
-    def _track_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> None:
+    def _track_operation(self, operation: asyncio.Task[AuthoringGatewayResult]) -> None:
         self._active_operations.add(operation)
         operation.add_done_callback(self._retire_operation)
 
+    async def drain(self) -> None:
+        operations = tuple(self._active_operations)
+        if operations:
+            done, pending = await asyncio.wait(operations, timeout=_OPERATION_GRACE_SECONDS)
+            if pending:
+                raise RuntimeError("authoring process did not settle during drain")
+            for operation in done:
+                self._retire_operation(operation)
+
     def _repository(self, session: AsyncSession) -> PostgresBrainstormRepository:
-        return PostgresBrainstormRepository(session, quota_policy=self.quota_policy)
+        return PostgresBrainstormRepository(
+            session, quota_policy=self.quota_policy, epic_ceiling=self.epic_ceiling
+        )
 
     @staticmethod
     def _host_duration_ms(attempt: BrainstormAttemptRow) -> int:
@@ -290,7 +311,7 @@ class EpicBrainstormWorker:
         }
 
     @staticmethod
-    def _quota_reset(result: BrainstormGatewayResult | None) -> datetime | None:
+    def _quota_reset(result: AuthoringGatewayResult | None) -> datetime | None:
         if (
             result is None
             or not isinstance(result.quota_reset_at, str)
@@ -448,7 +469,7 @@ class EpicBrainstormWorker:
             return reconciled
         async with self.sessions() as session, session.begin():
             repository = self._repository(session)
-            claimed = await repository.claim(self.owner, self.lease_seconds)
+            claimed = await repository.claim(self.owner, self.lease_seconds, kinds=self.kinds)
             if claimed is None:
                 return None
             row, attempt = claimed
@@ -488,9 +509,9 @@ class EpicBrainstormWorker:
                 or persisted_cancelled
             )
 
-        result: BrainstormGatewayResult | None = None
+        result: AuthoringGatewayResult | None = None
         failure = "unavailable"
-        operation: asyncio.Task[BrainstormGatewayResult] | None = None
+        operation: asyncio.Task[AuthoringGatewayResult] | None = None
         interrupted_during_cleanup = False
         try:
             # Construction is lazy. No client exists until the durable admission above.
@@ -531,7 +552,7 @@ class EpicBrainstormWorker:
                         raise BrainstormConflict("tool budget exhausted")
                     active.tool_calls_used += 1
 
-            async def invoke() -> BrainstormGatewayResult:
+            async def invoke() -> AuthoringGatewayResult:
                 constructed = self.reader_factory(snapshot)
                 asynchronous_reader = inspect.isawaitable(constructed)
                 repository_reader = (
@@ -620,7 +641,7 @@ class EpicBrainstormWorker:
             raise asyncio.CancelledError
         return snapshot.job_id
 
-    async def _wait_for_operation(self, operation: asyncio.Task[BrainstormGatewayResult]) -> bool:
+    async def _wait_for_operation(self, operation: asyncio.Task[AuthoringGatewayResult]) -> bool:
         deadline = asyncio.get_running_loop().time() + _OPERATION_GRACE_SECONDS
         interrupted = False
         while not operation.done():
@@ -641,7 +662,7 @@ class EpicBrainstormWorker:
         snapshot: AuthoringJobSnapshot,
         attempt_id: UUID,
         fence: UUID,
-        result: BrainstormGatewayResult | None,
+        result: AuthoringGatewayResult | None,
         failure: str,
         job_cancel: asyncio.Event,
     ) -> bool:
@@ -725,7 +746,7 @@ class EpicBrainstormWorker:
         snapshot: AuthoringJobSnapshot,
         attempt_id: UUID,
         fence: UUID,
-        result: BrainstormGatewayResult | None,
+        result: AuthoringGatewayResult | None,
         failure: str,
         stop: asyncio.Event,
     ) -> None:

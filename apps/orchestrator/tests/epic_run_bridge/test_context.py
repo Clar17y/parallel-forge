@@ -4,10 +4,16 @@ import json
 from uuid import UUID
 
 import pytest
+from forge.application.services.epic_budget import EpicBudgetEdit, EpicBudgetPermitRequest
 from forge.application.services.epic_run_bridge import build_task_context
 from forge.domain.epic_brief import BriefContent, BriefRequirement
 from forge.domain.epic_items import ItemInput, make_snapshot
-from forge.domain.epic_run_bridge import DependencyEvidence, LaunchRequest
+from forge.domain.epic_run_bridge import (
+    DependencyEvidence,
+    ExecutionStartRequest,
+    LaunchRequest,
+)
+from forge.domain.subscription import TaskBudget
 from pydantic import ValidationError
 
 
@@ -147,3 +153,45 @@ def test_context_preserves_complete_criteria_and_binds_owner_action():
     assert parsed["requirements"][0]["acceptance_criteria"] == [requirement_criterion]
     changed = {**arguments, "owner_override": False, "override_note": None}
     assert build_task_context(**changed)[1] != digest
+
+
+@pytest.mark.parametrize(
+    ("request_type", "note_field", "allow_blank"),
+    (
+        (LaunchRequest, "override_note", False),
+        (ExecutionStartRequest, "override_note", False),
+        (EpicBudgetEdit, "note", True),
+        (EpicBudgetPermitRequest, "note", True),
+    ),
+    ids=("launch", "start", "budget-edit", "budget-permit"),
+)
+def test_request_note_validation_contract(request_type, note_field, allow_blank):
+    source_pair = {
+        "expected_epic_version": 1,
+        "brief_revision_id": UUID(int=1),
+        "brief_digest": "0" * 64,
+        "graph_revision_id": UUID(int=2),
+        "graph_digest": "0" * 64,
+    }
+    data = {
+        LaunchRequest: {**source_pair, "item_id": UUID(int=3)},
+        ExecutionStartRequest: source_pair,
+        EpicBudgetEdit: {"expected_version": 0, "ceiling": TaskBudget()},
+        EpicBudgetPermitRequest: {"expected_version": 0, "run_id": UUID(int=10)},
+    }[request_type]
+    assert getattr(request_type.model_validate(data), note_field) is None
+
+    valid_notes = (None, "manual note", "  note with surrounding spaces  ")
+    invalid_notes = ("abc\x00def", "password=synthetic_placeholder")
+    if allow_blank:
+        valid_notes += ("", "   ")
+    else:
+        invalid_notes += ("", "   ")
+
+    for note in valid_notes:
+        request = request_type.model_validate({**data, note_field: note})
+        assert getattr(request, note_field) == note
+    for note in invalid_notes:
+        with pytest.raises(ValidationError) as error:
+            request_type.model_validate({**data, note_field: note})
+        assert error.value.errors(include_input=False)[0]["loc"] == (note_field,)

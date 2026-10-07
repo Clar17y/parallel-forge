@@ -33,7 +33,14 @@ from forge.persistence.models.epic_brainstorm import (
 )
 from forge.persistence.models.epic_brief import Epic, EpicBriefRevision
 from forge.persistence.models.epic_items import EpicGraphRevision
-from forge.persistence.models.epic_run_bridge import EpicExecution, EpicItemAttempt
+from forge.persistence.models.epic_run_bridge import (
+    EpicBudgetAdmissionPermit,
+    EpicChildBudgetHold,
+    EpicControlIntent,
+    EpicExecution,
+    EpicExecutionControl,
+    EpicItemAttempt,
+)
 from forge.persistence.models.evaluation import EvaluationCase, EvaluationSuite
 from forge.persistence.models.execution import (
     AgentExecution,
@@ -58,6 +65,7 @@ from forge.persistence.models.recovery import RecoveryBarrier
 from forge.persistence.models.release import PullRequest
 from forge.persistence.models.run import Run
 from forge.persistence.models.scheduling import (
+    EpicAdmissionScanCursor,
     SubscriptionScheduledEffect,
     SubscriptionScheduledTask,
     SubscriptionSchedulerCapacityPolicy,
@@ -133,8 +141,13 @@ __all__ = [
     "CapabilityEvidence",
     "CapabilityProbeDiagnosticRecord",
     "Epic",
+    "EpicAdmissionScanCursor",
     "EpicBriefRevision",
+    "EpicBudgetAdmissionPermit",
+    "EpicChildBudgetHold",
+    "EpicControlIntent",
     "EpicExecution",
+    "EpicExecutionControl",
     "EpicGraphRevision",
     "EpicItemAttempt",
     "EvaluationCase",

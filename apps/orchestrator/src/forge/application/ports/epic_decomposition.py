@@ -9,6 +9,7 @@ from uuid import UUID
 
 from forge.application.ports.audit import AuditRepository
 from forge.application.ports.epic_brainstorm import (
+    AuthoringGatewayResult,
     BrainstormProcessLifecycle,
 )
 from forge.application.ports.epic_brief import EpicBriefRepository
@@ -44,56 +45,104 @@ class DecompositionGateway(Protocol):
         *,
         cancelled: Callable[[], Awaitable[bool]],
         lifecycle: BrainstormProcessLifecycle,
-    ) -> DecompositionGatewayResult: ...
+    ) -> AuthoringGatewayResult: ...
 
 
 class DecompositionAuthoringPort(Protocol):
     """Shared authoring hooks required by the decomposition subject."""
 
     async def create(
-        self, *, epic_id: UUID, project_id: UUID, actor: AuthenticatedActor,
-        key: str, text: str,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        actor: AuthenticatedActor,
+        key: str,
+        text: str,
     ) -> tuple[UUID, int]: ...
 
     async def turns(
-        self, *, epic_id: UUID, project_id: UUID, conversation_id: UUID,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        conversation_id: UUID,
     ) -> tuple[BrainstormTurn, ...]: ...
 
     async def threads(
-        self, *, epic_id: UUID, project_id: UUID,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
     ) -> tuple[BrainstormThread, ...]: ...
 
     async def append(
-        self, *, epic_id: UUID, project_id: UUID, conversation_id: UUID,
-        expected_version: int, actor: AuthenticatedActor, key: str, text: str,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        conversation_id: UUID,
+        expected_version: int,
+        actor: AuthenticatedActor,
+        key: str,
+        text: str,
         pending: bool = False,
     ) -> int: ...
 
     async def submit(
-        self, *, epic_id: UUID, project_id: UUID, conversation_id: UUID,
-        prompt_turn_id: UUID, expected_epic_version: int,
-        expected_conversation_version: int, actor: AuthenticatedActor, key: str,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        conversation_id: UUID,
+        prompt_turn_id: UUID,
+        expected_epic_version: int,
+        expected_conversation_version: int,
+        actor: AuthenticatedActor,
+        key: str,
         kind: Literal["brainstorm", "decomposition"],
     ) -> AuthoringReceipt: ...
 
     async def require_kind(
-        self, *, epic_id: UUID, project_id: UUID, job_id: UUID,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
         kind: Literal["brainstorm", "decomposition"],
     ) -> None: ...
 
     async def observe(
-        self, *, epic_id: UUID, project_id: UUID, job_id: UUID,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
         kind: Literal["brainstorm", "decomposition"] | None = None,
     ) -> AuthoringOutcome: ...
 
     async def cancel(
-        self, *, epic_id: UUID, project_id: UUID, job_id: UUID,
-        expected_job_version: int, actor: AuthenticatedActor, key: str,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        expected_job_version: int,
+        actor: AuthenticatedActor,
+        key: str,
     ) -> AuthoringReceipt: ...
 
     async def retry(
-        self, *, epic_id: UUID, project_id: UUID, job_id: UUID,
-        expected_job_version: int, actor: AuthenticatedActor, key: str,
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        expected_job_version: int,
+        actor: AuthenticatedActor,
+        key: str,
+        owner_override: bool = False,
+        override_note: str | None = None,
     ) -> AuthoringReceipt: ...
 
 

@@ -21,7 +21,7 @@ export default function ProjectPage() {
     {project.failed && <p role="alert">Project unavailable. <button onClick={project.refresh}>Retry</button></p>}
     {value && <>
       <p>{value.repository_path} · {value.github_repository} · {value.default_branch}</p>
-      <p><Link href="/runs/new">New run</Link> · <Link href="/policies">Policy history</Link></p>
+      <p><Link href="/runs/new">New run</Link> · <Link href="/policies">Policy history</Link> · <Link href={`/epics?project_id=${projectId}`}>Epics</Link></p>
       {policy.loading && <p role="status">Loading policy…</p>}
       {policy.failed && <p role="alert">Policy unavailable. <button onClick={policy.refresh}>Retry</button></p>}
       {policy.value && <PolicyEditor policy={policy.value} onSave={async request => {

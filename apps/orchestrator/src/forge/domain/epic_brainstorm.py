@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from forge.domain.epic_decomposition import DecompositionProposal
 from forge.domain.operation import canonical_digest
 from forge.domain.payload import validate_durable_payload
 from forge.domain.subscription import RouteBinding, TaskBudget
@@ -48,7 +49,7 @@ class BrainstormTurn(_Closed):
     role: Literal["operator", "assistant"]
     text: str
     pending: bool = False
-    proposal: BrainstormProposal | None = None
+    proposal: BrainstormProposal | DecompositionProposal | None = None
 
     @field_validator("text")
     @classmethod
@@ -205,7 +206,7 @@ class AuthoringJobSnapshot(_Closed):
     epic_id: UUID
     project_id: UUID
     conversation_id: UUID
-    kind: Literal["brainstorm"] = "brainstorm"
+    kind: Literal["brainstorm", "decomposition"] = "brainstorm"
     input_brief_revision_id: UUID | None
     input_brief_digest: str | None
     input_draft_digest: str
@@ -391,7 +392,7 @@ class AuthoringOutcome(_Closed):
     job_version: int = Field(ge=1)
     state: BrainstormState
     proposal_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", max_length=64)
-    proposal: BrainstormProposal | None = None
+    proposal: BrainstormProposal | DecompositionProposal | None = None
     adopted_revision_id: UUID | None = None
     failure: BrainstormFailure | None = None
     usage_known: bool | None = None

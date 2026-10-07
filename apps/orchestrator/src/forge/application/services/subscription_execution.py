@@ -28,8 +28,16 @@ class SubscriptionDecisionExecutor:
         if eligible_routes == frozenset():
             return None
         async with self._work_factory() as work:
+            prepared_run_ids = await work.scheduler.prepare_epic_claim()
+            if not prepared_run_ids:
+                await work.commit()
+                return None
             lease = await work.scheduler.claim_execution_ready(
-                owner, lease_for, eligible_routes=eligible_routes, reservation_ceiling=reservation
+                owner,
+                lease_for,
+                eligible_routes=eligible_routes,
+                reservation_ceiling=reservation,
+                prepared_run_ids=prepared_run_ids,
             )
             if lease is None:
                 await work.commit()
@@ -39,6 +47,7 @@ class SubscriptionDecisionExecutor:
             )
             if fitted is None:
                 raise ValueError("attempt budget changed within atomic admission")
+            epic_blockers = await work.scheduler.epic_admission_blockers(lease.run_id, fitted)
             admission = await work.subscription_execution.admit(lease, uuid4())
             await work.subscription_budget.reserve_attempt(
                 lease.run_id,
@@ -46,6 +55,9 @@ class SubscriptionDecisionExecutor:
                 admission.attempt.attempt_id,
                 fitted,
                 idempotency_key=f"attempt:{admission.attempt.attempt_id}",
+            )
+            await work.scheduler.consume_epic_permit(
+                lease.run_id, admission.attempt.attempt_id, epic_blockers
             )
             await work.commit()
             return admission

@@ -8,8 +8,13 @@ from uuid import uuid4
 import pytest
 from forge.agents.client_process import ClientLaunchSpec, ClientProcessSupervisor, _process_token
 from forge.application.ports.epic_brainstorm import BrainstormGatewayResult
-from forge.domain.subscription import TaskBudget, UnknownTelemetryPolicy
-from forge.persistence.models.epic_brainstorm import BrainstormAttemptRow, BrainstormJobRow
+from forge.domain.subscription import TaskBudget, UnknownTelemetryPolicy, encode_subscription_record
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormAttemptRow,
+    BrainstormBudgetLedger,
+    BrainstormJobRow,
+)
+from forge.persistence.models.subscription_quota import SubscriptionQuotaPool
 from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRepository
 from forge.worker.epic_brainstorm import (
     DurableBrainstormProcessLifecycle,
@@ -17,6 +22,56 @@ from forge.worker.epic_brainstorm import (
     worker_host_scope,
 )
 from sqlalchemy import select
+
+
+@pytest.mark.asyncio
+async def test_authoring_claim_waiting_on_epic_ledger_does_not_hold_quota_pool(
+    brainstorm_session_factory,
+):
+    _, epic, project, _, receipt = await prepared(brainstorm_session_factory)
+    async with brainstorm_session_factory() as session, session.begin():
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        assert job is not None
+        repository = PostgresBrainstormRepository(session)
+        pool = await repository.quota_pool(repository.decode_snapshot(job))
+        pool_key = (pool.provider, pool.account, pool.pool)
+        session.add(
+            BrainstormBudgetLedger(
+                epic_id=epic,
+                project_id=project,
+                ceiling=encode_subscription_record(TaskBudget()),
+            )
+        )
+    entered = asyncio.Event()
+
+    async def claimant():
+        async with brainstorm_session_factory() as session, session.begin():
+            entered.set()
+            return await PostgresBrainstormRepository(session).claim("ledger-wait")
+
+    async with brainstorm_session_factory() as holder:
+        async with holder.begin():
+            await holder.get(BrainstormBudgetLedger, epic, with_for_update=True)
+            task = asyncio.create_task(claimant())
+            await entered.wait()
+            await asyncio.sleep(0.1)
+            assert not task.done()
+            async with brainstorm_session_factory() as observer, observer.begin():
+                # NOWAIT distinguishes the old pool→ledger inversion from the
+                # new ledger→pool order while the claim is stalled on ledger.
+                locked_pool = await observer.scalar(
+                    select(SubscriptionQuotaPool)
+                    .where(
+                        SubscriptionQuotaPool.provider == pool_key[0],
+                        SubscriptionQuotaPool.account == pool_key[1],
+                        SubscriptionQuotaPool.pool == pool_key[2],
+                    )
+                    .with_for_update(nowait=True)
+                )
+                assert locked_pool is not None
+        admitted = await asyncio.wait_for(task, 5)
+    assert admitted is not None and admitted[0].id == receipt.job_id
+
 
 from apps.orchestrator.tests.epic_brainstorm.test_brainstorm_worker import prepared
 

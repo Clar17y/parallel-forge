@@ -87,14 +87,14 @@ class EpicDecompositionService:
         pending: bool = False,
     ) -> int:
         return await self._authoring.append(
-                epic_id=epic_id,
-                project_id=project_id,
-                conversation_id=conversation_id,
-                expected_version=expected_version,
-                actor=actor,
-                key=key,
-                text=text,
-                pending=pending,
+            epic_id=epic_id,
+            project_id=project_id,
+            conversation_id=conversation_id,
+            expected_version=expected_version,
+            actor=actor,
+            key=key,
+            text=text,
+            pending=pending,
         )
 
     async def submit(
@@ -110,15 +110,15 @@ class EpicDecompositionService:
         key: str,
     ) -> AuthoringReceipt:
         return await self._authoring.submit(
-                epic_id=epic_id,
-                project_id=project_id,
-                conversation_id=conversation_id,
-                prompt_turn_id=prompt_turn_id,
-                expected_epic_version=expected_epic_version,
-                expected_conversation_version=expected_conversation_version,
-                actor=actor,
-                key=key,
-                kind="decomposition",
+            epic_id=epic_id,
+            project_id=project_id,
+            conversation_id=conversation_id,
+            prompt_turn_id=prompt_turn_id,
+            expected_epic_version=expected_epic_version,
+            expected_conversation_version=expected_conversation_version,
+            actor=actor,
+            key=key,
+            kind="decomposition",
         )
 
     async def observe(
@@ -146,16 +146,18 @@ class EpicDecompositionService:
         key: str,
     ) -> AuthoringReceipt:
         await self._authoring.require_kind(
-            epic_id=epic_id, project_id=project_id, job_id=job_id,
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
             kind="decomposition",
         )
         return await self._authoring.cancel(
-                epic_id=epic_id,
-                project_id=project_id,
-                job_id=job_id,
-                expected_job_version=expected_job_version,
-                actor=actor,
-                key=key,
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+            expected_job_version=expected_job_version,
+            actor=actor,
+            key=key,
         )
 
     async def retry(
@@ -167,18 +169,24 @@ class EpicDecompositionService:
         expected_job_version: int,
         actor: AuthenticatedActor,
         key: str,
+        owner_override: bool = False,
+        override_note: str | None = None,
     ) -> AuthoringReceipt:
         await self._authoring.require_kind(
-            epic_id=epic_id, project_id=project_id, job_id=job_id,
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
             kind="decomposition",
         )
         return await self._authoring.retry(
-                epic_id=epic_id,
-                project_id=project_id,
-                job_id=job_id,
-                expected_job_version=expected_job_version,
-                actor=actor,
-                key=key,
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+            expected_job_version=expected_job_version,
+            actor=actor,
+            key=key,
+            owner_override=owner_override,
+            override_note=override_note,
         )
 
     async def adopt(
@@ -203,7 +211,9 @@ class EpicDecompositionService:
             "proposal_digest": proposal_digest,
             "expected_job_version": expected_job_version,
             "expected_epic_version": expected_epic_version,
-            "items": [item.model_dump(mode="json") for item in items] if items is not None else None,
+            "items": [item.model_dump(mode="json") for item in items]
+            if items is not None
+            else None,
         }
         request_digest = canonical_digest(request_payload)
 
@@ -250,7 +260,8 @@ class EpicDecompositionService:
                 snapshot.expected_epic_version != epic.version
                 or snapshot.input_brief_revision_id != epic.accepted_brief_revision_id
                 or snapshot.input_brief_digest != epic.accepted_brief_digest
-                or snapshot.input_draft_digest != canonical_digest(epic.draft.model_dump(mode="json"))
+                or snapshot.input_draft_digest
+                != canonical_digest(epic.draft.model_dump(mode="json"))
                 or snapshot.input_graph_revision_id != epic.accepted_graph_revision_id
                 or snapshot.input_graph_digest != epic.accepted_graph_digest
             ):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from importlib import import_module
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -32,9 +32,11 @@ from forge.domain.subscription import (
     RouteBinding,
     SpecialistPurpose,
     TaskBudget,
+    decode_subscription_record,
 )
 from forge.persistence.models.epic_brainstorm import (
     BrainstormAttemptRow,
+    BrainstormBudgetLedger,
     BrainstormConversation,
     BrainstormJobRow,
 )
@@ -98,6 +100,20 @@ class EpicBrainstormService:
             budget,
             route_selector,
         )
+
+    async def require_kind(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        kind: Literal["brainstorm", "decomposition"],
+    ) -> None:
+        async with self.sessions() as session:
+            repository = PostgresBrainstormRepository(session)
+            row = await repository.job(epic_id, project_id, job_id)
+            if repository.decode_snapshot(row).kind != kind:
+                raise BrainstormConflict("authoring job kind conflicts with route")
 
     async def create(
         self, *, epic_id: UUID, project_id: UUID, actor: AuthenticatedActor, key: str, text: str
@@ -201,23 +217,26 @@ class EpicBrainstormService:
         actor: AuthenticatedActor,
         key: str,
         expected_snapshot: AuthoringJobSnapshot | None = None,
+        kind: Literal["brainstorm", "decomposition"] = "brainstorm",
     ) -> AuthoringReceipt:
-        digest = canonical_digest(
-            {
-                "schema_version": 1,
-                "action": "submit",
-                "epic_id": str(epic_id),
-                "project_id": str(project_id),
-                "actor_id": str(actor.actor_id),
-                "conversation_id": str(conversation_id),
-                "prompt_turn_id": str(prompt_turn_id),
-                "expected_epic_version": expected_epic_version,
-                "expected_conversation_version": expected_conversation_version,
-                "expected_snapshot": expected_snapshot.model_dump(mode="json")
-                if expected_snapshot
-                else None,
-            }
-        )
+        kind = expected_snapshot.kind if expected_snapshot is not None else kind
+        request = {
+            "schema_version": 1,
+            "action": "submit",
+            "epic_id": str(epic_id),
+            "project_id": str(project_id),
+            "actor_id": str(actor.actor_id),
+            "conversation_id": str(conversation_id),
+            "prompt_turn_id": str(prompt_turn_id),
+            "expected_epic_version": expected_epic_version,
+            "expected_conversation_version": expected_conversation_version,
+            "expected_snapshot": expected_snapshot.model_dump(mode="json")
+            if expected_snapshot
+            else None,
+        }
+        if kind != "brainstorm":
+            request["kind"] = kind
+        digest = canonical_digest(request)
         async with self.sessions() as session, session.begin():
             repository = PostgresBrainstormRepository(session)
             await repository.lock_command(epic_id, key)
@@ -228,6 +247,12 @@ class EpicBrainstormService:
                 epic_id, project_id, conversation_id, lock=True
             )
             brief = await self.briefs(session).input(epic_id)
+            if kind == "decomposition" and (
+                brief.accepted_revision_id is None
+                or brief.accepted_digest is None
+                or brief.accepted_content is None
+            ):
+                raise BrainstormConflict("decomposition requires an accepted brief")
             if (
                 brief.project_id != project_id
                 or brief.epic_version != expected_epic_version
@@ -254,6 +279,7 @@ class EpicBrainstormService:
                 epic_id=epic_id,
                 project_id=project_id,
                 conversation_id=conversation_id,
+                kind=kind,
                 input_brief_revision_id=brief.accepted_revision_id,
                 input_brief_digest=brief.accepted_digest,
                 input_draft_digest=brief.draft_digest,
@@ -298,10 +324,19 @@ class EpicBrainstormService:
             )
             return receipt
 
-    async def observe(self, *, epic_id: UUID, project_id: UUID, job_id: UUID) -> AuthoringOutcome:
+    async def observe(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        kind: Literal["brainstorm", "decomposition"] | None = None,
+    ) -> AuthoringOutcome:
         async with self.sessions() as session:
             repository = PostgresBrainstormRepository(session)
             row = await repository.job(epic_id, project_id, job_id)
+            if kind is not None and repository.decode_snapshot(row).kind != kind:
+                raise BrainstormConflict("authoring job kind conflicts with route")
             return await repository.outcome(row)
 
     async def turns(
@@ -371,7 +406,15 @@ class EpicBrainstormService:
         expected_job_version: int,
         actor: AuthenticatedActor,
         key: str,
+        owner_override: bool = False,
+        override_note: str | None = None,
     ) -> AuthoringReceipt:
+        if override_note is not None and (
+            not override_note.strip()
+            or "\x00" in override_note
+            or len(override_note.encode("utf-8")) > 2048
+        ):
+            raise ValueError("override note is invalid")
         digest = canonical_digest(
             {
                 "schema_version": 1,
@@ -381,6 +424,8 @@ class EpicBrainstormService:
                 "actor_id": str(actor.actor_id),
                 "job_id": str(job_id),
                 "expected_job_version": expected_job_version,
+                "owner_override": owner_override,
+                "override_note": override_note,
             }
         )
         async with self.sessions() as session, session.begin():
@@ -390,27 +435,75 @@ class EpicBrainstormService:
             if replay:
                 return AuthoringReceipt.model_validate(replay)
             row = await repository.job(epic_id, project_id, job_id, lock=True)
-            if (
-                row.version != expected_job_version
-                or row.state != "failed"
-                or row.current_attempt_id is None
-            ):
+            if row.version != expected_job_version or row.state != "failed":
                 raise BrainstormConflict("job retry is not eligible")
-            previous = await session.get(BrainstormAttemptRow, row.current_attempt_id)
+            previous = (
+                await session.get(BrainstormAttemptRow, row.current_attempt_id)
+                if row.current_attempt_id is not None
+                else None
+            )
             snapshot = repository.decode_snapshot(row)
-            if (
-                previous is None
-                or not previous.process_settled
-                or previous.number >= snapshot.budget.max_provider_attempts
-            ):
+            ledger = await session.get(BrainstormBudgetLedger, epic_id, with_for_update=True)
+            ceiling = (
+                decode_subscription_record(ledger.ceiling)
+                if ledger is not None
+                else snapshot.budget
+            )
+            if not isinstance(ceiling, TaskBudget):
+                raise BrainstormConflict("epic budget ceiling is invalid")
+            if previous is not None and not previous.process_settled:
                 raise BrainstormConflict("attempt settlement or retry budget is unavailable")
+            from forge.persistence.repositories.epic_budget import PostgresEpicBudgetRepository
+
+            totals = await PostgresEpicBudgetRepository(
+                session, legacy_hold=snapshot.budget
+            ).totals(epic_id)
+            disabled = frozenset(ledger.disabled_dimensions) if ledger is not None else frozenset()
+            # Retry authorizes one new invocation. The frozen job budget caps
+            # that invocation after claim, but is not itself an epic charge.
+            minimum_attempt = TaskBudget(
+                max_duration_seconds=1,
+                max_tool_calls=1,
+                max_provider_attempts=1,
+                max_input_tokens=1,
+                max_output_tokens=1,
+                max_cost_minor=1,
+            )
+            warnings = totals.blockers(ceiling, minimum_attempt, disabled)
+            authoring_attempts = await repository._epic_attempts(epic_id)
+            _, _, uncertain_attempts = repository._charges(authoring_attempts)
+            unknown_requires_owner = totals.shared_unknown or (
+                uncertain_attempts > 0
+                and uncertain_attempts >= ceiling.unknown_telemetry_policy.max_uncertain_attempts
+            )
+            required = [
+                warning
+                for warning in warnings
+                if warning.startswith("epic_budget_")
+                or (warning == "epic_usage_unknown" and unknown_requires_owner)
+            ]
+            if required and not owner_override:
+                raise BrainstormConflict("retry requires owner override: " + ",".join(required))
+            if owner_override:
+                row.retry_authorized_until = (previous.number if previous else 0) + 1
+                row.override_unknown_usage = unknown_requires_owner
             row.state, row.failure, row.next_eligible_at = "queued", None, None
             row.version += 1
             await session.flush()
             receipt = repository.receipt(row, key)
             await repository.save_receipt(epic_id, key, digest, receipt.model_dump(mode="json"))
             await repository.audit(
-                epic_id, actor.actor_id, "job_retried", job_id, {"from_attempt": str(previous.id)}
+                epic_id,
+                actor.actor_id,
+                "job_retried",
+                job_id,
+                {
+                    "from_attempt": str(previous.id) if previous else None,
+                    "owner_override": owner_override,
+                    "override_note": override_note,
+                    "warnings": warnings,
+                    "ceiling_version": ledger.version if ledger is not None else None,
+                },
             )
             return receipt
 
@@ -449,6 +542,8 @@ class EpicBrainstormService:
             brief = await self.briefs(session).input(epic_id, for_update=True)
             row = await repository.job(epic_id, project_id, job_id, lock=True)
             snapshot = repository.decode_snapshot(row)
+            if snapshot.kind != "brainstorm":
+                raise BrainstormConflict("authoring job kind conflicts with route")
             if (
                 brief.project_id != project_id
                 or brief.epic_version != expected_epic_version
@@ -535,7 +630,7 @@ class BoundEpicAuthoringAdapter:
 
     async def submit(self, job: AuthoringJobSnapshot) -> AuthoringReceipt:
         if (
-            job.kind != "brainstorm"
+            job.kind not in ("brainstorm", "decomposition")
             or job.epic_id != self.epic_id
             or job.project_id != self.project_id
         ):

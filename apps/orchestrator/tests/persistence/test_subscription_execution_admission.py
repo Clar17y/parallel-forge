@@ -159,3 +159,145 @@ async def test_locked_run_does_not_block_other_worktree_admission(session_factor
         await held.runs.get_for_update(persisted_run.id)
         admitted = await asyncio.wait_for(executor.admit_next("other", _reservation()), 1)
         assert admitted is not None and admitted.lease.run_id == second.id
+
+
+@pytest.mark.integration
+async def test_prepared_snapshot_excludes_newly_expired_run_from_cleanup(
+    session_factory, persisted_run
+):
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from forge.domain.run import RunSnapshot
+    from forge.persistence.models.scheduling import SubscriptionScheduledTask
+    from sqlalchemy import update
+
+    second = RunSnapshot(
+        id=uuid4(),
+        project_id=persisted_run.project_id,
+        task_id=persisted_run.task_id,
+        policy_version=persisted_run.policy_version,
+    )
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(second)
+        for run in (persisted_run, second):
+            primary = await _admit_run(work, run, (_route("p"), _route("p")))
+            await _enqueue(
+                work,
+                run.id,
+                provider="p",
+                worktree=f"prepared-{run.id}",
+                parent_id=primary,
+                paths=("apps",),
+            )
+        await work.commit()
+    async with PostgresUnitOfWork(session_factory) as work:
+        first = await work.scheduler.claim_ready("first", timedelta(seconds=30))
+        assert first is not None and first.run_id == persisted_run.id
+        await work.commit()
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.session.execute(
+            update(SubscriptionScheduledTask)
+            .where(
+                SubscriptionScheduledTask.run_id == first.run_id,
+                SubscriptionScheduledTask.task_id == first.task_id,
+            )
+            .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+        await work.commit()
+    async with PostgresUnitOfWork(session_factory) as work:
+        admitted = await work.scheduler.claim_execution_ready(
+            "second",
+            timedelta(seconds=30),
+            prepared_run_ids=frozenset({second.id}),
+        )
+        assert admitted is not None and admitted.run_id == second.id
+        stale = await work.session.get(SubscriptionScheduledTask, first.task_id)
+        assert stale is not None and stale.state == "leased"
+        await work.commit()
+
+
+@pytest.mark.integration
+async def test_prepared_epic_scan_is_bounded_and_rotates_without_starvation(
+    session_factory, persisted_run
+):
+    import asyncio
+    from uuid import UUID, uuid4
+
+    from forge.domain.run import RunSnapshot
+    from forge.persistence.models.scheduling import (
+        EpicAdmissionScanCursor,
+        SubscriptionScheduledTask,
+    )
+    from sqlalchemy import update
+
+    runs = [persisted_run]
+    async with PostgresUnitOfWork(session_factory) as work:
+        for _ in range(128):
+            run = RunSnapshot(
+                id=uuid4(),
+                project_id=persisted_run.project_id,
+                task_id=persisted_run.task_id,
+                policy_version=persisted_run.policy_version,
+            )
+            await work.runs.create(run)
+            runs.append(run)
+        work.session.add_all(
+            SubscriptionScheduledTask(
+                id=uuid4(),
+                run_id=run.id,
+                task_id=uuid4(),
+                worktree_id=f"scan-{run.id}",
+                provider="p",
+                state="queued",
+            )
+            for run in runs
+        )
+        await work.commit()
+    first = frozenset(sorted(run.id for run in runs)[:128])
+    # None of these queued rows has an admitted scheduler run. A blocked pass
+    # still commits its cursor so the remaining run is considered next.
+    assert (
+        await SubscriptionDecisionExecutor(lambda: PostgresUnitOfWork(session_factory)).admit_next(
+            "all-blocked", _reservation()
+        )
+        is None
+    )
+    async with PostgresUnitOfWork(session_factory) as work:
+        cursor = await work.session.get(EpicAdmissionScanCursor, 1)
+        assert cursor is not None and cursor.last_run_id == max(first)
+        await work.commit()
+    low = RunSnapshot(
+        id=UUID(int=1),
+        project_id=persisted_run.project_id,
+        task_id=persisted_run.task_id,
+        policy_version=persisted_run.policy_version,
+    )
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(low)
+        work.session.add(
+            SubscriptionScheduledTask(
+                id=uuid4(),
+                run_id=low.id,
+                task_id=uuid4(),
+                worktree_id="new-low-run",
+                provider="p",
+                state="queued",
+            )
+        )
+        await work.commit()
+
+    async def next_scan():
+        async with PostgresUnitOfWork(session_factory) as work:
+            selected = await work.scheduler.prepare_epic_claim()
+            await work.commit()
+            return selected
+
+    second, third = await asyncio.gather(next_scan(), next_scan())
+    assert len(second) == len(third) == 128
+    assert low.id in second or low.id in third
+    assert len(first | second | third) == 130
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.session.execute(update(SubscriptionScheduledTask).values(state="terminal"))
+        assert await work.scheduler.prepare_epic_claim() == frozenset()
+        await work.commit()

@@ -63,7 +63,7 @@ export interface BrainstormTurn {
   role: BrainstormRole;
   text: string;
   pending?: boolean;
-  proposal?: BrainstormProposal | null;
+  proposal?: BrainstormProposal | DecompositionProposal | null;
 }
 
 export interface BrainstormThread {
@@ -97,7 +97,7 @@ export interface AuthoringOutcome {
   job_version: number;
   state: BrainstormState;
   proposal_digest?: string | null;
-  proposal?: BrainstormProposal | null;
+  proposal?: BrainstormProposal | DecompositionProposal | null;
   adopted_revision_id?: string | null;
   failure?: string | null;
   usage_known?: boolean | null;
@@ -150,44 +150,43 @@ export interface AuthoringOutcome {
 }
 
 // Delivery / Execution Schemas
-export type ExecutionState = 'ACTIVE' | 'PAUSE_REQUESTED' | 'PAUSED' | 'RESUME_REQUESTED' | 'CANCEL_REQUESTED' | 'BLOCKED' | 'SUCCEEDED' | 'CANCELLED';
+export type EpicExecutionProjection = components['schemas']['EpicExecutionProjection'];
+export type EpicExecutionSnapshot = components['schemas']['EpicExecutionSnapshot'];
+export type EpicChildProjection = components['schemas']['EpicChildProjection'];
+export type EpicAttempt = components['schemas']['EpicAttempt'];
+export type EpicControlRequest = components['schemas']['EpicControlRequest'];
+export type EpicControlReceipt = components['schemas']['EpicControlReceipt'];
+export type ExecutionStartRequest = components['schemas']['ExecutionStartRequest'];
+export type EpicIntentProjection = components['schemas']['EpicIntentProjection'];
+export type EpicOwnerActionProjection = components['schemas']['EpicOwnerActionProjection'];
+export type ApprovalGate = components['schemas']['ApprovalGate'];
+export type RunState = components['schemas']['RunState'];
 
-export interface ChildRunRef {
-  run_id: string;
-  run_version: number;
-  run_state: string;
-  pending_gate: string | null;
-  pending_evidence_digest: string | null;
-}
+// Budget Schemas
+export type EpicBudgetProjection = components['schemas']['EpicBudgetProjection'];
+export type EpicBudgetEdit = components['schemas']['EpicBudgetEdit'];
+export type EpicBudgetReceipt = components['schemas']['EpicBudgetReceipt'];
+export type EpicBudgetPermitRequest = components['schemas']['EpicBudgetPermitRequest'];
+export type EpicBudgetPermitReceipt = components['schemas']['EpicBudgetPermitReceipt'];
+export type EpicBudgetOwnerAction = components['schemas']['EpicBudgetOwnerAction'];
+export type EpicBudgetPermitProjection = components['schemas']['EpicBudgetPermitProjection'];
+export type TaskBudget = components['schemas']['TaskBudget'];
 
-export interface ExecutionItemProgress {
-  item_id: string;
-  disposition: 'required' | 'deferred';
-  status: string;
-  blocker_code: string | null;
-  run_id: string | null;
-}
+export const SHARED_BUDGET_DIMENSIONS = [
+  'duration_ms',
+  'tool_call_count',
+  'input_tokens',
+  'output_tokens',
+  'estimated_api_cost_minor',
+  'provider_attempts',
+] as const;
+export type SharedBudgetDimension = (typeof SHARED_BUDGET_DIMENSIONS)[number];
 
-export interface ActiveChild extends ChildRunRef {
-  item_id: string;
-}
+// Authoring Retry Schemas
+export type JobRetry = components['schemas']['JobRetry'];
+export type DecompositionJobRetry = components['schemas']['DecompositionJobRetry'];
 
-export interface AggregateUsage {
-  known_cost_minor: number;
-  reserved_cost_minor: number;
-  unknown_usage: boolean;
-}
-
-export interface ExecutionProgress {
-  schema_version: 1;
-  execution_id: string;
-  epic_id: string;
-  epic_version: number;
-  execution_version: number;
-  state: ExecutionState;
-  brief_revision_id: string;
-  graph_revision_id: string;
-  active_child: ActiveChild | null;
-  items: ExecutionItemProgress[];
-  aggregate_usage: AggregateUsage;
-}
+// Decomposition Schemas
+export type DecompositionProposal = components['schemas']['DecompositionProposal'];
+export type DecompositionEvidence = components['schemas']['DecompositionEvidence'];
+export type DecompositionAdoptionResponse = components['schemas']['DecompositionAdoptionResponse'];

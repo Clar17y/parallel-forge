@@ -72,6 +72,8 @@ class BrainstormJobRow(Base, TimestampMixin):
     adopted_revision_id: Mapped[UUID | None] = mapped_column(Uuid)
     next_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     wait_pool_revision: Mapped[int | None] = mapped_column(Integer)
+    retry_authorized_until: Mapped[int | None] = mapped_column(Integer)
+    override_unknown_usage: Mapped[bool] = mapped_column(nullable=False, default=False)
 
 
 class BrainstormAttemptRow(Base, TimestampMixin):
@@ -139,6 +141,8 @@ class BrainstormBudgetLedger(Base, TimestampMixin):
     epic_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     project_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     ceiling: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    disabled_dimensions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
 
 
 __all__ = [

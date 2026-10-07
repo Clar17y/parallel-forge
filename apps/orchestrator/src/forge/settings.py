@@ -79,6 +79,24 @@ class Settings(BaseSettings):
             max_repairs=0,
         )
     )
+    epic_decomposition_budget: TaskBudget | None = Field(
+        default_factory=lambda: TaskBudget(
+            max_duration_seconds=300,
+            max_tool_calls=25,
+            max_named_checks=2,
+            max_provider_attempts=3,
+            max_repairs=0,
+        )
+    )
+    epic_cumulative_budget: TaskBudget = Field(
+        default_factory=lambda: TaskBudget(
+            max_duration_seconds=3600,
+            max_tool_calls=300,
+            max_named_checks=30,
+            max_provider_attempts=12,
+            max_repairs=0,
+        )
+    )
 
     @field_validator("subscription_worker_concurrency", mode="before")
     @classmethod

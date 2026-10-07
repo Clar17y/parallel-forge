@@ -22,7 +22,9 @@ from forge.api.routes.auth import router_for as auth_router_for
 from forge.api.routes.dashboard import router_for as dashboard_router_for
 from forge.api.routes.epic_brainstorm import router_for as epic_brainstorm_router_for
 from forge.api.routes.epic_brief import router_for as epic_brief_router_for
+from forge.api.routes.epic_decomposition import router_for as epic_decomposition_router_for
 from forge.api.routes.epic_items import router_for as epic_items_router_for
+from forge.api.routes.epic_lifecycle import router_for as epic_lifecycle_router_for
 from forge.api.routes.epic_run_bridge import router_for as epic_run_bridge_router_for
 from forge.api.routes.events import router_for as event_router_for
 from forge.api.routes.health import router_for as health_router_for
@@ -52,7 +54,10 @@ from forge.application.services.epic_brainstorm import (
     EpicBriefBrainstormAdapter,
 )
 from forge.application.services.epic_brief import EpicBriefService
+from forge.application.services.epic_budget import EpicBudgetService
+from forge.application.services.epic_decomposition import EpicDecompositionService
 from forge.application.services.epic_items import EpicItemsService
+from forge.application.services.epic_lifecycle import EpicLifecycleService
 from forge.application.services.epic_run_bridge import EpicRunBridgeService
 from forge.application.services.github_issue_import import GitHubIssueImportService
 from forge.application.services.jev_reporting import JevReportingService
@@ -76,6 +81,7 @@ from forge.persistence.queries.events import EventQuery
 from forge.persistence.queries.run_list import RunListQuery
 from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
 from forge.persistence.queries.subscription_usage import SubscriptionUsageQuery
+from forge.persistence.repositories.epic_decomposition import PostgresEpicDecompositionUnitOfWork
 from forge.persistence.repositories.subscription_runtime_status import (
     SubscriptionRuntimeStatusStore,
 )
@@ -101,6 +107,8 @@ def create_app(
     epic_items_service: Any | None = None,
     epic_run_bridge_service: Any | None = None,
     epic_brainstorm_budget: TaskBudget | None = None,
+    epic_decomposition_budget: TaskBudget | None = None,
+    epic_decomposition_service: EpicDecompositionService | None = None,
     run_service: Any | None = None,
     run_command_service: Any | None = None,
     projection_service: Any | None = None,
@@ -172,9 +180,20 @@ def create_app(
         resolved_uow_factory, settings=resolved_settings
     )
     resolved_epic_run_bridge_service = epic_run_bridge_service or EpicRunBridgeService(
-        resolved_uow_factory, run_service=resolved_run_service
+        resolved_uow_factory,
+        run_service=resolved_run_service,
+        epic_ceiling=resolved_settings.epic_cumulative_budget,
+        child_hold=resolved_settings.subscription_attempt_budget,
     )
     resolved_run_command_service = run_command_service or RunCommandService(resolved_uow_factory)
+    resolved_epic_lifecycle_service = EpicLifecycleService(
+        resolved_uow_factory, commands=resolved_run_command_service
+    )
+    resolved_epic_budget_service = EpicBudgetService(
+        resolved_uow_factory,
+        default_ceiling=resolved_settings.epic_cumulative_budget,
+        child_hold=resolved_settings.subscription_attempt_budget,
+    )
     resolved_jev_reporting_service = jev_reporting_service or JevReportingService(
         resolved_uow_factory
     )
@@ -233,6 +252,8 @@ def create_app(
     app.state.epic_brief_service = resolved_epic_brief_service
     app.state.epic_items_service = resolved_epic_items_service
     app.state.epic_run_bridge_service = resolved_epic_run_bridge_service
+    app.state.epic_lifecycle_service = resolved_epic_lifecycle_service
+    app.state.epic_budget_service = resolved_epic_budget_service
     resolved_brainstorm_budget = (
         epic_brainstorm_budget
         if epic_brainstorm_budget is not None
@@ -243,6 +264,23 @@ def create_app(
             session_factory, EpicBriefBrainstormAdapter, budget=resolved_brainstorm_budget
         )
         if session_factory is not None and resolved_brainstorm_budget is not None
+        else None
+    )
+    resolved_decomposition_budget = (
+        epic_decomposition_budget
+        if epic_decomposition_budget is not None
+        else getattr(resolved_settings, "epic_decomposition_budget", None)
+    )
+    app.state.epic_decomposition_service = epic_decomposition_service or (
+        EpicDecompositionService(
+            lambda: PostgresEpicDecompositionUnitOfWork(session_factory),
+            authoring_service=EpicBrainstormService(
+                session_factory,
+                EpicBriefBrainstormAdapter,
+                budget=resolved_decomposition_budget,
+            ),
+        )
+        if session_factory is not None and resolved_decomposition_budget is not None
         else None
     )
     app.state.subscription_profile_service = resolved_subscription_profile_service
@@ -304,7 +342,9 @@ def create_app(
     app.include_router(epic_brief_router_for(), prefix="/api")
     app.include_router(epic_items_router_for(), prefix="/api")
     app.include_router(epic_run_bridge_router_for(), prefix="/api")
+    app.include_router(epic_lifecycle_router_for(), prefix="/api")
     app.include_router(epic_brainstorm_router_for(), prefix="/api")
+    app.include_router(epic_decomposition_router_for(), prefix="/api")
     app.include_router(run_router_for(), prefix="/api")
     app.include_router(jev_router_for(), prefix="/api")
     app.include_router(dashboard_router_for(), prefix="/api")

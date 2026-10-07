@@ -75,11 +75,14 @@ async def test_applied_main_dispatches_decomposition_and_drains(
     monkeypatch.setattr(main, "_poll_brainstorms", poll_authoring)
     monkeypatch.setattr(main.EpicBrainstormWorker, "drain", checked_drain)
     settings = SimpleNamespace(
-        database_url="unused", subscription_installations_path=None,
+        database_url="unused",
+        subscription_installations_path=None,
         subscription_quota_policy=QuotaPolicy(),
     )
     await main.run_worker(
-        settings=settings, handlers={}, stop_event=stop,
+        settings=settings,
+        handlers={},
+        stop_event=stop,
         worker_id=f"decomposition-test-{uuid4().hex}",
         decomposition_gateway_factory=lambda _job: SupervisedGateway(),
         brainstorm_reader_factory=lambda _job: AsyncMock(),
@@ -87,6 +90,46 @@ async def test_applied_main_dispatches_decomposition_and_drains(
     assert observed == {"dispatch": True, "drain": True}
     outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
     assert outcome.state == "proposed" and outcome.process_settled
+
+
+@pytest.mark.asyncio
+async def test_default_worker_registers_both_authoring_kinds(monkeypatch) -> None:
+    from forge.worker import main
+
+    stop = asyncio.Event()
+    seen: list[frozenset[str]] = []
+
+    class FakeEngine:
+        dispose = AsyncMock()
+
+    class FakeWorker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def drain(self):
+            pass
+
+    async def poll_regular(_worker, stop_event, _interval):
+        await stop_event.wait()
+
+    async def poll_authoring(worker, stop_event, _interval):
+        seen.append(worker.kinds)
+        stop_event.set()
+
+    monkeypatch.setattr(main, "create_engine", lambda _url: FakeEngine())
+    monkeypatch.setattr(main, "create_session_factory", lambda _engine: object())
+    monkeypatch.setattr(main, "run_startup_recovery", AsyncMock(return_value=True))
+    monkeypatch.setattr(main, "Worker", FakeWorker)
+    monkeypatch.setattr(main, "_poll", poll_regular)
+    monkeypatch.setattr(main, "_poll_brainstorms", poll_authoring)
+    settings = SimpleNamespace(
+        database_url="unused",
+        subscription_installations_path=None,
+        subscription_quota_policy=QuotaPolicy(),
+        subscription_client_trust="operator",
+    )
+    await main.run_worker(settings=settings, stop_event=stop, worker_id="default-authoring")
+    assert seen == [frozenset(("brainstorm", "decomposition"))]
 
 
 @pytest.mark.asyncio
@@ -129,13 +172,17 @@ async def test_authoring_drain_error_still_closes_other_worker_resources(monkeyp
     monkeypatch.setattr(main, "_poll", poll_regular)
     monkeypatch.setattr(main, "_poll_brainstorms", poll_authoring)
     settings = SimpleNamespace(
-        database_url="unused", subscription_installations_path=None,
+        database_url="unused",
+        subscription_installations_path=None,
         subscription_quota_policy=QuotaPolicy(),
     )
     with pytest.raises(RuntimeError, match="authoring drain failed"):
         await main.run_worker(
-            settings=settings, handlers={}, stop_event=stop,
-            worker_id="cleanup-test", decomposition_gateway_factory=lambda _job: SupervisedGateway(),
+            settings=settings,
+            handlers={},
+            stop_event=stop,
+            worker_id="cleanup-test",
+            decomposition_gateway_factory=lambda _job: SupervisedGateway(),
             brainstorm_reader_factory=lambda _job: AsyncMock(),
         )
     assert seen == ["authoring", "regular", "control", "engine"]

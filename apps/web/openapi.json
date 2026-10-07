@@ -480,6 +480,16 @@
         "title": "ApprovalChallengeResponse",
         "type": "object"
       },
+      "ApprovalGate": {
+        "description": "The human gate an approval record authorizes.",
+        "enum": [
+          "plan",
+          "pr",
+          "merge"
+        ],
+        "title": "ApprovalGate",
+        "type": "string"
+      },
       "ApprovalHistoryItem": {
         "additionalProperties": false,
         "properties": {
@@ -1158,9 +1168,13 @@
                 "$ref": "#/components/schemas/BrainstormProposal"
               },
               {
+                "$ref": "#/components/schemas/DecompositionProposal"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Proposal"
           },
           "proposal_digest": {
             "anyOf": [
@@ -1927,9 +1941,13 @@
                 "$ref": "#/components/schemas/BrainstormProposal"
               },
               {
+                "$ref": "#/components/schemas/DecompositionProposal"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Proposal"
           },
           "role": {
             "enum": [
@@ -2763,6 +2781,402 @@
         "title": "DatabaseProvisioningPolicy",
         "type": "object"
       },
+      "DecompositionAdoptionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "epic_version": {
+            "title": "Epic Version",
+            "type": "integer"
+          },
+          "graph_digest": {
+            "title": "Graph Digest",
+            "type": "string"
+          },
+          "graph_revision_id": {
+            "format": "uuid",
+            "title": "Graph Revision Id",
+            "type": "string"
+          },
+          "job_version": {
+            "title": "Job Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph_revision_id",
+          "graph_digest",
+          "epic_version",
+          "job_version"
+        ],
+        "title": "DecompositionAdoptionResponse",
+        "type": "object"
+      },
+      "DecompositionConversationCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "text"
+        ],
+        "title": "DecompositionConversationCreate",
+        "type": "object"
+      },
+      "DecompositionEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "content_digest": {
+            "title": "Content Digest",
+            "type": "string"
+          },
+          "excerpt": {
+            "title": "Excerpt",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "content_digest",
+          "excerpt"
+        ],
+        "title": "DecompositionEvidence",
+        "type": "object"
+      },
+      "DecompositionJobControl": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_job_version": {
+            "minimum": 1.0,
+            "title": "Expected Job Version",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_job_version"
+        ],
+        "title": "DecompositionJobControl",
+        "type": "object"
+      },
+      "DecompositionJobRetry": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_job_version": {
+            "minimum": 1.0,
+            "title": "Expected Job Version",
+            "type": "integer"
+          },
+          "override_note": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Note"
+          },
+          "owner_override": {
+            "default": false,
+            "title": "Owner Override",
+            "type": "boolean"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_job_version"
+        ],
+        "title": "DecompositionJobRetry",
+        "type": "object"
+      },
+      "DecompositionJobSubmit": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_conversation_version": {
+            "minimum": 1.0,
+            "title": "Expected Conversation Version",
+            "type": "integer"
+          },
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "prompt_turn_id": {
+            "format": "uuid",
+            "title": "Prompt Turn Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "prompt_turn_id",
+          "expected_epic_version",
+          "expected_conversation_version"
+        ],
+        "title": "DecompositionJobSubmit",
+        "type": "object"
+      },
+      "DecompositionProposal": {
+        "additionalProperties": false,
+        "properties": {
+          "assumptions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "brief_digest": {
+            "title": "Brief Digest",
+            "type": "string"
+          },
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "evidence": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DecompositionEvidence"
+            },
+            "maxItems": 16,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ItemInput"
+            },
+            "maxItems": 128,
+            "title": "Items",
+            "type": "array"
+          },
+          "open_questions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Open Questions",
+            "type": "array"
+          },
+          "problem": {
+            "default": "",
+            "title": "Problem",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "resolved_turn_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Resolved Turn Ids",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "turn_id": {
+            "format": "uuid",
+            "title": "Turn Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn_id",
+          "epic_id",
+          "project_id",
+          "brief_revision_id",
+          "brief_digest"
+        ],
+        "title": "DecompositionProposal",
+        "type": "object"
+      },
+      "DecompositionProposalAdopt": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "expected_job_version": {
+            "minimum": 1.0,
+            "title": "Expected Job Version",
+            "type": "integer"
+          },
+          "items": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ItemInput"
+                },
+                "maxItems": 128,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Items"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "proposal_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Proposal Digest",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_job_version",
+          "expected_epic_version",
+          "proposal_digest"
+        ],
+        "title": "DecompositionProposalAdopt",
+        "type": "object"
+      },
+      "DecompositionTurnAppend": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_conversation_version": {
+            "minimum": 1.0,
+            "title": "Expected Conversation Version",
+            "type": "integer"
+          },
+          "pending": {
+            "default": false,
+            "title": "Pending",
+            "type": "boolean"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_conversation_version",
+          "text"
+        ],
+        "title": "DecompositionTurnAppend",
+        "type": "object"
+      },
       "DependencyEvidence": {
         "additionalProperties": false,
         "properties": {
@@ -2809,6 +3223,170 @@
           "status"
         ],
         "title": "DependencyEvidence",
+        "type": "object"
+      },
+      "EpicAttempt": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actual_epic_version": {
+            "minimum": 1.0,
+            "title": "Actual Epic Version",
+            "type": "integer"
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "attempt_number": {
+            "minimum": 1.0,
+            "title": "Attempt Number",
+            "type": "integer"
+          },
+          "base_ref": {
+            "title": "Base Ref",
+            "type": "string"
+          },
+          "base_sha": {
+            "title": "Base Sha",
+            "type": "string"
+          },
+          "blocker_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocker Codes",
+            "type": "array"
+          },
+          "brief_digest": {
+            "title": "Brief Digest",
+            "type": "string"
+          },
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "context_digest": {
+            "title": "Context Digest",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dependency_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/DependencyEvidence"
+            },
+            "title": "Dependency Evidence",
+            "type": "array"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "graph_digest": {
+            "title": "Graph Digest",
+            "type": "string"
+          },
+          "graph_revision_id": {
+            "format": "uuid",
+            "title": "Graph Revision Id",
+            "type": "string"
+          },
+          "item_digest": {
+            "title": "Item Digest",
+            "type": "string"
+          },
+          "item_disposition": {
+            "enum": [
+              "required",
+              "deferred"
+            ],
+            "title": "Item Disposition",
+            "type": "string"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "override_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Note"
+          },
+          "owner_override": {
+            "title": "Owner Override",
+            "type": "boolean"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "task_digest": {
+            "title": "Task Digest",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "execution_id",
+          "epic_id",
+          "item_id",
+          "attempt_number",
+          "item_disposition",
+          "actor_id",
+          "expected_epic_version",
+          "actual_epic_version",
+          "task_id",
+          "run_id",
+          "brief_revision_id",
+          "brief_digest",
+          "graph_revision_id",
+          "graph_digest",
+          "item_digest",
+          "context_digest",
+          "task_digest",
+          "base_ref",
+          "base_sha",
+          "owner_override",
+          "override_note",
+          "blocker_codes",
+          "dependency_evidence",
+          "created_at"
+        ],
+        "title": "EpicAttempt",
         "type": "object"
       },
       "EpicAttemptResponse": {
@@ -2975,6 +3553,495 @@
         "title": "EpicAttemptResponse",
         "type": "object"
       },
+      "EpicBudgetEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "ceiling": {
+            "$ref": "#/components/schemas/TaskBudget"
+          },
+          "disabled_dimensions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Dimensions",
+            "type": "array"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "expected_version",
+          "ceiling"
+        ],
+        "title": "EpicBudgetEdit",
+        "type": "object"
+      },
+      "EpicBudgetOwnerAction": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "actor_id",
+          "event_type",
+          "version",
+          "note"
+        ],
+        "title": "EpicBudgetOwnerAction",
+        "type": "object"
+      },
+      "EpicBudgetPermitProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "consumed_attempt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consumed Attempt Id"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "permit_id": {
+            "format": "uuid",
+            "title": "Permit Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "permit_id",
+          "run_id",
+          "actor_id",
+          "warnings",
+          "consumed_attempt_id",
+          "note"
+        ],
+        "title": "EpicBudgetPermitProjection",
+        "type": "object"
+      },
+      "EpicBudgetPermitReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "budget_version": {
+            "title": "Budget Version",
+            "type": "integer"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "permit_id": {
+            "format": "uuid",
+            "title": "Permit Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "permit_id",
+          "epic_id",
+          "run_id",
+          "actor_id",
+          "budget_version",
+          "warnings"
+        ],
+        "title": "EpicBudgetPermitReceipt",
+        "type": "object"
+      },
+      "EpicBudgetPermitRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "run_id"
+        ],
+        "title": "EpicBudgetPermitRequest",
+        "type": "object"
+      },
+      "EpicBudgetProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "ceiling": {
+            "$ref": "#/components/schemas/TaskBudget"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "disabled_dimensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Dimensions",
+            "type": "array"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "held": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Held",
+            "type": "object"
+          },
+          "initialized": {
+            "title": "Initialized",
+            "type": "boolean"
+          },
+          "known": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Known",
+            "type": "object"
+          },
+          "owner_actions": {
+            "items": {
+              "$ref": "#/components/schemas/EpicBudgetOwnerAction"
+            },
+            "title": "Owner Actions",
+            "type": "array"
+          },
+          "permits": {
+            "items": {
+              "$ref": "#/components/schemas/EpicBudgetPermitProjection"
+            },
+            "title": "Permits",
+            "type": "array"
+          },
+          "unknown": {
+            "title": "Unknown",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "epic_id",
+          "initialized",
+          "version",
+          "ceiling",
+          "disabled_dimensions",
+          "known",
+          "held",
+          "unknown",
+          "currency",
+          "warnings",
+          "permits",
+          "owner_actions"
+        ],
+        "title": "EpicBudgetProjection",
+        "type": "object"
+      },
+      "EpicBudgetReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "ceiling": {
+            "$ref": "#/components/schemas/TaskBudget"
+          },
+          "disabled_dimensions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Dimensions",
+            "type": "array"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epic_id",
+          "version",
+          "ceiling"
+        ],
+        "title": "EpicBudgetReceipt",
+        "type": "object"
+      },
+      "EpicChildProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "$ref": "#/components/schemas/EpicAttempt"
+          },
+          "effects_settled": {
+            "title": "Effects Settled",
+            "type": "boolean"
+          },
+          "pending_gate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalGate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retained_gate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalGate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "run_version": {
+            "title": "Run Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempt",
+          "run_state",
+          "run_version",
+          "pending_gate",
+          "retained_gate",
+          "effects_settled"
+        ],
+        "title": "EpicChildProjection",
+        "type": "object"
+      },
+      "EpicControlReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "pause",
+              "resume",
+              "cancel"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "blocker_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker Code"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "execution_version": {
+            "title": "Execution Version",
+            "type": "integer"
+          },
+          "intent_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Intent Ids",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id",
+          "execution_version",
+          "action",
+          "state",
+          "intent_ids"
+        ],
+        "title": "EpicControlReceipt",
+        "type": "object"
+      },
+      "EpicControlRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "pause",
+              "resume",
+              "cancel"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "expected_execution_version": {
+            "minimum": 1.0,
+            "title": "Expected Execution Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_execution_version",
+          "action"
+        ],
+        "title": "EpicControlRequest",
+        "type": "object"
+      },
       "EpicCreateRequest": {
         "additionalProperties": false,
         "description": "Closed epic creation request body.",
@@ -3034,6 +4101,189 @@
           "draft"
         ],
         "title": "EpicDraftUpdateRequest",
+        "type": "object"
+      },
+      "EpicExecutionProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "blocker_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker Code"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/EpicChildProjection"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "control_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Control State"
+          },
+          "control_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Control Version"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/EpicExecutionSnapshot"
+          },
+          "intents": {
+            "items": {
+              "$ref": "#/components/schemas/EpicIntentProjection"
+            },
+            "title": "Intents",
+            "type": "array"
+          },
+          "owner_actions": {
+            "items": {
+              "$ref": "#/components/schemas/EpicOwnerActionProjection"
+            },
+            "title": "Owner Actions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "execution",
+          "control_version",
+          "control_state",
+          "blocker_code",
+          "children",
+          "intents",
+          "owner_actions"
+        ],
+        "title": "EpicExecutionProjection",
+        "type": "object"
+      },
+      "EpicExecutionSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "brief_digest": {
+            "title": "Brief Digest",
+            "type": "string"
+          },
+          "brief_revision_id": {
+            "format": "uuid",
+            "title": "Brief Revision Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "epic_id": {
+            "format": "uuid",
+            "title": "Epic Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "graph_digest": {
+            "title": "Graph Digest",
+            "type": "string"
+          },
+          "graph_revision_id": {
+            "format": "uuid",
+            "title": "Graph Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id",
+          "epic_id",
+          "brief_revision_id",
+          "brief_digest",
+          "graph_revision_id",
+          "graph_digest",
+          "created_at"
+        ],
+        "title": "EpicExecutionSnapshot",
+        "type": "object"
+      },
+      "EpicIntentProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "command_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command Id"
+          },
+          "control_version": {
+            "title": "Control Version",
+            "type": "integer"
+          },
+          "intent_id": {
+            "format": "uuid",
+            "title": "Intent Id",
+            "type": "string"
+          },
+          "refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent_id",
+          "control_version",
+          "action",
+          "run_id",
+          "command_id",
+          "status",
+          "refusal"
+        ],
+        "title": "EpicIntentProjection",
         "type": "object"
       },
       "EpicLaunchRequest": {
@@ -3136,6 +4386,46 @@
           "item_id"
         ],
         "title": "EpicLaunchRequest",
+        "type": "object"
+      },
+      "EpicOwnerActionProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "actor_id",
+          "event_type",
+          "warnings",
+          "note"
+        ],
+        "title": "EpicOwnerActionProjection",
         "type": "object"
       },
       "EpicResponse": {
@@ -3564,6 +4854,91 @@
           "expires_at"
         ],
         "title": "EvidenceReferenceView",
+        "type": "object"
+      },
+      "ExecutionStartRequest": {
+        "additionalProperties": false,
+        "description": "Select and freeze one existing matching brief/graph pair.",
+        "properties": {
+          "brief_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brief Digest"
+          },
+          "brief_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brief Revision Id"
+          },
+          "expected_epic_version": {
+            "minimum": 1.0,
+            "title": "Expected Epic Version",
+            "type": "integer"
+          },
+          "graph_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Digest"
+          },
+          "graph_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Revision Id"
+          },
+          "override_note": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Note"
+          },
+          "owner_override": {
+            "default": false,
+            "title": "Owner Override",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_epic_version"
+        ],
+        "title": "ExecutionStartRequest",
         "type": "object"
       },
       "FindingItem": {
@@ -4312,6 +5687,50 @@
           "expected_job_version"
         ],
         "title": "JobControl",
+        "type": "object"
+      },
+      "JobRetry": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_job_version": {
+            "minimum": 1.0,
+            "title": "Expected Job Version",
+            "type": "integer"
+          },
+          "override_note": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Note"
+          },
+          "owner_override": {
+            "default": false,
+            "title": "Owner Override",
+            "type": "boolean"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_job_version"
+        ],
+        "title": "JobRetry",
         "type": "object"
       },
       "JobSubmit": {
@@ -9267,6 +10686,78 @@
         "title": "SuspensionKind",
         "type": "string"
       },
+      "TaskBudget": {
+        "description": "Budget limits for task execution, retries, and concurrent reservations.",
+        "properties": {
+          "billing_mode": {
+            "$ref": "#/components/schemas/BillingMode",
+            "default": "allowance_only"
+          },
+          "max_cost_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Minor"
+          },
+          "max_duration_seconds": {
+            "default": 1800,
+            "title": "Max Duration Seconds",
+            "type": "integer"
+          },
+          "max_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Input Tokens"
+          },
+          "max_named_checks": {
+            "default": 10,
+            "title": "Max Named Checks",
+            "type": "integer"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          },
+          "max_provider_attempts": {
+            "default": 3,
+            "title": "Max Provider Attempts",
+            "type": "integer"
+          },
+          "max_repairs": {
+            "default": 3,
+            "title": "Max Repairs",
+            "type": "integer"
+          },
+          "max_tool_calls": {
+            "default": 100,
+            "title": "Max Tool Calls",
+            "type": "integer"
+          },
+          "unknown_telemetry_policy": {
+            "$ref": "#/components/schemas/UnknownTelemetryPolicy"
+          }
+        },
+        "title": "TaskBudget",
+        "type": "object"
+      },
       "TaskControlAction": {
         "enum": [
           "pause",
@@ -9744,6 +11235,33 @@
           "text"
         ],
         "title": "TurnAppend",
+        "type": "object"
+      },
+      "UnknownTelemetryPolicy": {
+        "description": "Policy bounding allowed unknown telemetry for billing and auditing.",
+        "properties": {
+          "allow_unknown_cost": {
+            "default": true,
+            "title": "Allow Unknown Cost",
+            "type": "boolean"
+          },
+          "allow_unknown_quota": {
+            "default": true,
+            "title": "Allow Unknown Quota",
+            "type": "boolean"
+          },
+          "allow_unknown_tokens": {
+            "default": true,
+            "title": "Allow Unknown Tokens",
+            "type": "boolean"
+          },
+          "max_uncertain_attempts": {
+            "default": 1,
+            "title": "Max Uncertain Attempts",
+            "type": "integer"
+          }
+        },
+        "title": "UnknownTelemetryPolicy",
         "type": "object"
       },
       "UsageItem": {
@@ -11613,7 +13131,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/JobControl"
+                "$ref": "#/components/schemas/JobRetry"
               }
             }
           },
@@ -11882,6 +13400,1068 @@
           }
         ],
         "summary": "Get Brief Revision"
+      }
+    },
+    "/api/epics/{epic_id}/budget": {
+      "get": {
+        "operationId": "get_budget_api_epics__epic_id__budget_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicBudgetProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Budget"
+      },
+      "put": {
+        "operationId": "edit_budget_api_epics__epic_id__budget_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicBudgetEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicBudgetReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Edit Budget"
+      }
+    },
+    "/api/epics/{epic_id}/budget/admissions": {
+      "post": {
+        "operationId": "permit_budget_admission_api_epics__epic_id__budget_admissions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicBudgetPermitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicBudgetPermitReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Permit Budget Admission"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-conversations": {
+      "get": {
+        "operationId": "threads_api_epics__epic_id__decomposition_conversations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Threads Api Epics  Epic Id  Decomposition Conversations Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Threads"
+      },
+      "post": {
+        "operationId": "create_api_epics__epic_id__decomposition_conversations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecompositionConversationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "title": "Response Create Api Epics  Epic Id  Decomposition Conversations Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Create"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-conversations/{conversation_id}/jobs": {
+      "post": {
+        "operationId": "submit_api_epics__epic_id__decomposition_conversations__conversation_id__jobs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecompositionJobSubmit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoringReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Submit"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-conversations/{conversation_id}/turns": {
+      "get": {
+        "operationId": "turns_api_epics__epic_id__decomposition_conversations__conversation_id__turns_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Turns Api Epics  Epic Id  Decomposition Conversations  Conversation Id  Turns Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Turns"
+      },
+      "post": {
+        "operationId": "append_api_epics__epic_id__decomposition_conversations__conversation_id__turns_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecompositionTurnAppend"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Append Api Epics  Epic Id  Decomposition Conversations  Conversation Id  Turns Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Append"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}": {
+      "get": {
+        "operationId": "observe_api_epics__epic_id__decomposition_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoringOutcome"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Observe"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/adopt": {
+      "post": {
+        "operationId": "adopt_api_epics__epic_id__decomposition_jobs__job_id__adopt_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecompositionProposalAdopt"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecompositionAdoptionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Adopt"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "cancel_api_epics__epic_id__decomposition_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecompositionJobControl"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoringReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Cancel"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/retry": {
+      "post": {
+        "operationId": "retry_api_epics__epic_id__decomposition_jobs__job_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecompositionJobRetry"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoringReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Retry"
+      }
+    },
+    "/api/epics/{epic_id}/executions": {
+      "get": {
+        "operationId": "list_executions_api_epics__epic_id__executions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EpicExecutionProjection"
+                  },
+                  "title": "Response List Executions Api Epics  Epic Id  Executions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "List Executions"
+      },
+      "post": {
+        "operationId": "start_api_epics__epic_id__executions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutionStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicExecutionSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Start"
+      }
+    },
+    "/api/epics/{epic_id}/executions/{execution_id}": {
+      "get": {
+        "operationId": "get_execution_api_epics__epic_id__executions__execution_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Execution Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicExecutionProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Execution"
+      }
+    },
+    "/api/epics/{epic_id}/executions/{execution_id}/commands": {
+      "post": {
+        "operationId": "control_api_epics__epic_id__executions__execution_id__commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicControlReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Control"
       }
     },
     "/api/epics/{epic_id}/graph-adoptions": {

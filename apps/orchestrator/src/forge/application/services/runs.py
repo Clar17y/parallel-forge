@@ -76,8 +76,22 @@ class StaleProjectPolicyConflict(RunCommandValidationError):
 
 @runtime_checkable
 class ProjectWork(Protocol):
-    projects: ProjectRepository
-    tasks: TaskRepository
+    @property
+    def projects(self) -> ProjectRepository: ...
+
+    @property
+    def tasks(self) -> TaskRepository: ...
+
+
+class CommandWork(ProjectWork, Protocol):
+    @property
+    def runs(self) -> RunRepository: ...
+
+    @property
+    def events(self) -> EventRepository: ...
+
+    @property
+    def commands(self) -> CommandRepository: ...
 
 
 class RunUnitOfWork(Protocol):
@@ -442,68 +456,77 @@ class RunCommandService:
         request: RunCommandRequest,
     ) -> CommandEnvelope:
         request = _coerce_request(request, RunCommandRequest)
-        queue_key = hash_run_command_idempotency_key(
-            idempotency_key, actor_id=actor.actor_id, run_id=run_id
-        )
         async with self._unit_of_work_factory() as work:
-            existing = await work.commands.get_by_idempotency_key(queue_key)
-            if existing is not None:
-                _validate_command_replay(
-                    existing,
-                    run_id=run_id,
-                    actor_id=actor.actor_id,
-                    request=request,
-                )
-                await work.commit()
-                return existing
-            run = await work.runs.get_for_update(run_id)
-            # A concurrent producer may have committed while this request was
-            # waiting for the run lock. Re-read the queue key before checking
-            # the current run version/state so a retry remains idempotent even
-            # after the worker has advanced the run.
-            existing = await work.commands.get_by_idempotency_key(queue_key)
-            if existing is not None:
-                _validate_command_replay(
-                    existing,
-                    run_id=run_id,
-                    actor_id=actor.actor_id,
-                    request=request,
-                )
-                await work.commit()
-                return existing
-            if request.expected_run_version != run.version:
-                raise ConcurrencyConflict(run_id, request.expected_run_version, run.version)
-            if request.command_type == RunCommandType.CANCEL:
-                reason = cancellation_rejection_reason(run)
-                if reason is not None:
-                    raise RunCommandValidationError(reason)
-            if request.command_type == RunCommandType.RESUME:
-                reason = await preparation_resume_policy_conflict_reason(work, run)
-                if reason is not None:
-                    raise StaleProjectPolicyConflict(reason)
-            _validate_state(run.state, request.command_type)
-            payload = _command_payload(request, run)
-            if request.command_type == RunCommandType.TEARDOWN_RUN_RESOURCES:
-                if request.delete_branch and any(
-                    event.event_type == "resource.branch_removed"
-                    for event in await work.events.list_after(run_id, 0)
-                ):
-                    raise RunCommandValidationError("branch removal is already recorded")
-                quiescence = await work.runs.prove_quiescent(run_id)
-                if not quiescence.is_quiescent:
-                    raise RunCommandValidationError(
-                        "resource teardown is blocked by unsettled work"
-                    )
-            command = await work.commands.enqueue(
+            command = await self.enqueue_in_work(
+                work=work,
+                actor=actor,
                 run_id=run_id,
-                command_type=request.command_type,
-                idempotency_key=queue_key,
-                payload=payload,
-                expected_run_version=request.expected_run_version,
-                actor_id=actor.actor_id,
+                idempotency_key=idempotency_key,
+                request=request,
             )
             await work.commit()
             return command
+
+    async def enqueue_in_work(
+        self,
+        *,
+        work: CommandWork,
+        actor: AuthenticatedActor,
+        run_id: UUID,
+        idempotency_key: str,
+        request: RunCommandRequest,
+    ) -> CommandEnvelope:
+        """Queue under the caller's transaction and retained source/run fences."""
+        request = _coerce_request(request, RunCommandRequest)
+        queue_key = hash_run_command_idempotency_key(
+            idempotency_key, actor_id=actor.actor_id, run_id=run_id
+        )
+        existing = await work.commands.get_by_idempotency_key(queue_key)
+        if existing is not None:
+            _validate_command_replay(
+                existing, run_id=run_id, actor_id=actor.actor_id, request=request
+            )
+            return existing
+        run = await work.runs.get_for_update(run_id)
+        # A concurrent producer may have committed while this request was
+        # waiting for the run lock. Re-read the queue key before checking
+        # the current run version/state so a retry remains idempotent even
+        # after the worker has advanced the run.
+        existing = await work.commands.get_by_idempotency_key(queue_key)
+        if existing is not None:
+            _validate_command_replay(
+                existing, run_id=run_id, actor_id=actor.actor_id, request=request
+            )
+            return existing
+        if request.expected_run_version != run.version:
+            raise ConcurrencyConflict(run_id, request.expected_run_version, run.version)
+        if request.command_type == RunCommandType.CANCEL:
+            reason = cancellation_rejection_reason(run)
+            if reason is not None:
+                raise RunCommandValidationError(reason)
+        if request.command_type == RunCommandType.RESUME:
+            reason = await preparation_resume_policy_conflict_reason(work, run)
+            if reason is not None:
+                raise StaleProjectPolicyConflict(reason)
+        _validate_state(run.state, request.command_type)
+        payload = _command_payload(request, run)
+        if request.command_type == RunCommandType.TEARDOWN_RUN_RESOURCES:
+            if request.delete_branch and any(
+                event.event_type == "resource.branch_removed"
+                for event in await work.events.list_after(run_id, 0)
+            ):
+                raise RunCommandValidationError("branch removal is already recorded")
+            quiescence = await work.runs.prove_quiescent(run_id)
+            if not quiescence.is_quiescent:
+                raise RunCommandValidationError("resource teardown is blocked by unsettled work")
+        return await work.commands.enqueue(
+            run_id=run_id,
+            command_type=request.command_type,
+            idempotency_key=queue_key,
+            payload=payload,
+            expected_run_version=request.expected_run_version,
+            actor_id=actor.actor_id,
+        )
 
     async def enqueue_command(
         self,

@@ -69,6 +69,58 @@ class EpicExecution(Base):
     )
 
 
+class EpicExecutionControl(Base):
+    """Mutable authority for an immutable execution source snapshot."""
+
+    __tablename__ = "epic_execution_controls"
+    execution_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("epic_executions.id", ondelete="RESTRICT"), primary_key=True
+    )
+    epic_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("epics.id", ondelete="RESTRICT"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
+    blocker_code: Mapped[str | None] = mapped_column(String(96))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EpicControlIntent(Base):
+    """One durable child command intent in an execution control transition."""
+
+    __tablename__ = "epic_control_intents"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_id", "control_version", "run_id", name="uq_epic_control_intent_child"
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    execution_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("epic_execution_controls.execution_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    control_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    session_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    action: Mapped[str] = mapped_column(String(8), nullable=False)
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    expected_run_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    command_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("run_commands.id", ondelete="RESTRICT")
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="requested")
+    refusal: Mapped[str | None] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class EpicItemAttempt(Base):
     __tablename__ = "epic_item_attempts"
     __table_args__ = (
@@ -142,6 +194,46 @@ class EpicItemAttempt(Base):
     override_note: Mapped[str | None] = mapped_column(String(2048))
     blocker_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     dependency_evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EpicChildBudgetHold(Base):
+    """Run-level exposure floor until child process and effects settle."""
+
+    __tablename__ = "epic_child_budget_holds"
+    attempt_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("epic_item_attempts.id", ondelete="RESTRICT"), primary_key=True
+    )
+    epic_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("epics.id", ondelete="RESTRICT"), nullable=False
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    budget_payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    effects_settled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EpicBudgetAdmissionPermit(Base):
+    """One authenticated owner authorization for a concrete bound child run."""
+
+    __tablename__ = "epic_budget_admission_permits"
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    epic_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("epics.id", ondelete="RESTRICT"), nullable=False
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    actor_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    note: Mapped[str | None] = mapped_column(String(2048))
+    warnings: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    consumed_attempt_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("subscription_attempts.id", ondelete="RESTRICT")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

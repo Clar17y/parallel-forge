@@ -50,6 +50,7 @@ from forge.application.ports.epic_brainstorm import (
     BrainstormProcessLifecycle,
 )
 from forge.domain.epic_brainstorm import AuthoringJobSnapshot, BrainstormProposal, BrainstormTurn
+from forge.domain.epic_decomposition import DecompositionProposal
 from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription import AttemptTelemetry
 from forge.domain.subscription_installations import (
@@ -139,13 +140,15 @@ class EpicBrainstormGateway:
         tools = AuthoringTools(reader, job.budget.max_tool_calls, usage)
         session = None
         launch_files: GeminiLaunchDirectory | AntigravityAuthoringHome | None = None
-        proposal: BrainstormProposal | None = None
+        proposal: BrainstormProposal | DecompositionProposal | None = None
         failure: str | None = None
         quota_reset_at: str | None = None
         interrupted = False
         use_bridge = False
         try:
-            exchange: Callable[[ClientProcessSession], Awaitable[BrainstormProposal]]
+            exchange: Callable[
+                [ClientProcessSession], Awaitable[BrainstormProposal | DecompositionProposal]
+            ]
             if isinstance(installation, CodexInstallationSpec):
                 codex_runtime = CodexInstallation(
                     executable=installation.executable,
@@ -190,13 +193,18 @@ class EpicBrainstormGateway:
                 claude_gateway = ClaudeGateway(
                     claude_runtime, supervisor=self.supervisor, trust=self.trust
                 )
+                claude_prompt = (
+                    "You are a read-only epic decomposition assistant. Use only Forge read tools."
+                    if job.kind == "decomposition"
+                    else "You are a read-only epic brief authoring assistant. Use only Forge read tools."
+                )
                 arguments = _build_claude_launch_arguments(
                     script=claude_runtime.script,
                     model=claude_runtime.model,
                     effort=claude_runtime.effort,
                     session_id=str(job.job_id),
-                    system_prompt="You are a read-only epic brief authoring assistant. Use only Forge read tools.",
-                    schema_json=json.dumps(authoring_schema(), separators=(",", ":")),
+                    system_prompt=claude_prompt,
+                    schema_json=json.dumps(authoring_schema(job.kind), separators=(",", ":")),
                     allowed_tools=",".join("mcp__forge__" + name for name in AUTHORING_TOOL_NAMES),
                 )
                 environment = {
@@ -217,11 +225,16 @@ class EpicBrainstormGateway:
             elif isinstance(installation, GeminiInstallationSpec):
                 use_bridge = True
                 launch_files = GeminiLaunchDirectory(installation.cwd, attempt_id)
+                gemini_prompt = (
+                    "Read-only epic decomposition. Use only Forge MCP read tools. Return the proposal schema."
+                    if job.kind == "decomposition"
+                    else "Read-only epic brief authoring. Use only Forge MCP read tools. Return the proposal schema."
+                )
                 environment = launch_files.prepare(
                     home=installation.home,
                     model=installation.model,
                     effort=installation.effort,
-                    prompt="Read-only epic brief authoring. Use only Forge MCP read tools. Return the proposal schema.",
+                    prompt=gemini_prompt,
                 )
                 spec = ClientLaunchSpec(
                     argv=(
@@ -267,6 +280,11 @@ class EpicBrainstormGateway:
                 descriptor = tools.bridge.descriptor()
                 pairs = descriptor["env"]
                 assert isinstance(pairs, list)
+                antigravity_prompt = (
+                    "Read-only epic decomposition."
+                    if job.kind == "decomposition"
+                    else "Read-only epic brief authoring."
+                )
                 environment = launch_files.prepare(
                     "forge",
                     {
@@ -278,7 +296,7 @@ class EpicBrainstormGateway:
                             }
                         }
                     },
-                    "Read-only epic brief authoring.",
+                    antigravity_prompt,
                 )
                 spec = ClientLaunchSpec(
                     argv=(
@@ -293,7 +311,7 @@ class EpicBrainstormGateway:
                         "--output-format",
                         "stream-json",
                         "--json-schema",
-                        json.dumps(authoring_schema()),
+                        json.dumps(authoring_schema(job.kind)),
                         "--disable-slash-commands",
                     ),
                     cwd=str(launch_files.path),
@@ -539,7 +557,7 @@ class EpicBrainstormGateway:
             return BrainstormGatewayResult(proposal=None, telemetry=None, failure="invalid_output")
 
         # Parse final proposal and telemetry from collected frames
-        proposal: BrainstormProposal | None = None
+        proposal: BrainstormProposal | DecompositionProposal | None = None
         failure: str | None = None
         telemetry: AttemptTelemetry | None = None
         quota_reset_at: str | None = None
@@ -556,8 +574,9 @@ class EpicBrainstormGateway:
                 prop_data = dict(f["proposal"])
                 if "turn_id" not in prop_data:
                     prop_data["turn_id"] = str(job.prompt_turn_id)
+                model = DecompositionProposal if job.kind == "decomposition" else BrainstormProposal
                 try:
-                    proposal = BrainstormProposal.model_validate(prop_data)
+                    proposal = model.model_validate(prop_data)
                 except ValidationError:
                     failure = "invalid_output"
                 if "telemetry" in f and isinstance(f["telemetry"], Mapping):
@@ -567,8 +586,9 @@ class EpicBrainstormGateway:
                 prop_data = dict(f)
                 if "turn_id" not in prop_data:
                     prop_data["turn_id"] = str(job.prompt_turn_id)
+                model = DecompositionProposal if job.kind == "decomposition" else BrainstormProposal
                 try:
-                    proposal = BrainstormProposal.model_validate(prop_data)
+                    proposal = model.model_validate(prop_data)
                 except ValidationError:
                     failure = "invalid_output"
                 if "telemetry" in f and isinstance(f["telemetry"], Mapping):

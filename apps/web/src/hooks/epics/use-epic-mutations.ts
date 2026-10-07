@@ -3,7 +3,7 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { api, ApiError } from '@/lib/api/client';
 
-export type HttpMethod = 'POST' | 'PATCH';
+export type HttpMethod = 'POST' | 'PATCH' | 'PUT';
 export interface FrozenMutation {
   kind?: string;
   method: HttpMethod;
@@ -67,7 +67,7 @@ function loadPending(key: string): { pending: FrozenMutation | null; protected: 
     }
     if (!raw) return { pending: null, protected: true };
     const value = JSON.parse(raw) as FrozenMutation;
-    if (!value || !['POST', 'PATCH'].includes(value.method) ||
+    if (!value || !['POST', 'PATCH', 'PUT'].includes(value.method) ||
         typeof value.path !== 'string' || typeof value.idempotencyKey !== 'string' ||
         !value.body || typeof value.body !== 'object') throw new Error('Invalid saved request');
     return { pending: freeze({ ...value, uncertain: true }), protected: true };
@@ -204,7 +204,11 @@ class EpicMutationStore {
         scope.error = err.status === 409
           ? mutation.kind === 'execution-command'
             ? 'Execution version conflict: The execution version changed concurrently.'
-            : 'Epic version conflict: The epic version changed on the server before saving.'
+            : mutation.kind === 'budget-edit' || mutation.kind === 'budget-permit'
+              ? 'Budget version conflict: The budget version changed on the server before saving.'
+              : mutation.kind === 'job-retry' || mutation.kind === 'job-submit' || mutation.kind === 'job-cancel'
+                ? 'Authoring version conflict: The job or conversation version changed on the server.'
+                : 'Epic version conflict: The epic version changed on the server before saving.'
           : err.status === 422
             ? Object.entries(err.fields).length
               ? 'Validation failed: ' + Object.entries(err.fields).map(([field, message]) => field + ': ' + message).join('; ')

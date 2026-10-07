@@ -6,7 +6,15 @@ import { Panel } from '@/components/ui/panel';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { useEpicBrainstorm } from '@/hooks/epics/use-epic-brainstorm';
 import { EvidenceDetails } from './evidence-details';
-import type { AuthoringOutcome, BrainstormProposal } from '@/hooks/epics/types';
+import { AuthoringJobOutcome } from './authoring-job-outcome';
+import { DecompositionWorkspace } from './decomposition-workspace';
+import type { BrainstormProposal, DecompositionProposal } from '@/hooks/epics/types';
+
+function isBrainstormProposal(
+  proposal: BrainstormProposal | DecompositionProposal
+): proposal is BrainstormProposal {
+  return 'requirements' in proposal && Array.isArray(proposal.requirements);
+}
 
 function ProposalList({ title, items }: { title: string; items: string[] }) {
   if (!items.length) return null;
@@ -71,59 +79,7 @@ function ProposalPreview({ proposal }: { proposal: BrainstormProposal }) {
   );
 }
 
-function formatState(state: string): string {
-  return state.replaceAll('_', ' ');
-}
 
-function UsageValue({ label, value }: { label: string; value: number | null | undefined }) {
-  return <li>{label}: {value === null || value === undefined ? 'Unknown' : value}</li>;
-}
-
-function JobOutcome({ outcome }: { outcome: AuthoringOutcome }) {
-  const usage = outcome.usage;
-  const unknown = outcome.unknown_usage_fields ?? [];
-  const held = outcome.held_reservations;
-  const settlementLabel = outcome.process_settled
-    ? 'Process settled'
-    : outcome.state === 'cancelled'
-      ? 'No process settlement reported'
-      : 'Process settlement pending';
-  const settlementTone = outcome.process_settled || outcome.state === 'cancelled' ? 'neutral' : 'warning';
-  return (
-    <Panel title="Assistant job" description={`Job state: ${formatState(outcome.state)}`}>
-      <div className="space-y-3 text-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          <StatusBadge label={formatState(outcome.state)} tone={outcome.state === 'failed' ? 'danger' : outcome.state === 'proposed' ? 'success' : 'info'} />
-          <StatusBadge label={settlementLabel} tone={settlementTone} />
-        </div>
-        {outcome.failure && <p role="alert">The job reported: {formatState(outcome.failure)}.</p>}
-        <p>Usage: {outcome.usage_known === true ? 'measured' : outcome.usage_known === false ? 'unknown' : 'not yet reported'}.</p>
-        {usage && (
-          <ul className="list-disc pl-5 space-y-1">
-            <UsageValue label="Duration (ms)" value={usage.duration_ms} />
-            <UsageValue label="Duration lower bound (ms)" value={usage.duration_lower_bound_ms} />
-            <UsageValue label="Tool calls" value={usage.tool_call_count} />
-            <UsageValue label="Input tokens" value={usage.input_tokens} />
-            <UsageValue label="Output tokens" value={usage.output_tokens} />
-            <UsageValue label={`Estimated cost${outcome.currency ? ` (${outcome.currency})` : ''}`} value={usage.estimated_api_cost_minor} />
-          </ul>
-        )}
-        {unknown.length > 0 && <p>Unknown usage: {unknown.map(formatState).join(', ')}.</p>}
-        {held && outcome.held_reasons && Object.values(outcome.held_reasons).some(Boolean) && (
-          <EvidenceDetails summary="Inspect held usage reservations">
-            <span>{JSON.stringify(held)}</span>
-            <span>{JSON.stringify(outcome.held_reasons)}</span>
-          </EvidenceDetails>
-        )}
-        <EvidenceDetails summary="Inspect job identity and version">
-          <span>job_id: {outcome.job_id}</span>
-          <span>job_version: {outcome.job_version}</span>
-          {outcome.proposal_digest && <span>proposal_digest: {outcome.proposal_digest}</span>}
-        </EvidenceDetails>
-      </div>
-    </Panel>
-  );
-}
 
 export function AuthoringWorkspace({
   epicId,
@@ -161,7 +117,13 @@ export function AuthoringWorkspace({
   const latestOperatorTurn = [...turns].reverse().find(turn => turn.role === 'operator');
   const mutationPending = mutations.loading || mutations.hasPendingRetry;
   const registerCompletion = mutations.registerCompletion;
-  const isAuthoringAction = !mutations.actionKind || ['conversation-start', 'conversation-turn', 'job-submit', 'job-cancel', 'job-retry', 'proposal-adopt'].includes(mutations.actionKind);
+  const currentActionKind = mutations.pendingMutation?.kind ?? mutations.actionKind;
+  const isAuthoringAction =
+    !currentActionKind ||
+    (!currentActionKind.startsWith('decomp-') &&
+      ['conversation-start', 'conversation-turn', 'job-submit', 'job-cancel', 'job-retry', 'proposal-adopt'].includes(
+        currentActionKind
+      ));
 
   useEffect(() => {
     const clearSubmittedPrompt = (_receipt: unknown, request: { body: Record<string, unknown> }) => {
@@ -207,11 +169,14 @@ export function AuthoringWorkspace({
     }
   };
 
+  const [retryOwnerOverride, setRetryOwnerOverride] = useState(false);
+  const [retryOverrideNote, setRetryOverrideNote] = useState('');
+
   const handleJobControl = async (action: 'cancel' | 'retry') => {
     if (!outcome || mutationPending || isUnavailable) return;
     try {
       if (action === 'cancel') await cancelJob(outcome.job_id, outcome.job_version);
-      else await retryJob(outcome.job_id, outcome.job_version);
+      else await retryJob(outcome.job_id, outcome.job_version, retryOwnerOverride || undefined, retryOverrideNote.trim() || undefined);
     } catch {
       // The mutation owner retains uncertain requests for an exact retry.
     }
@@ -219,7 +184,7 @@ export function AuthoringWorkspace({
 
   return (
     <div className="authoring-workspace space-y-6">
-      {mutations.hasPendingRetry && !mutations.shared && (
+      {mutations.hasPendingRetry && !mutations.shared && isAuthoringAction && (
         <div role="alert" className="p-4 bg-[var(--warning-soft)] text-[var(--warning)] rounded border border-[var(--border)] space-y-2">
           <p className="font-semibold">The last request may still have completed.</p>
           <p className="text-sm">Retry the saved request to check its result before starting another action.</p>
@@ -297,7 +262,7 @@ export function AuthoringWorkspace({
                 <EvidenceDetails summary="Inspect message ID"><span>{turn.turn_id}</span></EvidenceDetails>
               </div>
               <p className="text-sm whitespace-pre-wrap">{turn.text}</p>
-              {turn.proposal && (
+              {turn.proposal && isBrainstormProposal(turn.proposal) && (
                 <>
                   <ProposalPreview proposal={turn.proposal} />
                   {canAdopt && (
@@ -313,14 +278,37 @@ export function AuthoringWorkspace({
 
       {outcome && (
         <>
-          <JobOutcome outcome={outcome} />
+          <AuthoringJobOutcome outcome={outcome} />
           {outcome.state === 'cancel_requested' && <p role="status">Cancellation requested. Waiting for the process to settle.</p>}
           <div className="flex flex-wrap gap-2">
             {['queued', 'running', 'quota_wait', 'capacity_wait', 'reconciling'].includes(outcome.state) && (
               <Button variant="secondary" disabled={mutationPending || isUnavailable} onClick={() => { void handleJobControl('cancel'); }}>Cancel assistant job</Button>
             )}
             {outcome.state === 'failed' && outcome.process_settled && (
-              <Button variant="secondary" disabled={mutationPending || isUnavailable} onClick={() => { void handleJobControl('retry'); }}>Retry assistant job</Button>
+              <div className="space-y-2">
+                <Button variant="secondary" disabled={mutationPending || isUnavailable} onClick={() => { void handleJobControl('retry'); }}>Retry assistant job</Button>
+                <div className="flex flex-col gap-2 pt-1 text-xs">
+                  <label className="flex items-center gap-2 cursor-pointer font-medium text-[var(--muted)]">
+                    <input
+                      type="checkbox"
+                      checked={retryOwnerOverride}
+                      disabled={mutationPending || isUnavailable}
+                      onChange={e => setRetryOwnerOverride(e.target.checked)}
+                    />
+                    <span>Owner override retry policy</span>
+                  </label>
+                  {retryOwnerOverride && (
+                    <input
+                      type="text"
+                      className="px-2 py-1 border border-[var(--control-border)] rounded text-xs bg-[var(--surface)] max-w-sm"
+                      placeholder="Optional override note..."
+                      value={retryOverrideNote}
+                      disabled={mutationPending || isUnavailable}
+                      onChange={e => setRetryOverrideNote(e.target.value)}
+                    />
+                  )}
+                </div>
+              </div>
             )}
           </div>
         </>
@@ -352,8 +340,15 @@ export function AuthoringWorkspace({
         </Panel>
       )}
 
-      <Panel title="Graph decomposition" description="There is no available graph decomposition request contract yet.">
-        <p className="text-sm text-[var(--muted)]">Use the Graph Editor to create and review work items manually.</p>
+      <Panel
+        title="Work-item graph decomposition"
+        description="Use assistant decomposition conversations to propose and adopt versioned work-item graphs."
+      >
+        <DecompositionWorkspace
+          epicId={epicId}
+          projectId={projectId}
+          epicVersion={epicVersion}
+        />
       </Panel>
     </div>
   );

@@ -18,10 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
 from forge.application.ports.commands import CommandLane, CommandRecoveryRequired
 from forge.application.ports.epic_brainstorm import BrainstormGateway
+from forge.application.ports.epic_decomposition import DecompositionGateway
 from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.repository import RepositoryReader
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.epic_lifecycle import EpicLifecycleService
 from forge.application.services.recovery import RecoveryError, RecoveryService
+from forge.application.services.runs import RunCommandService, RunUnitOfWork
 from forge.application.services.subscription_decision_recovery import (
     SubscriptionDecisionRecovery,
     is_transient_recovery_error,
@@ -50,6 +53,7 @@ from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.settings import Settings
 from forge.worker.composition import WorkerCompositionError, WorkerHandlers, compose_worker_handlers
 from forge.worker.epic_brainstorm import EpicBrainstormWorker, brainstorm_worker_owner
+from forge.worker.epic_decomposition import ValidatedDecompositionGateway
 from forge.worker.startup import run_startup_recovery
 from forge.worker.startup_intervention import StartupInterventionRecovery
 from forge.worker.subscription_installations import (
@@ -119,6 +123,8 @@ async def run_worker(
         [AuthoringJobSnapshot], RepositoryReader | Awaitable[RepositoryReader]
     ]
     | None = None,
+    decomposition_gateway_factory: Callable[[AuthoringJobSnapshot], DecompositionGateway]
+    | None = None,
 ) -> None:
     """Build PostgreSQL dependencies, recover intents, then poll durably.
 
@@ -132,8 +138,14 @@ async def run_worker(
     if poll_interval <= 0 or poll_interval > 1:
         raise ValueError("worker idle poll interval must be between zero and one second")
     _validate_decision_retry_interval(decision_retry_interval)
-    if (brainstorm_gateway_factory is None) != (brainstorm_reader_factory is None):
-        raise ValueError("brainstorm gateway and reader must be registered together")
+    if brainstorm_reader_factory is None and (
+        brainstorm_gateway_factory is not None or decomposition_gateway_factory is not None
+    ):
+        raise ValueError("authoring gateways require a controlled repository reader")
+    if brainstorm_reader_factory is not None and (
+        brainstorm_gateway_factory is None and decomposition_gateway_factory is None
+    ):
+        raise ValueError("authoring reader requires a configured gateway")
     supplied_subscription_adapters = (
         None if subscription_adapters is None else tuple(subscription_adapters)
     )
@@ -145,10 +157,12 @@ async def run_worker(
     factory = create_session_factory(engine)
     resolved_brainstorm_gateway_factory = brainstorm_gateway_factory
     resolved_brainstorm_reader_factory = brainstorm_reader_factory
+    resolved_decomposition_gateway_factory = decomposition_gateway_factory
     if (
         handlers is None
         and resolved_brainstorm_gateway_factory is None
         and resolved_brainstorm_reader_factory is None
+        and resolved_decomposition_gateway_factory is None
     ):
         from forge.worker.epic_brainstorm_composition import (
             make_brainstorm_gateway_factory,
@@ -157,8 +171,10 @@ async def run_worker(
 
         resolved_brainstorm_gateway_factory = make_brainstorm_gateway_factory(settings)
         resolved_brainstorm_reader_factory = make_brainstorm_reader_factory(factory)
+        resolved_decomposition_gateway_factory = make_brainstorm_gateway_factory(settings)
     worker: Worker | None = None
     control_worker: Worker | None = None
+    authoring_worker: EpicBrainstormWorker | None = None
     owned_handlers: WorkerHandlers | None = None
     status_reporter: SubscriptionRuntimeReporter | None = None
     subscription_readiness = None
@@ -290,6 +306,16 @@ async def run_worker(
             asyncio.create_task(_poll(worker, stop_event, poll_interval)),
             asyncio.create_task(_poll(control_worker, stop_event, poll_interval)),
         ]
+        if getattr(settings, "process_role", None) == "worker":
+            epic_controls = EpicLifecycleService(
+                lambda: PostgresUnitOfWork(factory),
+                commands=RunCommandService(
+                    lambda: cast(RunUnitOfWork, PostgresUnitOfWork(factory))
+                ),
+            )
+            polls.append(
+                asyncio.create_task(_poll_epic_controls(epic_controls, stop_event, poll_interval))
+            )
         if status_reporter is not None:
             polls.append(asyncio.create_task(status_reporter.run(stop_event)))
             if catalog_specs:
@@ -327,19 +353,41 @@ async def run_worker(
                 polls.append(
                     asyncio.create_task(_poll_invocations(invocation, stop_event, poll_interval))
                 )
-        if (
-            resolved_brainstorm_gateway_factory is not None
-            and resolved_brainstorm_reader_factory is not None
-        ):
-            brainstorm = EpicBrainstormWorker(
+        if resolved_brainstorm_reader_factory is not None:
+
+            def authoring_gateway(snapshot: AuthoringJobSnapshot) -> BrainstormGateway:
+                if (
+                    snapshot.kind == "decomposition"
+                    and resolved_decomposition_gateway_factory is not None
+                ):
+                    return ValidatedDecompositionGateway(
+                        resolved_decomposition_gateway_factory(snapshot)
+                    )
+                if (
+                    snapshot.kind == "brainstorm"
+                    and resolved_brainstorm_gateway_factory is not None
+                ):
+                    return resolved_brainstorm_gateway_factory(snapshot)
+                raise ValueError("authoring kind has no configured gateway")
+
+            authoring_worker = EpicBrainstormWorker(
                 factory,
                 owner=brainstorm_worker_owner(base_worker_id),
-                gateway_factory=resolved_brainstorm_gateway_factory,
+                gateway_factory=authoring_gateway,
                 reader_factory=resolved_brainstorm_reader_factory,
                 quota_policy=getattr(settings, "subscription_quota_policy", None),
+                epic_ceiling=getattr(settings, "epic_cumulative_budget", None),
+                kinds=frozenset(
+                    kind
+                    for kind, configured in (
+                        ("brainstorm", resolved_brainstorm_gateway_factory is not None),
+                        ("decomposition", resolved_decomposition_gateway_factory is not None),
+                    )
+                    if configured
+                ),
             )
             polls.append(
-                asyncio.create_task(_poll_brainstorms(brainstorm, stop_event, poll_interval))
+                asyncio.create_task(_poll_brainstorms(authoring_worker, stop_event, poll_interval))
             )
         await asyncio.gather(*polls)
     finally:
@@ -350,22 +398,26 @@ async def run_worker(
                 poll.cancel()
             await asyncio.gather(*polls, return_exceptions=True)
             try:
-                try:
-                    if worker is not None:
-                        await worker.drain()
-                finally:
-                    try:
-                        if control_worker is not None:
-                            await control_worker.drain()
-                    finally:
-                        if owned_handlers is not None:
-                            await owned_handlers.aclose()
+                if authoring_worker is not None:
+                    await authoring_worker.drain()
             finally:
                 try:
-                    if status_reporter is not None:
-                        await status_reporter.close()
+                    try:
+                        if worker is not None:
+                            await worker.drain()
+                    finally:
+                        try:
+                            if control_worker is not None:
+                                await control_worker.drain()
+                        finally:
+                            if owned_handlers is not None:
+                                await owned_handlers.aclose()
                 finally:
-                    await engine.dispose()
+                    try:
+                        if status_reporter is not None:
+                            await status_reporter.close()
+                    finally:
+                        await engine.dispose()
 
         # Invocation cancellation must finish broker/process/usage settlement
         # before shared tool clients or PostgreSQL are closed. A second shutdown
@@ -404,6 +456,20 @@ def run() -> None:
 async def _poll(worker: Worker, stop_event: asyncio.Event, poll_interval: float) -> None:
     while not stop_event.is_set():
         if await worker.tick() is None:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+            except TimeoutError:
+                pass
+
+
+async def _poll_epic_controls(
+    service: EpicLifecycleService, stop_event: asyncio.Event, poll_interval: float
+) -> None:
+    while not stop_event.is_set():
+        progressed = await service.reconcile_one()
+        if progressed is None:
+            progressed = await service.reconcile_one_hold()
+        if progressed is None:
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
             except TimeoutError:

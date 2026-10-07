@@ -20,6 +20,14 @@ from sqlalchemy.schema import conv
 from forge.persistence.models.base import Base, TimestampMixin
 
 
+class EpicAdmissionScanCursor(Base):
+    """One durable round-robin cursor for bounded prelocked scheduler scans."""
+
+    __tablename__ = "epic_admission_scan_cursor"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_run_id: Mapped[UUID | None] = mapped_column(Uuid)
+
+
 class SubscriptionScheduledTask(Base, TimestampMixin):
     __tablename__ = "subscription_scheduled_tasks"
     __table_args__ = (

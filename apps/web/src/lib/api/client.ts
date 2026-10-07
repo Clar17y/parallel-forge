@@ -87,11 +87,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T | 
 export function mutate<T>(path: string, body: Record<string, unknown>, options: {
   idempotencyKey: string;
   expectedVersion?: number;
+  method?: 'POST' | 'PUT' | 'PATCH';
   signal?: AbortSignal;
 }): Promise<T | undefined> {
   const payload = options.expectedVersion === undefined ? body : { ...body, expected_run_version: options.expectedVersion };
   return api<T>(path, {
-    method: 'POST', signal: options.signal,
+    method: options.method ?? 'POST', signal: options.signal,
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': options.idempotencyKey },
     body: JSON.stringify(payload),
   });
