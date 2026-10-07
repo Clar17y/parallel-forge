@@ -32,6 +32,8 @@ from forge.persistence.models.epic_brainstorm import (
     BrainstormTurnRow as BrainstormTurnRow,
 )
 from forge.persistence.models.epic_brief import Epic, EpicBriefRevision
+from forge.persistence.models.epic_dispatch import EpicDispatchSetting
+from forge.persistence.models.epic_eligibility import EpicCompletionHandoff
 from forge.persistence.models.epic_items import EpicGraphRevision
 from forge.persistence.models.epic_run_bridge import (
     EpicBudgetAdmissionPermit,
@@ -145,7 +147,9 @@ __all__ = [
     "EpicBriefRevision",
     "EpicBudgetAdmissionPermit",
     "EpicChildBudgetHold",
+    "EpicCompletionHandoff",
     "EpicControlIntent",
+    "EpicDispatchSetting",
     "EpicExecution",
     "EpicExecutionControl",
     "EpicGraphRevision",

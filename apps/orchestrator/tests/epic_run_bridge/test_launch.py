@@ -98,13 +98,13 @@ def bridge_factory(session_factory):
     return lambda: BridgeWork(session_factory)
 
 
-async def setup(session_factory, bridge_factory, *, dependencies=False, deferred=False):
+async def setup(session_factory, bridge_factory, *, dependencies=False, deferred=False, independent=False, repository_path=None):
     actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
     project_id = uuid4()
     async with session_factory() as session, session.begin():
         project = Project(
             id=project_id,
-            canonical_path=f"/tmp/forge-{project_id}",
+            canonical_path=str(repository_path) if repository_path is not None else f"/tmp/forge-{project_id}",
             github_repository=f"owner/repo-{project_id}",
             default_branch="main",
         )
@@ -169,7 +169,7 @@ async def setup(session_factory, bridge_factory, *, dependencies=False, deferred
             source_requirement_ids=[requirement_id],
         )
     ]
-    if dependencies or deferred:
+    if dependencies or deferred or independent:
         items.append(
             ItemInput(
                 item_id=second_id,
@@ -682,7 +682,7 @@ async def test_base_moves_while_eligibility_awaits_and_proof_is_rechecked(
         def __init__(self):
             self.calls: list[str] = []
 
-        async def evidence(self, *, epic_id, item_ids, base_sha):
+        async def evidence(self, *, epic_id, execution_id, item_ids, base_ref, base_sha):
             self.calls.append(base_sha)
             if base_sha == "c" * 40:
                 inspector.sha = "d" * 40
@@ -702,12 +702,15 @@ async def test_base_moves_while_eligibility_awaits_and_proof_is_rechecked(
         run_service=RunService(bridge_factory, repository_inspector=inspector, data_root="/tmp"),
         eligibility=eligibility,
     )
+    execution = await service.start(
+        actor=actor, epic_id=epic_id, idempotency_key="execution", expected_epic_version=5
+    )
     with pytest.raises(EpicLaunchConflict, match="predecessor_unverified"):
         await service.launch(
             actor=actor,
             epic_id=epic_id,
             idempotency_key="moving-default",
-            request=request(second_id),
+            request=request(second_id, execution_id=execution.execution_id),
         )
     assert eligibility.calls == ["c" * 40, "d" * 40]
     async with session_factory() as session:
@@ -716,7 +719,7 @@ async def test_base_moves_while_eligibility_awaits_and_proof_is_rechecked(
         actor=actor,
         epic_id=epic_id,
         idempotency_key="moving-owner",
-        request=request(second_id, owner_override=True),
+        request=request(second_id, execution_id=execution.execution_id, owner_override=True),
     )
     assert attempt.base_sha == "d" * 40
     assert attempt.dependency_evidence[0].status == "unknown"
@@ -736,7 +739,7 @@ async def test_continuously_moving_base_requires_explicit_owner_action_and_forge
         def __init__(self):
             self.calls: list[str] = []
 
-        async def evidence(self, *, epic_id, item_ids, base_sha):
+        async def evidence(self, *, epic_id, execution_id, item_ids, base_ref, base_sha):
             self.calls.append(base_sha)
             digits = "cdef0123456789ab"
             inspector.sha = digits[(digits.index(base_sha[0]) + 1) % len(digits)] * 40
@@ -755,7 +758,10 @@ async def test_continuously_moving_base_requires_explicit_owner_action_and_forge
         run_service=RunService(bridge_factory, repository_inspector=inspector, data_root="/tmp"),
         eligibility=eligibility,
     )
-    launch_request = request(second_id)
+    execution = await service.start(
+        actor=actor, epic_id=epic_id, idempotency_key="execution", expected_epic_version=5
+    )
+    launch_request = request(second_id, execution_id=execution.execution_id)
     with pytest.raises(EpicLaunchConflict) as blocked:
         await service.launch(
             actor=actor, epic_id=epic_id, idempotency_key="moving-default", request=launch_request
@@ -767,7 +773,9 @@ async def test_continuously_moving_base_requires_explicit_owner_action_and_forge
     assert eligibility.calls == ["c" * 40, "d" * 40, "e" * 40]
     async with session_factory() as session:
         for model in (EpicExecution, EpicItemAttempt, Task, Run):
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
+            assert await session.scalar(select(func.count()).select_from(model)) == (
+                1 if model is EpicExecution else 0
+            )
         assert (
             await session.scalar(
                 select(func.count())
@@ -824,7 +832,7 @@ async def test_unsafe_note_or_malformed_evidence_cannot_persist(session_factory,
         )
 
     class MalformedEligibility:
-        async def evidence(self, *, epic_id, item_ids, base_sha):
+        async def evidence(self, *, epic_id, execution_id, item_ids, base_ref, base_sha):
             return [
                 {
                     "item_id": str(item_ids[0]),
@@ -838,17 +846,20 @@ async def test_unsafe_note_or_malformed_evidence_cannot_persist(session_factory,
         run_service=RunService(bridge_factory, repository_inspector=inspector, data_root="/tmp"),
         eligibility=MalformedEligibility(),
     )
+    execution = await service.start(
+        actor=actor, epic_id=epic_id, idempotency_key="execution", expected_epic_version=5
+    )
     with pytest.raises(ValueError, match="durable payload contains a raw credential"):
         await malformed_service.launch(
             actor=actor,
             epic_id=epic_id,
             idempotency_key="unsafe-evidence",
-            request=request(second_id, owner_override=True),
+            request=request(second_id, execution_id=execution.execution_id, owner_override=True),
         )
     async with session_factory() as session:
         for model in (ApiMutation, EpicExecution, EpicItemAttempt, Task, Run, RunCommand):
             count = await session.scalar(select(func.count()).select_from(model))
-            assert count == (5 if model is ApiMutation else 0)
+            assert count == (6 if model is ApiMutation else 1 if model is EpicExecution else 0)
 
 
 @pytest.mark.asyncio
@@ -1896,6 +1907,26 @@ async def test_internal_child_claim_obeys_edited_epic_cap_and_one_owner_permit(
     assert measured.known["estimated_api_cost_minor"] == 0
     assert measured.held["provider_attempts"] == 0
     assert not measured.unknown
+    # Ordinary gateway evidence in the same run is an independent execution;
+    # subscription consumption remains counted once from its reservation.
+    from forge.persistence.models import AgentExecution, ModelUsage
+
+    ordinary_id = uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(
+            id=ordinary_id, run_id=child.run_id, role="planner", instruction_version="v1",
+            provider="fixture", model="ordinary", status="SUCCEEDED",
+        ))
+        session.add(ModelUsage(
+            run_id=child.run_id, agent_execution_id=ordinary_id,
+            provider="fixture", model="ordinary", prompt_version="v1",
+            input_tokens=7, output_tokens=2, duration_ms=3,
+            pricing_version="v1", estimated_cost_minor=0, currency="USD",
+        ))
+    mixed = await budget.get(epic_id)
+    assert mixed.known["provider_attempts"] == 2
+    assert mixed.known["input_tokens"] == 7
+    assert not mixed.unknown
     assert await executor.admit_next("retry-default", reservation) is None
     retry_permit = await budget.permit(
         actor=actor,
@@ -1910,7 +1941,7 @@ async def test_internal_child_claim_obeys_edited_epic_cap_and_one_owner_permit(
     retried = await executor.admit_next("retry-owner", reservation)
     assert retried is not None and retried.attempt.attempt_number == 2
     final = await budget.get(epic_id)
-    assert final.known["provider_attempts"] == 1
+    assert final.known["provider_attempts"] == 2
     assert final.held["provider_attempts"] == 1
     assert final.permits[1].consumed_attempt_id == retried.attempt.attempt_id
 
@@ -2544,7 +2575,9 @@ async def test_already_paused_sibling_is_observed_and_later_resume_blocks_aggreg
         await work.runs.resume(first.run_id, first_run.version, "run.resumed", {})
         second_run = await work.runs.get(second.run_id)
         await work.runs.pause(second.run_id, second_run.version, "run.paused", {})
-        command_id = (await controls.get(epic_id, execution.execution_id)).intents[0].command_id
+        command_id = next(intent.command_id for intent in
+                          (await controls.get(epic_id, execution.execution_id)).intents
+                          if intent.intent_id == receipt.intent_ids[0])
         command = await work.session.get(RunCommand, command_id)
         assert command is not None
         command.status = "COMPLETED"
@@ -2552,7 +2585,7 @@ async def test_already_paused_sibling_is_observed_and_later_resume_blocks_aggreg
         await work.commit()
     assert await controls.reconcile_one() == receipt.intent_ids[0]
     projection = await controls.get(epic_id, execution.execution_id)
-    assert projection.intents[0].status == "settled"
+    assert next(intent for intent in projection.intents if intent.intent_id == receipt.intent_ids[0]).status == "settled"
     assert projection.control_state == "BLOCKED"
 
 
@@ -2804,12 +2837,144 @@ async def test_same_epic_provider_authoring_and_delivery_claims_finish_without_d
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("history_state", "retry"),
+    [("COMPLETED", False), ("FAILED", True), ("CANCELLED", True)],
+)
+@pytest.mark.parametrize("action", ("pause", "cancel"))
+async def test_control_terminal_history_and_live_successor_preserves_history(
+    session_factory, bridge_factory, history_state, retry, action
+):
+    from datetime import UTC, datetime
+
+    from forge.domain.run import RunState
+    from forge.persistence.models.epic_run_bridge import EpicChildBudgetHold
+
+    bridge, _, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, independent=True
+    )
+    execution = await bridge.start(
+        actor=actor, epic_id=epic_id, idempotency_key="history-start", expected_epic_version=5
+    )
+    first = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="history-first",
+        request=request(first_id, execution_id=execution.execution_id),
+    )
+    async with bridge_factory() as work:
+        run = await work.session.get(Run, first.run_id)
+        run.state = history_state
+        command = await work.session.scalar(select(RunCommand).where(RunCommand.run_id == first.run_id))
+        command.status = "COMPLETED"
+        command.completed_at = datetime.now(UTC)
+        hold = await work.session.get(EpicChildBudgetHold, first.attempt_id)
+        hold.effects_settled = True
+        await work.commit()
+    second = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="history-second",
+        request=request(first_id if retry else second_id,
+                        execution_id=execution.execution_id, owner_override=True),
+    )
+    controls = EpicLifecycleService(bridge_factory, commands=RunCommandService(bridge_factory))
+    receipt = await controls.request(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key=f"history-{action}",
+        request=EpicControlRequest(expected_execution_version=1, action=action),
+    )
+    assert receipt.state == f"{action.upper()}_REQUESTED" and len(receipt.intent_ids) == 1
+    assert await controls.reconcile_one() == receipt.intent_ids[0]
+    async with bridge_factory() as work:
+        first_run = await work.runs.get(first.run_id)
+        assert first_run.state.value == history_state
+        commands = (await work.session.scalars(select(RunCommand).where(RunCommand.run_id == first.run_id))).all()
+        assert all(command.command_type != action for command in commands)
+        second_run = await work.runs.get(second.run_id)
+        if action == "pause":
+            await work.runs.pause(second.run_id, second_run.version, "run.paused", {})
+        else:
+            await work.runs.transition(second.run_id, second_run.version, RunState.CANCELLED, "run.cancelled", {})
+        for command in (await work.session.scalars(
+            select(RunCommand).where(RunCommand.run_id == second.run_id)
+        )).all():
+            command.status = "COMPLETED"
+            command.completed_at = datetime.now(UTC)
+        await work.commit()
+    assert await controls.reconcile_one() == receipt.intent_ids[0]
+    projection = await controls.get(epic_id, execution.execution_id)
+    assert projection.control_state == ("PAUSED" if action == "pause" else "CANCELLED")
+    assert next(child for child in projection.children if child.attempt.run_id == first.run_id).run_state.value == history_state
+
+
+@pytest.mark.integration
+async def test_resume_paused_successor_with_completed_history(
+    session_factory, bridge_factory
+):
+    from datetime import UTC, datetime
+
+    from forge.domain.run import RunState
+
+    bridge, _, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, independent=True
+    )
+    execution = await bridge.start(
+        actor=actor, epic_id=epic_id, idempotency_key="resume-history-start", expected_epic_version=5
+    )
+    first = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="resume-history-first",
+        request=request(first_id, execution_id=execution.execution_id),
+    )
+    second = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="resume-history-second",
+        request=request(second_id, execution_id=execution.execution_id, owner_override=True),
+    )
+    async with bridge_factory() as work:
+        first_run = await work.session.get(Run, first.run_id)
+        first_run.state = "COMPLETED"
+        for child in (first, second):
+            for command in (await work.session.scalars(
+                select(RunCommand).where(RunCommand.run_id == child.run_id)
+            )).all():
+                command.status = "COMPLETED"
+                command.completed_at = datetime.now(UTC)
+        second_run = await work.runs.get(second.run_id)
+        await work.runs.pause(second.run_id, second_run.version, "run.paused", {})
+        await work.commit()
+    controls = EpicLifecycleService(bridge_factory, commands=RunCommandService(bridge_factory))
+    paused = await controls.request(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="resume-history-paused",
+        request=EpicControlRequest(expected_execution_version=1, action="pause"),
+    )
+    assert paused.state == "PAUSED" and not paused.intent_ids
+    receipt = await controls.request(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="resume-history-control",
+        request=EpicControlRequest(expected_execution_version=2, action="resume"),
+    )
+    assert receipt.state == "RESUME_REQUESTED" and len(receipt.intent_ids) == 1
+    assert await controls.reconcile_one() == receipt.intent_ids[0]
+    async with bridge_factory() as work:
+        second_run = await work.runs.get(second.run_id)
+        await work.runs.resume(second.run_id, second_run.version, "run.resumed", {})
+        command = await work.session.scalar(select(RunCommand).where(
+            RunCommand.run_id == second.run_id, RunCommand.command_type == "resume"
+        ))
+        command.status = "COMPLETED"
+        command.completed_at = datetime.now(UTC)
+        await work.commit()
+    assert await controls.reconcile_one() == receipt.intent_ids[0]
+    projection = await controls.get(epic_id, execution.execution_id)
+    assert projection.control_state == "ACTIVE"
+    assert next(child for child in projection.children if child.attempt.run_id == first.run_id).run_state is RunState.COMPLETED
+
+
+@pytest.mark.integration
 async def test_resume_acknowledgement_then_terminal_child_settles_intent_but_blocks_active(
     session_factory, bridge_factory
 ):
     from datetime import UTC, datetime
 
     from forge.domain.run import RunState
+    from forge.persistence.models.epic_run_bridge import EpicChildBudgetHold
 
     bridge, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     child = await bridge.launch(
@@ -2851,16 +3016,30 @@ async def test_resume_acknowledgement_then_terminal_child_settles_intent_but_blo
         await work.runs.transition(
             child.run_id, restored.version, RunState.FAILED, "run.failed", {}
         )
-        command_id = (await controls.get(epic_id, child.execution_id)).intents[0].command_id
+        command_id = next(intent.command_id for intent in
+                          (await controls.get(epic_id, child.execution_id)).intents
+                          if intent.intent_id == resume.intent_ids[0])
         command = await work.session.get(RunCommand, command_id)
         assert command is not None
         command.status = "COMPLETED"
         command.completed_at = datetime.now(UTC)
+        # A separate durable effect remains pending after the resume command
+        # acknowledged and the run became terminal.
+        start = await work.session.scalar(select(RunCommand).where(
+            RunCommand.run_id == child.run_id, RunCommand.id != command_id
+        ))
+        assert start is not None
+        start.status = "PENDING"
+        start.completed_at = None
         await work.commit()
     assert await controls.reconcile_one() == resume.intent_ids[0]
     projection = await controls.get(epic_id, child.execution_id)
-    assert projection.intents[0].status == "settled"
+    assert next(intent for intent in projection.intents if intent.intent_id == resume.intent_ids[0]).status == "settled"
     assert projection.control_state == "BLOCKED"
+    async with bridge_factory() as work:
+        hold = await work.session.get(EpicChildBudgetHold, child.attempt_id)
+        assert hold is not None and not hold.effects_settled
+        await work.commit()
 
 
 @pytest.mark.integration
@@ -3004,16 +3183,18 @@ async def test_cancel_commands_both_owner_admitted_live_children_once(
 
 
 @pytest.mark.integration
-async def test_terminal_failed_sibling_blocks_cancel_and_unsettled_pause(
+async def test_terminal_failed_sibling_is_observed_during_pause(
     session_factory, bridge_factory
 ):
+    from datetime import UTC, datetime
+
     from forge.domain.run import RunState
 
     bridge, _, actor, epic_id, _, _, request = await setup(session_factory, bridge_factory)
     execution = await bridge.start(
         actor=actor, epic_id=epic_id, idempotency_key="complete-start", expected_epic_version=5
     )
-    await bridge.launch(
+    live = await bridge.launch(
         actor=actor,
         epic_id=epic_id,
         idempotency_key="complete-live",
@@ -3035,27 +3216,35 @@ async def test_terminal_failed_sibling_blocks_cancel_and_unsettled_pause(
             completed.run_id, planning.version, RunState.FAILED, "run.failed", {}
         )
         await work.commit()
-    with pytest.raises(EpicLaunchConflict) as pause_error:
-        await controls.request(
-            actor=actor,
-            epic_id=epic_id,
-            execution_id=execution.execution_id,
-            idempotency_key="complete-pause",
-            request=EpicControlRequest(expected_execution_version=1, action="pause"),
-        )
-    assert pause_error.value.blocker_codes == ("child_effects_unsettled",)
-    with pytest.raises(EpicLaunchConflict) as cancel_error:
-        await controls.request(
-            actor=actor,
-            epic_id=epic_id,
-            execution_id=execution.execution_id,
-            idempotency_key="complete-cancel",
-            request=EpicControlRequest(expected_execution_version=1, action="cancel"),
-        )
-    assert cancel_error.value.blocker_codes == ("child_terminal_not_cancelled",)
+    pause = await controls.request(
+        actor=actor,
+        epic_id=epic_id,
+        execution_id=execution.execution_id,
+        idempotency_key="complete-pause",
+        request=EpicControlRequest(expected_execution_version=1, action="pause"),
+    )
     projection = await controls.get(epic_id, execution.execution_id)
-    assert projection.control_state == "ACTIVE"
-    assert projection.intents == ()
+    assert pause.state == "PAUSE_REQUESTED"
+    assert {intent.run_id for intent in projection.intents} == {completed.run_id, live.run_id}
+    assert {intent.status for intent in projection.intents} == {"requested", "observing"}
+    assert projection.control_state == "PAUSE_REQUESTED"
+    assert next(child for child in projection.children if child.attempt.run_id == completed.run_id).run_state is RunState.FAILED
+    assert await controls.reconcile_one() in pause.intent_ids
+    async with bridge_factory() as work:
+        run = await work.runs.get(live.run_id)
+        await work.runs.pause(live.run_id, run.version, "run.paused", {})
+        for child in (live, completed):
+            for command in (await work.session.scalars(
+                select(RunCommand).where(RunCommand.run_id == child.run_id)
+            )).all():
+                command.status = "COMPLETED"
+                command.completed_at = datetime.now(UTC)
+        await work.commit()
+    for _ in range(3):
+        await controls.reconcile_one()
+    projection = await controls.get(epic_id, execution.execution_id)
+    assert projection.control_state == "PAUSED"
+    assert next(child for child in projection.children if child.attempt.run_id == completed.run_id).run_state is RunState.FAILED
 
 
 @pytest.mark.integration

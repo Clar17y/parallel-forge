@@ -184,8 +184,18 @@ async def test_stopped_upgrade_backup_rollback_and_recovery(
         await original_upgrade(case, factory, database_url, config)
         upgraded = await _tables(factory)
         _assert_original_rows(frozen, upgraded)
-        # No new-version effects have been admitted: exercise only that rollback boundary.
-        assert all(not rows for name, rows in upgraded.items() if name not in frozen)
+        # Migration 0029 seeds one internal recovery signing key before any
+        # subscription or epic work is admitted. It is not a runtime effect.
+        signing_keys = upgraded["subscription_recovery_signing_keys"]
+        assert len(signing_keys) == 1
+        assert set(signing_keys[0]) == {"id", "key_hex"}
+        assert signing_keys[0]["id"] == 1
+        assert re.fullmatch(r"[0-9a-f]{64}", signing_keys[0]["key_hex"])
+        assert all(
+            not rows
+            for name, rows in upgraded.items()
+            if name not in frozen and name != "subscription_recovery_signing_keys"
+        ), "Unexpected admitted state exists before the rollback boundary"
         await asyncio.to_thread(command.downgrade, config, LEGACY_REVISION)
         restored_schema = await _schema(factory)
         assert restored_schema == original_schema, "Rollback schema differs from the v0.1 boundary"

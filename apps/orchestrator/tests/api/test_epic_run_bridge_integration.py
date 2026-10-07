@@ -224,12 +224,12 @@ async def test_normal_app_launches_epic_item_and_exposes_owner_override(
                 )
             await session.rollback()
         config = alembic_config_factory(migrated_database_url)
-        with pytest.raises(DBAPIError, match="cannot downgrade retained epic execution data"):
+        with pytest.raises(RuntimeError, match="cannot drop nonempty epic execution control state"):
             await asyncio.to_thread(command.downgrade, config, "20261004_0033")
         async with session_factory() as session:
             assert (
                 await session.scalar(text("SELECT version_num FROM alembic_version"))
-                == "20261004_0034"
+                == "20261007_0037"
             )
         assert await post(f"{path}/work-item-runs", "launch", launch) == first
         assert await retained_bytes() == retained

@@ -77,6 +77,7 @@ describe('DeliveryWorkspace', () => {
     ],
     intents: [],
     owner_actions: [],
+    items: [],
   };
 
   const frozenGraph: GraphRevisionResponse = {

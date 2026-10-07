@@ -121,6 +121,8 @@ class DependencyEvidence(BaseModel):
     status: Literal["verified", "unknown", "unverified"]
     predecessor_run_id: UUID | None = None
     integrated_sha: str | None = None
+    blocker_code: str | None = None
+    handoff_id: UUID | None = None
 
     @field_validator("integrated_sha")
     @classmethod

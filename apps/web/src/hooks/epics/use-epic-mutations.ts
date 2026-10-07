@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, createElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
-import { api, ApiError } from '@/lib/api/client';
+import { api, ApiError, type EpicLaunchConflictDetail } from '@/lib/api/client';
 
 export type HttpMethod = 'POST' | 'PATCH' | 'PUT';
 export interface FrozenMutation {
@@ -20,6 +20,7 @@ type Scope = {
   loaded: boolean;
   pending: FrozenMutation | null;
   error: string | null;
+  errorDetail: EpicLaunchConflictDetail | null;
   conflict: boolean;
   actionKind?: string | null;
   reloadProtected: boolean;
@@ -35,12 +36,13 @@ type MutationSnapshot = {
   loading: boolean;
   conflict: boolean;
   error: string | null;
+  errorDetail: EpicLaunchConflictDetail | null;
   actionKind?: string | null;
   reloadProtected: boolean;
 };
 const INITIAL_SNAPSHOT: MutationSnapshot = {
   pendingMutation: null, hasPendingRetry: false, loading: false,
-  conflict: false, error: null, actionKind: null, reloadProtected: true,
+  conflict: false, error: null, errorDetail: null, actionKind: null, reloadProtected: true,
 };
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -89,6 +91,7 @@ class EpicMutationStore {
         loaded: false,
         pending: null,
         error: null,
+        errorDetail: null,
         conflict: false,
         actionKind: null,
         reloadProtected: true,
@@ -111,7 +114,7 @@ class EpicMutationStore {
     const scope = this.scope(key);
     return scope.snapshot ??= Object.freeze({
       pendingMutation: scope.pending, hasPendingRetry: scope.pending !== null,
-      loading: scope.inFlight, conflict: scope.conflict, error: scope.error,
+      loading: scope.inFlight, conflict: scope.conflict, error: scope.error, errorDetail: scope.errorDetail,
       actionKind: scope.actionKind, reloadProtected: scope.reloadProtected,
     });
   }
@@ -157,6 +160,7 @@ class EpicMutationStore {
   clearError(key: string) {
     const scope = this.scope(key);
     scope.error = null;
+    scope.errorDetail = null;
     scope.conflict = false;
     scope.actionKind = null;
     this.publish(scope);
@@ -167,6 +171,7 @@ class EpicMutationStore {
     scope.inFlight = true;
     scope.pending = mutation;
     scope.error = null;
+    scope.errorDetail = null;
     scope.conflict = false;
     scope.actionKind = mutation.kind ?? null;
     try { window.sessionStorage.setItem(storageKey, JSON.stringify(mutation)); } catch {
@@ -194,15 +199,23 @@ class EpicMutationStore {
       }
       return response as T;
     } catch (err) {
+      const epicLaunchBlocked = err instanceof ApiError && err.code === 'epic_launch_blocked';
+      scope.errorDetail = epicLaunchBlocked
+        ? err.detail ?? null
+        : null;
       const rejected = err instanceof ApiError &&
         (err.status === 409 || err.status === 422 ||
           (!mutation.uncertain && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429));
       if (rejected) {
         this.clearPending(storageKey, scope);
-        scope.conflict = err.status === 409;
+        scope.conflict = err.status === 409 && !epicLaunchBlocked;
         scope.actionKind = mutation.kind ?? null;
         scope.error = err.status === 409
-          ? mutation.kind === 'execution-command'
+          ? err instanceof ApiError && err.code === 'epic_launch_blocked'
+            ? 'The server blocked this work-item launch. Review the reported warnings or explicitly retry with owner override.'
+            : mutation.kind === 'execution-dispatch'
+              ? 'Dispatch version conflict: Refresh the execution before changing sequential delivery.'
+            : mutation.kind === 'execution-command'
             ? 'Execution version conflict: The execution version changed concurrently.'
             : mutation.kind === 'budget-edit' || mutation.kind === 'budget-permit'
               ? 'Budget version conflict: The budget version changed on the server before saving.'

@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.epic_dispatch import EpicDispatchProjection, EpicDispatchService
+from forge.application.services.epic_eligibility import EpicEligibilityService, EpicItemEligibility
 from forge.application.services.runs import RunCommandRequest, RunCommandService
 from forge.domain.approval import ApprovalGate
 from forge.domain.command import CommandStatus
@@ -98,6 +100,8 @@ class EpicExecutionProjection(BaseModel):
     children: tuple[EpicChildProjection, ...]
     intents: tuple[EpicIntentProjection, ...]
     owner_actions: tuple[EpicOwnerActionProjection, ...]
+    items: tuple[EpicItemEligibility, ...] = ()
+    dispatch: EpicDispatchProjection | None = None
 
 
 class EpicLifecycleService:
@@ -106,9 +110,13 @@ class EpicLifecycleService:
         unit_of_work_factory: Callable[[], PostgresUnitOfWork],
         *,
         commands: RunCommandService,
+        eligibility: EpicEligibilityService | None = None,
+        dispatch: EpicDispatchService | None = None,
     ) -> None:
         self._work = unit_of_work_factory
         self._commands = commands
+        self._eligibility = eligibility
+        self._dispatch = dispatch
 
     async def list(self, epic_id: UUID) -> tuple[EpicExecutionProjection, ...]:
         async with self._work() as work:
@@ -122,7 +130,7 @@ class EpicLifecycleService:
             ).all()
             result = tuple([await self._project(work, row) for row in rows])
             await work.commit()
-            return result
+        return tuple([await self._with_readiness(value) for value in result])
 
     async def get(self, epic_id: UUID, execution_id: UUID) -> EpicExecutionProjection:
         async with self._work() as work:
@@ -131,7 +139,19 @@ class EpicLifecycleService:
                 raise EpicExecutionNotFound("execution was not found")
             result = await self._project(work, row)
             await work.commit()
-            return result
+        return await self._with_readiness(result)
+
+    async def _with_readiness(self, value: EpicExecutionProjection) -> EpicExecutionProjection:
+        updates: dict[str, object] = {}
+        if self._eligibility is not None:
+            updates["items"] = await self._eligibility.readiness(
+                epic_id=value.execution.epic_id, execution_id=value.execution.execution_id
+            )
+        if self._dispatch is not None:
+            updates["dispatch"] = await self._dispatch.get(
+                value.execution.epic_id, value.execution.execution_id
+            )
+        return value.model_copy(update=updates) if updates else value
 
     async def _project(
         self, work: PostgresUnitOfWork, row: EpicExecution
@@ -263,48 +283,31 @@ class EpicLifecycleService:
             attempts = await work.epic_run_bridge.list_attempts(epic_id, execution_id=execution_id)
             live = []
             observing = []
+            historical = []
+            already_settled = []
             for attempt in attempts:
                 run = await work.runs.get_for_update(attempt.run_id)
-                if (
-                    run.state in _TERMINAL
-                    and request.action != "cancel"
-                    and not (await work.runs.prove_quiescent(attempt.run_id)).is_quiescent
-                ):
-                    raise EpicLaunchConflict(
-                        ["child_effects_unsettled"], actual_epic_version=control.version
-                    )
-                if request.action == "resume":
-                    if run.state is RunState.PAUSED:
-                        live.append(run)
-                    elif run.state in _TERMINAL:
-                        raise EpicLaunchConflict(
-                            ["child_terminal"], actual_epic_version=control.version
-                        )
-                elif request.action == "pause" and run.state is RunState.PAUSED:
-                    if not (await work.runs.prove_quiescent(attempt.run_id)).is_quiescent:
-                        observing.append(attempt.run_id)
-                elif request.action == "pause" and run.state in _TERMINAL:
-                    raise EpicLaunchConflict(
-                        ["child_terminal"], actual_epic_version=control.version
-                    )
-                elif run.state not in _TERMINAL:
-                    live.append(run)
-                elif request.action == "cancel" and run.state is not RunState.CANCELLED:
-                    raise EpicLaunchConflict(
-                        ["child_terminal_not_cancelled"], actual_epic_version=control.version
-                    )
                 if run.state in _TERMINAL:
-                    quiescent = (await work.runs.prove_quiescent(attempt.run_id)).is_quiescent
-                    if not quiescent:
-                        if request.action != "cancel":
-                            raise EpicLaunchConflict(
-                                ["child_effects_unsettled"], actual_epic_version=control.version
-                            )
-                        observing.append(attempt.run_id)
-                    elif request.action == "cancel":
+                    if (await work.runs.prove_quiescent(run.id)).is_quiescent:
+                        historical.append(run)
                         hold = await work.session.get(EpicChildBudgetHold, attempt.attempt_id)
                         if hold is not None:
                             hold.effects_settled = True
+                    else:
+                        observing.append(run.id)
+                    continue
+                if request.action == "resume":
+                    if run.state is RunState.PAUSED:
+                        live.append(run)
+                    else:
+                        already_settled.append(run)
+                elif request.action == "pause" and run.state is RunState.PAUSED:
+                    if not (await work.runs.prove_quiescent(attempt.run_id)).is_quiescent:
+                        observing.append(attempt.run_id)
+                    else:
+                        already_settled.append(run)
+                else:
+                    live.append(run)
             control.version += 1
             control.state = (
                 _REQUESTED[request.action] if live or observing else _SETTLED[request.action]
@@ -339,6 +342,17 @@ class EpicLifecycleService:
                 )
                 work.session.add(intent)
                 intent_ids.append(intent.id)
+            # Persist the request-time participant set. A completed predecessor
+            # remains historical; a later owner-admitted child has no marker and
+            # cannot make an aggregate control look settled by coincidence.
+            for run in historical + already_settled:
+                work.session.add(EpicControlIntent(
+                    id=uuid4(), execution_id=execution_id, control_version=control.version,
+                    actor_id=actor.actor_id, session_id=actor.session_id,
+                    action=request.action, run_id=run.id,
+                    expected_run_version=run.version,
+                    status="historical" if run in historical else "settled",
+                ))
             await work.session.flush()
             result = EpicControlReceipt(
                 execution_id=execution_id,
@@ -504,6 +518,8 @@ class EpicLifecycleService:
             async with self._work() as work:
                 run = await work.runs.get_for_update(run_id)
                 settled = (
+                    run.state in _TERMINAL
+                    or
                     (action == "cancel" and run.state is RunState.CANCELLED)
                     or (action == "pause" and run.state is RunState.PAUSED)
                 ) and (await work.runs.prove_quiescent(run_id)).is_quiescent
@@ -577,16 +593,21 @@ class EpicLifecycleService:
                     )
                     or (row.action == "pause" and current.state is RunState.PAUSED)
                     or (row.action == "cancel" and current.state is RunState.CANCELLED)
+                    or (row.status == "observing" and current.state in _TERMINAL)
                 )
                 if row.action == "cancel" and current.state is RunState.CANCELLED and correct_state:
                     correct_state = (await work.runs.prove_quiescent(row.run_id)).is_quiescent
                 if row.action == "pause" and current.state is RunState.PAUSED and correct_state:
                     correct_state = (await work.runs.prove_quiescent(row.run_id)).is_quiescent
+                if row.status == "observing" and current.state in _TERMINAL and correct_state:
+                    correct_state = (await work.runs.prove_quiescent(row.run_id)).is_quiescent
                 if not correct_state:
                     await work.commit()
                     return False
-                row.status = "settled"
-                if row.action == "cancel":
+                row.status = "historical" if row.status == "observing" and current.state in _TERMINAL else "settled"
+                if current.state in _TERMINAL and (
+                    await work.runs.prove_quiescent(row.run_id)
+                ).is_quiescent:
                     hold = await work.session.scalar(
                         select(EpicChildBudgetHold).where(EpicChildBudgetHold.run_id == row.run_id)
                     )
@@ -598,7 +619,7 @@ class EpicLifecycleService:
                         EpicControlIntent.execution_id == row.execution_id,
                         EpicControlIntent.control_version == row.control_version,
                         EpicControlIntent.id != row.id,
-                        EpicControlIntent.status != "settled",
+                        EpicControlIntent.status.not_in(("settled", "historical")),
                     )
                     .limit(1)
                 )
@@ -606,23 +627,41 @@ class EpicLifecycleService:
                     bound = await work.epic_run_bridge.list_attempts(
                         control.epic_id, execution_id=row.execution_id
                     )
+                    participants = {
+                        intent.run_id: intent for intent in (
+                            await work.session.scalars(
+                                select(EpicControlIntent).where(
+                                    EpicControlIntent.execution_id == row.execution_id,
+                                    EpicControlIntent.control_version == row.control_version,
+                                )
+                            )
+                        ).all()
+                    }
                     uncontrolled = False
                     for attempt in bound:
+                        participant = participants.get(attempt.run_id)
+                        if participant is None or participant.status not in ("settled", "historical"):
+                            uncontrolled = True
+                            break
                         sibling = await work.runs.get_for_update(attempt.run_id)
                         expected_state = (
-                            (row.action == "pause" and sibling.state is RunState.PAUSED)
-                            or (
-                                row.action == "resume"
-                                and sibling.state not in _TERMINAL
-                                and sibling.state is not RunState.PAUSED
+                            sibling.state in _TERMINAL
+                            if participant.status == "historical"
+                            else (
+                                (row.action == "pause" and sibling.state is RunState.PAUSED)
+                                or (
+                                    row.action == "resume"
+                                    and sibling.state not in _TERMINAL
+                                    and sibling.state is not RunState.PAUSED
+                                )
+                                or (row.action == "cancel" and sibling.state is RunState.CANCELLED)
                             )
-                            or (row.action == "cancel" and sibling.state is RunState.CANCELLED)
                         )
                         if not expected_state:
                             uncontrolled = True
                             break
                         if (
-                            row.action != "resume"
+                            (participant.status == "historical" or row.action != "resume")
                             and not (await work.runs.prove_quiescent(attempt.run_id)).is_quiescent
                         ):
                             uncontrolled = True

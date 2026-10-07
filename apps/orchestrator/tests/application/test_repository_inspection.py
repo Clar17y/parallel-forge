@@ -197,3 +197,48 @@ def test_inspection_reads_only_local_git_origin_and_resolves_real_default_branch
     assert result.base_ref == "refs/heads/main"
     assert len(result.base_sha) == 40
     assert result.base_sha == result.base_sha.lower()
+
+
+@pytest.mark.integration
+def test_linked_worktree_proves_complete_history_and_rejects_metadata_overlays(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    data_root = tmp_path / "data"
+    repository.mkdir()
+    data_root.mkdir()
+
+    def git(path: Path, *args: str) -> str:
+        return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
+
+    git(repository, "init", "-b", "main")
+    git(repository, "config", "user.email", "forge@example.test")
+    git(repository, "config", "user.name", "Forge Test")
+    git(repository, "remote", "add", "origin", "https://github.com/Owner/Repo.git")
+    (repository / "README.md").write_text("base", encoding="utf-8")
+    git(repository, "add", "README.md")
+    git(repository, "commit", "-m", "base")
+    base = git(repository, "rev-parse", "HEAD")
+    git(repository, "worktree", "add", "-b", "linked", str(linked), "main")
+    inspector = LocalGitRepositoryInspector()
+    arguments = {
+        "repository_path": str(linked), "data_root": str(data_root),
+        "github_repository": "owner/repo", "default_branch": "linked",
+        "base_sha": base, "merge_sha": base,
+    }
+    assert inspector.proves_integration(**arguments)
+    common = Path(git(linked, "rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = linked / common
+    common = common.resolve()
+    per_worktree = Path(git(linked, "rev-parse", "--git-dir"))
+    if not per_worktree.is_absolute():
+        per_worktree = linked / per_worktree
+    per_worktree = per_worktree.resolve()
+    for metadata in (common, per_worktree):
+        for overlay in (metadata / "shallow", metadata / "info" / "grafts"):
+            overlay.parent.mkdir(exist_ok=True)
+            overlay.write_text(base + "\n", encoding="utf-8")
+            with pytest.raises(RepositoryInspectionError):
+                inspector.proves_integration(**arguments)
+            overlay.unlink()
+    assert inspector.proves_integration(**arguments)

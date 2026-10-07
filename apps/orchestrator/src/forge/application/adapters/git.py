@@ -46,16 +46,17 @@ class LocalGitRepositoryInspector:
         self,
         *,
         repository_path: str,
-        data_root: str,
+        data_root: str | None,
         github_repository: str,
         default_branch: str,
     ) -> RepositoryInspection:
         """Return canonical repository identity and its current default-branch SHA."""
 
         repository = _canonical_directory(repository_path)
-        data = _canonical_directory(data_root)
-        if _contains(repository, data) or _contains(data, repository):
-            raise RepositoryInspectionError()
+        if data_root is not None:
+            data = _canonical_directory(data_root)
+            if _contains(repository, data) or _contains(data, repository):
+                raise RepositoryInspectionError()
 
         top_level = self._git_output(repository, ["rev-parse", "--show-toplevel"])
         try:
@@ -88,15 +89,52 @@ class LocalGitRepositoryInspector:
             base_sha=base_sha,
         )
 
-    def _git_output(self, repository: Path, arguments: list[str]) -> str:
-        argv = ["git", "-C", str(repository), *arguments]
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_ASKPASS": "true",
-            }
+    def proves_integration(
+        self, *, repository_path: str, github_repository: str, default_branch: str,
+        base_sha: str, merge_sha: str, data_root: str | None = None,
+    ) -> bool:
+        """Verify immutable commit ancestry on the registered branch without Git overlays."""
+
+        if _SHA.fullmatch(base_sha) is None or _SHA.fullmatch(merge_sha) is None:
+            raise RepositoryInspectionError()
+        inspection = self.inspect(
+            repository_path=repository_path, data_root=data_root,
+            github_repository=github_repository, default_branch=default_branch,
         )
+        if inspection.base_sha != base_sha:
+            return False
+        repository = Path(inspection.canonical_path)
+        metadata_dirs: set[Path] = set()
+        for command in ("--git-dir", "--git-common-dir"):
+            value = self._git_output(repository, ["rev-parse", command])
+            metadata = Path(value)
+            if not metadata.is_absolute():
+                metadata = repository / metadata
+            metadata_dirs.add(_canonical_directory(metadata))
+        for metadata in metadata_dirs:
+            for overlay in (metadata / "shallow", metadata / "info" / "grafts"):
+                if os.path.lexists(overlay):
+                    raise RepositoryInspectionError()
+        if self._git_output(repository, ["rev-parse", "--is-shallow-repository"]) != "false":
+            raise RepositoryInspectionError()
+        result = self._git_result(
+            repository, ["merge-base", "--is-ancestor", merge_sha, base_sha]
+        )
+        if result.returncode not in (0, 1):
+            raise RepositoryInspectionError()
+        return result.returncode == 0
+
+    def _git_output(self, repository: Path, arguments: list[str]) -> str:
+        result = self._git_result(repository, arguments)
+        if result.returncode != 0:
+            raise RepositoryInspectionError()
+        return result.stdout.strip()
+
+    def _git_result(self, repository: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+        argv = ["git", "--no-replace-objects", "-C", str(repository), *arguments]
+        allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "COMSPEC", "PATHEXT", "HOME", "USERPROFILE"}
+        environment = {key: value for key, value in os.environ.items() if key.upper() in allowed and isinstance(value, str) and "\x00" not in value}
+        environment.update({"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true", "GIT_CONFIG_NOSYSTEM": "1"})
         try:
             result = self._runner(
                 argv,
@@ -119,15 +157,13 @@ class LocalGitRepositoryInspector:
             UnicodeError,
         ):
             raise RepositoryInspectionError() from None
-        if result.returncode != 0:
-            raise RepositoryInspectionError()
         output = result.stdout
         if (
             not isinstance(output, str)
             or len(output.encode("utf-8", errors="replace")) > _GIT_OUTPUT_LIMIT
         ):
             raise RepositoryInspectionError()
-        return output.strip()
+        return result
 
 
 def canonical_path_key(path: str | Path) -> str:

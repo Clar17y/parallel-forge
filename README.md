@@ -1,10 +1,10 @@
 # Parallel Forge
 
-> **Status: v0.2 functional acceptance complete for personal operator use.**
-> A1–A9 and the remaining filesystem checks have recorded outcomes. See the
-> [release handoff](docs/v0.2-release.md) for supported behavior, evidence,
-> platform limitations and the final delivery gates. Historical full-suite
-> failures remain explicit; focused acceptance is not a new full-CI pass.
+> **Status: v0.3 delivery candidate; local verification complete; hosted CI pending.**
+> See the [release evidence](docs/v0.3-release.md) for tested behavior,
+> upgrade coverage and remaining delivery gates. Local checks, hosted CI,
+> publication and merge are recorded separately. The
+> [v0.2 handoff](docs/v0.2-release.md) retains the earlier release evidence.
 
 Parallel Forge is a local-first control plane for durable, reviewable
 agent-assisted software delivery. It began as the engineering system for
@@ -24,6 +24,10 @@ building Parallel, but is designed to manage other repositories independently.
   shared-worktree ownership and independent-worktree concurrency
 - frozen routing profiles, durable quota/fallback state, per-task controls,
   operator feedback and measured/unknown usage reporting
+- saved brainstorming, revisioned requirements briefs and dependency-aware epic
+  work items with frozen child-run context
+- verified prerequisite integration, shared epic budgets, owner controls and
+  explicitly enabled sequential delivery through the existing human run gates
 
 ## Safety model
 
@@ -77,6 +81,12 @@ cleanup under `.llm-output/local-verification/`. See
 [reproducible local verification](docs/local-verification.md).
 
 ## Development status and roadmap
+
+The [v0.3 contract](docs/v0.3-design.md),
+[release evidence](docs/v0.3-release.md) and
+[stopped-upgrade procedure](docs/v0.3-upgrade.md) describe the epic delivery
+candidate. Sequential coordination must be enabled for each execution; accepting
+a brief or graph does not approve a child's plan, PR publication or merge.
 
 The [v0.2 release handoff](docs/v0.2-release.md) combines the completed functional
 work, current setup and stopped-upgrade guidance. The

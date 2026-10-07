@@ -1,7 +1,19 @@
 import { csrf } from './csrf';
 
+export interface EpicLaunchConflictDetail {
+  code: 'epic_launch_blocked';
+  blocker_codes: string[];
+  actual_epic_version: number;
+  owner_action: 'retry_with_owner_override';
+}
+
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, public fields: Record<string, string> = {}) {
+  constructor(
+    public status: number,
+    public code: string,
+    public fields: Record<string, string> = {},
+    public detail?: EpicLaunchConflictDetail,
+  ) {
     super(code);
   }
 }
@@ -37,10 +49,28 @@ async function readBoundedPayload(response: Response): Promise<unknown> {
   finally { reader.releaseLock(); }
 }
 
-async function conflictCode(response: Response): Promise<string> {
+async function conflictError(response: Response): Promise<ApiError> {
   const payload = await readBoundedPayload(response);
-  if (payload && typeof payload === 'object' && 'detail' in payload && payload.detail === 'stale-project-policy') return 'stale-project-policy';
-  return 'stale-projection';
+  if (payload && typeof payload === 'object' && 'detail' in payload) {
+    const detail = payload.detail;
+    if (detail === 'stale-project-policy') return new ApiError(409, 'stale-project-policy');
+    if (detail && typeof detail === 'object' &&
+        'code' in detail && detail.code === 'epic_launch_blocked' &&
+        'blocker_codes' in detail && Array.isArray(detail.blocker_codes) &&
+        detail.blocker_codes.length <= 128 && detail.blocker_codes.every(code =>
+          typeof code === 'string' && /^[a-z][a-z0-9_]{0,95}$/.test(code)) &&
+        'actual_epic_version' in detail && typeof detail.actual_epic_version === 'number' &&
+        Number.isSafeInteger(detail.actual_epic_version) && detail.actual_epic_version >= 1 &&
+        'owner_action' in detail && detail.owner_action === 'retry_with_owner_override') {
+      return new ApiError(409, 'epic_launch_blocked', {}, {
+        code: 'epic_launch_blocked',
+        blocker_codes: detail.blocker_codes,
+        actual_epic_version: detail.actual_epic_version,
+        owner_action: 'retry_with_owner_override',
+      });
+    }
+  }
+  return new ApiError(409, 'stale-projection');
 }
 
 function extractValidationFields(payload: unknown): Record<string, string> {
@@ -76,7 +106,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T | 
   const response = await fetch(url, { ...init, method, headers, credentials: 'same-origin' });
   if (!response.ok) {
     if (response.status === 401) { csrf.clear(); throw new ApiError(401, 'bootstrap-required'); }
-    if (response.status === 409) throw new ApiError(409, await conflictCode(response));
+    if (response.status === 409) throw await conflictError(response);
     if (response.status === 422) throw await unprocessableError(response);
     throw new ApiError(response.status, 'request-failed');
   }

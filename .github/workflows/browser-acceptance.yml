@@ -109,6 +109,12 @@ jobs:
         env:
           FORGE_SUBSCRIPTION_BROWSER_TEST: "1"
         run: uv run --frozen python -m pytest tests/acceptance/test_subscription_browser_process.py -q
+      - name: Build production web for epic delivery acceptance
+        run: npm run build:web
+      - name: Verify sequential epic delivery in Chromium
+        env:
+          FORGE_EPIC_BROWSER_TEST: "1"
+        run: uv run --frozen python -m pytest tests/epic_acceptance/test_three_item_process.py -q
       - name: Start real API, worker and control bridge
         shell: bash
         run: |

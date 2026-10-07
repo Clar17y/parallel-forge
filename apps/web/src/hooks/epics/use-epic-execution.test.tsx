@@ -66,6 +66,7 @@ describe('useEpicExecution', () => {
     ],
     intents: [],
     owner_actions: [],
+    items: [],
   };
 
   beforeEach(() => {
@@ -205,6 +206,7 @@ describe('useEpicExecution', () => {
       children: [],
       intents: [],
       owner_actions: [],
+      items: [],
     };
     const projection2: EpicExecutionProjection = {
       execution: {
@@ -222,6 +224,7 @@ describe('useEpicExecution', () => {
       children: [],
       intents: [],
       owner_actions: [],
+      items: [],
     };
 
     vi.mocked(api).mockImplementation(async <T,>(path: string) => {
@@ -253,6 +256,7 @@ describe('useEpicExecution', () => {
       children: [],
       intents: [],
       owner_actions: [],
+      items: [],
     };
 
     vi.mocked(api).mockResolvedValue(legacyProjection);
@@ -280,6 +284,7 @@ describe('useEpicExecution', () => {
       children: [],
       intents: [],
       owner_actions: [],
+      items: [],
     };
     const epoch2Snapshot = {
       epic_id: epicId,
@@ -298,6 +303,7 @@ describe('useEpicExecution', () => {
       children: [],
       intents: [],
       owner_actions: [],
+      items: [],
     };
 
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
@@ -337,6 +343,7 @@ describe('useEpicExecution', () => {
       children: [],
       intents: [],
       owner_actions: [],
+      items: [],
     };
 
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {

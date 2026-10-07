@@ -747,6 +747,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/epics/{epic_id}/executions/{execution_id}/dispatch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Dispatch */
+        get: operations["get_dispatch_api_epics__epic_id__executions__execution_id__dispatch_get"];
+        /** Configure Dispatch */
+        put: operations["configure_dispatch_api_epics__epic_id__executions__execution_id__dispatch_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/epics/{epic_id}/graph-adoptions": {
         parameters: {
             query?: never;
@@ -2856,6 +2874,10 @@ export interface components {
         };
         /** DependencyEvidence */
         DependencyEvidence: {
+            /** Blocker Code */
+            blocker_code?: string | null;
+            /** Handoff Id */
+            handoff_id?: string | null;
             /** Integrated Sha */
             integrated_sha?: string | null;
             /**
@@ -3256,6 +3278,53 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** EpicDispatchProjection */
+        EpicDispatchProjection: {
+            /** Blocker Code */
+            blocker_code: string | null;
+            /** Claim Expires At */
+            claim_expires_at: string | null;
+            /** Claim Item Id */
+            claim_item_id: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Enabled By Actor Id */
+            enabled_by_actor_id: string | null;
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /** Profile Id */
+            profile_id: string | null;
+            /** Profile Version */
+            profile_version: number | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Version */
+            version: number;
+        };
+        /** EpicDispatchRequest */
+        EpicDispatchRequest: {
+            /** Enabled */
+            enabled: boolean;
+            /** Expected Dispatch Version */
+            expected_dispatch_version: number;
+            /** Profile Id */
+            profile_id?: string | null;
+            /** Profile Version */
+            profile_version?: number | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /**
          * EpicDraftUpdateRequest
          * @description Closed epic draft update request body.
@@ -3283,9 +3352,15 @@ export interface components {
             control_state: string | null;
             /** Control Version */
             control_version: number | null;
+            dispatch?: components["schemas"]["EpicDispatchProjection"] | null;
             execution: components["schemas"]["EpicExecutionSnapshot"];
             /** Intents */
             intents: components["schemas"]["EpicIntentProjection"][];
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["EpicItemEligibility"][];
             /** Owner Actions */
             owner_actions: components["schemas"]["EpicOwnerActionProjection"][];
         };
@@ -3343,6 +3418,35 @@ export interface components {
             run_id: string;
             /** Status */
             status: string;
+        };
+        /** EpicItemEligibility */
+        EpicItemEligibility: {
+            /** Blocker Code */
+            blocker_code: string | null;
+            completion_evidence: components["schemas"]["DependencyEvidence"] | null;
+            /** Dependency Evidence */
+            dependency_evidence: components["schemas"]["DependencyEvidence"][];
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "required" | "deferred";
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "blocked" | "deferred" | "active" | "verified";
         };
         /** EpicLaunchRequest */
         EpicLaunchRequest: {
@@ -7711,6 +7815,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EpicControlReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_dispatch_api_epics__epic_id__executions__execution_id__dispatch_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                epic_id: string;
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicDispatchProjection"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    configure_dispatch_api_epics__epic_id__executions__execution_id__dispatch_put: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                epic_id: string;
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicDispatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicDispatchProjection"];
                 };
             };
             /** @description Validation Error */

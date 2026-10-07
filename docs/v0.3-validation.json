@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "status": "local_candidate_verified_ready_for_hosted_ci",
+  "candidate": {
+    "baseline_commit": "11b088d",
+    "migration_head_observed": "20261007_0037",
+    "integrated_source_stable": true,
+    "post_review_source_sha256": {
+      "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f9dbb7ee5705859651ff690488c4d55b93447b54d675b43689833150f29719d6",
+      "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "e6ad469eb5b0fb964bb89e6ac7d7b0262eef97cac9a358558b4340e5c1ccf140",
+      "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "9d755b85aab756c59eac62a6cf6f6297dd8d5f0dba63645deaff9db61e023d0c",
+      "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "4819ff426747343b4538e50cf418b82d21ceb5688d2635b0bf789f900f94699d",
+      "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2"
+    }
+  },
+  "environment": {
+    "python": "3.14.5",
+    "postgresql": "disposable loopback 5435",
+    "provider_calls": false,
+    "real_github_calls": false
+  },
+  "local_checks": [
+    {
+      "name": "accepted source reselection",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_authoring_selection.py -q --junitxml=.llm-output/acceptance-authoring.xml",
+      "result": "1 passed",
+      "evidence": ".llm-output/acceptance-authoring.xml"
+    },
+    {
+      "name": "retained pre-dispatch source and v0.2 profile/run/approval/artifact/recovery upgrade",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_retained_upgrade.py -q --junitxml=.llm-output/acceptance-upgrade.xml",
+      "result": "2 passed",
+      "evidence": ".llm-output/acceptance-upgrade.xml"
+    },
+    {
+      "name": "issue 72 focused reuse",
+      "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/epic_brainstorm/test_persistence.py::test_conversation_and_job_reopen_replay_and_cross_project apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py::test_restart_adoption_and_stale_draft apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py::test_cancel_before_and_during_invocation_discards_late_proposal apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py::test_late_apply_cannot_replace_terminal_measurement_or_duplicate_turn apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py::test_confirmed_exhaustion_blocks_pool_before_process_settles apps/orchestrator/tests/epic_brainstorm/test_gateway.py::test_authoring_tools_never_forward_reader_errors_or_dispatch_writes -q --junitxml=.llm-output/acceptance-authoring-reuse.xml",
+      "result": "6 passed",
+      "evidence": ".llm-output/acceptance-authoring-reuse.xml"
+    },
+    {
+      "name": "retained v0.1 plan schema and current recovery driver",
+      "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/persistence/test_legacy_upgrade_acceptance.py::test_legacy_plan_artifacts_survive_v01_schema_and_restart -q --junitxml=.llm-output/acceptance-v01-plan.xml",
+      "result": "1 passed",
+      "evidence": ".llm-output/acceptance-v01-plan.xml",
+      "limit": "current driver at old schema; historical process rehearsal reported separately"
+    },
+    {
+      "name": "retained v0.1 unfinished write and pending controls",
+      "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/persistence/test_legacy_upgrade_acceptance.py::test_legacy_unfinished_execution_preserves_write_receipt_after_upgrade apps/orchestrator/tests/persistence/test_legacy_upgrade_acceptance.py::test_legacy_retained_review_and_pending_control_survive_upgrade -q --junitxml=.llm-output/acceptance-v01-controls.xml",
+      "result": "3 passed",
+      "evidence": ".llm-output/acceptance-v01-controls.xml",
+      "limit": "current driver at old schema; historical process rehearsal reported separately"
+    },
+    {
+      "name": "v0.2 runtime migration",
+      "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/persistence/test_subscription_runtime_upgrade.py -q --junitxml=.llm-output/acceptance-v02-runtime.xml",
+      "result": "1 passed",
+      "evidence": ".llm-output/acceptance-v02-runtime.xml",
+      "limit": "does not exercise every v0.2 retained record family"
+    },
+    {
+      "name": "original historical stopped v0.1 rehearsal, repaired plan case",
+      "command": ".venv/Scripts/python.exe -m pytest 'apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py::test_stopped_upgrade_backup_rollback_and_recovery[plan]' -q --junitxml=.llm-output/acceptance-v01-original-repaired-plan.xml",
+      "result": "1 passed",
+      "evidence": ".llm-output/acceptance-v01-original-repaired-plan.xml",
+      "limit": "other three original cases not rerun; equivalent corrected fixture passed all four before deduplication"
+    },
+    {
+      "name": "nonempty verified Git handoff downgrade fence",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_handoff_downgrade.py -q --junitxml=.llm-output/acceptance-handoff-downgrade.xml",
+      "result": "1 passed",
+      "evidence": ".llm-output/acceptance-handoff-downgrade.xml",
+      "limit": "component fixture seeds completed child; proves schema refusal and row retention, not normal owner gates"
+    },
+    {
+      "name": "production web build and full unit suite",
+      "command": "node npm-cli.js run build --workspace apps/web; node npm-cli.js run test --workspace apps/web",
+      "result": "build passed; 62 test files and 539 tests passed",
+      "evidence": ".llm-output/primary-checks/web-build-final.log; .llm-output/primary-checks/web-tests-final.log",
+      "limit": "build and unit results do not replace rendered browser acceptance"
+    },
+    {
+      "name": "head0037 retained source and v0.2 row upgrade rerun",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_retained_upgrade.py -q --junitxml=.llm-output/acceptance-upgrade-head0037.xml",
+      "result": "2 passed",
+      "evidence": ".llm-output/acceptance-upgrade-head0037.xml"
+    },
+    {
+      "name": "head0037 nonempty Git handoff downgrade fence rerun",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_handoff_downgrade.py -q --junitxml=.llm-output/acceptance-handoff-downgrade-head0037.xml",
+      "result": "1 passed",
+      "evidence": ".llm-output/acceptance-handoff-downgrade-head0037.xml"
+    },
+    {
+      "name": "nonempty v0.3 dispatch authority downgrade fence",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_handoff_downgrade.py::test_nonempty_dispatch_authority_refuses_downgrade_and_retains_exact_row -q --junitxml=.llm-output/acceptance-dispatch-downgrade.xml",
+      "result": "1 passed",
+      "evidence": ".llm-output/acceptance-dispatch-downgrade.xml; .llm-output/acceptance-current-downgrade-fences.xml (combined 2 passed)",
+      "limit": "seeded disabled authority row on a valid frozen execution proves schema refusal and exact row retention; no worker transition is inferred"
+    },
+    {
+      "name": "browser acceptance workflow policy wiring",
+      "command": "focused workflow policy tests; exact command in primary check log",
+      "result": "3 passed after expected red for missing browser step",
+      "evidence": ".llm-output/primary-checks/epic-browser-ci-red.log; .llm-output/primary-checks/epic-browser-ci-green.log",
+      "limit": "structural local workflow proof; hosted CI was not run"
+    },
+    {
+      "name": "browser bootstrap-token failure and timeout diagnostics",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_browser_probe_diagnostics_redact_token_and_reject_malformed_output tests/epic_acceptance/test_three_item_process.py::test_browser_timeout_settles_child_without_leaking_chained_error -q --junitxml=.llm-output/acceptance-browser-redaction.xml",
+      "result": "2 passed",
+      "evidence": ".llm-output/acceptance-browser-redaction.xml"
+    },
+    {
+      "name": "three required children through Chromium action, API, separate worker, human gates and real local Git",
+      "command": "FORGE_EPIC_BROWSER_TEST=1 .venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_three_item_dispatch_through_owner_gates_and_verified_git_handoffs -q --junitxml=.llm-output/acceptance-three-item-terminal-diagnostic.xml",
+      "result": "1 passed in 205.02s",
+      "evidence": ".llm-output/acceptance-three-item-terminal-diagnostic.xml",
+      "limit": "historical pass before an intermittent worker terminal defect was diagnosed; superseded by final repaired evidence below"
+    },
+    {
+      "name": "final repaired three-child default API, worker and real Git chain",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_three_item_dispatch_through_owner_gates_and_verified_git_handoffs -q --junitxml=.llm-output/acceptance-three-item-core-repaired.xml",
+      "result": "1 passed in 187.93s",
+      "evidence": ".llm-output/acceptance-three-item-core-repaired.xml",
+      "limit": "browser phase disabled; exercised the normal Python CI path"
+    },
+    {
+      "name": "final repaired Chromium enable action and three-child process chain",
+      "command": "PowerShell: $env:FORGE_EPIC_BROWSER_TEST='1'; .venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_three_item_dispatch_through_owner_gates_and_verified_git_handoffs -q --junitxml=.llm-output/acceptance-three-item-browser-final.xml",
+      "result": "1 passed in 198.74s",
+      "evidence": ".llm-output/acceptance-three-item-browser-final.xml",
+      "limit": "local Chromium against production Next build; hosted CI unrun"
+    },
+    {
+      "name": "backend dispatch and persisted stopped-task affected suite",
+      "command": "backend-owned focused pytest command recorded with .llm-output/backend-checks/v03-terminal-affected.xml",
+      "result": "45 passed",
+      "evidence": ".llm-output/backend-checks/v03-terminal-affected.xml",
+      "limit": "includes owner enable, pause/cancel claim fencing, expiry and duplicate prevention, transaction rollback/recovery, three-child terminal, ordinary priced/unknown usage, and task control cases; separate from browser/process chain"
+    },
+    {
+      "name": "post-review completed predecessor plus live successor aggregate pause/resume and full delivery",
+      "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_three_item_dispatch_through_owner_gates_and_verified_git_handoffs -q --junitxml=.llm-output/acceptance-postreview-control.xml",
+      "result": "1 passed in 197.06s",
+      "evidence": ".llm-output/acceptance-postreview-control.xml",
+      "limit": "default non-browser process branch; previously green Chromium renderer and upgrade checks reused because their exercised inputs did not change"
+    },
+    {
+      "name": "post-review terminal floor retention focused regression",
+      "command": "primary-audited backend focused pytest command recorded with .llm-output/primary-checks/floor-retention-audit.json",
+      "result": "expected red 1 failure then 9 passed after repair",
+      "evidence": ".llm-output/backend-checks/v03-floor-retention-red.xml; .llm-output/backend-checks/v03-floor-retention-green.xml; .llm-output/primary-checks/floor-retention-audit.json",
+      "limit": "focused PostgreSQL component evidence; final 37-case affected suite recorded separately"
+    },
+    {
+      "name": "final post-review progression and aggregate-control affected suite",
+      "command": "backend-owned focused pytest command audited in .llm-output/primary-checks/final-backend-audit.json",
+      "result": "37 passed in 119.124s; 0 failed or skipped",
+      "evidence": ".llm-output/backend-checks/v03-progression-control-post-floor.xml; .llm-output/primary-checks/final-backend-audit.json",
+      "limit": "focused PostgreSQL cases include independent ready sibling, manual-launch race, claim/control fencing, historical completed/failed/cancelled children, paused successor resume, terminal unsettled holds and floor retention; not a branching or cross-execution process rehearsal"
+    }
+  ],
+  "resolved_test_fixture_regression": {
+    "target": "apps/orchestrator/tests/persistence/historical_v01.py::_assert_matching_environment",
+    "initial_red_observation": "the first head0037 plan rerun failed before migration in _assert_matching_environment because uv.lock metadata revision had changed from 3 to 5; its XML path was reused by the subsequent green rerun, so no separate red XML is retained",
+    "resolution": "restore compatible lock format revision 3 while retaining first-party version 0.3.0 and unchanged 78 resolved dependency packages; strict historical comparison remains intact",
+    "green_evidence": ".llm-output/acceptance-v01-original-head0037-plan.xml; .llm-output/primary-checks/version-lock-format-installed.log; .llm-output/primary-checks/version-lock-format-ci.log"
+  },
+  "integration_red_evidence": [
+    {
+      "name": "normal published branch handoff proof mismatch",
+      "evidence": ".llm-output/acceptance-three-item-diagnostic.xml",
+      "observed": "settled real merge and local main ancestry remained unverified because stored pull base_ref was main and verifier expected refs/heads/main",
+      "status": "backend repaired; final default and Chromium-enabled chains verified all three handoffs"
+    },
+    {
+      "name": "normal child cumulative usage admission",
+      "evidence": ".llm-output/acceptance-three-item-browser-probe.xml",
+      "observed": "Chromium enabled dispatch and rendered first plan gate; first child passed owner plan/PR/merge gates and verified integration, but second ready item was not admitted because dispatch disabled with child_usage_unproved",
+      "status": "backend repaired; subsequent integrated run admitted all three children"
+    },
+    {
+      "name": "all verified children do not settle execution terminal state",
+      "evidence": ".llm-output/acceptance-three-item-terminal-red.xml; .llm-output/acceptance-three-item-core-final.xml; .llm-output/acceptance-three-item-core-diagnostic.xml",
+      "observed": "three distinct required child commits, ordinary gates, verified handoffs, and settled persisted holds; execution remains ACTIVE. Last ten separate-worker polls report DBAPIError at paused_task_quiescence_exemptions:1016. After stopping that worker and waiting until dispatch was due, a direct EpicDispatchWorker.run_once returned the execution ID and the API refetch was SUCCEEDED with dispatch disabled and all items verified",
+      "status": "backend repaired the PostgreSQL run-lock contention; strict default and Chromium-enabled separate-process chains passed on the repaired candidate"
+    },
+    {
+      "name": "browser final-state assertion expected enabled dispatch after success",
+      "evidence": ".llm-output/acceptance-three-item-browser-repaired.xml",
+      "observed": "the first post-repair browser chain reached final page but fixture expected sequential delivery on; successful terminal transition intentionally persists dispatch disabled",
+      "status": "fixture assertion corrected to require rendered SUCCEEDED and sequential delivery off; final Chromium chain passed"
+    }
+  ],
+  "post_review": {
+    "V03-R1": {
+      "invariant": "independent or branching ready siblings wait while another bound child or its effects remain unsettled without consuming a genuine failure retry",
+      "evidence": ".llm-output/backend-checks/v03-progression-control-post-floor.xml; .llm-output/primary-checks/final-backend-audit.json",
+      "observed": "independent ready sibling waits for active epic child, manual launch racing committed claim yields one child, and expected control/claim fences and owner recovery paths pass in the final 37-case PostgreSQL suite",
+      "status": "proved for independent ready and manual race; branching and cross-execution variants not separately exercised"
+    },
+    "V03-R2": {
+      "invariant": "a completed verified predecessor remains unchanged while an owner pauses and resumes the live successor through normal command settlement",
+      "evidence": ".llm-output/acceptance-postreview-control.xml",
+      "observed": "202 request then PAUSED physical child state and retained plan gate; 202 resume request then ACTIVE/pending plan; exact completed predecessor child and verified evidence unchanged, no commands on historical run, one COMPLETED pause and resume command on successor, no third admission during pause, normal three-child delivery then SUCCEEDED",
+      "status": "proved in final local separate-process fixture"
+    }
+  },
+  "resolved_test_defects": [
+    {
+      "target": "apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py::test_stopped_upgrade_backup_rollback_and_recovery[plan]",
+      "red_evidence": ".llm-output/acceptance-v01-historical-plan.xml",
+      "cause": "migration 20260929_0029 intentionally seeds one subscription_recovery_signing_keys row",
+      "resolution": "original assertion now verifies closed signing-key row shape and emptiness of all other new tables",
+      "green_evidence": ".llm-output/acceptance-v01-original-repaired-plan.xml"
+    }
+  ],
+  "prior_matching_evidence": [
+    {
+      "name": "four historical stopped v0.1 states with scoped signing-key assertion",
+      "result": "4 passed before duplicate fixture removal",
+      "evidence": ".llm-output/acceptance-v01-corrected-stop.xml",
+      "limit": "superseded fixture was removed; original plan rerun after repair"
+    }
+  ],
+  "unproved": [
+    "V03-R1 branching siblings after a shared prerequisite and cross-execution competing children are not separately rehearsed; independent ready sibling and manual race are covered by final PostgreSQL cases",
+    "terminal child changing state before command enqueue and every physical effect type are not individually exercised in the process chain; focused PostgreSQL cases cover selected transitions and hold retention",
+    "failed dependency, stale accepted graph, and combined budget/owner-override variants in the same three-child process chain; focused component tests should be assessed separately",
+    "historical v0.2 binary readback and coordinated backup restoration",
+    "original PostgreSQL SQLSTATE of the earlier run-lock fault was not captured; DBAPIError class and Forge call site were captured before the lock-path repair",
+    "hosted CI, publication and merge"
+  ],
+  "review": {
+    "scoped_repair_review": "fresh Astra review found no material defects",
+    "claude_opus_5_5": "authentication expired; not a quota-exhaustion result"
+  },
+  "hosted_ci": "unrun",
+  "publication": "unpublished",
+  "merge": "unmerged"
+}

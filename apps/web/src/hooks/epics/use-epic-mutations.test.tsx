@@ -4,11 +4,12 @@ import { startTransition, useEffect, useLayoutEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EpicMutationProvider, useEpicMutations, resetEpicMutationStoreForTesting } from './use-epic-mutations';
 import { api, ApiError } from '@/lib/api/client';
+import type { EpicLaunchConflictDetail } from '@/lib/api/client';
 
 vi.mock('@/lib/api/client', () => ({
   api: vi.fn(),
   ApiError: class ApiError extends Error {
-    constructor(public status: number, public code: string, public fields: Record<string, string> = {}) {
+    constructor(public status: number, public code: string, public fields: Record<string, string> = {}, public detail?: unknown) {
       super(code);
     }
   },
@@ -192,6 +193,22 @@ describe('useEpicMutations', () => {
 
     expect(result.current.hasPendingRetry).toBe(false);
     expect(result.current.conflict).toBe(true);
+    expect(sessionStorage.getItem(`epic_pending_mutation_${epicId}`)).toBeNull();
+  });
+
+  test('treats a typed epic launch blocker as a definitive workflow rejection, not a version conflict', async () => {
+    const detail: EpicLaunchConflictDetail = { code: 'epic_launch_blocked', blocker_codes: ['item_deferred'], actual_epic_version: 7, owner_action: 'retry_with_owner_override' };
+    vi.mocked(api).mockRejectedValueOnce(new ApiError(409, 'epic_launch_blocked', {}, detail));
+    const { result } = renderHook(() => useEpicMutations(epicId));
+
+    await act(async () => {
+      await expect(result.current.execute('POST', `/epics/${epicId}/work-item-runs`, { owner_override: false }, { kind: 'work-item-launch' })).rejects.toThrow();
+    });
+
+    expect(result.current.hasPendingRetry).toBe(false);
+    expect(result.current.conflict).toBe(false);
+    expect(result.current.errorDetail).toEqual(detail);
+    expect(result.current.error).toMatch(/blocked this work-item launch/i);
     expect(sessionStorage.getItem(`epic_pending_mutation_${epicId}`)).toBeNull();
   });
 
