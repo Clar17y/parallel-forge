@@ -56,7 +56,7 @@ describe('DeliveryWorkspace readiness and sequential dispatch', () => {
     render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
     expect(await screen.findByText('Blocked: The predecessor is not verified as integrated.')).toBeInTheDocument();
     expect(screen.getByText('Child run status: COMPLETED')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open run' })).toHaveAttribute('href', `/runs/${runId}`);
+    expect(screen.getAllByRole('link', { name: 'Open run' })[0]).toHaveAttribute('href', `/runs/${runId}`);
     expect(screen.queryByText('Verified')).not.toBeInTheDocument();
     await userEvent.click(screen.getByText('Inspect readiness evidence'));
     expect(screen.getAllByText(/handoff_id: null/)).toHaveLength(2);

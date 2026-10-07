@@ -59,7 +59,6 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
   // Execution discovery
   const executionsPath = epicId ? `/epics/${epicId}/executions` : null;
   const executionsApi = useApi<EpicExecutionProjection[]>(executionsPath, {
-    refreshIntervalMs: 5000,
     keepPreviousOnRefresh: true,
   });
 
@@ -202,6 +201,7 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
     loading: executionApi.loading || (!executionId && executionsApi.loading),
     failed: executionApi.failed,
     refresh: refreshAll,
+    refreshExecutions,
     isPendingDiscovery,
     controlState,
     controlVersion,

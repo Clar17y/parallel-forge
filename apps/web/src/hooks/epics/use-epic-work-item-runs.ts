@@ -1,18 +1,12 @@
 'use client';
 
-import { useCallback, useEffect } from 'react';
-import { useApi } from '@/hooks/use-api';
+import { useCallback } from 'react';
 import { useEpicMutations } from './use-epic-mutations';
 import type { EpicAttemptResponse, EpicLaunchRequest } from './types';
 
 export function useEpicWorkItemRuns(epicId: string) {
-  const path = epicId ? `/epics/${epicId}/work-item-runs` : null;
-  const attemptsApi = useApi<EpicAttemptResponse[]>(path, { keepPreviousOnRefresh: true });
   const mutations = useEpicMutations(epicId);
-  const { execute, registerCompletion } = mutations;
-  const refresh = attemptsApi.refresh;
-
-  useEffect(() => registerCompletion('work-item-launch', refresh), [registerCompletion, refresh]);
+  const { execute } = mutations;
 
   const launch = useCallback((request: EpicLaunchRequest) => execute<EpicAttemptResponse>(
     'POST',
@@ -21,5 +15,5 @@ export function useEpicWorkItemRuns(epicId: string) {
     { kind: 'work-item-launch' },
   ), [epicId, execute]);
 
-  return { attempts: attemptsApi.value ?? [], loading: attemptsApi.loading, failed: attemptsApi.failed, refresh, launch, mutations };
+  return { launch, mutations };
 }

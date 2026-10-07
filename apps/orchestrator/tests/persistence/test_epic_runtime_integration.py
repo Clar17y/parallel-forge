@@ -120,6 +120,7 @@ async def test_brainstorm_downgrade_retains_concurrently_committed_conversation(
                 await asyncio.gather(downgrade, return_exceptions=True)
     async with session_factory() as session:
         assert await session.get(BrainstormConversation, conversation_id) is not None
+        # PostgreSQL rolls the complete failed downgrade command back to head.
         assert (
-            await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261004_0034"
+            await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007_0037"
         )

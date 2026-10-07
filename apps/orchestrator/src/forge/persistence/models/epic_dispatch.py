@@ -3,7 +3,17 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Uuid, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.persistence.models.base import Base
@@ -17,6 +27,7 @@ class EpicDispatchSetting(Base):
         CheckConstraint("profile_version IS NULL OR profile_version >= 1", name="profile_version_positive"),
         CheckConstraint("(claim_item_id IS NULL) = (claim_token IS NULL)", name="claim_pair"),
         CheckConstraint("(claim_item_id IS NULL) = (claim_expires_at IS NULL)", name="claim_expiry_pair"),
+        Index("ix_epic_dispatch_scan", "enabled", "checked_at", "execution_id"),
     )
 
     execution_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("epic_executions.id", ondelete="RESTRICT"), primary_key=True)

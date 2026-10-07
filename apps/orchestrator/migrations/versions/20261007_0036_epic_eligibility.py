@@ -50,14 +50,14 @@ def upgrade() -> None:
         sa.UniqueConstraint("execution_id", "item_id", name="uq_epic_completion_item"),
         sa.UniqueConstraint("attempt_id", name="uq_epic_completion_attempt"),
         sa.CheckConstraint(
-            "merge_sha ~ '^[0-9a-f]{40}$'", name="ck_epic_completion_handoffs_merge_sha"
+            "merge_sha ~ '^[0-9a-f]{40}$'", name="merge_sha"
         ),
         sa.CheckConstraint(
             "verified_base_sha ~ '^[0-9a-f]{40}$'",
-            name="ck_epic_completion_handoffs_verified_base_sha",
+            name="verified_base_sha",
         ),
         sa.CheckConstraint(
-            "evidence_digest ~ '^[0-9a-f]{64}$'", name="ck_epic_completion_handoffs_evidence_digest"
+            "evidence_digest ~ '^[0-9a-f]{64}$'", name="evidence_digest"
         ),
     )
     op.execute("""

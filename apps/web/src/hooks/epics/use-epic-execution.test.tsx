@@ -382,4 +382,74 @@ describe('useEpicExecution', () => {
 
     await waitFor(() => expect(result.current.executionId).toBe('new-exec-id'));
   });
+
+  test('does not poll discovery collection recurringly while selected progress stays fresh', async () => {
+    vi.useFakeTimers();
+    try {
+      let executionsCalls = 0;
+      let executionCalls = 0;
+      vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+        if (path === `/epics/${epicId}/executions`) {
+          executionsCalls += 1;
+          return [projection] as T;
+        }
+        if (path === `/epics/${epicId}/executions/${executionId}`) {
+          executionCalls += 1;
+          return projection as T;
+        }
+        return undefined as T;
+      });
+
+      const { result } = renderHook(() => useEpicExecution(epicId, executionId));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      expect(executionsCalls).toBe(1);
+      expect(executionCalls).toBe(1);
+
+      // Advance across several discovery periods (15 seconds) in steps
+      for (let i = 0; i < 5; i++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      }
+
+      // Selected execution progress polled (every 3s), but discovery collection did NOT poll
+      expect(executionCalls).toBeGreaterThanOrEqual(4);
+      expect(executionsCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('explicit discovery refresh on empty or failed discovery sees new execution', async () => {
+    let executionsCalls = 0;
+    let shouldFail = true;
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path === `/epics/${epicId}/executions`) {
+        executionsCalls += 1;
+        if (shouldFail) {
+          throw new Error('discovery temporary failure');
+        }
+        return [projection] as T;
+      }
+      if (path === `/epics/${epicId}/executions/${executionId}`) {
+        return projection as T;
+      }
+      return undefined as T;
+    });
+
+    const { result } = renderHook(() => useEpicExecution(epicId));
+    await waitFor(() => expect(result.current.executionsFailed).toBe(true));
+    expect(result.current.isPendingDiscovery).toBe(true);
+    expect(executionsCalls).toBe(1);
+
+    // Explicit discovery refresh
+    shouldFail = false;
+    await act(async () => {
+      result.current.refreshExecutions();
+    });
+
+    await waitFor(() => expect(result.current.executionsFailed).toBe(false));
+    await waitFor(() => expect(result.current.executionId).toBe(executionId));
+    expect(result.current.isPendingDiscovery).toBe(false);
+    expect(executionsCalls).toBe(2);
+  });
 });

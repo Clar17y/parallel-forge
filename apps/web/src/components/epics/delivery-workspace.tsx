@@ -89,6 +89,7 @@ export function DeliveryWorkspace({
     loading,
     failed,
     refresh,
+    refreshExecutions,
     isPendingDiscovery,
     controlState,
     controlVersion,
@@ -287,6 +288,23 @@ export function DeliveryWorkspace({
   const nextReadyItem = execution?.items?.find(item => item.status === 'ready');
   const firstBlockedItem = execution?.items?.find(item => item.status === 'blocked');
 
+  const executionAttempts = children
+    .map(c => c.attempt)
+    .sort((a, b) => {
+      if (a.created_at !== b.created_at) {
+        return a.created_at.localeCompare(b.created_at);
+      }
+      return a.attempt_number - b.attempt_number;
+    });
+
+  const latestChildByItemId = new Map<string, (typeof children)[number]>();
+  for (const child of children) {
+    const existing = latestChildByItemId.get(child.attempt.item_id);
+    if (!existing || child.attempt.attempt_number > existing.attempt.attempt_number) {
+      latestChildByItemId.set(child.attempt.item_id, child);
+    }
+  }
+
   const launchWorkItem = async () => {
     if (!executionSnapshot || !selectedItemId || mutationPending) return;
     try {
@@ -383,6 +401,14 @@ export function DeliveryWorkspace({
                 </option>
               ))}
             </select>
+            <Button
+              type="button"
+              variant="quiet"
+              disabled={mutationPending || executionsLoading}
+              onClick={() => refreshExecutions()}
+            >
+              Refresh Discovery
+            </Button>
           </div>
           {!isStartingNew && (
             <Button
@@ -413,6 +439,18 @@ export function DeliveryWorkspace({
                   ? 'No executions discovered for this epic yet. You can start an execution using the current accepted pair or alternate saved sources, or load an execution by ID.'
                   : 'Start a new execution epoch. Previous frozen executions will remain available in history.'}
               </p>
+              {(executionsFailed || executions.length === 0 || isPendingDiscovery) && (
+                <div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={mutationPending || executionsLoading}
+                    onClick={() => refreshExecutions()}
+                  >
+                    {executionsFailed ? 'Retry Discovery' : 'Refresh Discovery'}
+                  </Button>
+                </div>
+              )}
             </div>
 
             <form onSubmit={handleManualIdSubmit} className="flex flex-col sm:flex-row gap-2">
@@ -826,7 +864,7 @@ export function DeliveryWorkspace({
             {(!execution.items || execution.items.length === 0) && <p className="mb-3 text-sm text-[var(--muted)]">No server readiness items are available for this execution; no status is inferred from the saved graph or child run state.</p>}
             <div className="space-y-2">
               {(frozenGraph?.items ?? []).map((it, idx) => {
-                const child = children.find(c => c.attempt.item_id === it.item_id);
+                const child = latestChildByItemId.get(it.item_id);
                 const readiness = execution.items?.find(item => item.item_id === it.item_id);
                 return (
                   <div key={it.item_id} className="p-3 border border-[var(--border)] rounded text-sm flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 min-w-0 break-words">
@@ -957,12 +995,10 @@ export function DeliveryWorkspace({
                     </EvidenceDetails>
                   </div>
                 )}
-                {workItemRuns.loading && <p role="status" className="text-sm text-[var(--muted)]">Loading saved launch history…</p>}
-                {workItemRuns.failed && <p role="alert" className="text-sm text-[var(--warning)]">Saved launch history is unavailable. Retry to refresh it.</p>}
-                {workItemRuns.attempts.filter(attempt => attempt.execution_id === executionSnapshot?.execution_id).length > 0 && (
+                {executionAttempts.length > 0 && (
                   <div className="space-y-2">
                     <h3 className="font-medium text-sm">Saved attempts in this execution</h3>
-                    {workItemRuns.attempts.filter(attempt => attempt.execution_id === executionSnapshot?.execution_id).map(attempt => (
+                    {executionAttempts.map(attempt => (
                       <div key={attempt.attempt_id} className="flex flex-wrap items-center gap-2 text-sm border-t border-[var(--border)] pt-2">
                         <span>Attempt {attempt.attempt_number} · {frozenItems.get(attempt.item_id)?.title ?? 'Saved work item'} · {attempt.item_disposition}</span>
                         <Link className="text-[var(--focus)] hover:underline" href={`/runs/${attempt.run_id}`}>Open run</Link>

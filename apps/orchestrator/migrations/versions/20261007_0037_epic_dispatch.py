@@ -30,11 +30,11 @@ def upgrade() -> None:
         sa.Column("blocker_code", sa.String(96)),
         sa.Column("checked_at", sa.DateTime(timezone=True)),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.CheckConstraint("version >= 1", name="ck_epic_dispatch_settings_version_positive"),
-        sa.CheckConstraint("(profile_id IS NULL) = (profile_version IS NULL)", name="ck_epic_dispatch_settings_profile_pair"),
-        sa.CheckConstraint("profile_version IS NULL OR profile_version >= 1", name="ck_epic_dispatch_settings_profile_version_positive"),
-        sa.CheckConstraint("(claim_item_id IS NULL) = (claim_token IS NULL)", name="ck_epic_dispatch_settings_claim_pair"),
-        sa.CheckConstraint("(claim_item_id IS NULL) = (claim_expires_at IS NULL)", name="ck_epic_dispatch_settings_claim_expiry_pair"),
+        sa.CheckConstraint("version >= 1", name="version_positive"),
+        sa.CheckConstraint("(profile_id IS NULL) = (profile_version IS NULL)", name="profile_pair"),
+        sa.CheckConstraint("profile_version IS NULL OR profile_version >= 1", name="profile_version_positive"),
+        sa.CheckConstraint("(claim_item_id IS NULL) = (claim_token IS NULL)", name="claim_pair"),
+        sa.CheckConstraint("(claim_item_id IS NULL) = (claim_expires_at IS NULL)", name="claim_expiry_pair"),
     )
     op.create_index("ix_epic_dispatch_scan", "epic_dispatch_settings", ["enabled", "checked_at", "execution_id"])
 
