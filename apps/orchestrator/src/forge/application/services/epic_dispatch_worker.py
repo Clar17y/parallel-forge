@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, case, or_, select
 
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.epic_eligibility import EpicEligibilityService
@@ -27,6 +28,19 @@ _CLAIM_LIFETIME = timedelta(minutes=2)
 _RECHECK_INTERVAL = timedelta(seconds=1)
 
 
+def _block_failed_child(
+    control: EpicExecutionControl, setting: EpicDispatchSetting | None
+) -> None:
+    """Settle a known latest required failure without granting dispatch authority."""
+    control.state = "BLOCKED"
+    control.version += 1
+    control.blocker_code = "predecessor_failed"
+    if setting is not None:
+        setting.enabled = False
+        setting.blocker_code = "predecessor_failed"
+        setting.claim_item_id = setting.claim_token = setting.claim_expires_at = None
+
+
 class EpicDispatchWorker:
     def __init__(
         self,
@@ -42,22 +56,47 @@ class EpicDispatchWorker:
     async def run_once(self) -> UUID | None:
         now = datetime.now(UTC)
         async with self._work() as work:
-            candidate = await work.session.scalar(
-                select(EpicDispatchSetting)
+            candidate = (await work.session.execute(
+                select(
+                    EpicExecutionControl.execution_id,
+                    EpicExecutionControl.epic_id,
+                    EpicDispatchSetting.enabled,
+                )
+                .outerjoin(
+                    EpicDispatchSetting,
+                    EpicDispatchSetting.execution_id == EpicExecutionControl.execution_id,
+                )
                 .where(
-                    EpicDispatchSetting.enabled.is_(True),
                     or_(
-                        EpicDispatchSetting.checked_at.is_(None),
-                        EpicDispatchSetting.checked_at < now - _RECHECK_INTERVAL,
+                        and_(
+                            EpicDispatchSetting.enabled.is_(True),
+                            or_(
+                                EpicDispatchSetting.checked_at.is_(None),
+                                EpicDispatchSetting.checked_at < now - _RECHECK_INTERVAL,
+                            ),
+                        ),
+                        and_(
+                            EpicExecutionControl.state == "ACTIVE",
+                            EpicDispatchSetting.enabled.is_not(True),
+                            EpicExecutionControl.updated_at < now - _RECHECK_INTERVAL,
+                        ),
                     ),
                 )
-                .order_by(EpicDispatchSetting.checked_at.asc().nullsfirst(), EpicDispatchSetting.execution_id)
+                .order_by(
+                    case(
+                        (EpicDispatchSetting.enabled.is_(True), EpicDispatchSetting.checked_at),
+                        else_=EpicExecutionControl.updated_at,
+                    ).asc().nullsfirst(),
+                    EpicExecutionControl.execution_id,
+                )
                 .limit(1)
-            )
+            )).one_or_none()
             if candidate is None:
                 await work.commit()
                 return None
-            epic_id, execution_id = candidate.epic_id, candidate.execution_id
+            execution_id = cast(UUID, candidate[0])
+            epic_id = cast(UUID, candidate[1])
+            was_enabled = candidate[2]
             await work.commit()
 
         try:
@@ -68,9 +107,20 @@ class EpicDispatchWorker:
             async with self._work() as work:
                 await work.epics.get(epic_id, for_update=True)
                 setting = await work.session.get(EpicDispatchSetting, execution_id, with_for_update=True)
+                control = await work.session.get(EpicExecutionControl, execution_id, with_for_update=True)
+                if control is not None and control.state == "ACTIVE":
+                    attempts = await work.epic_run_bridge.list_attempts(
+                        epic_id, execution_id=execution_id
+                    )
+                    if await latest_required_child_failed(attempts, execution_id, work.runs.get):
+                        _block_failed_child(control, setting)
+                        await work.commit()
+                        return execution_id
                 if setting is not None and setting.enabled:
                     setting.checked_at = datetime.now(UTC)
                     setting.blocker_code = "readiness_unavailable"
+                elif control is not None and control.state == "ACTIVE":
+                    control.updated_at = datetime.now(UTC)
                 await work.commit()
             return execution_id
         required = [item for item in readiness if item.disposition == "required"]
@@ -80,27 +130,29 @@ class EpicDispatchWorker:
             epic = await work.epics.get(epic_id, for_update=True)
             setting = await work.session.get(EpicDispatchSetting, execution_id, with_for_update=True)
             control = await work.session.get(EpicExecutionControl, execution_id, with_for_update=True)
-            if setting is None or not setting.enabled:
-                await work.commit()
-                return execution_id
-            setting.checked_at = now
             if control is None or control.state != "ACTIVE":
-                setting.blocker_code = "execution_not_active"
-                if control is not None and control.state in {"SUCCEEDED", "CANCELLED"}:
-                    setting.enabled = False
+                if setting is not None and setting.enabled:
+                    setting.checked_at = now
+                    setting.blocker_code = "execution_not_active"
+                    if control is not None and control.state in {"SUCCEEDED", "CANCELLED"}:
+                        setting.enabled = False
                 await work.commit()
                 return execution_id
+            if setting is None or not setting.enabled:
+                # Manual epochs have no dispatch checked_at. Rotate them with
+                # the control timestamp without changing its state version.
+                if not was_enabled and control.updated_at >= now - _RECHECK_INTERVAL:
+                    await work.commit()
+                    return execution_id
+                control.updated_at = now
+            else:
+                setting.checked_at = now
             attempts = await work.epic_run_bridge.list_attempts(epic_id, execution_id=execution_id)
             if await latest_required_child_failed(attempts, execution_id, work.runs.get):
-                control.state = "BLOCKED"
-                control.version += 1
-                control.blocker_code = "predecessor_failed"
-                setting.enabled = False
-                setting.blocker_code = "predecessor_failed"
-                setting.claim_item_id = setting.claim_token = setting.claim_expires_at = None
+                _block_failed_child(control, setting)
                 await work.commit()
                 return execution_id
-            if setting.claim_item_id is not None:
+            if setting is not None and setting.enabled and setting.claim_item_id is not None:
                 if setting.claim_expires_at is not None and setting.claim_expires_at > now:
                     await work.commit()
                     return execution_id
@@ -127,10 +179,14 @@ class EpicDispatchWorker:
                     control.state = "SUCCEEDED"
                     control.version += 1
                     control.blocker_code = None
-                    setting.blocker_code = None
-                    setting.enabled = False
-                else:
+                    if setting is not None:
+                        setting.blocker_code = None
+                        setting.enabled = False
+                elif setting is not None and setting.enabled:
                     setting.blocker_code = "child_effects_unsettled"
+                await work.commit()
+                return execution_id
+            if setting is None or not setting.enabled:
                 await work.commit()
                 return execution_id
             if ready is None:
