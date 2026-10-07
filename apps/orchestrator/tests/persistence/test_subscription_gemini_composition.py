@@ -2,6 +2,7 @@
 
 import sys
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +29,9 @@ from test_subscription_usage import _reservation
 
 from apps.orchestrator.tests.agents.capability_support import bind_fake_capability_report
 
+_TEST_EXECUTABLE = Path(sys.executable).resolve(strict=True)
+_TEST_EXECUTABLE_DIGEST = sha256(_TEST_EXECUTABLE.read_bytes()).hexdigest()
+
 
 @pytest.mark.integration
 @pytest.mark.parametrize("scenario", ["production", "rpc_429"])
@@ -53,13 +57,13 @@ async def test_composed_google_specialist_preserves_primary_and_durable_settleme
     home.mkdir()
     verifications = []
     installation = GeminiInstallation(
-        executable=sys.executable,
+        executable=str(_TEST_EXECUTABLE),
         cwd=str(isolated),
         home=str(home),
         model=google.model,
         effort=google.effort.value,
         account="test-account",
-        executable_digest="c" * 64,
+        executable_digest=_TEST_EXECUTABLE_DIGEST,
         duration_seconds=10,
         script=(
             str(Path(__file__).parents[1] / "agents/gemini_acp_peer.py"),
@@ -112,7 +116,7 @@ async def test_composed_google_specialist_preserves_primary_and_durable_settleme
         assert outcome.admission.task.route.effective == google
         assert outcome.attempt.settlement.disposition == (
             "handoff" if scenario == "production" else "failed"
-        )
+        ), repr(outcome.attempt.result)
         assert await handlers.subscription_invocations("restarted-poller").run_once() is None
         assert len(verifications) == 1
         if scenario == "rpc_429":

@@ -3,8 +3,8 @@
   "status": "candidate_specific_validation_evidence",
   "candidate": {
     "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
-    "worktree_parent_commit": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
-    "observed_at_utc": "2026-10-07T23:01:40.160089+00:00",
+    "worktree_parent_commit": "945d84659e83068771ec8737dc1ebee6ee72676f",
+    "observed_at_utc": "2026-10-07T23:46:26.429779+00:00",
     "migration_head_observed": "20261007_0037",
     "integrated_source_stable": true,
     "post_review_source_sha256": {
@@ -17,9 +17,10 @@
       "apps/orchestrator/src/forge/application/services/epic_eligibility.py": "5051ff020aa26456c74c89226cfeb46d8308659c6b1eecba4679e1f8a21eb29a",
       "apps/orchestrator/src/forge/application/services/epic_run_bridge.py": "7433967efe2fc60507551d5221f1980a5446b68a3ba46558f5423fccba2041ba",
       "apps/orchestrator/tests/epic_run_bridge/test_eligibility.py": "b14afe174651b5317b6af84409218a54a39acaeb4cabbcb30ee36e3e3a4652e1",
-      "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a"
+      "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a",
+      "apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py": "6ff6961f32aec6ee109079b02dd057c0ef114f12073395070a1eeb4afeb81986"
     },
-    "source_snapshot_sha256": "be54bf5552f80a8fc337205ced4e54104590cff81ff990982c3b8cb2b039942b",
+    "source_snapshot_sha256": "f43b649060cdd475acd3f0c648a9b1b8edee7397dca0eb38b9c5d5f972750138",
     "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
   },
   "environment": {
@@ -272,13 +273,13 @@
     "claude_opus_5_5": "authentication expired; not a quota-exhaustion result",
     "initial_review_candidate_ref": "2327275629e910449ecf90722fec4a16d913397c",
     "latest_codex_observed": {
-      "candidate_ref": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
-      "request_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6048466823",
-      "status": "C11 owner-action projection finding adjudicated and locally repaired; fresh current-head review required after push"
+      "candidate_ref": "945d84659e83068771ec8737dc1ebee6ee72676f",
+      "verdict_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6048648386",
+      "status": "No major issues on945d846; new test/evidence-only repair still requires fresh current-head review after push."
     }
   },
   "hosted_ci": {
-    "observed_at_utc": "2026-10-07T23:01:40.160089+00:00",
+    "observed_at_utc": "2026-10-07T23:46:26.429779+00:00",
     "snapshot_only": true,
     "runs": [
       {
@@ -289,10 +290,10 @@
         },
         "head": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
         "intended_head_sha": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
-        "status": "in_progress",
-        "conclusion": "",
+        "status": "completed",
+        "conclusion": "failure",
         "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37696755985",
-        "last_poll_utc": "2026-10-07T23:00:57.889836+00:00"
+        "last_poll_utc": "2026-10-07T23:37:59.333739+00:00"
       },
       {
         "id": 37696759181,
@@ -308,15 +309,14 @@
         "last_poll_utc": "2026-10-07T22:36:20.154374+00:00"
       },
       {
-        "id": 37698722891,
+        "id": 37699864539,
         "workflow": "PR smoke",
-        "head": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
+        "head": "945d84659e83068771ec8737dc1ebee6ee72676f",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37698722891"
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37699864539"
       }
     ],
-    "owner_recovery_candidate": "Retain the full Python run on parent 3da5207 and browser success for matching unchanged inputs. C9 configure/re-enable and C11 owner-action projection changes are covered by the current 70-case PostgreSQL dispatch suite, ten lifecycle cases and changed-service static checks. Worker, schema, dependency, frontend and browser-flow inputs are unchanged by these bounded deltas. Latest-head smoke and a fresh Codex review follow the push. This is a dated snapshot of actual named runs; consult the PR and linked runs for later results. No pending or failed run is a passing check.",
     "matching_reuse": {
       "web": {
         "run": 37685645993,
@@ -331,12 +331,13 @@
         "job": 112964016632,
         "reason": "Supervisor startup inputs unchanged"
       }
-    }
+    },
+    "current_candidate": "Full parent3da run failed after5076passes at composition fixture digest mismatch. Both local scenarios now pass with actual executable identity and unchanged production guards. Fresh full Python/runtime CI, latest-head smoke and Codex review follow the stable push. Matching completed browser/web/Docker/supervisor inputs are retained. This is a dated snapshot; failed or pending runs are not passing evidence."
   },
   "publication": {
     "pull_request": "https://github.com/Clar17y/parallel-forge/pull/88",
     "state_observed": "OPEN",
-    "pushed_parent_commit": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
+    "pushed_parent_commit": "945d84659e83068771ec8737dc1ebee6ee72676f",
     "release_published": false
   },
   "merge": "unmerged",
@@ -381,6 +382,31 @@
         "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
       },
       "scope": "C9 checks retain the exact source hashes tested before the C11 history-projection assertion and allowlist repair."
+    },
+    {
+      "commit": "945d84659e83068771ec8737dc1ebee6ee72676f",
+      "candidate": {
+        "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
+        "worktree_parent_commit": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
+        "observed_at_utc": "2026-10-07T23:01:40.160089+00:00",
+        "migration_head_observed": "20261007_0037",
+        "integrated_source_stable": true,
+        "post_review_source_sha256": {
+          "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f5ccb91a0cc2b3d6957d4b5611253139846c0d310b87916f891b916dfc69fc3e",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "12421cc2bd10c7119e0098ee56e4488fa3fee214fbc7fc7435f6f003ae8611fe",
+          "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "8f9940d677d07d1b493cd2f7a98bfa9a192210ff32f94fb6b35754bae8d59ced",
+          "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "427f4fe56f3da6a044bac433ce55a6d7b9a633bf6ca3ed5c428ef11ed5cfebfe",
+          "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch.py": "32cf7203f65b4d95415e66ab14e1be642cdc7a83c38930c2cabb216be9570bd0",
+          "apps/orchestrator/src/forge/application/services/epic_eligibility.py": "5051ff020aa26456c74c89226cfeb46d8308659c6b1eecba4679e1f8a21eb29a",
+          "apps/orchestrator/src/forge/application/services/epic_run_bridge.py": "7433967efe2fc60507551d5221f1980a5446b68a3ba46558f5423fccba2041ba",
+          "apps/orchestrator/tests/epic_run_bridge/test_eligibility.py": "b14afe174651b5317b6af84409218a54a39acaeb4cabbcb30ee36e3e3a4652e1",
+          "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a"
+        },
+        "source_snapshot_sha256": "be54bf5552f80a8fc337205ced4e54104590cff81ff990982c3b8cb2b039942b",
+        "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
+      },
+      "scope": "C11 source snapshot and receipts before CI5 fixture correction; named production files retain identical hashes."
     }
   ],
   "repair_checks": [
@@ -489,6 +515,53 @@
       "scope": "Single known event allowlist omission. Existing warning/note mapping, execution filtering and ordering retained. Existing hook and panel inspected: event_type, actor_id and warnings render directly. No schema/frontend/worker changes.",
       "limits": [
         "No new browser run for the unchanged renderer; current PostgreSQL get/list projection assertions and inspection cover this bounded delta. Earlier named coverage limits remain."
+      ]
+    },
+    {
+      "name": "CI5 composed specialist executable fixture identity",
+      "parent_commit": "945d84659e83068771ec8737dc1ebee6ee72676f",
+      "source_hashes": {
+        "apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py": "6ff6961f32aec6ee109079b02dd057c0ef114f12073395070a1eeb4afeb81986"
+      },
+      "scoped_diff_sha256": "3824448cd294cc4db4196792cbf615640eb12467b56975b563996d7fb28f217f",
+      "result": "Baseline both scenarios failed; corrected production handoff and RPC429 failed/throttled settlement pass. Affected 71 and adjacent eight cases passed; no production code or fencing checks changed.",
+      "cause": "Hosted fence followed fake fixture executable_digest c*64; launch supervisor compares exact executable bytes and rejects mismatch. Local baseline both cases fenced; temporary diagnostic showed PROTOCOL, launch_proof None, and ClientProcessError official client launch failed at _spawn. Corrected fixture resolves sys.executable and hashes its bytes, matching existing gateway-test pattern. The 10-second fixture duration did not cause this observed failure.",
+      "junit": {
+        "baseline.xml": {
+          "tests": 2,
+          "failures": 2,
+          "sha256": "d77ce246ead382035f46bda4dba073d76c2d442bf593a69c1e005893d6927dd0"
+        },
+        "digest.xml": {
+          "tests": 2,
+          "failures": 0,
+          "sha256": "51f73d7019ca46f0d2b2c5e6807d1008030c3dfdb7c217576b4e2a9831456fc5"
+        },
+        "affected.xml": {
+          "tests": 71,
+          "failures": 0,
+          "sha256": "c324af4a88671d8e7211f5c151e14e5c684246fcad096a187cbe56ab08869ebc"
+        },
+        "persistence-adjacent.xml": {
+          "tests": 8,
+          "failures": 0,
+          "sha256": "3a2b33916189c33047a09c41e5537c3c00cc982a2f61d7869102e33b23f60279"
+        }
+      },
+      "commands": {
+        "baseline": "python -m pytest apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py -q --junitxml=.llm-output/composition-fence-checks/baseline.xml",
+        "affected": "python -m pytest apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py apps/orchestrator/tests/agents/test_gemini_gateway.py apps/orchestrator/tests/worker/test_subscription_invocation.py -q --junitxml=.llm-output/composition-fence-checks/affected.xml",
+        "adjacent": "python -m pytest apps/orchestrator/tests/persistence/test_subscription_invocation_worker.py apps/orchestrator/tests/persistence/test_subscription_invocation_outcomes.py -q --junitxml=.llm-output/composition-fence-checks/persistence-adjacent.xml",
+        "ruff": "rtk err .venv/Scripts/python.exe -m ruff check apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py"
+      },
+      "static_checks": {
+        "ruff": "changed test passed; primary saved actual ruff-final.log",
+        "mypy": "not applicable: no production source change",
+        "diff_check": "passed"
+      },
+      "primary_acceptance": "Primary checked actual one-file delta and source digest, JUnit counts/case sets, raw PROTOCOL/no-launch-proof trace, executable byte verification guard and existing composition safety/usage/route/restart assertions. Worker commands clarified; no test success inferred from review.",
+      "limits": [
+        "Linux hosted final candidate and combined resource-load/timing schedule remain unproved until full rerun; no production behavior changed."
       ]
     }
   ]
