@@ -6,16 +6,28 @@ from uuid import uuid4
 
 import pytest
 from forge.application.services.epic_budget import EpicBudgetEdit, EpicBudgetService
-from forge.application.services.epic_dispatch import EpicDispatchRequest, EpicDispatchService
+from forge.application.services.epic_dispatch import (
+    EpicDispatchConflict,
+    EpicDispatchRequest,
+    EpicDispatchService,
+)
 from forge.application.services.epic_dispatch_worker import EpicDispatchWorker
 from forge.application.services.epic_eligibility import EpicItemEligibility
 from forge.domain.epic_run_bridge import EpicExecutionBindingConflict, EpicLaunchConflict
 from forge.domain.subscription import TaskBudget
-from forge.persistence.models import AgentExecution, ModelUsage, Run, RunCommand, Task
+from forge.persistence.models import (
+    AgentExecution,
+    ModelUsage,
+    OperatorAuditEvent,
+    Run,
+    RunCommand,
+    Task,
+)
 from forge.persistence.models.epic_brief import Epic
 from forge.persistence.models.epic_dispatch import EpicDispatchSetting
 from forge.persistence.models.epic_run_bridge import EpicChildBudgetHold, EpicExecutionControl
-from forge.persistence.repositories.mutations import PostgresMutationRepository
+from forge.persistence.repositories.mutations import MutationConflict, PostgresMutationRepository
+from forge.persistence.repositories.subscription import SubscriptionProfileNotFound
 from sqlalchemy import func, select
 
 from apps.orchestrator.tests.epic_run_bridge.test_launch import BridgeWork, setup
@@ -608,6 +620,188 @@ async def test_exhausted_budget_blocks_control_but_owner_can_admit_directly(
     assert owner.override_note is None
     assert "epic_budget_provider_attempts_exhausted" in owner.blocker_codes
     assert "execution_not_active" in owner.blocker_codes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget_change", ["raise", "unset", "unchanged"])
+async def test_owner_reenable_recovers_only_actual_budget_block_and_rechecks_cap(
+    session_factory, bridge_factory, budget_change
+):
+    bridge, _, actor, epic_id, first_id, _, _ = await setup(session_factory, bridge_factory)
+    execution = await bridge.start(
+        actor=actor, epic_id=epic_id, idempotency_key="execution", expected_epic_version=5
+    )
+    budget = EpicBudgetService(bridge_factory)
+    await budget.edit(
+        actor=actor, epic_id=epic_id, idempotency_key="zero-cap",
+        request=EpicBudgetEdit(expected_version=0, ceiling=TaskBudget(max_provider_attempts=0)),
+    )
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    worker = EpicDispatchWorker(bridge_factory, bridge=bridge, eligibility=ReadyEligibility(first_id))
+    assert await worker.run_once() == execution.execution_id
+    blocker = "epic_budget_provider_attempts_exhausted"
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, execution.execution_id)
+        assert (control.state, control.version, control.blocker_code) == ("BLOCKED", 2, blocker)
+        await work.commit()
+
+    if budget_change != "unchanged":
+        await budget.edit(
+            actor=actor, epic_id=epic_id, idempotency_key="change-cap",
+            request=EpicBudgetEdit(
+                expected_version=1,
+                ceiling=TaskBudget(max_provider_attempts=2 if budget_change == "raise" else 0),
+                disabled_dimensions=("provider_attempts",) if budget_change == "unset" else (),
+            ),
+        )
+    retry = EpicDispatchRequest(expected_dispatch_version=1, enabled=True)
+    reopened = await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="retry", request=retry,
+    )
+    assert (reopened.version, reopened.enabled, reopened.blocker_code) == (2, True, blocker)
+    assert await dispatch.get(epic_id, execution.execution_id) == reopened
+    assert await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="retry", request=retry,
+    ) == reopened
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, execution.execution_id)
+        assert (control.state, control.version, control.blocker_code) == ("ACTIVE", 3, None)
+        events = (await work.session.scalars(select(OperatorAuditEvent).where(
+            OperatorAuditEvent.subject_id == epic_id,
+            OperatorAuditEvent.event_type == "epic.dispatch_configured",
+        ).order_by(OperatorAuditEvent.created_at))).all()
+        assert len(events) == 2
+        assert events[-1].actor_id == actor.actor_id
+        assert events[-1].payload["execution_id"] == str(execution.execution_id)
+        assert events[-1].payload["warnings"] == [blocker]
+        assert events[-1].payload["execution_control_version"] == 3
+        assert events[-1].payload["recovered_budget_blocker"] == blocker
+        await work.commit()
+
+    assert await worker.run_once() == execution.execution_id
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, execution.execution_id)
+        if budget_change == "unchanged":
+            assert (control.state, control.version, control.blocker_code) == ("BLOCKED", 4, blocker)
+        else:
+            assert (control.state, control.version, control.blocker_code) == ("ACTIVE", 3, None)
+        expected_children = 0 if budget_change == "unchanged" else 1
+        assert len(await work.epic_run_bridge.list_attempts(epic_id, execution_id=execution.execution_id)) == expected_children
+        for model in (Task, Run, RunCommand):
+            assert await work.session.scalar(select(func.count()).select_from(model)) == expected_children
+        await work.commit()
+    assert await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="retry", request=retry,
+    ) == reopened
+
+
+@pytest.mark.asyncio
+async def test_budget_reenable_rejects_stale_invalid_and_conflicting_requests(
+    session_factory, bridge_factory
+):
+    bridge, _, actor, epic_id, first_id, _, _ = await setup(session_factory, bridge_factory)
+    execution = await bridge.start(
+        actor=actor, epic_id=epic_id, idempotency_key="execution", expected_epic_version=5
+    )
+    await EpicBudgetService(bridge_factory).edit(
+        actor=actor, epic_id=epic_id, idempotency_key="zero-cap",
+        request=EpicBudgetEdit(expected_version=0, ceiling=TaskBudget(max_provider_attempts=0)),
+    )
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    await EpicDispatchWorker(
+        bridge_factory, bridge=bridge, eligibility=ReadyEligibility(first_id)
+    ).run_once()
+    with pytest.raises(EpicDispatchConflict, match="version is stale"):
+        await dispatch.configure(
+            actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+            idempotency_key="stale",
+            request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+        )
+    with pytest.raises(SubscriptionProfileNotFound, match="profile version not found"):
+        await dispatch.configure(
+            actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+            idempotency_key="invalid-profile",
+            request=EpicDispatchRequest(
+                expected_dispatch_version=1, enabled=True,
+                profile_id=uuid4(), profile_version=1,
+            ),
+        )
+    with pytest.raises(MutationConflict):
+        await dispatch.configure(
+            actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+            idempotency_key="enable",
+            request=EpicDispatchRequest(expected_dispatch_version=1, enabled=True),
+        )
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, execution.execution_id)
+        assert (control.state, control.version, control.blocker_code) == (
+            "BLOCKED", 2, "epic_budget_provider_attempts_exhausted"
+        )
+        setting = await work.session.get(EpicDispatchSetting, execution.execution_id)
+        assert (setting.version, setting.enabled) == (1, False)
+        events = (await work.session.scalars(select(OperatorAuditEvent).where(
+            OperatorAuditEvent.subject_id == epic_id,
+            OperatorAuditEvent.event_type == "epic.dispatch_configured",
+        ))).all()
+        assert len(events) == 1
+        await work.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("control_state", "blocker", "reenable"),
+    [
+        ("BLOCKED", "epic_budget_provider_attempts_exhausted", False),
+        ("BLOCKED", "predecessor_failed", True),
+        ("BLOCKED", "uncontrolled_child", True),
+        ("PAUSE_REQUESTED", "epic_budget_provider_attempts_exhausted", True),
+        ("RESUME_REQUESTED", "epic_budget_provider_attempts_exhausted", True),
+        ("CANCEL_REQUESTED", "epic_budget_provider_attempts_exhausted", True),
+        ("PAUSED", "epic_budget_provider_attempts_exhausted", True),
+        ("SUCCEEDED", "epic_budget_provider_attempts_exhausted", True),
+        ("CANCELLED", "epic_budget_provider_attempts_exhausted", True),
+    ],
+)
+async def test_reenable_does_not_recover_other_control_states_or_disable(
+    session_factory, bridge_factory, control_state, blocker, reenable
+):
+    bridge, _, actor, epic_id, _, _, _ = await setup(session_factory, bridge_factory)
+    execution = await bridge.start(
+        actor=actor, epic_id=epic_id, idempotency_key="execution", expected_epic_version=5
+    )
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    async with session_factory() as session, session.begin():
+        control = await session.get(EpicExecutionControl, execution.execution_id)
+        control.state = control_state
+        control.version = 2
+        control.blocker_code = blocker
+    configured = await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="again",
+        request=EpicDispatchRequest(expected_dispatch_version=1, enabled=reenable),
+    )
+    assert (configured.version, configured.enabled, configured.blocker_code) == (
+        2, reenable, "execution_not_active"
+    )
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, execution.execution_id)
+        assert (control.state, control.version, control.blocker_code) == (control_state, 2, blocker)
+        await work.commit()
 
 
 @pytest.mark.asyncio

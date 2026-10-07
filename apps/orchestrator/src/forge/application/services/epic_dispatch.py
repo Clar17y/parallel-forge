@@ -115,8 +115,27 @@ class EpicDispatchService:
                 profile = await work.subscription.profile(request.profile_id, request.profile_version)
                 if profile is None:
                     raise EpicDispatchConflict("profile does not exist")
-            control = await work.session.get(EpicExecutionControl, execution_id)
-            warning = "execution_not_active" if control is None or control.state != "ACTIVE" else None
+            control = await work.session.get(EpicExecutionControl, execution_id, with_for_update=True)
+            budget_blocker = control.blocker_code if control is not None else None
+            recover_budget_block = False
+            if (
+                request.enabled
+                and control is not None
+                and control.state == "BLOCKED"
+                and budget_blocker is not None
+                and budget_blocker.startswith("epic_budget_")
+                and budget_blocker.endswith("_exhausted")
+            ):
+                recover_budget_block = True
+                control.state = "ACTIVE"
+                control.version += 1
+                control.blocker_code = None
+            if recover_budget_block:
+                warning = budget_blocker
+            elif control is None or control.state != "ACTIVE":
+                warning = "execution_not_active"
+            else:
+                warning = None
             if row is None:
                 row = EpicDispatchSetting(
                     execution_id=execution_id, epic_id=epic_id, version=1,
@@ -146,6 +165,8 @@ class EpicDispatchService:
                     "execution_id": str(execution_id), "dispatch_version": row.version,
                     "enabled": request.enabled, "profile_id": str(request.profile_id) if request.profile_id else None,
                     "profile_version": request.profile_version, "warnings": [warning] if warning else [],
+                    "execution_control_version": control.version if control is not None else None,
+                    "recovered_budget_blocker": budget_blocker if recover_budget_block else None,
                 },
             )
             await work.mutations.complete(

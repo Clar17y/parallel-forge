@@ -1,165 +1,196 @@
 {
   "schema_version": 1,
-  "status": "local_candidate_verified_ready_for_hosted_ci",
+  "status": "candidate_specific_validation_evidence",
   "candidate": {
-    "baseline_commit": "11b088d",
+    "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
+    "worktree_parent_commit": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+    "observed_at_utc": "2026-10-07T22:47:40.458900+00:00",
     "migration_head_observed": "20261007_0037",
     "integrated_source_stable": true,
     "post_review_source_sha256": {
-      "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f9dbb7ee5705859651ff690488c4d55b93447b54d675b43689833150f29719d6",
-      "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "e6ad469eb5b0fb964bb89e6ac7d7b0262eef97cac9a358558b4340e5c1ccf140",
-      "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "9d755b85aab756c59eac62a6cf6f6297dd8d5f0dba63645deaff9db61e023d0c",
-      "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "4819ff426747343b4538e50cf418b82d21ceb5688d2635b0bf789f900f94699d",
-      "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2"
-    }
+      "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "eaaa1479fba93e9630a3106865ea245d911251ee01143217881b9f6160681026",
+      "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "12421cc2bd10c7119e0098ee56e4488fa3fee214fbc7fc7435f6f003ae8611fe",
+      "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "8f9940d677d07d1b493cd2f7a98bfa9a192210ff32f94fb6b35754bae8d59ced",
+      "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "8b5ea87efbcb73ef77f54ba7970446d4d0ce595bdf7810c2d05644a51b9309e4",
+      "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2",
+      "apps/orchestrator/src/forge/application/services/epic_dispatch.py": "32cf7203f65b4d95415e66ab14e1be642cdc7a83c38930c2cabb216be9570bd0",
+      "apps/orchestrator/src/forge/application/services/epic_eligibility.py": "5051ff020aa26456c74c89226cfeb46d8308659c6b1eecba4679e1f8a21eb29a",
+      "apps/orchestrator/src/forge/application/services/epic_run_bridge.py": "7433967efe2fc60507551d5221f1980a5446b68a3ba46558f5423fccba2041ba",
+      "apps/orchestrator/tests/epic_run_bridge/test_eligibility.py": "b14afe174651b5317b6af84409218a54a39acaeb4cabbcb30ee36e3e3a4652e1",
+      "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a"
+    },
+    "source_snapshot_sha256": "ebfe7484dfd92ecf15ca12b0edbbc2bc048e26c121081e15c3e8bd85bb64e21d",
+    "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
   },
   "environment": {
     "python": "3.14.5",
     "postgresql": "disposable loopback 5435",
     "provider_calls": false,
-    "real_github_calls": false
+    "real_github_calls": false,
+    "scope": "Local/application validation fixtures; GitHub PR and hosted CI actions are recorded separately."
   },
   "local_checks": [
     {
       "name": "accepted source reselection",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_authoring_selection.py -q --junitxml=.llm-output/acceptance-authoring.xml",
       "result": "1 passed",
-      "evidence": ".llm-output/acceptance-authoring.xml"
+      "evidence": ".llm-output/acceptance-authoring.xml",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "retained pre-dispatch source and v0.2 profile/run/approval/artifact/recovery upgrade",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_retained_upgrade.py -q --junitxml=.llm-output/acceptance-upgrade.xml",
       "result": "2 passed",
-      "evidence": ".llm-output/acceptance-upgrade.xml"
+      "evidence": ".llm-output/acceptance-upgrade.xml",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "issue 72 focused reuse",
       "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/epic_brainstorm/test_persistence.py::test_conversation_and_job_reopen_replay_and_cross_project apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py::test_restart_adoption_and_stale_draft apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py::test_cancel_before_and_during_invocation_discards_late_proposal apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py::test_late_apply_cannot_replace_terminal_measurement_or_duplicate_turn apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py::test_confirmed_exhaustion_blocks_pool_before_process_settles apps/orchestrator/tests/epic_brainstorm/test_gateway.py::test_authoring_tools_never_forward_reader_errors_or_dispatch_writes -q --junitxml=.llm-output/acceptance-authoring-reuse.xml",
       "result": "6 passed",
-      "evidence": ".llm-output/acceptance-authoring-reuse.xml"
+      "evidence": ".llm-output/acceptance-authoring-reuse.xml",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "retained v0.1 plan schema and current recovery driver",
       "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/persistence/test_legacy_upgrade_acceptance.py::test_legacy_plan_artifacts_survive_v01_schema_and_restart -q --junitxml=.llm-output/acceptance-v01-plan.xml",
       "result": "1 passed",
       "evidence": ".llm-output/acceptance-v01-plan.xml",
-      "limit": "current driver at old schema; historical process rehearsal reported separately"
+      "limit": "current driver at old schema; historical process rehearsal reported separately",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "retained v0.1 unfinished write and pending controls",
       "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/persistence/test_legacy_upgrade_acceptance.py::test_legacy_unfinished_execution_preserves_write_receipt_after_upgrade apps/orchestrator/tests/persistence/test_legacy_upgrade_acceptance.py::test_legacy_retained_review_and_pending_control_survive_upgrade -q --junitxml=.llm-output/acceptance-v01-controls.xml",
       "result": "3 passed",
       "evidence": ".llm-output/acceptance-v01-controls.xml",
-      "limit": "current driver at old schema; historical process rehearsal reported separately"
+      "limit": "current driver at old schema; historical process rehearsal reported separately",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "v0.2 runtime migration",
       "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/persistence/test_subscription_runtime_upgrade.py -q --junitxml=.llm-output/acceptance-v02-runtime.xml",
       "result": "1 passed",
       "evidence": ".llm-output/acceptance-v02-runtime.xml",
-      "limit": "does not exercise every v0.2 retained record family"
+      "limit": "does not exercise every v0.2 retained record family",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "original historical stopped v0.1 rehearsal, repaired plan case",
       "command": ".venv/Scripts/python.exe -m pytest 'apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py::test_stopped_upgrade_backup_rollback_and_recovery[plan]' -q --junitxml=.llm-output/acceptance-v01-original-repaired-plan.xml",
       "result": "1 passed",
       "evidence": ".llm-output/acceptance-v01-original-repaired-plan.xml",
-      "limit": "other three original cases not rerun; equivalent corrected fixture passed all four before deduplication"
+      "limit": "other three original cases not rerun; equivalent corrected fixture passed all four before deduplication",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "nonempty verified Git handoff downgrade fence",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_handoff_downgrade.py -q --junitxml=.llm-output/acceptance-handoff-downgrade.xml",
       "result": "1 passed",
       "evidence": ".llm-output/acceptance-handoff-downgrade.xml",
-      "limit": "component fixture seeds completed child; proves schema refusal and row retention, not normal owner gates"
+      "limit": "component fixture seeds completed child; proves schema refusal and row retention, not normal owner gates",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "production web build and full unit suite",
       "command": "node npm-cli.js run build --workspace apps/web; node npm-cli.js run test --workspace apps/web",
       "result": "build passed; 62 test files and 539 tests passed",
       "evidence": ".llm-output/primary-checks/web-build-final.log; .llm-output/primary-checks/web-tests-final.log",
-      "limit": "build and unit results do not replace rendered browser acceptance"
+      "limit": "build and unit results do not replace rendered browser acceptance",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "head0037 retained source and v0.2 row upgrade rerun",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_retained_upgrade.py -q --junitxml=.llm-output/acceptance-upgrade-head0037.xml",
       "result": "2 passed",
-      "evidence": ".llm-output/acceptance-upgrade-head0037.xml"
+      "evidence": ".llm-output/acceptance-upgrade-head0037.xml",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "head0037 nonempty Git handoff downgrade fence rerun",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_handoff_downgrade.py -q --junitxml=.llm-output/acceptance-handoff-downgrade-head0037.xml",
       "result": "1 passed",
-      "evidence": ".llm-output/acceptance-handoff-downgrade-head0037.xml"
+      "evidence": ".llm-output/acceptance-handoff-downgrade-head0037.xml",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "nonempty v0.3 dispatch authority downgrade fence",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_handoff_downgrade.py::test_nonempty_dispatch_authority_refuses_downgrade_and_retains_exact_row -q --junitxml=.llm-output/acceptance-dispatch-downgrade.xml",
       "result": "1 passed",
       "evidence": ".llm-output/acceptance-dispatch-downgrade.xml; .llm-output/acceptance-current-downgrade-fences.xml (combined 2 passed)",
-      "limit": "seeded disabled authority row on a valid frozen execution proves schema refusal and exact row retention; no worker transition is inferred"
+      "limit": "seeded disabled authority row on a valid frozen execution proves schema refusal and exact row retention; no worker transition is inferred",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "browser acceptance workflow policy wiring",
       "command": "focused workflow policy tests; exact command in primary check log",
       "result": "3 passed after expected red for missing browser step",
       "evidence": ".llm-output/primary-checks/epic-browser-ci-red.log; .llm-output/primary-checks/epic-browser-ci-green.log",
-      "limit": "structural local workflow proof; hosted CI was not run"
+      "limit": "structural local workflow proof; hosted CI was not run",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "browser bootstrap-token failure and timeout diagnostics",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_browser_probe_diagnostics_redact_token_and_reject_malformed_output tests/epic_acceptance/test_three_item_process.py::test_browser_timeout_settles_child_without_leaking_chained_error -q --junitxml=.llm-output/acceptance-browser-redaction.xml",
       "result": "2 passed",
-      "evidence": ".llm-output/acceptance-browser-redaction.xml"
+      "evidence": ".llm-output/acceptance-browser-redaction.xml",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "three required children through Chromium action, API, separate worker, human gates and real local Git",
       "command": "FORGE_EPIC_BROWSER_TEST=1 .venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_three_item_dispatch_through_owner_gates_and_verified_git_handoffs -q --junitxml=.llm-output/acceptance-three-item-terminal-diagnostic.xml",
       "result": "1 passed in 205.02s",
       "evidence": ".llm-output/acceptance-three-item-terminal-diagnostic.xml",
-      "limit": "historical pass before an intermittent worker terminal defect was diagnosed; superseded by final repaired evidence below"
+      "limit": "historical pass before an intermittent worker terminal defect was diagnosed; superseded by final repaired evidence below",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "final repaired three-child default API, worker and real Git chain",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_three_item_dispatch_through_owner_gates_and_verified_git_handoffs -q --junitxml=.llm-output/acceptance-three-item-core-repaired.xml",
       "result": "1 passed in 187.93s",
       "evidence": ".llm-output/acceptance-three-item-core-repaired.xml",
-      "limit": "browser phase disabled; exercised the normal Python CI path"
+      "limit": "browser phase disabled; exercised the normal Python CI path",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "final repaired Chromium enable action and three-child process chain",
       "command": "PowerShell: $env:FORGE_EPIC_BROWSER_TEST='1'; .venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_three_item_dispatch_through_owner_gates_and_verified_git_handoffs -q --junitxml=.llm-output/acceptance-three-item-browser-final.xml",
       "result": "1 passed in 198.74s",
       "evidence": ".llm-output/acceptance-three-item-browser-final.xml",
-      "limit": "local Chromium against production Next build; hosted CI unrun"
+      "limit": "local Chromium against production Next build; hosted CI unrun",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "backend dispatch and persisted stopped-task affected suite",
       "command": "backend-owned focused pytest command recorded with .llm-output/backend-checks/v03-terminal-affected.xml",
       "result": "45 passed",
       "evidence": ".llm-output/backend-checks/v03-terminal-affected.xml",
-      "limit": "includes owner enable, pause/cancel claim fencing, expiry and duplicate prevention, transaction rollback/recovery, three-child terminal, ordinary priced/unknown usage, and task control cases; separate from browser/process chain"
+      "limit": "includes owner enable, pause/cancel claim fencing, expiry and duplicate prevention, transaction rollback/recovery, three-child terminal, ordinary priced/unknown usage, and task control cases; separate from browser/process chain",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "post-review completed predecessor plus live successor aggregate pause/resume and full delivery",
       "command": ".venv/Scripts/python.exe -m pytest tests/epic_acceptance/test_three_item_process.py::test_three_item_dispatch_through_owner_gates_and_verified_git_handoffs -q --junitxml=.llm-output/acceptance-postreview-control.xml",
       "result": "1 passed in 197.06s",
       "evidence": ".llm-output/acceptance-postreview-control.xml",
-      "limit": "default non-browser process branch; previously green Chromium renderer and upgrade checks reused because their exercised inputs did not change"
+      "limit": "default non-browser process branch; previously green Chromium renderer and upgrade checks reused because their exercised inputs did not change",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "post-review terminal floor retention focused regression",
       "command": "primary-audited backend focused pytest command recorded with .llm-output/primary-checks/floor-retention-audit.json",
       "result": "expected red 1 failure then 9 passed after repair",
       "evidence": ".llm-output/backend-checks/v03-floor-retention-red.xml; .llm-output/backend-checks/v03-floor-retention-green.xml; .llm-output/primary-checks/floor-retention-audit.json",
-      "limit": "focused PostgreSQL component evidence; final 37-case affected suite recorded separately"
+      "limit": "focused PostgreSQL component evidence; final 37-case affected suite recorded separately",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     },
     {
       "name": "final post-review progression and aggregate-control affected suite",
       "command": "backend-owned focused pytest command audited in .llm-output/primary-checks/final-backend-audit.json",
       "result": "37 passed in 119.124s; 0 failed or skipped",
       "evidence": ".llm-output/backend-checks/v03-progression-control-post-floor.xml; .llm-output/primary-checks/final-backend-audit.json",
-      "limit": "focused PostgreSQL cases include independent ready sibling, manual-launch race, claim/control fencing, historical completed/failed/cancelled children, paused successor resume, terminal unsettled holds and floor retention; not a branching or cross-execution process rehearsal"
+      "limit": "focused PostgreSQL cases include independent ready sibling, manual-launch race, claim/control fencing, historical completed/failed/cancelled children, paused successor resume, terminal unsettled holds and floor retention; not a branching or cross-execution process rehearsal",
+      "candidate_ref": "2327275629e910449ecf90722fec4a16d913397c"
     }
   ],
   "resolved_test_fixture_regression": {
@@ -231,13 +262,167 @@
     "failed dependency, stale accepted graph, and combined budget/owner-override variants in the same three-child process chain; focused component tests should be assessed separately",
     "historical v0.2 binary readback and coordinated backup restoration",
     "original PostgreSQL SQLSTATE of the earlier run-lock fault was not captured; DBAPIError class and Forge call site were captured before the lock-path repair",
-    "hosted CI, publication and merge"
+    "Mid-admission FAILED timing, simultaneous initial permanent block, pause/cancel plus new failure and expired claim plus failure were not separately forced.",
+    "Concurrent immutable proof tests do not establish exhaustive unique-arbiter scheduler timing; real hosted collision was repaired and scoped cases passed.",
+    "Generic launch conflict, intermediate loading/dispatch notice and uncertain command/dispatch retry UI combinations remain outside focused evidence.",
+    "Forced concurrent cap edit versus re-enable and injected configure-commit failure were not executed; existing epic lock and transactional paths inspected."
   ],
   "review": {
     "scoped_repair_review": "fresh Astra review found no material defects",
-    "claude_opus_5_5": "authentication expired; not a quota-exhaustion result"
+    "claude_opus_5_5": "authentication expired; not a quota-exhaustion result",
+    "initial_review_candidate_ref": "2327275629e910449ecf90722fec4a16d913397c",
+    "latest_codex_observed": {
+      "candidate_ref": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+      "request_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6048212729",
+      "status": "C9 and C10 adjudicated and locally repaired; fresh review required after push"
+    }
   },
-  "hosted_ci": "unrun",
-  "publication": "unpublished",
-  "merge": "unmerged"
+  "hosted_ci": {
+    "observed_at_utc": "2026-10-07T22:47:40.458900+00:00",
+    "snapshot_only": true,
+    "runs": [
+      {
+        "id": 37696755985,
+        "workflow": "python-contract.yml",
+        "inputs": {
+          "verification_scope": "full"
+        },
+        "head": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+        "intended_head_sha": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37696755985",
+        "last_poll_utc": "2026-10-07T22:44:53.128997+00:00"
+      },
+      {
+        "id": 37696759181,
+        "workflow": "browser-acceptance.yml",
+        "inputs": {
+          "browser_only": "true"
+        },
+        "head": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+        "intended_head_sha": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37696759181",
+        "last_poll_utc": "2026-10-07T22:36:20.154374+00:00"
+      },
+      {
+        "id": 37696713478,
+        "workflow": "PR smoke",
+        "head": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37696713478"
+      }
+    ],
+    "owner_recovery_candidate": "Retain the full Python run on parent 3da5207 and browser success for matching unchanged inputs. The bounded configure/re-enable branch and receipt guards are covered by the final 70-case PostgreSQL dispatch suite and Ruff/mypy on the named current source hashes. Worker, schema, dependency, frontend and browser-flow inputs are unchanged by this delta. Latest-head smoke and a fresh Codex review follow the push. The full run is pending at this dated snapshot; consult the PR and linked runs for later results. No pending or failed run is a passing check.",
+    "matching_reuse": {
+      "web": {
+        "run": 37685645993,
+        "head": "be65156f0048364b0019e65471ddefb22b344f8d",
+        "reason": "Frontend, API schema and dependency inputs unchanged by the six backend repair files"
+      },
+      "docker": {
+        "run": 37671465675,
+        "reason": "Runner build/policy/dependency inputs unchanged"
+      },
+      "supervisor": {
+        "job": 112964016632,
+        "reason": "Supervisor startup inputs unchanged"
+      }
+    }
+  },
+  "publication": {
+    "pull_request": "https://github.com/Clar17y/parallel-forge/pull/88",
+    "state_observed": "OPEN",
+    "pushed_parent_commit": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+    "release_published": false
+  },
+  "merge": "unmerged",
+  "historical_candidates": [
+    {
+      "commit": "2327275629e910449ecf90722fec4a16d913397c",
+      "candidate": {
+        "baseline_commit": "11b088d",
+        "migration_head_observed": "20261007_0037",
+        "integrated_source_stable": true,
+        "post_review_source_sha256": {
+          "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f9dbb7ee5705859651ff690488c4d55b93447b54d675b43689833150f29719d6",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "e6ad469eb5b0fb964bb89e6ac7d7b0262eef97cac9a358558b4340e5c1ccf140",
+          "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "9d755b85aab756c59eac62a6cf6f6297dd8d5f0dba63645deaff9db61e023d0c",
+          "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "4819ff426747343b4538e50cf418b82d21ceb5688d2635b0bf789f900f94699d",
+          "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2"
+        }
+      },
+      "scope": "Original local_checks, integration_red_evidence, post_review, prior_matching_evidence and original independent review refer to this candidate and their named earlier receipts. They are historical evidence, not reruns of the repaired source."
+    }
+  ],
+  "repair_checks": [
+    {
+      "name": "C7 final locked admission",
+      "candidate_ref": "68bb0e34b9ccc7bd578c340dd2202074b3f16ac2",
+      "result": "62 launch cases and real Git/PostgreSQL eligibility case passed; final timed CANCELLED regression raw red then green",
+      "evidence": ".llm-output/guard-recovery-checks/launch-final.xml; .llm-output/guard-recovery-checks/eligibility-final.xml",
+      "limit": "FAILED timing was not separately interleaved; matching evidence retained for unchanged bridge source."
+    },
+    {
+      "name": "C8 manual/disabled reconciliation",
+      "candidate_ref": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+      "result": "57 dispatch and 10 selected lifecycle cases passed; six unavailable-proof failures raw red then green; newer owner retry preserved",
+      "evidence": ".llm-output/disabled-reconciliation-checks/dispatch-c8-final.xml; .llm-output/disabled-reconciliation-checks/lifecycle.xml; .llm-output/disabled-reconciliation-checks/unavailable-red.xml",
+      "limit": "Initial C8 red record reconstructed from observed output; full control-state x unavailable-proof cross-product unexecuted."
+    },
+    {
+      "name": "CI4 strict schema expectations",
+      "source_sha256": {
+        "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a"
+      },
+      "result": "Focused schema/head/model inventory red then green; all 20 schema cases passed",
+      "evidence": ".llm-output/schema-inventory-red.xml; .llm-output/schema-inventory-adjacent-red.xml; .llm-output/schema-inventory-affected-final.xml",
+      "limit": "Exact independent literal inventory retained; no schema or model assertions relaxed."
+    },
+    {
+      "name": "C9 authenticated budget re-enable recovery",
+      "parent_commit": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+      "source_hashes": {
+        "apps/orchestrator/src/forge/application/services/epic_dispatch.py": "32cf7203f65b4d95415e66ab14e1be642cdc7a83c38930c2cabb216be9570bd0",
+        "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "8b5ea87efbcb73ef77f54ba7970446d4d0ce595bdf7810c2d05644a51b9309e4"
+      },
+      "scoped_diff_sha256": "faedb02847747c74e9cbebf5417eef0211c2ebb45a5322691443adf21b2e39d3",
+      "result": "70 dispatch cases passed on final source; real raised/unset/unchanged zero-cap cases red then green; stale/conflicting/invalid/disable/other-control guards, exact replay and audit verified.",
+      "junit": {
+        "red.xml": {
+          "tests": 3,
+          "failures": 3,
+          "sha256": "763d5bca64e4195c4dfb01f7f31b1a534ee0c943a67d7e07e184caeb656e4190"
+        },
+        "green.xml": {
+          "tests": 3,
+          "failures": 0,
+          "sha256": "75fcfd4355dacafcb8033df66b59989f70f986aa5240696c974cd8963073130a"
+        },
+        "guards.xml": {
+          "tests": 1,
+          "failures": 0,
+          "sha256": "973bedc4142133d81960803d0b79e85b268b74b44bfa6a52559b0d1baeb775e3"
+        },
+        "dispatch-final.xml": {
+          "tests": 70,
+          "failures": 0,
+          "sha256": "8afd10bde2ee4b2edfdffe84a3b98aa3b0d25ba784df51274b4a1fa948662551"
+        }
+      },
+      "static_checks": {
+        "ruff": "changed service/test files passed",
+        "mypy": "changed service passed",
+        "diff_check": "scoped diff passed"
+      },
+      "evidence": ".llm-output/budget-reenable-task.json; .llm-output/budget-reenable-checks/",
+      "primary_acceptance": "Primary inspected actual code/test delta, exact scoped/source hashes, raw red log, JUnit and Ruff/mypy logs against invariant map. Earlier boundaries.xml had an expected-exception mismatch repaired in test; final guards and 70-case suite passed. No test result inferred from review.",
+      "coverage_limits": [
+        "Forced concurrent cap edit versus re-enable and injected configure-commit failure were not executed; existing epic lock and transactional paths inspected."
+      ]
+    }
+  ]
 }
