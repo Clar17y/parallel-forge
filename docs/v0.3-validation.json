@@ -3,15 +3,15 @@
   "status": "candidate_specific_validation_evidence",
   "candidate": {
     "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
-    "worktree_parent_commit": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
-    "observed_at_utc": "2026-10-07T22:47:40.458900+00:00",
+    "worktree_parent_commit": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
+    "observed_at_utc": "2026-10-07T23:01:40.160089+00:00",
     "migration_head_observed": "20261007_0037",
     "integrated_source_stable": true,
     "post_review_source_sha256": {
-      "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "eaaa1479fba93e9630a3106865ea245d911251ee01143217881b9f6160681026",
+      "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f5ccb91a0cc2b3d6957d4b5611253139846c0d310b87916f891b916dfc69fc3e",
       "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "12421cc2bd10c7119e0098ee56e4488fa3fee214fbc7fc7435f6f003ae8611fe",
       "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "8f9940d677d07d1b493cd2f7a98bfa9a192210ff32f94fb6b35754bae8d59ced",
-      "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "8b5ea87efbcb73ef77f54ba7970446d4d0ce595bdf7810c2d05644a51b9309e4",
+      "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "427f4fe56f3da6a044bac433ce55a6d7b9a633bf6ca3ed5c428ef11ed5cfebfe",
       "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2",
       "apps/orchestrator/src/forge/application/services/epic_dispatch.py": "32cf7203f65b4d95415e66ab14e1be642cdc7a83c38930c2cabb216be9570bd0",
       "apps/orchestrator/src/forge/application/services/epic_eligibility.py": "5051ff020aa26456c74c89226cfeb46d8308659c6b1eecba4679e1f8a21eb29a",
@@ -19,7 +19,7 @@
       "apps/orchestrator/tests/epic_run_bridge/test_eligibility.py": "b14afe174651b5317b6af84409218a54a39acaeb4cabbcb30ee36e3e3a4652e1",
       "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a"
     },
-    "source_snapshot_sha256": "ebfe7484dfd92ecf15ca12b0edbbc2bc048e26c121081e15c3e8bd85bb64e21d",
+    "source_snapshot_sha256": "be54bf5552f80a8fc337205ced4e54104590cff81ff990982c3b8cb2b039942b",
     "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
   },
   "environment": {
@@ -272,13 +272,13 @@
     "claude_opus_5_5": "authentication expired; not a quota-exhaustion result",
     "initial_review_candidate_ref": "2327275629e910449ecf90722fec4a16d913397c",
     "latest_codex_observed": {
-      "candidate_ref": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
-      "request_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6048212729",
-      "status": "C9 and C10 adjudicated and locally repaired; fresh review required after push"
+      "candidate_ref": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
+      "request_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6048466823",
+      "status": "C11 owner-action projection finding adjudicated and locally repaired; fresh current-head review required after push"
     }
   },
   "hosted_ci": {
-    "observed_at_utc": "2026-10-07T22:47:40.458900+00:00",
+    "observed_at_utc": "2026-10-07T23:01:40.160089+00:00",
     "snapshot_only": true,
     "runs": [
       {
@@ -292,7 +292,7 @@
         "status": "in_progress",
         "conclusion": "",
         "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37696755985",
-        "last_poll_utc": "2026-10-07T22:44:53.128997+00:00"
+        "last_poll_utc": "2026-10-07T23:00:57.889836+00:00"
       },
       {
         "id": 37696759181,
@@ -308,15 +308,15 @@
         "last_poll_utc": "2026-10-07T22:36:20.154374+00:00"
       },
       {
-        "id": 37696713478,
+        "id": 37698722891,
         "workflow": "PR smoke",
-        "head": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+        "head": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37696713478"
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37698722891"
       }
     ],
-    "owner_recovery_candidate": "Retain the full Python run on parent 3da5207 and browser success for matching unchanged inputs. The bounded configure/re-enable branch and receipt guards are covered by the final 70-case PostgreSQL dispatch suite and Ruff/mypy on the named current source hashes. Worker, schema, dependency, frontend and browser-flow inputs are unchanged by this delta. Latest-head smoke and a fresh Codex review follow the push. The full run is pending at this dated snapshot; consult the PR and linked runs for later results. No pending or failed run is a passing check.",
+    "owner_recovery_candidate": "Retain the full Python run on parent 3da5207 and browser success for matching unchanged inputs. C9 configure/re-enable and C11 owner-action projection changes are covered by the current 70-case PostgreSQL dispatch suite, ten lifecycle cases and changed-service static checks. Worker, schema, dependency, frontend and browser-flow inputs are unchanged by these bounded deltas. Latest-head smoke and a fresh Codex review follow the push. This is a dated snapshot of actual named runs; consult the PR and linked runs for later results. No pending or failed run is a passing check.",
     "matching_reuse": {
       "web": {
         "run": 37685645993,
@@ -336,7 +336,7 @@
   "publication": {
     "pull_request": "https://github.com/Clar17y/parallel-forge/pull/88",
     "state_observed": "OPEN",
-    "pushed_parent_commit": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+    "pushed_parent_commit": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
     "release_published": false
   },
   "merge": "unmerged",
@@ -356,6 +356,31 @@
         }
       },
       "scope": "Original local_checks, integration_red_evidence, post_review, prior_matching_evidence and original independent review refer to this candidate and their named earlier receipts. They are historical evidence, not reruns of the repaired source."
+    },
+    {
+      "commit": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
+      "candidate": {
+        "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
+        "worktree_parent_commit": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+        "observed_at_utc": "2026-10-07T22:47:40.458900+00:00",
+        "migration_head_observed": "20261007_0037",
+        "integrated_source_stable": true,
+        "post_review_source_sha256": {
+          "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "eaaa1479fba93e9630a3106865ea245d911251ee01143217881b9f6160681026",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "12421cc2bd10c7119e0098ee56e4488fa3fee214fbc7fc7435f6f003ae8611fe",
+          "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "8f9940d677d07d1b493cd2f7a98bfa9a192210ff32f94fb6b35754bae8d59ced",
+          "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "8b5ea87efbcb73ef77f54ba7970446d4d0ce595bdf7810c2d05644a51b9309e4",
+          "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch.py": "32cf7203f65b4d95415e66ab14e1be642cdc7a83c38930c2cabb216be9570bd0",
+          "apps/orchestrator/src/forge/application/services/epic_eligibility.py": "5051ff020aa26456c74c89226cfeb46d8308659c6b1eecba4679e1f8a21eb29a",
+          "apps/orchestrator/src/forge/application/services/epic_run_bridge.py": "7433967efe2fc60507551d5221f1980a5446b68a3ba46558f5423fccba2041ba",
+          "apps/orchestrator/tests/epic_run_bridge/test_eligibility.py": "b14afe174651b5317b6af84409218a54a39acaeb4cabbcb30ee36e3e3a4652e1",
+          "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a"
+        },
+        "source_snapshot_sha256": "ebfe7484dfd92ecf15ca12b0edbbc2bc048e26c121081e15c3e8bd85bb64e21d",
+        "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
+      },
+      "scope": "C9 checks retain the exact source hashes tested before the C11 history-projection assertion and allowlist repair."
     }
   ],
   "repair_checks": [
@@ -422,6 +447,48 @@
       "primary_acceptance": "Primary inspected actual code/test delta, exact scoped/source hashes, raw red log, JUnit and Ruff/mypy logs against invariant map. Earlier boundaries.xml had an expected-exception mismatch repaired in test; final guards and 70-case suite passed. No test result inferred from review.",
       "coverage_limits": [
         "Forced concurrent cap edit versus re-enable and injected configure-commit failure were not executed; existing epic lock and transactional paths inspected."
+      ]
+    },
+    {
+      "name": "C11 normal owner-action history after budget recovery",
+      "parent_commit": "5ed80c45073b3bacef1afc437eb42a6d8d3dd406",
+      "source_hashes": {
+        "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f5ccb91a0cc2b3d6957d4b5611253139846c0d310b87916f891b916dfc69fc3e",
+        "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "427f4fe56f3da6a044bac433ce55a6d7b9a633bf6ca3ed5c428ef11ed5cfebfe"
+      },
+      "scoped_diff_sha256": "57095e59859c0db3a2fc7df7b5010bdc0668e432e5c2d3af7de190b476abd704",
+      "result": "Three expected red failures exposed zero dispatch actions; green and final 70-case dispatch suite preserve actor/prior warning in both get/list after raised/unset admission or unchanged-cap refusal and exact replay. Ten lifecycle cases passed.",
+      "junit": {
+        "red.xml": {
+          "tests": 3,
+          "failures": 3,
+          "sha256": "5a60951f195a0e2d89c4b9bb267b21eba900453766187f82cefad062c31d01ad"
+        },
+        "green.xml": {
+          "tests": 3,
+          "failures": 0,
+          "sha256": "37761fc3a7573968557c53f68f55c6e87b5deaac13c7c13198987e290714b464"
+        },
+        "dispatch-final.xml": {
+          "tests": 70,
+          "failures": 0,
+          "sha256": "d64920aee2240db0e0f06b5ef92f8024909e53c85a7f3738f0dad5ef87d22ce2"
+        },
+        "lifecycle.xml": {
+          "tests": 10,
+          "failures": 0,
+          "sha256": "dc065ae6aa3a4bd7d4e6e803f3883688f66570920cc6315cf1d38165ed1b35eb"
+        }
+      },
+      "static_checks": {
+        "ruff": "changed service and dispatch test passed",
+        "mypy": "changed lifecycle service passed",
+        "diff_check": "passed"
+      },
+      "evidence": ".llm-output/budget-history-checks/",
+      "scope": "Single known event allowlist omission. Existing warning/note mapping, execution filtering and ordering retained. Existing hook and panel inspected: event_type, actor_id and warnings render directly. No schema/frontend/worker changes.",
+      "limits": [
+        "No new browser run for the unchanged renderer; current PostgreSQL get/list projection assertions and inspection cover this bounded delta. Earlier named coverage limits remain."
       ]
     }
   ]

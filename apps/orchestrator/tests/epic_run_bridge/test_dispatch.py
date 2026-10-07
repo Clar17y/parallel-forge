@@ -13,6 +13,8 @@ from forge.application.services.epic_dispatch import (
 )
 from forge.application.services.epic_dispatch_worker import EpicDispatchWorker
 from forge.application.services.epic_eligibility import EpicItemEligibility
+from forge.application.services.epic_lifecycle import EpicLifecycleService
+from forge.application.services.runs import RunCommandService
 from forge.domain.epic_run_bridge import EpicExecutionBindingConflict, EpicLaunchConflict
 from forge.domain.subscription import TaskBudget
 from forge.persistence.models import (
@@ -700,6 +702,22 @@ async def test_owner_reenable_recovers_only_actual_budget_block_and_rechecks_cap
         actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
         idempotency_key="retry", request=retry,
     ) == reopened
+
+    controls = EpicLifecycleService(
+        bridge_factory, commands=RunCommandService(bridge_factory), dispatch=dispatch,
+    )
+    projected = await controls.get(epic_id, execution.execution_id)
+    configured_actions = tuple(
+        action for action in projected.owner_actions if action.event_type == "epic.dispatch_configured"
+    )
+    assert len(configured_actions) == 2
+    assert tuple(action.actor_id for action in configured_actions) == (actor.actor_id, actor.actor_id)
+    assert tuple(action.warnings for action in configured_actions) == ((), (blocker,))
+    assert all(action.note is None for action in configured_actions)
+    assert projected.dispatch is not None
+    assert projected.dispatch.blocker_code == (blocker if budget_change == "unchanged" else None)
+    listed = await controls.list(epic_id)
+    assert listed[0].owner_actions == projected.owner_actions
 
 
 @pytest.mark.asyncio

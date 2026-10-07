@@ -194,6 +194,7 @@ class EpicLifecycleService:
                         (
                             "epic.execution_started",
                             "epic.execution_control_requested",
+                            "epic.dispatch_configured",
                         )
                     ),
                     OperatorAuditEvent.payload["execution_id"].astext == str(row.id),
