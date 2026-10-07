@@ -727,6 +727,91 @@ async def test_base_moves_while_eligibility_awaits_and_proof_is_rechecked(
     assert eligibility.calls[-1] == "d" * 40
 
 
+@pytest.mark.integration
+async def test_required_child_failure_during_eligibility_blocks_final_admission(
+    session_factory, bridge_factory, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    from forge.domain.run import RunState
+    from forge.persistence.models.epic_run_bridge import EpicChildBudgetHold
+
+    bridge, inspector, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, dependencies=True
+    )
+    first = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="race-first", request=request(first_id)
+    )
+    async def no_budget_blockers(self, epic_id, project_id, *, ceiling, hold):
+        return []
+
+    monkeypatch.setattr(
+        PostgresEpicRunBridgeRepository, "child_budget_blockers", no_budget_blockers
+    )
+
+    class SettlingEligibility:
+        calls = 0
+
+        async def evidence(self, *, epic_id, execution_id, item_ids, base_ref, base_sha):
+            self.calls += 1
+            if self.calls == 1:
+                async with bridge_factory() as work:
+                    run = await work.runs.get(first.run_id)
+                    await work.runs.transition(
+                        first.run_id, run.version, RunState.CANCELLED, "run.cancelled", {}
+                    )
+                    hold = await work.session.get(EpicChildBudgetHold, first.attempt_id)
+                    assert hold is not None
+                    hold.effects_settled = True
+                    for command in (
+                        await work.session.scalars(
+                            select(RunCommand).where(RunCommand.run_id == first.run_id)
+                        )
+                    ).all():
+                        command.status = "COMPLETED"
+                        command.completed_at = datetime.now(UTC)
+                    await work.commit()
+            return [
+                DependencyEvidence(
+                    item_id=item_ids[0], status="verified",
+                    predecessor_run_id=first.run_id, integrated_sha=base_sha,
+                )
+            ]
+
+    eligibility = SettlingEligibility()
+    service = EpicRunBridgeService(
+        bridge_factory,
+        run_service=RunService(bridge_factory, repository_inspector=inspector, data_root="/tmp"),
+        eligibility=eligibility,
+    )
+    async with session_factory() as session:
+        before = []
+        for model in (Task, Run, EpicItemAttempt):
+            before.append(await session.scalar(select(func.count()).select_from(model)))
+    with pytest.raises(EpicLaunchConflict) as blocked:
+        await service.launch(
+            actor=actor, epic_id=epic_id, idempotency_key="race-second",
+            request=request(second_id, execution_id=first.execution_id),
+        )
+    assert blocked.value.blocker_codes == ("predecessor_failed",)
+    assert eligibility.calls == 1
+    async with session_factory() as session:
+        after = []
+        for model in (Task, Run, EpicItemAttempt):
+            after.append(await session.scalar(select(func.count()).select_from(model)))
+    assert after == before
+    owner_request = request(second_id, execution_id=first.execution_id, owner_override=True)
+    admitted = await service.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="race-owner", request=owner_request
+    )
+    assert admitted.owner_override and admitted.override_note is None
+    assert "predecessor_failed" in admitted.blocker_codes
+    assert await service.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="race-owner", request=owner_request
+    ) == admitted
+    assert eligibility.calls == 2
+
+
 @pytest.mark.asyncio
 async def test_continuously_moving_base_requires_explicit_owner_action_and_forgets_stale_proof(
     session_factory, bridge_factory
@@ -2335,7 +2420,7 @@ async def test_terminal_child_pending_effect_is_sequence_blocker_independent_of_
 
 
 @pytest.mark.integration
-async def test_known_terminal_child_allows_default_sequence_only_after_effects_settle(
+async def test_known_cancelled_child_requires_owner_after_effects_settle(
     session_factory, bridge_factory
 ):
     from datetime import UTC, datetime
@@ -2424,14 +2509,23 @@ async def test_known_terminal_child_allows_default_sequence_only_after_effects_s
         await work.runs.get_for_update(first.run_id)
         quiescence = await work.runs.prove_quiescent(first.run_id)
         assert quiescence.is_quiescent, quiescence
+    with pytest.raises(EpicLaunchConflict) as permanent:
+        await bridge.launch(
+            actor=actor,
+            epic_id=epic_id,
+            idempotency_key="known-effect-next-default",
+            request=request(execution_id=first.execution_id),
+        )
+    assert "predecessor_failed" in permanent.value.blocker_codes
     next_child = await bridge.launch(
         actor=actor,
         epic_id=epic_id,
-        idempotency_key="known-effect-next",
-        request=request(execution_id=first.execution_id),
+        idempotency_key="known-effect-next-owner",
+        request=request(execution_id=first.execution_id, owner_override=True),
     )
     assert next_child.attempt_id != first.attempt_id
-    assert not next_child.owner_override
+    assert next_child.owner_override and next_child.override_note is None
+    assert "predecessor_failed" in next_child.blocker_codes
 
 
 @pytest.mark.integration

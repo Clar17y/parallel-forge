@@ -304,11 +304,15 @@ class EpicEligibilityService:
             if handoff is not None:
                 if (
                     handoff.attempt_id,
+                    handoff.run_id,
+                    handoff.run_version,
                     handoff.merge_intent_id,
                     handoff.merge_sha,
                     handoff.integration_ref,
                 ) != (
                     attempt.id,
+                    run.id,
+                    event.run_version,
                     intent.id,
                     pull.merge_sha,
                     integration_ref,
@@ -337,7 +341,7 @@ class EpicEligibilityService:
                     verified_base_sha=base_sha,
                     evidence_digest=digest,
                 )
-                .on_conflict_do_nothing(index_elements=["execution_id", "item_id"])
+                .on_conflict_do_nothing()
             )
             handoff = await work.session.scalar(
                 select(EpicCompletionHandoff).where(
@@ -347,12 +351,18 @@ class EpicEligibilityService:
             )
             if handoff is not None and (
                 handoff.attempt_id,
+                handoff.run_id,
+                handoff.run_version,
                 handoff.merge_intent_id,
                 handoff.merge_sha,
+                handoff.integration_ref,
             ) == (
                 attempt.id,
+                run.id,
+                event.run_version,
                 intent.id,
                 pull.merge_sha,
+                integration_ref,
             ):
                 return DependencyEvidence(
                     item_id=item_id,

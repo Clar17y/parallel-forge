@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Protocol, Self
 from uuid import UUID, uuid4
@@ -28,7 +28,7 @@ from forge.domain.epic_run_bridge import (
 )
 from forge.domain.operation import canonical_digest
 from forge.domain.payload import validate_durable_payload
-from forge.domain.run import RunState
+from forge.domain.run import RunSnapshot, RunState
 from forge.domain.subscription import TaskBudget
 from forge.persistence.models.epic_dispatch import EpicDispatchSetting
 from forge.persistence.repositories.tasks import MAX_BODY_BYTES
@@ -43,6 +43,24 @@ class EpicLaunchWork(RunUnitOfWork, Protocol):
     epic_run_bridge: EpicRunBridgeRepository
 
     async def __aenter__(self) -> Self: ...
+
+
+async def latest_required_child_failed(
+    attempts: Sequence[EpicAttempt], execution_id: UUID,
+    get_run: Callable[[UUID], Awaitable[RunSnapshot]],
+) -> bool:
+    """Use durable latest attempts, never an older failed retry or readiness snapshot."""
+    latest: dict[UUID, EpicAttempt] = {}
+    for attempt in attempts:
+        if attempt.execution_id != execution_id or attempt.item_disposition != "required":
+            continue
+        previous = latest.get(attempt.item_id)
+        if previous is None or attempt.attempt_number > previous.attempt_number:
+            latest[attempt.item_id] = attempt
+    for attempt in latest.values():
+        if (await get_run(attempt.run_id)).state in {RunState.FAILED, RunState.CANCELLED}:
+            return True
+    return False
 
 
 class EpicRunBridgeService:
@@ -284,6 +302,7 @@ class EpicRunBridgeService:
             if control_state is not None and control_state != "ACTIVE":
                 blockers.append("execution_not_active")
             prior = await work.epic_run_bridge.list_attempts(epic_id)
+            failure_blocker_position = len(blockers)
             if item.disposition == "deferred":
                 blockers.append("item_deferred")
             child_blocker_position = len(blockers)
@@ -345,6 +364,8 @@ class EpicRunBridgeService:
                 elif not (await work.runs.prove_quiescent(value.run_id)).is_quiescent:
                     child_blockers.append("child_effects_unsettled")
             blockers[child_blocker_position:child_blocker_position] = child_blockers
+            if await latest_required_child_failed(prior, execution_id, work.runs.get_for_update):
+                blockers.insert(failure_blocker_position, "predecessor_failed")
             if blockers and not request.owner_override:
                 raise EpicLaunchConflict(blockers, actual_epic_version=epic.version)
             body, context_digest = build_task_context(

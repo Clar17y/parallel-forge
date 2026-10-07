@@ -5,11 +5,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from forge.application.services.epic_budget import EpicBudgetService
+from forge.application.services.epic_budget import EpicBudgetEdit, EpicBudgetService
 from forge.application.services.epic_dispatch import EpicDispatchRequest, EpicDispatchService
 from forge.application.services.epic_dispatch_worker import EpicDispatchWorker
 from forge.application.services.epic_eligibility import EpicItemEligibility
 from forge.domain.epic_run_bridge import EpicExecutionBindingConflict, EpicLaunchConflict
+from forge.domain.subscription import TaskBudget
 from forge.persistence.models import AgentExecution, ModelUsage, Run, RunCommand, Task
 from forge.persistence.models.epic_brief import Epic
 from forge.persistence.models.epic_dispatch import EpicDispatchSetting
@@ -79,6 +80,320 @@ class TwoReadyEligibility(TwoVerifiedEligibility):
         items = await super().readiness(epic_id=epic_id, execution_id=execution_id)
         return tuple(item.model_copy(update={"status": "active" if self.first_active and index == 0 else "ready"})
                      for index, item in enumerate(items))
+
+
+class FailedAndReadyEligibility(TwoReadyEligibility):
+    async def readiness(self, *, epic_id, execution_id):
+        first, second = await super().readiness(epic_id=epic_id, execution_id=execution_id)
+        return first.model_copy(update={"status": "blocked", "blocker_code": "predecessor_failed"}), second
+
+
+class FailedNoReadyEligibility(FailedAndReadyEligibility):
+    async def readiness(self, *, epic_id, execution_id):
+        first, second = await super().readiness(epic_id=epic_id, execution_id=execution_id)
+        return first, second.model_copy(update={"status": "blocked", "blocker_code": "predecessor_unverified"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_state", ["FAILED", "CANCELLED"])
+@pytest.mark.parametrize("effects_settled", [False, True])
+@pytest.mark.parametrize("sibling_ready", [False, True])
+async def test_failed_required_child_blocks_independent_ready_sibling(
+    session_factory, bridge_factory, run_state, effects_settled, sibling_ready
+):
+    bridge, _, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, independent=True
+    )
+    first = await bridge.launch(actor=actor, epic_id=epic_id, idempotency_key="first", request=request())
+    async with session_factory() as session, session.begin():
+        run = await session.get(Run, first.run_id)
+        run.state = run_state
+        command = (await session.scalars(select(RunCommand).where(RunCommand.run_id == first.run_id))).one()
+        command.status = "COMPLETED"
+        command.completed_at = datetime.now(UTC)
+        hold = await session.get(EpicChildBudgetHold, first.attempt_id)
+        hold.effects_settled = effects_settled
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=first.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    worker = EpicDispatchWorker(
+        bridge_factory, bridge=bridge,
+        eligibility=(FailedAndReadyEligibility if sibling_ready else FailedNoReadyEligibility)(
+            first_id, second_id
+        ),
+    )
+    assert await worker.run_once() == first.execution_id
+    state = await dispatch.get(epic_id, first.execution_id)
+    assert state.enabled is False and state.blocker_code == "predecessor_failed"
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, first.execution_id)
+        assert control.state == "BLOCKED" and control.blocker_code == "predecessor_failed"
+        assert control.version == 2
+        attempts = await work.epic_run_bridge.list_attempts(epic_id, execution_id=first.execution_id)
+        assert len(attempts) == 1 and attempts[0].attempt_id == first.attempt_id
+        assert (await work.session.get(EpicChildBudgetHold, first.attempt_id)).effects_settled == effects_settled
+        for model in (Task, Run, RunCommand):
+            assert await work.session.scalar(select(func.count()).select_from(model)) == 1
+        await work.commit()
+    assert await asyncio.gather(worker.run_once(), worker.run_once()) == [None, None]
+    async with bridge_factory() as work:
+        assert (await work.session.get(EpicExecutionControl, first.execution_id)).version == 2
+        assert len(await work.epic_run_bridge.list_attempts(epic_id, execution_id=first.execution_id)) == 1
+        await work.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_sibling", [False, True])
+async def test_failure_after_claim_refuses_bridge_and_owner_can_retry_without_note(
+    session_factory, bridge_factory, owner_sibling
+):
+    bridge, _, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, independent=True
+    )
+    first = await bridge.launch(actor=actor, epic_id=epic_id, idempotency_key="first", request=request())
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=first.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    token = uuid4()
+    async with session_factory() as session, session.begin():
+        setting = await session.get(EpicDispatchSetting, first.execution_id)
+        setting.claim_item_id = second_id
+        setting.claim_token = token
+        setting.claim_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+        run = await session.get(Run, first.run_id)
+        run.state = "FAILED"
+    with pytest.raises(EpicLaunchConflict) as error:
+        await bridge.launch(
+            actor=actor, epic_id=epic_id, idempotency_key="claimed-sibling",
+            request=request(second_id, execution_id=first.execution_id),
+            dispatch_claim_token=token,
+        )
+    assert "predecessor_failed" in error.value.blocker_codes
+    worker = EpicDispatchWorker(
+        bridge_factory, bridge=bridge, eligibility=FailedAndReadyEligibility(first_id, second_id)
+    )
+    await worker.run_once()
+    async with bridge_factory() as work:
+        setting = await work.session.get(EpicDispatchSetting, first.execution_id)
+        assert not setting.enabled and setting.claim_token is None
+        assert (await work.session.get(EpicExecutionControl, first.execution_id)).state == "BLOCKED"
+        await work.commit()
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=first.execution_id,
+        idempotency_key="re-enable", request=EpicDispatchRequest(expected_dispatch_version=1, enabled=True),
+    )
+    await asyncio.sleep(1.1)
+    await worker.run_once()
+    assert (await dispatch.get(epic_id, first.execution_id)).blocker_code == "execution_not_active"
+    target = second_id if owner_sibling else first_id
+    retry = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="owner-retry",
+        request=request(target, execution_id=first.execution_id, owner_override=True),
+    )
+    replay = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="owner-retry",
+        request=request(target, execution_id=first.execution_id, owner_override=True),
+    )
+    assert retry.attempt_id == replay.attempt_id
+    assert retry.attempt_number == (1 if owner_sibling else 2)
+    assert retry.override_note is None and "predecessor_failed" in retry.blocker_codes
+    assert "execution_not_active" in retry.blocker_codes
+    async with bridge_factory() as work:
+        attempts = await work.epic_run_bridge.list_attempts(epic_id, execution_id=first.execution_id)
+        assert [attempt.attempt_id for attempt in attempts] == [first.attempt_id, retry.attempt_id]
+        assert (await work.runs.get(first.run_id)).state == "FAILED"
+        for model in (Task, Run, RunCommand):
+            assert await work.session.scalar(select(func.count()).select_from(model)) == 2
+        await work.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_after_refusal", [False, True])
+async def test_failure_committed_after_claim_stops_bridge_and_settles_control(
+    session_factory, bridge_factory, retry_after_refusal
+):
+    bridge, _, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, independent=True
+    )
+    first = await bridge.launch(actor=actor, epic_id=epic_id, idempotency_key="first", request=request())
+    async with session_factory() as session, session.begin():
+        run = await session.get(Run, first.run_id)
+        run.state = "COMPLETED"
+        command = (await session.scalars(select(RunCommand).where(RunCommand.run_id == first.run_id))).one()
+        command.status = "COMPLETED"
+        command.completed_at = datetime.now(UTC)
+        hold = await session.get(EpicChildBudgetHold, first.attempt_id)
+        hold.effects_settled = True
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=first.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    claimed = asyncio.Event()
+    release = asyncio.Event()
+
+    class WaitingBridge:
+        retry = None
+
+        async def launch(self, **kwargs):
+            claimed.set()
+            await release.wait()
+            try:
+                return await bridge.launch(**kwargs)
+            except EpicLaunchConflict:
+                if retry_after_refusal:
+                    self.retry = await bridge.launch(
+                        actor=actor, epic_id=epic_id, idempotency_key="owner-retry-after-refusal",
+                        request=request(first_id, execution_id=first.execution_id, owner_override=True),
+                    )
+                raise
+
+    waiting_bridge = WaitingBridge()
+    worker = EpicDispatchWorker(
+        bridge_factory, bridge=waiting_bridge,
+        eligibility=FailedAndReadyEligibility(first_id, second_id)
+    )
+    pending = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(claimed.wait(), timeout=10)
+    try:
+        async with session_factory() as session, session.begin():
+            setting = await session.get(EpicDispatchSetting, first.execution_id)
+            assert setting.claim_item_id == second_id and setting.claim_token is not None
+            run = await session.get(Run, first.run_id)
+            run.state = "FAILED"
+    finally:
+        release.set()
+    assert await asyncio.wait_for(pending, timeout=10) == first.execution_id
+    state = await dispatch.get(epic_id, first.execution_id)
+    assert state.enabled is retry_after_refusal
+    assert state.blocker_code == ("active_child" if retry_after_refusal else "predecessor_failed")
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, first.execution_id)
+        assert (control.state, control.version, control.blocker_code) == (
+            ("ACTIVE" if retry_after_refusal else "BLOCKED"),
+            (1 if retry_after_refusal else 2),
+            (None if retry_after_refusal else "predecessor_failed"),
+        )
+        assert len(await work.epic_run_bridge.list_attempts(epic_id, execution_id=first.execution_id)) == (
+            2 if retry_after_refusal else 1
+        )
+        for model in (Task, Run, RunCommand):
+            assert await work.session.scalar(select(func.count()).select_from(model)) == (
+                2 if retry_after_refusal else 1
+            )
+        await work.commit()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_budget_blocks_control_but_owner_can_admit_directly(
+    session_factory, bridge_factory
+):
+    bridge, _, actor, epic_id, first_id, _, request = await setup(session_factory, bridge_factory)
+    execution = await bridge.start(
+        actor=actor, epic_id=epic_id, idempotency_key="execution", expected_epic_version=5
+    )
+    await EpicBudgetService(bridge_factory).edit(
+        actor=actor, epic_id=epic_id, idempotency_key="zero-cap",
+        request=EpicBudgetEdit(expected_version=0, ceiling=TaskBudget(max_provider_attempts=0)),
+    )
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=execution.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    worker = EpicDispatchWorker(bridge_factory, bridge=bridge, eligibility=ReadyEligibility(first_id))
+    assert await worker.run_once() == execution.execution_id
+    state = await dispatch.get(epic_id, execution.execution_id)
+    assert state.enabled is False and state.blocker_code == "epic_budget_provider_attempts_exhausted"
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, execution.execution_id)
+        assert (control.state, control.version, control.blocker_code) == (
+            "BLOCKED", 2, "epic_budget_provider_attempts_exhausted"
+        )
+        assert await work.epic_run_bridge.list_attempts(epic_id, execution_id=execution.execution_id) == []
+        for model in (Task, Run, RunCommand):
+            assert await work.session.scalar(select(func.count()).select_from(model)) == 0
+        await work.commit()
+    assert await worker.run_once() is None
+    owner = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="owner-admit",
+        request=request(first_id, execution_id=execution.execution_id, owner_override=True),
+    )
+    assert owner.override_note is None
+    assert "epic_budget_provider_attempts_exhausted" in owner.blocker_codes
+    assert "execution_not_active" in owner.blocker_codes
+
+
+@pytest.mark.asyncio
+async def test_latest_active_retry_supersedes_old_failure_before_dispatch_poll(
+    session_factory, bridge_factory
+):
+    bridge, _, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, independent=True
+    )
+    first = await bridge.launch(actor=actor, epic_id=epic_id, idempotency_key="first", request=request())
+    async with session_factory() as session, session.begin():
+        run = await session.get(Run, first.run_id)
+        run.state = "FAILED"
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=first.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    class OwnerRetryDuringReadiness(FailedAndReadyEligibility):
+        retry = None
+
+        async def readiness(self, *, epic_id, execution_id):
+            stale = await super().readiness(epic_id=epic_id, execution_id=execution_id)
+            self.retry = await bridge.launch(
+                actor=actor, epic_id=epic_id, idempotency_key="retry",
+                request=request(first_id, execution_id=first.execution_id, owner_override=True),
+            )
+            return stale
+
+    eligibility = OwnerRetryDuringReadiness(first_id, second_id)
+    worker = EpicDispatchWorker(bridge_factory, bridge=bridge, eligibility=eligibility)
+    await worker.run_once()
+    assert eligibility.retry.attempt_number == 2
+    assert "predecessor_failed" in eligibility.retry.blocker_codes
+    state = await dispatch.get(epic_id, first.execution_id)
+    assert state.enabled and state.blocker_code == "child_effects_unsettled"
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, first.execution_id)
+        assert control.state == "ACTIVE" and control.version == 1
+        assert len(await work.epic_run_bridge.list_attempts(epic_id, execution_id=first.execution_id)) == 2
+        await work.commit()
+
+
+@pytest.mark.asyncio
+async def test_deferred_failure_does_not_block_required_dispatch_control(session_factory, bridge_factory):
+    bridge, _, actor, epic_id, first_id, second_id, request = await setup(
+        session_factory, bridge_factory, deferred=True
+    )
+    deferred = await bridge.launch(
+        actor=actor, epic_id=epic_id, idempotency_key="deferred-owner",
+        request=request(second_id, owner_override=True),
+    )
+    async with session_factory() as session, session.begin():
+        run = await session.get(Run, deferred.run_id)
+        run.state = "FAILED"
+    dispatch = EpicDispatchService(bridge_factory)
+    await dispatch.configure(
+        actor=actor, epic_id=epic_id, execution_id=deferred.execution_id,
+        idempotency_key="enable", request=EpicDispatchRequest(expected_dispatch_version=0, enabled=True),
+    )
+    worker = EpicDispatchWorker(bridge_factory, bridge=bridge, eligibility=ReadyEligibility(first_id))
+    await worker.run_once()
+    async with bridge_factory() as work:
+        control = await work.session.get(EpicExecutionControl, deferred.execution_id)
+        assert control.state == "ACTIVE" and control.version == 1
+        assert len(await work.epic_run_bridge.list_attempts(epic_id, execution_id=deferred.execution_id)) == 1
+        await work.commit()
+    assert (await dispatch.get(epic_id, deferred.execution_id)).blocker_code != "predecessor_failed"
 
 
 @pytest.mark.asyncio

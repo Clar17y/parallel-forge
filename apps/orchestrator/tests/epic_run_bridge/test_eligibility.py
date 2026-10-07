@@ -230,7 +230,7 @@ async def test_settled_merge_requires_integration_and_is_immutable(
     async with session_factory() as session, session.begin():
         pull = (await session.scalars(select(PullRequest).where(PullRequest.run_id == first.run_id))).one()
         pull.base_ref = "main"
-    proof, simultaneous = await asyncio.gather(
+    concurrent = await asyncio.gather(
         *(
             producer.evidence(
                 epic_id=epic_id,
@@ -239,12 +239,17 @@ async def test_settled_merge_requires_integration_and_is_immutable(
                 base_ref="refs/heads/main",
                 base_sha=integrated_sha,
             )
-            for _ in range(2)
+            for _ in range(6)
         )
     )
+    proof = concurrent[0]
     assert proof[0].status == "verified"
-    assert simultaneous[0].handoff_id == proof[0].handoff_id
+    assert all(value[0].handoff_id == proof[0].handoff_id for value in concurrent)
     assert proof[0].integrated_sha == merged_sha
+    async with session_factory() as session:
+        original = (await session.scalars(select(EpicCompletionHandoff))).one()
+        original_base, original_digest = original.verified_base_sha, original.evidence_digest
+        assert original_base == integrated_sha
     shallow = tmp_path / ".git" / "shallow"
     shallow.write_text(f"{base_sha}\n")
     assert (await producer.evidence(
@@ -289,6 +294,20 @@ async def test_settled_merge_requires_integration_and_is_immutable(
         eligibility=producer,
     ).get(epic_id, first.execution_id)
     assert execution_view.items == items
+    (tmp_path / "later").write_text("later integration")
+    git(tmp_path, "add", "later")
+    git(tmp_path, "commit", "-m", "advance integration")
+    advanced_sha = git(tmp_path, "rev-parse", "main")
+    advanced = await producer.evidence(
+        epic_id=epic_id, execution_id=first.execution_id,
+        item_ids=[first_id], base_ref="refs/heads/main", base_sha=advanced_sha,
+    )
+    assert advanced[0].status == "verified" and advanced[0].handoff_id == proof[0].handoff_id
+    async with session_factory() as session:
+        retained = (await session.scalars(select(EpicCompletionHandoff))).one()
+        assert (retained.verified_base_sha, retained.evidence_digest) == (
+            original_base, original_digest
+        )
     later_epoch = await service.start(
         actor=actor,
         epic_id=epic_id,
@@ -312,6 +331,26 @@ async def test_settled_merge_requires_integration_and_is_immutable(
                 {"sha": base_sha},
             )
         await session.rollback()
+    async with session_factory() as session, session.begin():
+        pull = (await session.scalars(select(PullRequest).where(PullRequest.run_id == first.run_id))).one()
+        pull.merge_sha = advanced_sha
+        recorded_intent = await session.get(OperationIntent, intent.id)
+        recorded_intent.outcome_payload = {"merge_sha": advanced_sha}
+        event = (await session.scalars(select(RunEvent).where(
+            RunEvent.run_id == first.run_id,
+            RunEvent.event_type == "run.merge_completed",
+        ))).one()
+        event.payload = {**event.payload, "merge_sha": advanced_sha}
+    conflicting = await producer.evidence(
+        epic_id=epic_id, execution_id=first.execution_id,
+        item_ids=[first_id], base_ref="refs/heads/main", base_sha=advanced_sha,
+    )
+    assert conflicting[0].status == "unverified" and conflicting[0].handoff_id is None
+    async with session_factory() as session:
+        retained = (await session.scalars(select(EpicCompletionHandoff))).one()
+        assert (retained.merge_sha, retained.verified_base_sha, retained.evidence_digest) == (
+            merged_sha, original_base, original_digest
+        )
     async with session_factory() as session, session.begin():
         recorded_intent = await session.get(OperationIntent, intent.id)
         recorded_intent.status = "FAILED"
