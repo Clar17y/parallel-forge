@@ -105,4 +105,67 @@ describe('DeliveryWorkspace manual child launch', () => {
     expect(await screen.findByRole('link', { name: /Open launched run/i })).toHaveAttribute('href', `/runs/${runId}`);
     expect(postCount).toBe(2);
   });
+
+  test.each([
+    ['selection', true], ['selection', false],
+    ['route', true], ['route', false],
+    ['manual load', true], ['manual load', false],
+  ] as const)('resets launch state after %s changes execution (preserved item: %s)', async (change, preservedItem) => {
+    const nextExecutionId = '99999999-9999-4999-8999-999999999999';
+    const nextGraphId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const nextItemId = preservedItem ? itemId : 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const nextProjection: EpicExecutionProjection = {
+      ...projection,
+      execution: { ...projection.execution, execution_id: nextExecutionId, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64) },
+    };
+    const nextGraph: GraphRevisionResponse = {
+      ...graph, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64), revision_number: 3,
+      items: graph.items.map(item => ({ ...item, item_id: nextItemId, graph_revision_id: nextGraphId })),
+    };
+    vi.mocked(useEpicWorkspace).mockReturnValue({ graphRevisions: [graph, nextGraph], acceptedGraph: undefined, loadingGraphRevisions: false } as unknown as ReturnType<typeof useEpicWorkspace>);
+    const launchBodies: Record<string, unknown>[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.endsWith('/executions')) return [projection, nextProjection] as T;
+      if (path === `/epics/${epicId}/executions/${executionId}`) return projection as T;
+      if (path === `/epics/${epicId}/executions/${nextExecutionId}`) return nextProjection as T;
+      if (path === `/epics/${epicId}/work-item-runs` && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        launchBodies.push(body);
+        return { epic_id: epicId, execution_id: body.execution_id, item_id: body.item_id, item_disposition: 'deferred', run_id: runId, attempt_id: `attempt-${launchBodies.length}`, attempt_number: 1, blocker_codes: [] } as T;
+      }
+      return path.endsWith('/budget') ? undefined as T : [] as T;
+    });
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    await userEvent.selectOptions(await screen.findByLabelText('Saved work item'), itemId);
+    await userEvent.click(screen.getByLabelText(/Owner override: launch despite server-reported workflow warnings/i));
+    await userEvent.type(screen.getByLabelText('Override note (optional)'), 'First execution authority');
+    await userEvent.click(screen.getByRole('button', { name: 'Launch Work Item' }));
+    await screen.findByRole('link', { name: /Open launched run/i });
+    // A new draft after the successful launch must also remain execution-local.
+    await userEvent.type(screen.getByLabelText('Override note (optional)'), 'First execution draft');
+
+    if (change === 'route') {
+      rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={nextExecutionId} epicVersion={7} />);
+    } else if (change === 'manual load') {
+      await userEvent.click(screen.getByRole('button', { name: 'Start New Execution' }));
+      await userEvent.type(screen.getByLabelText('Execution ID'), nextExecutionId);
+      await userEvent.click(screen.getByRole('button', { name: 'Load Execution' }));
+    } else {
+      await userEvent.selectOptions(screen.getByLabelText('Select Execution'), nextExecutionId);
+    }
+    await waitFor(() => expect(screen.getByText(`graph_revision_id: ${nextGraphId}`)).toBeInTheDocument());
+    expect(screen.getByLabelText('Saved work item')).toHaveValue('');
+    expect(screen.getByLabelText(/Owner override: launch despite server-reported workflow warnings/i)).not.toBeChecked();
+    expect(screen.queryByRole('link', { name: /Open launched run/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Launch Work Item' })).toBeDisabled();
+    await userEvent.click(screen.getByLabelText(/Owner override: launch despite server-reported workflow warnings/i));
+    expect(screen.getByLabelText('Override note (optional)')).toHaveValue('');
+    await userEvent.click(screen.getByLabelText(/Owner override: launch despite server-reported workflow warnings/i));
+    await userEvent.selectOptions(screen.getByLabelText('Saved work item'), nextItemId);
+    await userEvent.click(screen.getByRole('button', { name: 'Launch Work Item' }));
+    await waitFor(() => expect(launchBodies).toHaveLength(2));
+    expect(launchBodies[0]).toMatchObject({ execution_id: executionId, owner_override: true, override_note: 'First execution authority' });
+    expect(launchBodies[1]).toMatchObject({ execution_id: nextExecutionId, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64), item_id: nextItemId, owner_override: false });
+    expect(launchBodies[1]).not.toHaveProperty('override_note');
+  });
 });

@@ -66,6 +66,15 @@ export function DeliveryWorkspace({
   const [launchOverride, setLaunchOverride] = useState(false);
   const [launchNote, setLaunchNote] = useState('');
   const [launchedAttempt, setLaunchedAttempt] = useState<EpicAttemptResponse | null>(null);
+  const currentLaunchExecutionId = delivery.execution?.execution.execution_id ?? null;
+  const [launchExecutionId, setLaunchExecutionId] = useState(currentLaunchExecutionId);
+  if (launchExecutionId !== currentLaunchExecutionId) {
+    setLaunchExecutionId(currentLaunchExecutionId);
+    setSelectedItemId('');
+    setLaunchOverride(false);
+    setLaunchNote('');
+    setLaunchedAttempt(null);
+  }
 
   const {
     executionId,
