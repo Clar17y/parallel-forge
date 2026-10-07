@@ -130,7 +130,7 @@ class EpicLifecycleService:
             ).all()
             result = tuple([await self._project(work, row) for row in rows])
             await work.commit()
-        return tuple([await self._with_readiness(value) for value in result])
+        return result
 
     async def get(self, epic_id: UUID, execution_id: UUID) -> EpicExecutionProjection:
         async with self._work() as work:

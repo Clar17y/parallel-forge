@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Panel } from '@/components/ui/panel';
@@ -54,7 +54,7 @@ export function DeliveryWorkspace({
   const workspace = useEpicWorkspace(epicId);
   const workItemRuns = useEpicWorkItemRuns(epicId);
   const [manualIdInput, setManualIdInput] = useState('');
-  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ text: string; executionId: string | null } | null>(null);
 
   // Owner override start controls
   const [isStartingNew, setIsStartingNew] = useState(false);
@@ -66,7 +66,7 @@ export function DeliveryWorkspace({
   const [launchOverride, setLaunchOverride] = useState(false);
   const [launchNote, setLaunchNote] = useState('');
   const [launchedAttempt, setLaunchedAttempt] = useState<EpicAttemptResponse | null>(null);
-  const currentLaunchExecutionId = delivery.execution?.execution.execution_id ?? null;
+  const currentLaunchExecutionId = delivery.executionId ?? delivery.execution?.execution.execution_id ?? null;
   const [launchExecutionId, setLaunchExecutionId] = useState(currentLaunchExecutionId);
   if (launchExecutionId !== currentLaunchExecutionId) {
     setLaunchExecutionId(currentLaunchExecutionId);
@@ -74,6 +74,9 @@ export function DeliveryWorkspace({
     setLaunchOverride(false);
     setLaunchNote('');
     setLaunchedAttempt(null);
+    if (actionNotice?.executionId !== currentLaunchExecutionId) {
+      setActionNotice(null);
+    }
   }
 
   const {
@@ -99,32 +102,62 @@ export function DeliveryWorkspace({
     mutations,
   } = delivery;
   const registerCompletion = mutations.registerCompletion;
+  const {
+    error: mutationError,
+    conflict: mutationConflict,
+    executionId: mutationExecutionId,
+    hasPendingRetry,
+    clearError,
+  } = mutations;
+  const isExecutionScopedMutation = ['execution-command', 'execution-dispatch', 'work-item-launch'].includes(mutations.actionKind ?? '');
+
+  const previousExecutionIdRef = useRef(currentLaunchExecutionId);
+  useEffect(() => {
+    if (previousExecutionIdRef.current !== currentLaunchExecutionId) {
+      previousExecutionIdRef.current = currentLaunchExecutionId;
+      if (isExecutionScopedMutation && mutationExecutionId && mutationExecutionId !== currentLaunchExecutionId &&
+          (mutationError || mutationConflict) && !hasPendingRetry) {
+        clearError();
+      }
+    }
+  }, [clearError, currentLaunchExecutionId, hasPendingRetry, isExecutionScopedMutation, mutationConflict, mutationError, mutationExecutionId]);
 
   useEffect(() => {
     const unregisterStart = registerCompletion('execution-start', value => {
-      if ((value as { execution_id?: string }).execution_id) {
-        setActionNotice('Execution started; loading frozen progress.');
+      const newId = (value as { execution_id?: string }).execution_id ?? null;
+      if (newId) {
+        setActionNotice({ text: 'Execution started; loading frozen progress.', executionId: newId });
       }
     });
     const unregisterCommand = registerCompletion('execution-command', (_value, request) => {
+      const commandExecId = request.path.match(/\/executions\/([^/?]+)\/commands/)?.[1] ?? null;
+      if (commandExecId && commandExecId !== currentLaunchExecutionId) return;
       const action = request.body.action;
       if (action === 'pause' || action === 'resume' || action === 'cancel') {
         const label = (action as string)[0].toUpperCase() + (action as string).slice(1);
-        setActionNotice(`${label} requested; waiting for server confirmation.`);
+        setActionNotice({ text: `${label} requested; waiting for server confirmation.`, executionId: commandExecId });
       }
     });
     const unregisterWorkItem = registerCompletion('work-item-launch', value => {
-      setLaunchedAttempt(value as EpicAttemptResponse);
-      setActionNotice('Work item launched; the run retains its normal approval gates.');
-      setLaunchNote('');
+      const attempt = value as EpicAttemptResponse;
+      if (attempt.execution_id === currentLaunchExecutionId) {
+        setLaunchedAttempt(attempt);
+        setActionNotice({ text: 'Work item launched; the run retains its normal approval gates.', executionId: attempt.execution_id });
+        setLaunchNote('');
+      }
       refresh();
     });
     const unregisterDispatch = registerCompletion('execution-dispatch', (_value, request) => {
-      setActionNotice(request.body.enabled ? 'Sequential delivery enabled.' : 'Sequential delivery disabled.');
+      const dispatchExecId = request.path.match(/\/executions\/([^/?]+)\/dispatch/)?.[1] ?? null;
+      if (dispatchExecId && dispatchExecId !== currentLaunchExecutionId) {
+        refresh();
+        return;
+      }
+      setActionNotice({ text: request.body.enabled ? 'Sequential delivery enabled.' : 'Sequential delivery disabled.', executionId: dispatchExecId });
       refresh();
     });
     return () => { unregisterStart(); unregisterCommand(); unregisterWorkItem(); unregisterDispatch(); };
-  }, [registerCompletion, refresh]);
+  }, [currentLaunchExecutionId, registerCompletion, refresh]);
 
   const savedGraphs = workspace.acceptedGraph && !workspace.graphRevisions.some(graph => graph.graph_revision_id === workspace.acceptedGraph?.graph_revision_id)
     ? [...workspace.graphRevisions, workspace.acceptedGraph]
@@ -274,8 +307,11 @@ export function DeliveryWorkspace({
     }
   };
 
-  const launchBlockers = mutations.errorDetail?.blocker_codes ?? [];
-  const isWorkItemLaunchError = mutations.actionKind === 'work-item-launch' && !!mutations.error;
+  const isExecutionMatchingMutation = !mutations.executionId || mutations.executionId === currentLaunchExecutionId;
+  const launchBlockers = (isExecutionMatchingMutation && mutations.actionKind === 'work-item-launch')
+    ? (mutations.errorDetail?.blocker_codes ?? [])
+    : [];
+  const isWorkItemLaunchError = mutations.actionKind === 'work-item-launch' && !!mutations.error && isExecutionMatchingMutation;
 
   return (
     <div className="delivery-workspace space-y-6">
@@ -283,6 +319,9 @@ export function DeliveryWorkspace({
       {mutations.hasPendingRetry && !mutations.shared && (
         <div role="alert" className="p-4 bg-[var(--warning-soft)] text-[var(--warning)] rounded border border-[var(--border)] space-y-2">
           <p className="font-semibold">Network or server error. Mutation outcome uncertain.</p>
+          <p>{mutations.executionId
+            ? `The original request belongs to execution ${mutations.executionId}.`
+            : 'The original request belongs to this epic.'}</p>
           <div className="flex space-x-2">
             <Button variant="primary" disabled={mutations.loading} onClick={() => { void mutations.retryPending().catch(() => undefined); }}>
               {mutations.loading ? 'Retrying…' : 'Retry original request'}
@@ -291,7 +330,7 @@ export function DeliveryWorkspace({
         </div>
       )}
 
-      {mutations.conflict && isDeliveryAction && (
+      {mutations.conflict && isDeliveryAction && isExecutionMatchingMutation && (
         <div role="alert" className="p-4 bg-[var(--danger-soft)] text-[var(--danger)] rounded border border-[var(--border)] space-y-1">
           <p className="font-semibold">
             {mutations.actionKind === 'execution-command'
@@ -306,16 +345,16 @@ export function DeliveryWorkspace({
         </div>
       )}
 
-      {mutations.error && !mutations.conflict && isDeliveryAction && (
+      {mutations.error && !mutations.conflict && isDeliveryAction && isExecutionMatchingMutation && (
         <div role="alert" className="p-4 bg-[var(--danger-soft)] text-[var(--danger)] rounded border border-[var(--border)] space-y-2">
           <p>{mutations.error}</p>
           <Button variant="quiet" onClick={mutations.clearError}>Dismiss message</Button>
         </div>
       )}
 
-      {actionNotice && (
+      {actionNotice && (!actionNotice.executionId || actionNotice.executionId === currentLaunchExecutionId) && (
         <div role="status" className="p-3 bg-[var(--success-soft)] text-[var(--success)] rounded text-sm">
-          {actionNotice}
+          {actionNotice.text}
         </div>
       )}
 
@@ -905,7 +944,7 @@ export function DeliveryWorkspace({
                     {!launchOverride && launchBlockers.length > 0 && <p>Choose the owner override to make a new, explicit launch request.</p>}
                   </div>
                 )}
-                {launchedAttempt && (
+                {launchedAttempt && launchedAttempt.execution_id === executionSnapshot?.execution_id && (
                   <div role="status" className="p-3 border border-[var(--border)] rounded space-y-2 text-sm">
                     <p>Server created attempt {launchedAttempt.attempt_number} for the saved {launchedAttempt.item_disposition} item. This is a run launch, not a completion or integration claim.</p>
                     {launchedAttempt.blocker_codes.length > 0 && <p className="text-[var(--warning)]">Warnings retained: {launchedAttempt.blocker_codes.map(code => blockerLabels[code] ?? code.replaceAll('_', ' ')).join('; ')}</p>}

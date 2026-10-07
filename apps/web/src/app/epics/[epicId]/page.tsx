@@ -63,6 +63,9 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
   const recovery = <>
     {mutations.hasPendingRetry && <div role="alert" className="p-4 rounded border border-[var(--border)] bg-[var(--warning-soft)] space-y-2">
       <p>{mutations.loading ? 'Waiting for the current action to finish.' : 'An earlier action has an uncertain result. Retry it before starting another action.'}</p>
+      <p>{mutations.executionId
+        ? `The original request belongs to execution ${mutations.executionId}.`
+        : 'The original request belongs to this epic.'}</p>
       <Button disabled={mutations.loading} onClick={() => { void mutations.retryPending().catch(() => undefined); }}>Retry original request</Button>
       {!mutations.reloadProtected && <p>This browser cannot preserve the request if you reload or close this tab. You can navigate within this tab, but keep it open until the request is resolved.</p>}
       <EvidenceDetails summary="Inspect pending request"><p>{mutations.pendingMutation?.method} {mutations.pendingMutation?.path}</p><pre className="overflow-auto">{JSON.stringify(mutations.pendingMutation?.body, null, 2)}</pre></EvidenceDetails>

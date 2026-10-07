@@ -1,4 +1,4 @@
-import { act, cleanup, render, renderHook, screen } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import EpicsPage from './page';
@@ -214,6 +214,49 @@ describe('Epics App Pages', () => {
     await act(async () => { render(<EpicPage params={Promise.resolve({ epicId })} />); });
     await userEvent.click(await screen.findByRole('button', { name: 'Retry original request' }));
     expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('execution_id=execution-saved-once'), expect.any(Object));
+  });
+
+  test('composed epic recovery shows pending execution ownership and retries the exact request', async () => {
+    const executionId = '22222222-2222-4222-8222-222222222222';
+    const originalPath = `/epics/${epicId}/work-item-runs`;
+    const originalBody = { schema_version: 1, execution_id: executionId, item_id: 'item-1' };
+    let requestCount = 0;
+    let originalRequest: { body: string; key: string } | undefined;
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === originalPath && init?.method === 'POST') {
+        requestCount += 1;
+        const request = { body: String(init.body), key: (init.headers as Record<string, string>)['Idempotency-Key'] };
+        if (requestCount === 1) {
+          originalRequest = request;
+          throw new Error('response lost');
+        }
+        expect(request).toEqual(originalRequest);
+        return { epic_id: epicId, execution_id: executionId, item_id: 'item-1', item_disposition: 'required', run_id: 'run-1', attempt_id: 'attempt-1', attempt_number: 1, blocker_codes: [] } as T;
+      }
+      if (path === `/epics/${epicId}`) return mockEpic as T;
+      return [] as T;
+    });
+
+    const first = renderHook(() => useEpicMutations(epicId));
+    await act(async () => {
+      await expect(first.result.current.execute('POST', originalPath, originalBody, { kind: 'work-item-launch' })).rejects.toThrow();
+    });
+    first.unmount();
+
+    await act(async () => { render(<EpicPage params={Promise.resolve({ epicId })} />); });
+    await userEvent.click(await screen.findByRole('button', { name: 'Delivery & Progress' }));
+    await screen.findByRole('button', { name: 'Retry original request' });
+    expect(screen.getByText(`The original request belongs to execution ${executionId}.`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start Execution' })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry original request' }));
+    await waitFor(() => expect(requestCount).toBe(2));
+    const launchRequests = vi.mocked(api).mock.calls.filter(([path, init]) => path === originalPath && init?.method === 'POST');
+    expect(launchRequests).toHaveLength(2);
+    expect(launchRequests[1]?.[1]?.body).toBe(launchRequests[0]?.[1]?.body);
+    expect((launchRequests[1]?.[1]?.headers as Record<string, string>)['Idempotency-Key']).toBe(
+      (launchRequests[0]?.[1]?.headers as Record<string, string>)['Idempotency-Key'],
+    );
   });
 
   test('a definitive retry rejection stays visible while the initial epic read is unavailable', async () => {

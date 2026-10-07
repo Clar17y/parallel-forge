@@ -23,6 +23,7 @@ type Scope = {
   errorDetail: EpicLaunchConflictDetail | null;
   conflict: boolean;
   actionKind?: string | null;
+  executionId?: string | null;
   reloadProtected: boolean;
   inFlight: boolean;
   handlers: Map<string, Set<RegisteredCompletion>>;
@@ -38,12 +39,19 @@ type MutationSnapshot = {
   error: string | null;
   errorDetail: EpicLaunchConflictDetail | null;
   actionKind?: string | null;
+  executionId?: string | null;
   reloadProtected: boolean;
 };
 const INITIAL_SNAPSHOT: MutationSnapshot = {
   pendingMutation: null, hasPendingRetry: false, loading: false,
-  conflict: false, error: null, errorDetail: null, actionKind: null, reloadProtected: true,
+  conflict: false, error: null, errorDetail: null, actionKind: null, executionId: null, reloadProtected: true,
 };
+
+function extractExecutionId(mutation: FrozenMutation): string | null {
+  if (typeof mutation.body?.execution_id === 'string') return mutation.body.execution_id;
+  const match = mutation.path.match(/\/executions\/([^/?]+)/);
+  return match ? match[1] : null;
+}
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function normalizeEpicId(id?: string | null): string | undefined {
@@ -94,6 +102,7 @@ class EpicMutationStore {
         errorDetail: null,
         conflict: false,
         actionKind: null,
+        executionId: null,
         reloadProtected: true,
         inFlight: false,
         handlers: new Map(),
@@ -115,7 +124,7 @@ class EpicMutationStore {
     return scope.snapshot ??= Object.freeze({
       pendingMutation: scope.pending, hasPendingRetry: scope.pending !== null,
       loading: scope.inFlight, conflict: scope.conflict, error: scope.error, errorDetail: scope.errorDetail,
-      actionKind: scope.actionKind, reloadProtected: scope.reloadProtected,
+      actionKind: scope.actionKind, executionId: scope.executionId, reloadProtected: scope.reloadProtected,
     });
   }
 
@@ -129,6 +138,7 @@ class EpicMutationStore {
     if (!scope.loaded && typeof window !== 'undefined') {
       const saved = loadPending(storageKey);
       scope.pending = saved.pending;
+      scope.executionId = saved.pending ? extractExecutionId(saved.pending) : null;
       scope.reloadProtected = saved.protected;
       scope.loaded = true;
       this.publish(scope);
@@ -163,6 +173,7 @@ class EpicMutationStore {
     scope.errorDetail = null;
     scope.conflict = false;
     scope.actionKind = null;
+    scope.executionId = null;
     this.publish(scope);
   }
 
@@ -170,6 +181,7 @@ class EpicMutationStore {
     const scope = this.scope(storageKey);
     scope.inFlight = true;
     scope.pending = mutation;
+    scope.executionId = extractExecutionId(mutation);
     scope.error = null;
     scope.errorDetail = null;
     scope.conflict = false;

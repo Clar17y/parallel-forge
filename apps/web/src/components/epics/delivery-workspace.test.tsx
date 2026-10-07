@@ -1,4 +1,4 @@
-import { resetEpicMutationStoreForTesting } from '@/hooks/epics/use-epic-mutations';
+import { EpicMutationProvider, resetEpicMutationStoreForTesting, useEpicMutations } from '@/hooks/epics/use-epic-mutations';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -614,6 +614,66 @@ describe('DeliveryWorkspace', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Pause Execution' }));
     expect(await screen.findByText('Conflict: Execution version has changed concurrently.')).toBeInTheDocument();
+  });
+
+  test('hides an execution-command conflict when the route changes to another execution', async () => {
+    const nextExecutionId = '99999999-9999-4999-8999-999999999999';
+    const nextProjection = {
+      ...defaultProjection,
+      execution: { ...defaultProjection.execution, execution_id: nextExecutionId },
+    };
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions` && !init?.method) return [defaultProjection, nextProjection] as T;
+      if (path === `/epics/${epicId}/executions/${executionId}` && (!init?.method || init.method === 'GET')) return defaultProjection as T;
+      if (path === `/epics/${epicId}/executions/${nextExecutionId}` && (!init?.method || init.method === 'GET')) return nextProjection as T;
+      if (path === `/epics/${epicId}/executions/${executionId}/commands` && init?.method === 'POST') throw new ApiError(409, 'version-conflict');
+      return undefined as T;
+    });
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Pause Execution' }));
+    expect(await screen.findByText('Conflict: Execution version has changed concurrently.')).toBeInTheDocument();
+
+    rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={nextExecutionId} epicVersion={7} />);
+    await waitFor(() => expect(screen.getByText(`execution_id: ${nextExecutionId}`)).toBeInTheDocument());
+    expect(screen.queryByText('Conflict: Execution version has changed concurrently.')).not.toBeInTheDocument();
+  });
+
+  test.each([
+    ['brief-edit', `/epics/${epicId}`, 'Epic version conflict'],
+    ['budget-edit', `/epics/${epicId}/budget`, 'Budget version conflict'],
+    ['execution-start', `/epics/${epicId}/executions`, 'Epic version conflict'],
+  ])('preserves epic-scoped %s feedback after the displayed execution changes', async (kind, path, errorText) => {
+    const nextExecutionId = '99999999-9999-4999-8999-999999999999';
+    const nextProjection = {
+      ...defaultProjection,
+      execution: { ...defaultProjection.execution, execution_id: nextExecutionId },
+    };
+    vi.mocked(api).mockImplementation(async <T,>(requestedPath: string, init?: RequestInit) => {
+      if (requestedPath === `/epics/${epicId}/executions` && !init?.method) return [defaultProjection, nextProjection] as T;
+      if (requestedPath === `/epics/${epicId}/executions/${executionId}` && (!init?.method || init.method === 'GET')) return defaultProjection as T;
+      if (requestedPath === `/epics/${epicId}/executions/${nextExecutionId}` && (!init?.method || init.method === 'GET')) return nextProjection as T;
+      if (requestedPath === path && init?.method) throw new ApiError(409, 'version-conflict');
+      return undefined as T;
+    });
+
+    function MutationProbe({ selectedExecutionId }: { selectedExecutionId: string }) {
+      const mutations = useEpicMutations(epicId);
+      return <>
+        <DeliveryWorkspace epicId={epicId} initialExecutionId={selectedExecutionId} epicVersion={7} />
+        <button onClick={() => { void mutations.execute('PATCH', path, {}, { kind }).catch(() => undefined); }}>Create epic-scoped conflict</button>
+        <output aria-label="Mutation error">{mutations.error}</output>
+      </>;
+    }
+
+    const { rerender } = render(
+      <EpicMutationProvider epicId={epicId}><MutationProbe selectedExecutionId={executionId} /></EpicMutationProvider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Create epic-scoped conflict' }));
+    expect(await screen.findByLabelText('Mutation error')).toHaveTextContent(errorText);
+
+    rerender(<EpicMutationProvider epicId={epicId}><MutationProbe selectedExecutionId={nextExecutionId} /></EpicMutationProvider>);
+    await waitFor(() => expect(screen.getByText(`execution_id: ${nextExecutionId}`)).toBeInTheDocument());
+    expect(screen.getByLabelText('Mutation error')).toHaveTextContent(errorText);
   });
 
   test('shows epic version conflict on execution-start 409', async () => {

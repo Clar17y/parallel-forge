@@ -3506,3 +3506,56 @@ async def test_execution_scoped_reads_and_epic_wide_default(session_factory, bri
     assert all(action.actor_id == actor.actor_id for action in proj_2.owner_actions)
     assert proj_2.owner_actions[1].warnings == ("historical",)
     assert await controls.list(epic_id) == (proj_1, proj_2)
+
+
+@pytest.mark.asyncio
+async def test_execution_discovery_does_not_reprove_historical_readiness(
+    session_factory, bridge_factory
+):
+    from forge.application.services.epic_dispatch import EpicDispatchService
+    from forge.application.services.epic_eligibility import EpicItemEligibility
+
+    bridge, _, actor, epic_id, item_id, _, _ = await setup(session_factory, bridge_factory)
+    first = await bridge.start(
+        actor=actor, epic_id=epic_id, idempotency_key="discover-first", expected_epic_version=5
+    )
+    async with bridge_factory() as work:
+        second = await work.epic_run_bridge.create_execution(
+            epic_id=epic_id, brief_revision_id=first.brief_revision_id,
+            brief_digest=first.brief_digest, graph_revision_id=first.graph_revision_id,
+            graph_digest=first.graph_digest,
+        )
+        await work.commit()
+
+    class Eligibility:
+        calls = 0
+
+        async def readiness(self, *, epic_id, execution_id):
+            self.calls += 1
+            return (EpicItemEligibility(
+                item_id=item_id, disposition="required", status="ready",
+                blocker_code=None, dependency_evidence=(), completion_evidence=None,
+            ),)
+
+    class Dispatch:
+        calls = 0
+
+        async def get(self, epic_id, execution_id):
+            self.calls += 1
+            return await EpicDispatchService(bridge_factory).get(epic_id, execution_id)
+
+    eligibility, dispatch = Eligibility(), Dispatch()
+    controls = EpicLifecycleService(
+        bridge_factory, commands=RunCommandService(bridge_factory),
+        eligibility=eligibility, dispatch=dispatch,
+    )
+    discovered = await controls.list(epic_id)
+    assert [value.execution.execution_id for value in discovered] == [
+        first.execution_id, second.execution_id,
+    ]
+    assert eligibility.calls == dispatch.calls == 0
+    assert all(value.items == () and value.dispatch is None for value in discovered)
+    selected = await controls.get(epic_id, first.execution_id)
+    assert eligibility.calls == dispatch.calls == 1
+    assert selected.items[0].item_id == item_id
+    assert selected.dispatch is not None and selected.dispatch.execution_id == first.execution_id

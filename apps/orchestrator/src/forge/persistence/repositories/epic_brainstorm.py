@@ -521,7 +521,7 @@ class PostgresBrainstormRepository:
                     )
                 )
             ):
-                return None, any(not attempt.process_settled for attempt in attempts)
+                raise BrainstormConflict("epic monetary proof conflicts with admission scope")
         owner_retry = (
             row.retry_authorized_until is not None and next_number <= row.retry_authorized_until
         )

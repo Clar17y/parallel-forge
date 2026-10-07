@@ -168,4 +168,206 @@ describe('DeliveryWorkspace manual child launch', () => {
     expect(launchBodies[1]).toMatchObject({ execution_id: nextExecutionId, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64), item_id: nextItemId, owner_override: false });
     expect(launchBodies[1]).not.toHaveProperty('override_note');
   });
+
+  test.each([
+    ['selection', true], ['selection', false],
+    ['route', true], ['route', false],
+    ['manual load', true], ['manual load', false],
+  ] as const)('clears typed 409 launch blockers and notice after %s changes execution (preserved item: %s)', async (change, preservedItem) => {
+    const nextExecutionId = '99999999-9999-4999-8999-999999999999';
+    const nextGraphId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const nextItemId = preservedItem ? itemId : 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const nextProjection: EpicExecutionProjection = {
+      ...projection,
+      execution: { ...projection.execution, execution_id: nextExecutionId, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64) },
+    };
+    const nextGraph: GraphRevisionResponse = {
+      ...graph, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64), revision_number: 3,
+      items: graph.items.map(item => ({ ...item, item_id: nextItemId, graph_revision_id: nextGraphId })),
+    };
+    vi.mocked(useEpicWorkspace).mockReturnValue({ graphRevisions: [graph, nextGraph], acceptedGraph: undefined, loadingGraphRevisions: false } as unknown as ReturnType<typeof useEpicWorkspace>);
+    const launchBodies: Record<string, unknown>[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.endsWith('/executions')) return [projection, nextProjection] as T;
+      if (path === `/epics/${epicId}/executions/${executionId}`) return projection as T;
+      if (path === `/epics/${epicId}/executions/${nextExecutionId}`) return nextProjection as T;
+      if (path === `/epics/${epicId}/work-item-runs` && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        launchBodies.push(body);
+        if (body.execution_id === executionId) {
+          throw new ApiError(409, 'epic_launch_blocked', {}, { code: 'epic_launch_blocked', blocker_codes: ['item_deferred'], actual_epic_version: 7, owner_action: 'retry_with_owner_override' });
+        }
+        return { epic_id: epicId, execution_id: body.execution_id, item_id: body.item_id, item_disposition: 'deferred', run_id: runId, attempt_id: `attempt-${launchBodies.length}`, attempt_number: 1, blocker_codes: [] } as T;
+      }
+      return path.endsWith('/budget') ? undefined as T : [] as T;
+    });
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    await userEvent.selectOptions(await screen.findByLabelText('Saved work item'), itemId);
+    await userEvent.click(screen.getByRole('button', { name: 'Launch Work Item' }));
+    expect(await screen.findByText('This work item is saved as deferred.')).toBeInTheDocument();
+    expect(screen.getByText(/The server blocked this launch:/i)).toBeInTheDocument();
+
+    if (change === 'route') {
+      rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={nextExecutionId} epicVersion={7} />);
+    } else if (change === 'manual load') {
+      await userEvent.click(screen.getByRole('button', { name: 'Start New Execution' }));
+      await userEvent.type(screen.getByLabelText('Execution ID'), nextExecutionId);
+      await userEvent.click(screen.getByRole('button', { name: 'Load Execution' }));
+    } else {
+      await userEvent.selectOptions(screen.getByLabelText('Select Execution'), nextExecutionId);
+    }
+    expect(screen.queryByText('This work item is saved as deferred.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/The server blocked this launch:/i)).not.toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByText(`graph_revision_id: ${nextGraphId}`)).toBeInTheDocument());
+    expect(screen.queryByText('This work item is saved as deferred.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/The server blocked this launch:/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Saved work item')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Launch Work Item' })).toBeDisabled();
+
+    await userEvent.selectOptions(screen.getByLabelText('Saved work item'), nextItemId);
+    await userEvent.click(screen.getByRole('button', { name: 'Launch Work Item' }));
+    await waitFor(() => expect(launchBodies).toHaveLength(2));
+    expect(launchBodies[1]).toMatchObject({ execution_id: nextExecutionId, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64), item_id: nextItemId, owner_override: false });
+  });
+
+  test('returning to execution A after route switch does not silently resurrect authority or receipt', async () => {
+    const nextExecutionId = '99999999-9999-4999-8999-999999999999';
+    const nextGraphId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const nextProjection: EpicExecutionProjection = {
+      ...projection,
+      execution: { ...projection.execution, execution_id: nextExecutionId, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64) },
+    };
+    const nextGraph: GraphRevisionResponse = {
+      ...graph, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64), revision_number: 3,
+      items: graph.items.map(item => ({ ...item, item_id: itemId, graph_revision_id: nextGraphId })),
+    };
+    vi.mocked(useEpicWorkspace).mockReturnValue({ graphRevisions: [graph, nextGraph], acceptedGraph: undefined, loadingGraphRevisions: false } as unknown as ReturnType<typeof useEpicWorkspace>);
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.endsWith('/executions')) return [projection, nextProjection] as T;
+      if (path === `/epics/${epicId}/executions/${executionId}`) return projection as T;
+      if (path === `/epics/${epicId}/executions/${nextExecutionId}`) return nextProjection as T;
+      if (path === `/epics/${epicId}/work-item-runs` && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        return { epic_id: epicId, execution_id: body.execution_id, item_id: body.item_id, item_disposition: 'deferred', run_id: runId, attempt_id: 'att-1', attempt_number: 1, blocker_codes: [] } as T;
+      }
+      return path.endsWith('/budget') ? undefined as T : [] as T;
+    });
+
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    await userEvent.selectOptions(await screen.findByLabelText('Saved work item'), itemId);
+    await userEvent.click(screen.getByLabelText(/Owner override: launch despite server-reported workflow warnings/i));
+    await userEvent.type(screen.getByLabelText('Override note (optional)'), 'Authority for A');
+    await userEvent.click(screen.getByRole('button', { name: 'Launch Work Item' }));
+    expect(await screen.findByRole('link', { name: /Open launched run/i })).toBeInTheDocument();
+    expect(screen.getByText('Work item launched; the run retains its normal approval gates.')).toBeInTheDocument();
+
+    // Route switch to B
+    rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={nextExecutionId} epicVersion={7} />);
+    await waitFor(() => expect(screen.getByText(`graph_revision_id: ${nextGraphId}`)).toBeInTheDocument());
+    expect(screen.queryByRole('link', { name: /Open launched run/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('Work item launched; the run retains its normal approval gates.')).not.toBeInTheDocument();
+
+    // Route switch back to A: must NOT silently resurrect authority
+    rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    await waitFor(() => expect(screen.getByText(`graph_revision_id: ${graphId}`)).toBeInTheDocument());
+    expect(screen.getByLabelText('Saved work item')).toHaveValue('');
+    expect(screen.getByLabelText(/Owner override: launch despite server-reported workflow warnings/i)).not.toBeChecked();
+    expect(screen.queryByRole('link', { name: /Open launched run/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('Work item launched; the run retains its normal approval gates.')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Launch Work Item' })).toBeDisabled();
+  });
+
+  test('uncertain launch preserves exact durable request identity across route switch to B and attributes completion', async () => {
+    const nextExecutionId = '99999999-9999-4999-8999-999999999999';
+    const nextGraphId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const nextProjection: EpicExecutionProjection = {
+      ...projection,
+      execution: { ...projection.execution, execution_id: nextExecutionId, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64) },
+    };
+    const nextGraph: GraphRevisionResponse = {
+      ...graph, graph_revision_id: nextGraphId, graph_digest: 'n'.repeat(64), revision_number: 3,
+      items: graph.items.map(item => ({ ...item, item_id: itemId, graph_revision_id: nextGraphId })),
+    };
+    vi.mocked(useEpicWorkspace).mockReturnValue({ graphRevisions: [graph, nextGraph], acceptedGraph: undefined, loadingGraphRevisions: false } as unknown as ReturnType<typeof useEpicWorkspace>);
+
+    let firstRequest: { body: string; key: string } | undefined;
+    let postCount = 0;
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.endsWith('/executions')) return [projection, nextProjection] as T;
+      if (path === `/epics/${epicId}/executions/${executionId}`) return projection as T;
+      if (path === `/epics/${epicId}/executions/${nextExecutionId}`) return nextProjection as T;
+      if (path === `/epics/${epicId}/work-item-runs` && init?.method === 'POST') {
+        postCount += 1;
+        const request = { body: String(init.body), key: (init.headers as Record<string, string>)['Idempotency-Key'] };
+        if (postCount === 1) {
+          firstRequest = request;
+          throw new ApiError(503, 'request-failed');
+        }
+        expect(request).toEqual(firstRequest);
+        return { epic_id: epicId, execution_id: executionId, item_id: itemId, item_disposition: 'deferred', run_id: runId, attempt_id: 'attempt-replayed', attempt_number: 1, blocker_codes: [] } as T;
+      }
+      return path.endsWith('/budget') ? undefined as T : [] as T;
+    });
+
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    await userEvent.selectOptions(await screen.findByLabelText('Saved work item'), itemId);
+    await userEvent.click(screen.getByRole('button', { name: 'Launch Work Item' }));
+    expect(await screen.findByRole('button', { name: 'Retry original request' })).toBeInTheDocument();
+
+    // Switch route to B while pending
+    rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={nextExecutionId} epicVersion={7} />);
+    await waitFor(() => expect(screen.getByText(`graph_revision_id: ${nextGraphId}`)).toBeInTheDocument());
+
+    // In B: retry button is still available, competing launch is prevented
+    const retryBtn = screen.getByRole('button', { name: 'Retry original request' });
+    expect(retryBtn).toBeInTheDocument();
+    expect(screen.getByText(`The original request belongs to execution ${executionId}.`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Launch Work Item' })).toBeDisabled();
+
+    // Click retry while B is displayed
+    await userEvent.click(retryBtn);
+    await waitFor(() => expect(postCount).toBe(2));
+
+    // Completed while B is displayed: B must NOT display A's receipt or notice
+    expect(screen.queryByRole('link', { name: /Open launched run/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('Work item launched; the run retains its normal approval gates.')).not.toBeInTheDocument();
+  });
+
+  test('same-execution refresh preserves launch error blockers and successful receipt', async () => {
+    let postCount = 0;
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions/${executionId}`) return projection as T;
+      if (path === `/epics/${epicId}/work-item-runs` && init?.method === 'POST') {
+        postCount += 1;
+        if (postCount === 1) {
+          throw new ApiError(409, 'epic_launch_blocked', {}, { code: 'epic_launch_blocked', blocker_codes: ['item_deferred'], actual_epic_version: 7, owner_action: 'retry_with_owner_override' });
+        }
+        return { epic_id: epicId, execution_id: executionId, item_id: itemId, item_disposition: 'deferred', run_id: runId, attempt_id: 'att-success', attempt_number: 1, blocker_codes: [] } as T;
+      }
+      return path.endsWith('/budget') ? undefined as T : [] as T;
+    });
+
+    render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    await userEvent.selectOptions(await screen.findByLabelText('Saved work item'), itemId);
+    await userEvent.click(screen.getByRole('button', { name: 'Launch Work Item' }));
+    expect(await screen.findByText('This work item is saved as deferred.')).toBeInTheDocument();
+
+    // Trigger same-execution refresh
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh Progress' }));
+    // Blocker must persist across same-execution refresh
+    expect(screen.getByText('This work item is saved as deferred.')).toBeInTheDocument();
+
+    // Now launch with override
+    await userEvent.click(screen.getByLabelText(/Owner override: launch despite server-reported workflow warnings/i));
+    await userEvent.click(screen.getByRole('button', { name: 'Launch Work Item' }));
+    expect(await screen.findByRole('link', { name: /Open launched run/i })).toBeInTheDocument();
+    expect(screen.getByText('Work item launched; the run retains its normal approval gates.')).toBeInTheDocument();
+
+    // Trigger same-execution refresh again
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh Progress' }));
+    // Receipt and notice must persist across same-execution refresh
+    expect(screen.getByRole('link', { name: /Open launched run/i })).toBeInTheDocument();
+    expect(screen.getByText('Work item launched; the run retains its normal approval gates.')).toBeInTheDocument();
+  });
 });

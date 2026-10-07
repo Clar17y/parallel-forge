@@ -708,4 +708,47 @@ describe('useEpicMutations', () => {
     expect(api).toHaveBeenCalledTimes(1);
     expect(vi.mocked(api).mock.calls[0][1]?.method).toBe('PUT');
   });
+
+  test('tracks executionId on work-item-launch and command mutations and clears it on clearError', async () => {
+    const executionId = '22222222-2222-4222-8222-222222222222';
+    vi.mocked(api).mockRejectedValueOnce(new ApiError(409, 'epic_launch_blocked', {}, { code: 'epic_launch_blocked', blocker_codes: ['item_deferred'], actual_epic_version: 7, owner_action: 'retry_with_owner_override' }));
+
+    const { result } = renderHook(() => useEpicMutations(epicId));
+
+    await act(async () => {
+      await expect(result.current.execute('POST', `/epics/${epicId}/work-item-runs`, {
+        schema_version: 1,
+        execution_id: executionId,
+        item_id: 'item-1',
+      }, { kind: 'work-item-launch' })).rejects.toThrow();
+    });
+
+    expect(result.current.executionId).toBe(executionId);
+    expect(result.current.errorDetail?.blocker_codes).toEqual(['item_deferred']);
+
+    act(() => {
+      result.current.clearError();
+    });
+
+    expect(result.current.executionId).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.errorDetail).toBeNull();
+  });
+
+  test('extracts executionId from command path and restores from sessionStorage', async () => {
+    const executionId = '22222222-2222-4222-8222-222222222222';
+    const rawPending = {
+      method: 'POST',
+      path: `/epics/${epicId}/executions/${executionId}/commands`,
+      body: { action: 'pause' },
+      idempotencyKey: 'saved-cmd-key',
+      timestamp: Date.now(),
+      kind: 'execution-command',
+    };
+    sessionStorage.setItem(`epic_pending_mutation_${epicId}`, JSON.stringify(rawPending));
+
+    const { result } = renderHook(() => useEpicMutations(epicId));
+    expect(result.current.hasPendingRetry).toBe(true);
+    expect(result.current.executionId).toBe(executionId);
+  });
 });
