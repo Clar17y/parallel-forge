@@ -239,8 +239,11 @@ def test_absent_and_malformed_manifests_leave_settings_healthy(tmp_path: Path) -
 
 
 def test_manifest_rejects_unknown_reasoning_effort_before_readiness(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # In-process Alembic checks disable existing loggers; a standalone worker
+    # starts with this logger enabled.
+    monkeypatch.setattr(installations.logger, "disabled", False)
     path, payload = _codex_manifest(tmp_path)
     payload["installations"][0]["effort"] = "turbo"
     path.write_text(json.dumps(payload), encoding="utf-8")

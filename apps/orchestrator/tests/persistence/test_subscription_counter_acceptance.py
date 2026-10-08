@@ -5,6 +5,7 @@ allowance-only enforcement, or the complete A1 live proof. The shared harness
 supports the trusted-host case here and the separate real-Docker variant.
 """
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +27,7 @@ from forge.application.services.runs import RunService
 from forge.application.services.tasks import PlainTextTaskRequest, TaskService
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.plan import ScopedPlanOutput
-from forge.domain.policy import RunnerMode
+from forge.domain.policy import ProjectPolicy, RunnerMode
 from forge.domain.run import RunState
 from forge.domain.subscription import (
     AcceptanceCriterion,
@@ -254,6 +255,16 @@ class CounterScript:
         )
 
 
+def _command_specs_for_runner(runner_mode: RunnerMode):
+    commands = get_acceptance_command_specs()
+    if runner_mode is RunnerMode.TRUSTED_HOST:
+        return tuple(
+            command.model_copy(update={"argv": (sys.executable, *command.argv[1:])})
+            for command in commands
+        )
+    return commands
+
+
 async def prepared_counter_case(
     session_factory,
     tmp_path,
@@ -288,7 +299,7 @@ async def prepared_counter_case(
             default_branch="main",
             runner_mode=runner_mode,
             trusted_project=runner_mode is RunnerMode.TRUSTED_HOST,
-            commands=get_acceptance_command_specs(),
+            commands=_command_specs_for_runner(runner_mode),
         ),
     )
     task = await TaskService(factory).create_plain_text(
@@ -394,6 +405,7 @@ async def prepared_counter_case(
             assert delegated.application.disposition == "delegated"
         return SimpleNamespace(
             fixture=fixture,
+            project=project,
             factory=factory,
             run=run,
             settings=settings,
@@ -408,9 +420,22 @@ async def prepared_counter_case(
         raise
 
 
+def test_acceptance_command_interpreter_is_runner_local():
+    host_commands = _command_specs_for_runner(RunnerMode.TRUSTED_HOST)
+    docker_commands = _command_specs_for_runner(RunnerMode.DOCKER)
+    assert all(command.argv[0] == sys.executable for command in host_commands)
+    assert all(command.argv[0] == "python" for command in docker_commands)
+    assert [command.argv[1:] for command in host_commands] == [
+        command.argv[1:] for command in docker_commands
+    ]
+
+
 @pytest.mark.integration
 async def test_a1_counter_repair_retains_failed_and_passing_evidence(session_factory, tmp_path):
     case = await prepared_counter_case(session_factory, tmp_path)
+    assert case.project.policy is not None
+    registered = ProjectPolicy.model_validate(case.project.policy.document)
+    assert all(command.argv[0] == sys.executable for command in registered.commands)
     await verify_counter_repair(case, session_factory, tmp_path)
 
 

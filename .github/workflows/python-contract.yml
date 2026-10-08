@@ -70,9 +70,9 @@ jobs:
 
   postgres-contract:
     runs-on: ubuntu-24.04
-    # The complete backend suite reached 99% at the 90-minute cap;
-    # allow its final acceptance cases and Docker checks to finish.
-    timeout-minutes: 120
+    # The measured prefix, remaining cases and Docker phase total about 145
+    # minutes across hosted/local runs; allow setup and runner variance.
+    timeout-minutes: 180
     services:
       postgres:
         image: postgres:17
@@ -109,7 +109,8 @@ jobs:
           rg --version
       - name: Deterministic backend, evaluations and migration round trips
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'full'
-        run: uv run --frozen python -m pytest -q -ra --maxfail=1 -m "not live_provider and not live_github and not docker"
+        # Collect all failures for one repair batch from an authorized run.
+        run: uv run --frozen python -m pytest -q -ra --maxfail=0 -m "not live_provider and not live_github and not docker"
       - name: Focused recovery crash boundary
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'recovery'
         run: >-

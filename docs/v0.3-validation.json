@@ -1,27 +1,45 @@
 {
   "schema_version": 1,
-  "status": "candidate_specific_validation_evidence",
+  "status": "local repair candidate verified; awaiting authorized final hosted verification; unpublished",
   "candidate": {
     "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
-    "worktree_parent_commit": "945d84659e83068771ec8737dc1ebee6ee72676f",
-    "observed_at_utc": "2026-10-07T23:46:26.429779+00:00",
+    "worktree_parent_commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
+    "observed_at_utc": "2026-10-08T11:53:49.992334+00:00",
     "migration_head_observed": "20261007_0037",
     "integrated_source_stable": true,
     "post_review_source_sha256": {
-      "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f5ccb91a0cc2b3d6957d4b5611253139846c0d310b87916f891b916dfc69fc3e",
-      "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "12421cc2bd10c7119e0098ee56e4488fa3fee214fbc7fc7435f6f003ae8611fe",
-      "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "8f9940d677d07d1b493cd2f7a98bfa9a192210ff32f94fb6b35754bae8d59ced",
-      "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "427f4fe56f3da6a044bac433ce55a6d7b9a633bf6ca3ed5c428ef11ed5cfebfe",
-      "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2",
+      ".github/workflows/python-contract.yml": "1c2c6fe86679e7954d3a93c6b8f92a964709a285246127e5710dc738e4eeb1d8",
       "apps/orchestrator/src/forge/application/services/epic_dispatch.py": "32cf7203f65b4d95415e66ab14e1be642cdc7a83c38930c2cabb216be9570bd0",
+      "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "12421cc2bd10c7119e0098ee56e4488fa3fee214fbc7fc7435f6f003ae8611fe",
       "apps/orchestrator/src/forge/application/services/epic_eligibility.py": "5051ff020aa26456c74c89226cfeb46d8308659c6b1eecba4679e1f8a21eb29a",
+      "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f5ccb91a0cc2b3d6957d4b5611253139846c0d310b87916f891b916dfc69fc3e",
       "apps/orchestrator/src/forge/application/services/epic_run_bridge.py": "7433967efe2fc60507551d5221f1980a5446b68a3ba46558f5423fccba2041ba",
+      "apps/orchestrator/src/forge/application/services/subscription_broker.py": "477f6ebb1026ab5569d66f2ffdcc02178bc3143d379d6379e75e8d213fd66e6a",
+      "apps/orchestrator/src/forge/application/services/tools.py": "5c4c90208c57dc4312c33f3f398ecf462992d66ccfab35d103d4104f2d6d3289",
+      "apps/orchestrator/src/forge/worker/composition.py": "46ab83a9116b9bf96bf50cc1ed50d94aa4a1e2870908a2f822378f86de6f2ea4",
+      "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "427f4fe56f3da6a044bac433ce55a6d7b9a633bf6ca3ed5c428ef11ed5cfebfe",
       "apps/orchestrator/tests/epic_run_bridge/test_eligibility.py": "b14afe174651b5317b6af84409218a54a39acaeb4cabbcb30ee36e3e3a4652e1",
+      "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "8f9940d677d07d1b493cd2f7a98bfa9a192210ff32f94fb6b35754bae8d59ced",
+      "apps/orchestrator/tests/persistence/subscription_review_script.py": "c3f3ea58a4f3c2ed8c084bc38aa856862cfa8f88e7594ac3e3750de9f618f9b4",
+      "apps/orchestrator/tests/persistence/subscription_worktree_case.py": "fff864f002ed2f94d35996734ad307f662ed16ef0cac872bed91194d6d52aa94",
       "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a",
-      "apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py": "6ff6961f32aec6ee109079b02dd057c0ef114f12073395070a1eeb4afeb81986"
+      "apps/orchestrator/tests/persistence/test_subscription_counter_acceptance.py": "5ffc5cbb408348395e6fc7a44e23c359f676673cae445270eaa8fc4d42dc3115",
+      "apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py": "6ff6961f32aec6ee109079b02dd057c0ef114f12073395070a1eeb4afeb81986",
+      "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+      "apps/orchestrator/tests/persistence/test_subscription_review_acceptance.py": "6c719c009c10b68acfa9ff38876d7074d2f7c7db07a446d5e1bb13226b6d3cf9",
+      "apps/orchestrator/tests/persistence/test_subscription_trivial_acceptance.py": "cb052c69deff2e6ef2f9da749a03f4b0b4f7bdc224a57702f91ca46aaf9159d4",
+      "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py": "5c5af136594d60b5cdb35b5d95293652162b5480ba199e4500a0eba9f923c5e1",
+      "apps/orchestrator/tests/security/test_planner_permissions.py": "7240ade88bf5e558c830f1ab2a1ec173440b6504075cf64e3102cc1005084e5d",
+      "apps/orchestrator/tests/worker/test_subscription_installations.py": "e83b21d0308309c5f97584aee151515485a75a8258d8fde096d1c83d5d201ba4",
+      "pyproject.toml": "d1f6bae98794d992ff4540336d15c09adbe9cf74050e2fe84090206e026deedc",
+      "tests/ci/test_workflow_policy.py": "4ae7a0a13a4f360a6484ec60b1f71e1c9cdb296fc272d45cb730e44d48fa9d38",
+      "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2",
+      "tests/integration/test_worker_planning_e2e.py": "33f9374a835c04efef7110783dd51733bb1ae541fbaec01879dd7a23e0b6324c",
+      "uv.lock": "55ee08c980830b9bb1937fead0d032b9a8aa55febc70b42a68241f5e0ac4c266"
     },
-    "source_snapshot_sha256": "f43b649060cdd475acd3f0c648a9b1b8edee7397dca0eb38b9c5d5f972750138",
-    "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
+    "source_snapshot_sha256": "54e81532d5fcfe7afbb538ce2dfe573162d96e2448f17ee6166587d70ad13ab2",
+    "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map.",
+    "verification_status": "All ten collected failures repaired and their affected Linux suite passes; retained unchanged evidence remains applicable. No final full hosted success claimed."
   },
   "environment": {
     "python": "3.14.5",
@@ -273,27 +291,36 @@
     "claude_opus_5_5": "authentication expired; not a quota-exhaustion result",
     "initial_review_candidate_ref": "2327275629e910449ecf90722fec4a16d913397c",
     "latest_codex_observed": {
-      "candidate_ref": "945d84659e83068771ec8737dc1ebee6ee72676f",
-      "verdict_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6048648386",
-      "status": "No major issues on945d846; new test/evidence-only repair still requires fresh current-head review after push."
+      "candidate_ref": "cf712a61ab61196a499fd1d303141488d86a16e4",
+      "verdict_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6049205658",
+      "status": "No major issues on cf712a6; new local test/CI/evidence changes need a fresh current-head verdict after publication."
     }
   },
   "hosted_ci": {
-    "observed_at_utc": "2026-10-07T23:46:26.429779+00:00",
+    "observed_at_utc": "2026-10-08T11:53:49.992334+00:00",
     "snapshot_only": true,
     "runs": [
       {
-        "id": 37696755985,
-        "workflow": "python-contract.yml",
-        "inputs": {
-          "verification_scope": "full"
-        },
-        "head": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
-        "intended_head_sha": "3da52070ebed5c53eea75ca3ce0e57a4261d870b",
+        "id": 37671465675,
+        "workflow": "docker-smoke.yml",
+        "inputs": {},
+        "head": "2327275629e910449ecf90722fec4a16d913397c",
+        "intended_head_sha": "2327275629e910449ecf90722fec4a16d913397c",
         "status": "completed",
-        "conclusion": "failure",
-        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37696755985",
-        "last_poll_utc": "2026-10-07T23:37:59.333739+00:00"
+        "conclusion": "success",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37671465675",
+        "last_poll_utc": "2026-10-07T19:04:41Z"
+      },
+      {
+        "id": 37685645993,
+        "workflow": "web-contract.yml",
+        "inputs": {},
+        "head": "be65156f0048364b0019e65471ddefb22b344f8d",
+        "intended_head_sha": "be65156f0048364b0019e65471ddefb22b344f8d",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37685645993",
+        "last_poll_utc": "2026-10-07T20:57:53.120299+00:00"
       },
       {
         "id": 37696759181,
@@ -309,12 +336,25 @@
         "last_poll_utc": "2026-10-07T22:36:20.154374+00:00"
       },
       {
-        "id": 37699864539,
+        "id": 37704421620,
+        "workflow": "python-contract.yml",
+        "inputs": {
+          "verification_scope": "full"
+        },
+        "head": "cf712a61ab61196a499fd1d303141488d86a16e4",
+        "intended_head_sha": "cf712a61ab61196a499fd1d303141488d86a16e4",
+        "status": "completed",
+        "conclusion": "failure",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37704421620",
+        "last_poll_utc": "2026-10-08T07:03:40.180274+00:00"
+      },
+      {
+        "id": 37704195585,
         "workflow": "PR smoke",
-        "head": "945d84659e83068771ec8737dc1ebee6ee72676f",
+        "head": "cf712a61ab61196a499fd1d303141488d86a16e4",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37699864539"
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37704195585"
       }
     ],
     "matching_reuse": {
@@ -332,12 +372,37 @@
         "reason": "Supervisor startup inputs unchanged"
       }
     },
-    "current_candidate": "Full parent3da run failed after5076passes at composition fixture digest mismatch. Both local scenarios now pass with actual executable identity and unchanged production guards. Fresh full Python/runtime CI, latest-head smoke and Codex review follow the stable push. Matching completed browser/web/Docker/supervisor inputs are retained. This is a dated snapshot; failed or pending runs are not passing evidence."
+    "current_candidate": "Latest pushed full run37704421620 failed on cf712a6 after5595passes. The remaining2736cases were collected locally; all10failures are now repaired and independently present as passing cases in the affected Linux receipt. Complete hosted backend/runtime verification is still pending.",
+    "cost_control": {
+      "observed_at_utc": "2026-10-08T08:46:05.119587+01:00",
+      "user_steering": "ok but you just spammed a ton of github action usage because the CI gate keeps failing",
+      "acknowledged_cause": "Repeated full fail-fast workflow dispatches exposed one failure per expensive run instead of batching the remaining failures locally.",
+      "current_boundary": "No hosted dispatches, reruns or pushes during the local repair batch.",
+      "acceptance_plan": "Collect the complete unrun deterministic tail locally without fail-fast, adjudicate related findings together, run affected checks, inspect a stable candidate and bind integrated Jev review before any push.",
+      "repository_ci_policy": "Full CI dispatches and reruns require explicit authorization for that specific run, including runs triggered by opening or updating a PR.",
+      "next_hosted_run": "Undecided pending concrete, passing local candidate and runtime-budget evidence; no run authorized or launched by this record.",
+      "billing": "Actual monetary cost is unknown; no billing amount inferred.",
+      "latest_description_update": {
+        "observed_at_utc": "2026-10-08T10:17:02.654844+01:00",
+        "operation": "PR description only; no push, review request or workflow dispatch",
+        "body_sha256": "1e60cbb1e9c944583ddacb0e3d45b0af643c563b8607454e0f7e4cca72f5d86e"
+      },
+      "hosted_operations_since_complaint": 0,
+      "next_full_run": "not_dispatched_or_approved; prepare stable locally passing candidate first",
+      "runtime_evidence": {
+        "hosted_prefix_seconds": 5393.82,
+        "local_tail_seconds": 2867.7140708779916,
+        "local_docker_seconds": 409.308,
+        "different_environments": true,
+        "proposed_postgres_job_limit_minutes": 180,
+        "reason": "Combined observed phase times exceed previous 120 minute cap; actual hosted duration remains unproved."
+      }
+    }
   },
   "publication": {
     "pull_request": "https://github.com/Clar17y/parallel-forge/pull/88",
     "state_observed": "OPEN",
-    "pushed_parent_commit": "945d84659e83068771ec8737dc1ebee6ee72676f",
+    "pushed_parent_commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
     "release_published": false
   },
   "merge": "unmerged",
@@ -407,6 +472,76 @@
         "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
       },
       "scope": "C11 source snapshot and receipts before CI5 fixture correction; named production files retain identical hashes."
+    },
+    {
+      "commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
+      "candidate": {
+        "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
+        "worktree_parent_commit": "945d84659e83068771ec8737dc1ebee6ee72676f",
+        "observed_at_utc": "2026-10-07T23:46:26.429779+00:00",
+        "migration_head_observed": "20261007_0037",
+        "integrated_source_stable": true,
+        "post_review_source_sha256": {
+          "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f5ccb91a0cc2b3d6957d4b5611253139846c0d310b87916f891b916dfc69fc3e",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "12421cc2bd10c7119e0098ee56e4488fa3fee214fbc7fc7435f6f003ae8611fe",
+          "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "8f9940d677d07d1b493cd2f7a98bfa9a192210ff32f94fb6b35754bae8d59ced",
+          "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "427f4fe56f3da6a044bac433ce55a6d7b9a633bf6ca3ed5c428ef11ed5cfebfe",
+          "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch.py": "32cf7203f65b4d95415e66ab14e1be642cdc7a83c38930c2cabb216be9570bd0",
+          "apps/orchestrator/src/forge/application/services/epic_eligibility.py": "5051ff020aa26456c74c89226cfeb46d8308659c6b1eecba4679e1f8a21eb29a",
+          "apps/orchestrator/src/forge/application/services/epic_run_bridge.py": "7433967efe2fc60507551d5221f1980a5446b68a3ba46558f5423fccba2041ba",
+          "apps/orchestrator/tests/epic_run_bridge/test_eligibility.py": "b14afe174651b5317b6af84409218a54a39acaeb4cabbcb30ee36e3e3a4652e1",
+          "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a",
+          "apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py": "6ff6961f32aec6ee109079b02dd057c0ef114f12073395070a1eeb4afeb81986"
+        },
+        "source_snapshot_sha256": "f43b649060cdd475acd3f0c648a9b1b8edee7397dca0eb38b9c5d5f972750138",
+        "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map."
+      },
+      "scope": "Named source snapshot in pushed cf712a6 before the local settlement-fixture and CI failure-collection repairs. Historical checks retain their own candidates and limits."
+    },
+    {
+      "parent_commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
+      "candidate": {
+        "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
+        "worktree_parent_commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
+        "observed_at_utc": "2026-10-08T11:53:49.992334+00:00",
+        "migration_head_observed": "20261007_0037",
+        "integrated_source_stable": true,
+        "post_review_source_sha256": {
+          ".github/workflows/python-contract.yml": "1c2c6fe86679e7954d3a93c6b8f92a964709a285246127e5710dc738e4eeb1d8",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch.py": "32cf7203f65b4d95415e66ab14e1be642cdc7a83c38930c2cabb216be9570bd0",
+          "apps/orchestrator/src/forge/application/services/epic_dispatch_worker.py": "12421cc2bd10c7119e0098ee56e4488fa3fee214fbc7fc7435f6f003ae8611fe",
+          "apps/orchestrator/src/forge/application/services/epic_eligibility.py": "5051ff020aa26456c74c89226cfeb46d8308659c6b1eecba4679e1f8a21eb29a",
+          "apps/orchestrator/src/forge/application/services/epic_lifecycle.py": "f5ccb91a0cc2b3d6957d4b5611253139846c0d310b87916f891b916dfc69fc3e",
+          "apps/orchestrator/src/forge/application/services/epic_run_bridge.py": "7433967efe2fc60507551d5221f1980a5446b68a3ba46558f5423fccba2041ba",
+          "apps/orchestrator/src/forge/application/services/subscription_broker.py": "477f6ebb1026ab5569d66f2ffdcc02178bc3143d379d6379e75e8d213fd66e6a",
+          "apps/orchestrator/src/forge/application/services/tools.py": "5c4c90208c57dc4312c33f3f398ecf462992d66ccfab35d103d4104f2d6d3289",
+          "apps/orchestrator/src/forge/worker/composition.py": "46ab83a9116b9bf96bf50cc1ed50d94aa4a1e2870908a2f822378f86de6f2ea4",
+          "apps/orchestrator/tests/epic_run_bridge/test_dispatch.py": "427f4fe56f3da6a044bac433ce55a6d7b9a633bf6ca3ed5c428ef11ed5cfebfe",
+          "apps/orchestrator/tests/epic_run_bridge/test_eligibility.py": "b14afe174651b5317b6af84409218a54a39acaeb4cabbcb30ee36e3e3a4652e1",
+          "apps/orchestrator/tests/epic_run_bridge/test_launch.py": "8f9940d677d07d1b493cd2f7a98bfa9a192210ff32f94fb6b35754bae8d59ced",
+          "apps/orchestrator/tests/persistence/subscription_review_script.py": "c3f3ea58a4f3c2ed8c084bc38aa856862cfa8f88e7594ac3e3750de9f618f9b4",
+          "apps/orchestrator/tests/persistence/subscription_worktree_case.py": "fff864f002ed2f94d35996734ad307f662ed16ef0cac872bed91194d6d52aa94",
+          "apps/orchestrator/tests/persistence/test_schema.py": "f85bccf4b96e7be3eee2b9665186e7d5904e72cb5fb9cce3c7a3ef58dc39302a",
+          "apps/orchestrator/tests/persistence/test_subscription_counter_acceptance.py": "5ffc5cbb408348395e6fc7a44e23c359f676673cae445270eaa8fc4d42dc3115",
+          "apps/orchestrator/tests/persistence/test_subscription_gemini_composition.py": "6ff6961f32aec6ee109079b02dd057c0ef114f12073395070a1eeb4afeb81986",
+          "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+          "apps/orchestrator/tests/persistence/test_subscription_review_acceptance.py": "6c719c009c10b68acfa9ff38876d7074d2f7c7db07a446d5e1bb13226b6d3cf9",
+          "apps/orchestrator/tests/persistence/test_subscription_trivial_acceptance.py": "cb052c69deff2e6ef2f9da749a03f4b0b4f7bdc224a57702f91ca46aaf9159d4",
+          "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py": "5c5af136594d60b5cdb35b5d95293652162b5480ba199e4500a0eba9f923c5e1",
+          "apps/orchestrator/tests/security/test_planner_permissions.py": "7240ade88bf5e558c830f1ab2a1ec173440b6504075cf64e3102cc1005084e5d",
+          "apps/orchestrator/tests/worker/test_subscription_installations.py": "e83b21d0308309c5f97584aee151515485a75a8258d8fde096d1c83d5d201ba4",
+          "pyproject.toml": "d1f6bae98794d992ff4540336d15c09adbe9cf74050e2fe84090206e026deedc",
+          "tests/ci/test_workflow_policy.py": "4ae7a0a13a4f360a6484ec60b1f71e1c9cdb296fc272d45cb730e44d48fa9d38",
+          "tests/epic_acceptance/test_three_item_process.py": "7a0b1fe771c891e248ab7fa2566f479600f5a638c0d7a49a811805d069fc05c2",
+          "tests/integration/test_worker_planning_e2e.py": "33f9374a835c04efef7110783dd51733bb1ae541fbaec01879dd7a23e0b6324c",
+          "uv.lock": "55ee08c980830b9bb1937fead0d032b9a8aa55febc70b42a68241f5e0ac4c266"
+        },
+        "source_snapshot_sha256": "54e81532d5fcfe7afbb538ce2dfe573162d96e2448f17ee6166587d70ad13ab2",
+        "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map.",
+        "verification_status": "All ten collected failures repaired and their affected Linux suite passes; retained unchanged evidence remains applicable. No final full hosted success claimed."
+      },
+      "scope": "Earlier unpublished local checkpoint before all ten remaining failures were collected and repaired."
     }
   ],
   "repair_checks": [
@@ -562,6 +697,507 @@
       "primary_acceptance": "Primary checked actual one-file delta and source digest, JUnit counts/case sets, raw PROTOCOL/no-launch-proof trace, executable byte verification guard and existing composition safety/usage/route/restart assertions. Worker commands clarified; no test success inferred from review.",
       "limits": [
         "Linux hosted final candidate and combined resource-load/timing schedule remain unproved until full rerun; no production behavior changed."
+      ]
+    },
+    {
+      "name": "CI6 settlement role fixtures and Actions cost-control checkpoint",
+      "parent_commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
+      "observed_at_utc": "2026-10-08T09:39:03.404335+00:00",
+      "source_hashes": {
+        "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+        ".github/workflows/python-contract.yml": "fb1d6902be8b3f76e73320ab6b065747babfd0c341978557fbd528c2f5e9a69b"
+      },
+      "scope": {
+        "scope": "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py",
+        "reassessment": "All decisions in this file inspected after the second related failure. Its only primary-action cases were a worker DelegateDecision expecting pending and an unsafe worker PlanOutput expecting accepted repair. Worker TaskHandoff and failure-only cases keep their existing role semantics.",
+        "pending_delegate": "Uses existing prepared, approved primary delegation fixture; pending disposition and exact nested decode equality retained. Earlier focused green and current private Linux baseline apply before the unsafe-test-only delta.",
+        "unsafe_worker_plan": "Actual Linux red: accepted=False, role_correction_queued. Corrected expectation retains rejection/protocol status and asserts digest-only storage, secret omission, exact replay, conflict for changed response and one charged provider attempt/repair with measured input3.",
+        "production": "No production guard, role policy, serialization, budget, usage or helper changes.",
+        "current_source_sha256": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+        "checks": {
+          "local-tail-verification/linux-focused-unsafe-plan-junit.xml": {
+            "tests": 1,
+            "failures": 1,
+            "errors": 0,
+            "skipped": 0,
+            "sha256": "b5bfadc07eed2fdaf65c884bdd6da4454ae26a0143f5a323b4e8a79e9f529f48"
+          },
+          "unsafe-worker-plan-green.xml": {
+            "tests": 1,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0,
+            "sha256": "b8e908d22cf83142a9aa9262a5ae9374f1e908a1a7fd6d95a6e14ee28a874d65"
+          }
+        },
+        "ruff": {
+          "result": "passed",
+          "log": ".llm-output/settlement-fixture-ruff-backslash.log",
+          "command": "rtk err .venv\\Scripts\\python.exe -m ruff check apps/orchestrator/tests/persistence/test_subscription_result_settlement.py"
+        },
+        "diff_check": "passed",
+        "limits": "Complete Linux tail and final Linux whole-file recheck remain pending. Windows focused green does not stand for an unrun hosted full suite."
+      },
+      "result": "Both original role assumptions have focused expected-red and green evidence. The CI command now collects all failures; three existing workflow-policy checks pass. No production behavior changed. Full Linux tail and final whole-file checks remain pending.",
+      "junit": {
+        "pending-decision-red.xml": {
+          "tests": 1,
+          "failures": 1,
+          "errors": 0,
+          "skipped": 0,
+          "sha256": "09e523b2f102c986eb0f5e512838c02217300b71398aec6d3c3a1f54ed689467"
+        },
+        "pending-decision-green.xml": {
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "sha256": "a5b60c3d0ee24a27ae3e99c209cb0358454c958e676a29992f86be72b9fe1ee5"
+        },
+        "local-tail-verification/linux-focused-unsafe-plan-junit.xml": {
+          "tests": 1,
+          "failures": 1,
+          "errors": 0,
+          "skipped": 0,
+          "sha256": "b5bfadc07eed2fdaf65c884bdd6da4454ae26a0143f5a323b4e8a79e9f529f48"
+        },
+        "unsafe-worker-plan-green.xml": {
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "sha256": "b8e908d22cf83142a9aa9262a5ae9374f1e908a1a7fd6d95a6e14ee28a874d65"
+        },
+        "ci-failure-batch-policy.xml": {
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "sha256": "953073c4ebf6566104ccc6849eb32b61bcade61188c066c147996a8b00f1cceb"
+        },
+        "local-docker-verification/docker.xml": {
+          "tests": 18,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "sha256": "8517304077569ae8af095e83661145b8fdc40f3b7b06c3a8a9b1c1f66b8a1e46"
+        }
+      },
+      "evidence_binding": "Pending-decision green ran on initial corrected module fe20ccb; unsafe-worker green and CI policy checks ran on current module db8b39 and workflow fb1d690. The subsequent module change affects only the unsafe-worker test. No earlier full-suite result is relabeled as passing.",
+      "docker": {
+        "head": "cf712a61ab61196a499fd1d303141488d86a16e4",
+        "started_at": "2026-10-08T07:14:42.791697+00:00",
+        "completed_at": "2026-10-08T07:21:32.099169+00:00",
+        "elapsed_seconds": 409.30834320001304,
+        "os": "Windows-11-10.0.26200-SP0",
+        "python": "3.14.5",
+        "args": [
+          "tests/integration/test_runner_container.py",
+          "apps/orchestrator/tests/persistence/test_subscription_counter_docker.py",
+          "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py",
+          "apps/orchestrator/tests/persistence/test_subscription_codex_counter_acceptance.py",
+          "apps/orchestrator/tests/persistence/test_subscription_active_client_controls.py",
+          "apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py",
+          "-q",
+          "-ra",
+          "-m",
+          "docker",
+          "--maxfail=0",
+          "--junitxml=.llm-output\\local-docker-verification/docker.xml",
+          "-o",
+          "cache_dir=.llm-output\\local-docker-verification/cache"
+        ],
+        "exit_code": 0,
+        "counts": {
+          "tests": 18,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        "cases_with_findings": [],
+        "source_change": "Pending-decision fixture only; no production or Docker input changes during run.",
+        "limitation": "Local Windows controller with Linux Docker daemon; does not replace Linux-hosted full-suite evidence.",
+        "verified_source_hashes": {
+          "tests/integration/test_runner_container.py": "b4dcdb52d80b8008c70fd81242ccf53291b775c1a53c02f85ce8b0dcc0934f42",
+          "apps/orchestrator/tests/persistence/test_subscription_counter_docker.py": "753d99682fc23a5c4e920055814332b8fdd97f6d607d24066684efddce5b041f",
+          "apps/orchestrator/tests/persistence/test_subscription_counter_quota.py": "6a9e673611ebadcf7c7110cf2b45d579a0da998a78c94e1e6197fc3527e5f2ab",
+          "apps/orchestrator/tests/persistence/test_subscription_codex_counter_acceptance.py": "996a76cb40a2dfcdf0eaa831b8cab76765177510d05fdc4f1e96de7a05b1341f",
+          "apps/orchestrator/tests/persistence/test_subscription_active_client_controls.py": "dd3065ced376f91099dab0f957cd436443ef29ed60233374e9748e4d75212c5c",
+          "apps/orchestrator/tests/persistence/test_stopped_upgrade_rehearsal.py": "c611e091f60b2913a3df67870fbb18d586b1d9d4474f74c02d722a761454d460",
+          "Dockerfile.runner": "5c58e8805ab8bedeb3f651cafc52ec2a8e5274345331a288285f97c30886d4ee",
+          "scripts/runner-mount-guard.c": "c8f93574f38924ab169f81afc04d088550f182c3c0047b25ca59f031a009d856",
+          "apps/orchestrator/src/forge/tools/docker.py": "7bb8124e6d3c0f69aa0997a41ba660d6373e1579fec7adfaadccfc2173535226"
+        },
+        "junit_sha256": "8517304077569ae8af095e83661145b8fdc40f3b7b06c3a8a9b1c1f66b8a1e46",
+        "primary_acceptance": "Actual18case JUnit and0exit verified, including Docker controller/runtime identity, repair/restart, controls, quota and stopped upgrade; named source inputs match committed cf712a6. Future relevant production changes invalidate this evidence."
+      },
+      "verification_environment": {
+        "relay_batch": "Interrupted after connection resets; 27 early failure events and partial logs retained, no completed JUnit. This is not a passing run.",
+        "direct_namespace": "Recovery uses the existing scripts/verify.py isolated PostgreSQL design; stability and exhaustive execution pending.",
+        "filtered_tail": {
+          "marker": "not live_provider and not live_github and not docker",
+          "collected_count": 8342,
+          "tail_start_index": 5606,
+          "selected_count": 2736,
+          "ordered_sha256": "98f0fa98706a2f69f6b7aa1a4e010cceeba3b041e31cc5e1086893312fd1c210",
+          "selected_sha256": "b09227b5deb6007bde41ae8dffad9051d3661603cfdc989f69f8d399f75694a5",
+          "pytest_exit": 0
+        }
+      },
+      "review_decision": "Small test/CI-reporting fixes received focused self-review and coupled replay/role/redaction/accounting checks. Prior integrated simplify and unchanged-source review evidence retained. Mandatory current integrated Jev and fresh post-push Codex verdict remain pending.",
+      "limits": [
+        "No final current-source Linux or hosted full-suite success claimed. Local Docker used a Windows Python 3.14.5 controller and Linux Docker daemon. Monetary Actions cost is unknown."
+      ]
+    },
+    {
+      "name": "CI7 complete local failure batch and stable affected Linux candidate",
+      "parent_commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
+      "observed_at_utc": "2026-10-08T11:53:49.992334+00:00",
+      "source_hashes": {
+        ".github/workflows/python-contract.yml": "1c2c6fe86679e7954d3a93c6b8f92a964709a285246127e5710dc738e4eeb1d8",
+        "apps/orchestrator/src/forge/application/services/subscription_broker.py": "477f6ebb1026ab5569d66f2ffdcc02178bc3143d379d6379e75e8d213fd66e6a",
+        "apps/orchestrator/src/forge/application/services/tools.py": "5c4c90208c57dc4312c33f3f398ecf462992d66ccfab35d103d4104f2d6d3289",
+        "apps/orchestrator/src/forge/worker/composition.py": "46ab83a9116b9bf96bf50cc1ed50d94aa4a1e2870908a2f822378f86de6f2ea4",
+        "apps/orchestrator/tests/persistence/subscription_review_script.py": "c3f3ea58a4f3c2ed8c084bc38aa856862cfa8f88e7594ac3e3750de9f618f9b4",
+        "apps/orchestrator/tests/persistence/subscription_worktree_case.py": "fff864f002ed2f94d35996734ad307f662ed16ef0cac872bed91194d6d52aa94",
+        "apps/orchestrator/tests/persistence/test_subscription_counter_acceptance.py": "5ffc5cbb408348395e6fc7a44e23c359f676673cae445270eaa8fc4d42dc3115",
+        "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+        "apps/orchestrator/tests/persistence/test_subscription_review_acceptance.py": "6c719c009c10b68acfa9ff38876d7074d2f7c7db07a446d5e1bb13226b6d3cf9",
+        "apps/orchestrator/tests/persistence/test_subscription_trivial_acceptance.py": "cb052c69deff2e6ef2f9da749a03f4b0b4f7bdc224a57702f91ca46aaf9159d4",
+        "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py": "5c5af136594d60b5cdb35b5d95293652162b5480ba199e4500a0eba9f923c5e1",
+        "apps/orchestrator/tests/security/test_planner_permissions.py": "7240ade88bf5e558c830f1ab2a1ec173440b6504075cf64e3102cc1005084e5d",
+        "apps/orchestrator/tests/worker/test_subscription_installations.py": "e83b21d0308309c5f97584aee151515485a75a8258d8fde096d1c83d5d201ba4",
+        "pyproject.toml": "d1f6bae98794d992ff4540336d15c09adbe9cf74050e2fe84090206e026deedc",
+        "tests/ci/test_workflow_policy.py": "4ae7a0a13a4f360a6484ec60b1f71e1c9cdb296fc272d45cb730e44d48fa9d38",
+        "tests/integration/test_worker_planning_e2e.py": "33f9374a835c04efef7110783dd51733bb1ae541fbaec01879dd7a23e0b6324c",
+        "uv.lock": "55ee08c980830b9bb1937fead0d032b9a8aa55febc70b42a68241f5e0ac4c266"
+      },
+      "collected_tail": {
+        "started_at": "2026-10-08T10:18:58.002944+00:00",
+        "completed_at": "2026-10-08T11:06:45.601582+00:00",
+        "elapsed_seconds": 2867.7140708779916,
+        "command": [
+          "/opt/forge-controller-venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "-ra",
+          "--maxfail=0",
+          "-m",
+          "not live_provider and not live_github and not docker",
+          "--durations=25",
+          "-p",
+          "no:cacheprovider",
+          "--junitxml=/verification/final-tail.xml"
+        ],
+        "exit_code": 1,
+        "counts": {
+          "tests": 2736,
+          "failures": 10,
+          "errors": 0,
+          "skipped": 84
+        },
+        "selected": 2736,
+        "executed": 2736,
+        "selected_sha256": "3e0f7aa6b1793839bff15a0bcbab08942366bd1ae9d3b638683cad4f8dd1bf9f",
+        "executed_sha256": "3e0f7aa6b1793839bff15a0bcbab08942366bd1ae9d3b638683cad4f8dd1bf9f",
+        "collection_seconds": 19.12104816304054,
+        "source_hashes_start": {
+          "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+          "apps/orchestrator/tests/persistence/test_subscription_delegation_application.py": "11d009e7ed6a3d1b4d7bb244f17dde32331cd6c67728708250a9d1cf64200308",
+          "apps/orchestrator/tests/persistence/test_subscription_pending_decision_roles.py": "53619df8e3ac55ed395abf48580b91b562acaf80454541bd3d1c50e850fcea5f",
+          "apps/orchestrator/tests/domain/test_subscription_decision_policy.py": "e8d765910325c6df9419bf0ff28b0d4571e2380ad227ff56d9bf9998074f9194",
+          "apps/orchestrator/src/forge/persistence/repositories/subscription_execution.py": "6e4e0ca6811e17bb9a3fde4704ff0d7eb4a104dafb93fd7a6e2c05a32cf7a3bd",
+          "apps/orchestrator/src/forge/domain/subscription_decision_policy.py": "84a0155ac97ae574993b83bf24524550c26c2da43cc3a7d48ce49357f3a25827",
+          "tests/ci/test_workflow_policy.py": "4ae7a0a13a4f360a6484ec60b1f71e1c9cdb296fc272d45cb730e44d48fa9d38",
+          ".github/workflows/python-contract.yml": "fb1d6902be8b3f76e73320ab6b065747babfd0c341978557fbd528c2f5e9a69b",
+          "pyproject.toml": "d1f6bae98794d992ff4540336d15c09adbe9cf74050e2fe84090206e026deedc",
+          "uv.lock": "55ee08c980830b9bb1937fead0d032b9a8aa55febc70b42a68241f5e0ac4c266"
+        },
+        "source_hashes_end": {
+          "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+          "apps/orchestrator/tests/persistence/test_subscription_delegation_application.py": "11d009e7ed6a3d1b4d7bb244f17dde32331cd6c67728708250a9d1cf64200308",
+          "apps/orchestrator/tests/persistence/test_subscription_pending_decision_roles.py": "53619df8e3ac55ed395abf48580b91b562acaf80454541bd3d1c50e850fcea5f",
+          "apps/orchestrator/tests/domain/test_subscription_decision_policy.py": "e8d765910325c6df9419bf0ff28b0d4571e2380ad227ff56d9bf9998074f9194",
+          "apps/orchestrator/src/forge/persistence/repositories/subscription_execution.py": "6e4e0ca6811e17bb9a3fde4704ff0d7eb4a104dafb93fd7a6e2c05a32cf7a3bd",
+          "apps/orchestrator/src/forge/domain/subscription_decision_policy.py": "84a0155ac97ae574993b83bf24524550c26c2da43cc3a7d48ce49357f3a25827",
+          "tests/ci/test_workflow_policy.py": "4ae7a0a13a4f360a6484ec60b1f71e1c9cdb296fc272d45cb730e44d48fa9d38",
+          ".github/workflows/python-contract.yml": "fb1d6902be8b3f76e73320ab6b065747babfd0c341978557fbd528c2f5e9a69b",
+          "pyproject.toml": "d1f6bae98794d992ff4540336d15c09adbe9cf74050e2fe84090206e026deedc",
+          "uv.lock": "55ee08c980830b9bb1937fead0d032b9a8aa55febc70b42a68241f5e0ac4c266"
+        },
+        "junit_sha256": "7aa6fbdd1dc060a6b87137b637a89f7b415352c0a5fd9a7e8b223b9798dc566b",
+        "findings": 10,
+        "identity": {
+          "started_at": "2026-10-08T10:18:57.399710+00:00",
+          "python": "3.14.2 (main, Feb  3 2026, 03:06:17) [GCC 14.2.0]",
+          "node": "v24.19.0",
+          "os": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+          "uid": 1000,
+          "gid": 1000,
+          "head": "cf712a61ab61196a499fd1d303141488d86a16e4",
+          "status": " M .github/workflows/python-contract.yml\n M apps/orchestrator/tests/persistence/test_subscription_result_settlement.py\n",
+          "source_hashes": {
+            "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+            "apps/orchestrator/tests/persistence/test_subscription_delegation_application.py": "11d009e7ed6a3d1b4d7bb244f17dde32331cd6c67728708250a9d1cf64200308",
+            "apps/orchestrator/tests/persistence/test_subscription_pending_decision_roles.py": "53619df8e3ac55ed395abf48580b91b562acaf80454541bd3d1c50e850fcea5f",
+            "apps/orchestrator/tests/domain/test_subscription_decision_policy.py": "e8d765910325c6df9419bf0ff28b0d4571e2380ad227ff56d9bf9998074f9194",
+            "apps/orchestrator/src/forge/persistence/repositories/subscription_execution.py": "6e4e0ca6811e17bb9a3fde4704ff0d7eb4a104dafb93fd7a6e2c05a32cf7a3bd",
+            "apps/orchestrator/src/forge/domain/subscription_decision_policy.py": "84a0155ac97ae574993b83bf24524550c26c2da43cc3a7d48ce49357f3a25827",
+            "tests/ci/test_workflow_policy.py": "4ae7a0a13a4f360a6484ec60b1f71e1c9cdb296fc272d45cb730e44d48fa9d38",
+            ".github/workflows/python-contract.yml": "fb1d6902be8b3f76e73320ab6b065747babfd0c341978557fbd528c2f5e9a69b",
+            "pyproject.toml": "d1f6bae98794d992ff4540336d15c09adbe9cf74050e2fe84090206e026deedc",
+            "uv.lock": "55ee08c980830b9bb1937fead0d032b9a8aa55febc70b42a68241f5e0ac4c266"
+          },
+          "network": "shared namespace with isolated PostgreSQL; direct localhost5435; no TCP relay",
+          "changed_paths": [
+            ".github/workflows/python-contract.yml",
+            "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py"
+          ]
+        }
+      },
+      "original_failures_verified_green": [
+        "apps/orchestrator/tests/persistence/test_subscription_review_acceptance.py::test_planning_review_and_bounded_repair_reach_final_validation",
+        "apps/orchestrator/tests/persistence/test_subscription_trivial_acceptance.py::test_primary_trivial_fix_preserves_human_gates",
+        "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py::test_other_worktree_finishes_while_origin_peer_is_held[check]",
+        "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py::test_other_worktree_finishes_while_origin_peer_is_held[checkpoint]",
+        "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py::test_other_worktree_finishes_while_origin_peer_is_held[paused]",
+        "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py::test_other_worktree_finishes_while_origin_peer_is_held[reconciliation]",
+        "apps/orchestrator/tests/security/test_planner_permissions.py::test_selected_context_hides_env_and_custom_policy_secrets_from_planner",
+        "apps/orchestrator/tests/worker/test_subscription_installations.py::test_manifest_rejects_unknown_reasoning_effort_before_readiness",
+        "tests/integration/test_worker_planning_e2e.py::test_composed_planner_tools_use_durable_admission[README.md-succeeded]",
+        "tests/integration/test_worker_planning_e2e.py::test_composed_planner_tools_use_durable_admission[.env-failed]"
+      ],
+      "callback_repair": {
+        "status": "accepted",
+        "owner_stopped": true,
+        "owner": "native backend; final Linux acceptance by root",
+        "head": "cf712a61ab61196a499fd1d303141488d86a16e4",
+        "owned_paths": [
+          "apps/orchestrator/tests/persistence/test_subscription_counter_acceptance.py"
+        ],
+        "source_sha256": "5ffc5cbb408348395e6fc7a44e23c359f676673cae445270eaa8fc4d42dc3115",
+        "cause": "Trusted-host acceptance commands used bare python, unresolved in POSIX restricted environment. Exact current interpreter now registered; Docker keeps container-local python.",
+        "scope": "Test harness only; no production source, environment allowlist, broker, role, ownership, budget, timing or reconciliation boundary changed.",
+        "self_review": "Reuse existing command-spec builder and copy only host argv executable. CounterScript and verify_counter_repair ASTs unchanged; original lifecycle assertions retained. No additional simplification warranted.",
+        "windows": {
+          "focused-windows.xml": {
+            "counts": {
+              "testcase": 6,
+              "failure": 0,
+              "error": 0,
+              "skipped": 0
+            },
+            "sha256": "c0b8bb46c9421e62326a078d64c1c6c3f8d88815243c2a7175c653651fa52215"
+          },
+          "interpreter-red.xml": {
+            "counts": {
+              "testcase": 1,
+              "failure": 1,
+              "error": 0,
+              "skipped": 0
+            },
+            "sha256": "04dfde9a1f025e7ffe193146378ce9a653d3a9ec81a5a84cf047eb95eac8e482"
+          },
+          "interpreter-counter-green.xml": {
+            "counts": {
+              "testcase": 2,
+              "failure": 0,
+              "error": 0,
+              "skipped": 0
+            },
+            "sha256": "d35aded47f03c1c36002d852f2070e7539f27cb5b6cf3a607c47271d6b5fe38d"
+          }
+        },
+        "linux": {
+          "path": ".llm-output/repair-batch-linux/affected.xml",
+          "counts": {
+            "testcase": 101,
+            "failure": 0,
+            "error": 0,
+            "skipped": 0
+          },
+          "sha256": "c2be5773b8a030ddf9ff4ce517690b24c9447b6acbd5935cd3771c26e17745ed",
+          "elapsed_seconds": 169.7456146220211
+        },
+        "coverage": [
+          {
+            "invariant": "Only allowed callbacks execute with durable receipts and ownership denials.",
+            "cases": [
+              "Planning/reviewer reads and forbidden writes",
+              "Primary trivial repair and outside-plan write denial",
+              "Writer checks and snapshot"
+            ],
+            "status": "proved",
+            "evidence": "Original review and trivial cases pass on repaired Linux candidate; test scripts unchanged."
+          },
+          {
+            "invariant": "Independent managed worktrees proceed while origin is held under host capacity; pause and reconciliation retain fences.",
+            "cases": [
+              "held named check",
+              "checkpoint",
+              "paused origin",
+              "receipt persistence failure/reconciliation"
+            ],
+            "status": "proved",
+            "evidence": "All four original worktree parametrizations pass in Linux affected.xml; capacity, launch, control and fence assertions unchanged."
+          },
+          {
+            "invariant": "Host interpreter binding is explicit; Docker commands stay local.",
+            "cases": [
+              "Trusted-host registered durable command argv uses sys.executable",
+              "Docker specs use python with unchanged remaining args"
+            ],
+            "status": "proved",
+            "evidence": "Focused helper and registered-policy/counter lifecycle green2/2 plus final Linux counterpart2/2."
+          }
+        ],
+        "reused_docker": {
+          "receipt": ".llm-output/local-docker-verification/accepted.json",
+          "tests": 18,
+          "basis": "All nine recorded Docker inputs match; CounterScript/verification behavior unchanged; Docker branch directly returns the same unchanged fixture command builder output. New cross-mode regression proves container-local executable and remaining args.",
+          "limits": "Historical restore/binary and concurrency schedule limitations retain their original evidence."
+        },
+        "limits": [
+          "Earlier Windows6/6 is pre-repair evidence; exact interpreter repair has2/2Windows and101/101Linux. Final hosted Python3.14.5/Node24.20.0 full result remains unproved."
+        ]
+      },
+      "planner_fixture_repair": {
+        "failures": 4,
+        "state": "focused_red_then_green_and_77_affected_passed",
+        "owner": "root",
+        "red": {
+          "path": ".llm-output/planner-fixture-batch-red.xml",
+          "counts": {
+            "testcase": 4,
+            "failure": 4,
+            "error": 0,
+            "skipped": 0
+          },
+          "sha256": "0ff6b2f2d1a81878f79fbc6aaa28d12012f169d6731a1846421e4c756490ae50"
+        },
+        "green": {
+          "path": ".llm-output/planner-fixture-batch-green.xml",
+          "counts": {
+            "testcase": 4,
+            "failure": 0,
+            "error": 0,
+            "skipped": 0
+          },
+          "sha256": "0a8bfce050093be5a7ab71284d08ab4a6185fc4159842241aa436fbda4d92929"
+        },
+        "checks": {
+          "planner-fixture-affected.xml": {
+            "counts": {
+              "testcase": 77,
+              "failure": 0,
+              "error": 0,
+              "skipped": 0
+            },
+            "sha256": "212488bb368d3268775f3aba9d8b525d31a356e3e729120c08a9624d31d47eea"
+          },
+          "ci-batch-deadline-policy.xml": {
+            "counts": {
+              "testcase": 3,
+              "failure": 0,
+              "error": 0,
+              "skipped": 0
+            },
+            "sha256": "027f5872baa70e9fbc6030bcfcae0d45b0c4f5ac9ebac17c12cde318bea55074"
+          }
+        },
+        "source_hashes": {
+          "apps/orchestrator/tests/security/test_planner_permissions.py": "7240ade88bf5e558c830f1ab2a1ec173440b6504075cf64e3102cc1005084e5d",
+          "apps/orchestrator/tests/worker/test_subscription_installations.py": "e83b21d0308309c5f97584aee151515485a75a8258d8fde096d1c83d5d201ba4",
+          "tests/integration/test_worker_planning_e2e.py": "33f9374a835c04efef7110783dd51733bb1ae541fbaec01879dd7a23e0b6324c",
+          ".github/workflows/python-contract.yml": "1c2c6fe86679e7954d3a93c6b8f92a964709a285246127e5710dc738e4eeb1d8"
+        },
+        "scope": "Only test doubles, exact allowed-tool expectations and test logging precondition corrected. Production code unchanged.",
+        "self_review": "Reuse existing SimpleNamespace/AsyncMock Jev port convention and existing standalone-worker logger reset; preserve five closed read tools, durable audit and secret-redaction assertions; no additional abstraction warranted.",
+        "remaining": "Integrated affected Linux check and callback batch pending; no current full hosted success claimed."
+      },
+      "linux": {
+        "head": "cf712a61ab61196a499fd1d303141488d86a16e4",
+        "source_hashes_start": {
+          ".github/workflows/python-contract.yml": "1c2c6fe86679e7954d3a93c6b8f92a964709a285246127e5710dc738e4eeb1d8",
+          "apps/orchestrator/src/forge/application/services/subscription_broker.py": "477f6ebb1026ab5569d66f2ffdcc02178bc3143d379d6379e75e8d213fd66e6a",
+          "apps/orchestrator/src/forge/application/services/tools.py": "5c4c90208c57dc4312c33f3f398ecf462992d66ccfab35d103d4104f2d6d3289",
+          "apps/orchestrator/src/forge/worker/composition.py": "46ab83a9116b9bf96bf50cc1ed50d94aa4a1e2870908a2f822378f86de6f2ea4",
+          "apps/orchestrator/tests/persistence/subscription_review_script.py": "c3f3ea58a4f3c2ed8c084bc38aa856862cfa8f88e7594ac3e3750de9f618f9b4",
+          "apps/orchestrator/tests/persistence/subscription_worktree_case.py": "fff864f002ed2f94d35996734ad307f662ed16ef0cac872bed91194d6d52aa94",
+          "apps/orchestrator/tests/persistence/test_subscription_counter_acceptance.py": "5ffc5cbb408348395e6fc7a44e23c359f676673cae445270eaa8fc4d42dc3115",
+          "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+          "apps/orchestrator/tests/persistence/test_subscription_review_acceptance.py": "6c719c009c10b68acfa9ff38876d7074d2f7c7db07a446d5e1bb13226b6d3cf9",
+          "apps/orchestrator/tests/persistence/test_subscription_trivial_acceptance.py": "cb052c69deff2e6ef2f9da749a03f4b0b4f7bdc224a57702f91ca46aaf9159d4",
+          "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py": "5c5af136594d60b5cdb35b5d95293652162b5480ba199e4500a0eba9f923c5e1",
+          "apps/orchestrator/tests/security/test_planner_permissions.py": "7240ade88bf5e558c830f1ab2a1ec173440b6504075cf64e3102cc1005084e5d",
+          "apps/orchestrator/tests/worker/test_subscription_installations.py": "e83b21d0308309c5f97584aee151515485a75a8258d8fde096d1c83d5d201ba4",
+          "pyproject.toml": "d1f6bae98794d992ff4540336d15c09adbe9cf74050e2fe84090206e026deedc",
+          "tests/ci/test_workflow_policy.py": "4ae7a0a13a4f360a6484ec60b1f71e1c9cdb296fc272d45cb730e44d48fa9d38",
+          "tests/integration/test_worker_planning_e2e.py": "33f9374a835c04efef7110783dd51733bb1ae541fbaec01879dd7a23e0b6324c",
+          "uv.lock": "55ee08c980830b9bb1937fead0d032b9a8aa55febc70b42a68241f5e0ac4c266"
+        },
+        "source_hashes_end": {
+          ".github/workflows/python-contract.yml": "1c2c6fe86679e7954d3a93c6b8f92a964709a285246127e5710dc738e4eeb1d8",
+          "apps/orchestrator/src/forge/application/services/subscription_broker.py": "477f6ebb1026ab5569d66f2ffdcc02178bc3143d379d6379e75e8d213fd66e6a",
+          "apps/orchestrator/src/forge/application/services/tools.py": "5c4c90208c57dc4312c33f3f398ecf462992d66ccfab35d103d4104f2d6d3289",
+          "apps/orchestrator/src/forge/worker/composition.py": "46ab83a9116b9bf96bf50cc1ed50d94aa4a1e2870908a2f822378f86de6f2ea4",
+          "apps/orchestrator/tests/persistence/subscription_review_script.py": "c3f3ea58a4f3c2ed8c084bc38aa856862cfa8f88e7594ac3e3750de9f618f9b4",
+          "apps/orchestrator/tests/persistence/subscription_worktree_case.py": "fff864f002ed2f94d35996734ad307f662ed16ef0cac872bed91194d6d52aa94",
+          "apps/orchestrator/tests/persistence/test_subscription_counter_acceptance.py": "5ffc5cbb408348395e6fc7a44e23c359f676673cae445270eaa8fc4d42dc3115",
+          "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py": "db8b39a2979786064b2e5f545cdeb407c564042dc89be0ac9b38844fce2630bf",
+          "apps/orchestrator/tests/persistence/test_subscription_review_acceptance.py": "6c719c009c10b68acfa9ff38876d7074d2f7c7db07a446d5e1bb13226b6d3cf9",
+          "apps/orchestrator/tests/persistence/test_subscription_trivial_acceptance.py": "cb052c69deff2e6ef2f9da749a03f4b0b4f7bdc224a57702f91ca46aaf9159d4",
+          "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py": "5c5af136594d60b5cdb35b5d95293652162b5480ba199e4500a0eba9f923c5e1",
+          "apps/orchestrator/tests/security/test_planner_permissions.py": "7240ade88bf5e558c830f1ab2a1ec173440b6504075cf64e3102cc1005084e5d",
+          "apps/orchestrator/tests/worker/test_subscription_installations.py": "e83b21d0308309c5f97584aee151515485a75a8258d8fde096d1c83d5d201ba4",
+          "pyproject.toml": "d1f6bae98794d992ff4540336d15c09adbe9cf74050e2fe84090206e026deedc",
+          "tests/ci/test_workflow_policy.py": "4ae7a0a13a4f360a6484ec60b1f71e1c9cdb296fc272d45cb730e44d48fa9d38",
+          "tests/integration/test_worker_planning_e2e.py": "33f9374a835c04efef7110783dd51733bb1ae541fbaec01879dd7a23e0b6324c",
+          "uv.lock": "55ee08c980830b9bb1937fead0d032b9a8aa55febc70b42a68241f5e0ac4c266"
+        },
+        "command": [
+          "/opt/forge-controller-venv/bin/python",
+          "-m",
+          "pytest",
+          "apps/orchestrator/tests/persistence/test_subscription_review_acceptance.py",
+          "apps/orchestrator/tests/persistence/test_subscription_trivial_acceptance.py",
+          "apps/orchestrator/tests/persistence/test_subscription_worktree_acceptance.py",
+          "apps/orchestrator/tests/persistence/test_subscription_counter_acceptance.py",
+          "apps/orchestrator/tests/persistence/test_subscription_result_settlement.py",
+          "apps/orchestrator/tests/security/test_planner_permissions.py",
+          "apps/orchestrator/tests/worker/test_subscription_installations.py",
+          "tests/integration/test_worker_planning_e2e.py",
+          "tests/ci/test_workflow_policy.py",
+          "-q",
+          "-ra",
+          "--maxfail=0",
+          "-m",
+          "not live_provider and not live_github and not docker",
+          "--durations=10",
+          "--junitxml=/verification/affected.xml"
+        ],
+        "exit_code": 0,
+        "counts": {
+          "testcase": 101,
+          "failure": 0,
+          "error": 0,
+          "skipped": 0
+        },
+        "elapsed_seconds": 169.7456146220211,
+        "python": "3.14.2 (main, Feb  3 2026, 03:06:17) [GCC 14.2.0]",
+        "node": "v24.19.0",
+        "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+        "completed_at": "2026-10-08T11:52:39.200750+00:00",
+        "junit_sha256": "c2be5773b8a030ddf9ff4ce517690b24c9447b6acbd5935cd3771c26e17745ed"
+      },
+      "workflow": "Collect all failures with --maxfail=0 and a measured 180-minute backend job cap. No new full run has been dispatched.",
+      "limits": [
+        "Original 2736-case run remains a failed receipt:2642passes,10failures,84skips; it is not relabeled green.",
+        "Affected Linux check uses Python3.14.2/Node24.19.0 in isolated PostgreSQL namespace. Final hosted workflow uses Python3.14.5/Node24.20.0.",
+        "Platform/browser/privilege skips and historical restore/concurrency limits retain their original evidence.",
+        "Mandatory current integrated Jev preparation and fresh post-push Codex verdict are recorded separately; neither is test evidence.",
+        "Final full hosted CI requires specific owner authorization. No merge or release authorization."
       ]
     }
   ]

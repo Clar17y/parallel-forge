@@ -314,29 +314,16 @@ async def test_unsafe_telemetry_text_preserves_measured_usage_and_exact_replay(
 
 
 @pytest.mark.integration
-async def test_pending_nested_decision_is_retained_losslessly(session_factory, persisted_run):
-    from dataclasses import replace
-    from uuid import uuid4
-
-    from forge.domain.subscription import DelegateDecision, decode_subscription_record
+async def test_pending_nested_decision_is_retained_losslessly(session_factory, tmp_path):
+    from forge.domain.subscription import decode_subscription_record
     from forge.persistence.models.subscription_results import SubscriptionAttemptResult
+    from test_subscription_delegation_application import delegation_case
 
-    executor, admission = await _admitted(session_factory, persisted_run)
-    child = replace(admission.task, task_id=uuid4(), parent_task_id=admission.task.task_id)
-    decision = DelegateDecision(
-        run_id=persisted_run.id,
-        parent_task_id=admission.task.task_id,
-        child_tasks=(child,),
-        rationale="Assigned work",
-    )
-    launch_proof = await record_stopped_launch(session_factory, admission)
-    result = SubscriptionInvocationResult(
-        launch_proof=launch_proof, attempt=admission.attempt, decision=decision, telemetry=_known()
-    )
-    assert (await executor.settle(admission, result)).disposition == "decision_pending"
-    async with PostgresUnitOfWork(session_factory) as work:
+    factory, admission, _, result = await delegation_case(session_factory, tmp_path)
+    async with factory() as work:
         receipt = await work.session.get(SubscriptionAttemptResult, admission.attempt.attempt_id)
-        assert decode_subscription_record(receipt.result_payload["decision"]) == decision
+        assert receipt.disposition == "decision_pending"
+        assert decode_subscription_record(receipt.result_payload["decision"]) == result.decision
 
 
 @pytest.mark.integration
@@ -395,11 +382,14 @@ async def test_schema_one_result_replay_remains_compatible(session_factory, pers
 
 
 @pytest.mark.integration
-async def test_unsafe_plan_is_a_protocol_failure_not_a_modified_pending_proposal(
+async def test_unsafe_worker_plan_is_redacted_and_role_corrected(
     session_factory, persisted_run
 ):
+    from dataclasses import replace
+
     from forge.domain.plan import PlanOutput
     from forge.persistence.models.subscription_results import SubscriptionAttemptResult
+    from forge.persistence.repositories.subscription import SubscriptionConflict
 
     executor, admission = await _admitted(session_factory, persisted_run)
     plan = PlanOutput(
@@ -420,9 +410,18 @@ async def test_unsafe_plan_is_a_protocol_failure_not_a_modified_pending_proposal
         telemetry=_known(input_tokens=3),
     )
     settled = await executor.settle(admission, result)
-    assert settled.accepted and settled.disposition == "repair_queued"
+    assert not settled.accepted and settled.disposition == "role_correction_queued"
+    assert (await executor.settle(admission, result)).replayed
+    with pytest.raises(SubscriptionConflict, match="replay conflicts"):
+        await executor.settle(
+            admission,
+            replace(result, decision=plan.model_copy(update={"steps": ("Different response",)})),
+        )
     async with PostgresUnitOfWork(session_factory) as work:
         row = await work.session.get(SubscriptionAttemptResult, admission.attempt.attempt_id)
         assert row.result_payload["effective_failure"] == SubscriptionFailure.PROTOCOL.value
+        assert set(row.result_payload["decision"]) == {"rejected_plan_digest"}
         assert "synthetic-plan-secret" not in str(row.result_payload)
-        assert (await work.subscription_budget.usage(persisted_run.id)).consumed.input_tokens == 3
+        usage = await work.subscription_budget.usage(persisted_run.id)
+        assert usage.consumed.input_tokens == 3
+        assert usage.consumed.provider_attempts == 1 and usage.consumed.repairs == 1

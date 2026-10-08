@@ -628,6 +628,7 @@ async def test_composed_planner_tools_use_durable_admission(
                 ToolName.REPOSITORY_LIST_FILES,
                 ToolName.REPOSITORY_READ_FILE,
                 ToolName.REPOSITORY_SEARCH,
+                ToolName.REPOSITORY_SEARCH_SEMANTIC,
                 ToolName.REPOSITORY_READ_INSTRUCTIONS,
             }
             tool = next(
