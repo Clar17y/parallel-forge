@@ -23,6 +23,7 @@ from forge.persistence.models.epic_run_bridge import (
     EpicExecutionControl,
     EpicItemAttempt,
 )
+from forge.persistence.models.execution import AgentExecution, ModelUsage
 from forge.persistence.models.subscription import SubscriptionAttempt
 from forge.persistence.models.subscription_quota import SubscriptionQuotaAdmission
 from forge.persistence.models.subscription_usage import (
@@ -221,7 +222,51 @@ class PostgresEpicBudgetRepository:
                     select(SubscriptionAttempt).where(SubscriptionAttempt.run_id == child.run_id)
                 )
             ).all()
-            if not attempts and child.run_id != for_internal_run:
+            ordinary_observed = False
+            executions = (
+                await self.session.scalars(
+                    select(AgentExecution).where(AgentExecution.run_id == child.run_id)
+                )
+            ).all()
+            observations = (
+                await self.session.scalars(
+                    select(ModelUsage).where(ModelUsage.run_id == child.run_id)
+                )
+            ).all()
+            execution_by_id = {execution.id: execution for execution in executions}
+            observed_ids: set[UUID] = set()
+            for observation in observations:
+                execution = execution_by_id.get(observation.agent_execution_id)
+                if (
+                    execution is None
+                    or execution.provider != observation.provider
+                    or execution.model != observation.model
+                ):
+                    unknown = True
+                    money_unproved = True
+                    warnings.append("child_usage_lineage_unproved")
+                    continue
+                observed_ids.add(execution.id)
+                child_known["duration_ms"] += observation.duration_ms
+                child_known["tool_call_count"] += observation.tool_call_count
+                child_known["input_tokens"] += observation.input_tokens
+                child_known["output_tokens"] += observation.output_tokens
+                if observation.estimated_cost_minor is None:
+                    unknown = True
+                    money_unproved = True
+                    warnings.append("child_cost_unknown")
+                    child_held["estimated_api_cost_minor"] += floor["estimated_api_cost_minor"] or 0
+                else:
+                    child_known["estimated_api_cost_minor"] += observation.estimated_cost_minor
+                    if observation.estimated_cost_minor > 0:
+                        currency_set.add(observation.currency)
+            child_known["provider_attempts"] += len(executions)
+            ordinary_observed = bool(executions) and all(
+                execution.id in observed_ids
+                and execution.status in {"SUCCEEDED", "FAILED", "CANCELLED"}
+                for execution in executions
+            )
+            if not ordinary_observed and not attempts and child.run_id != for_internal_run:
                 unknown = True
                 money_unproved = True
                 warnings.append("child_usage_unproved")
@@ -310,7 +355,7 @@ class PostgresEpicBudgetRepository:
                 exposure = child_known[key] + child_held[key]
                 floor_amount = floor[key] or 0
                 if child.run_id != for_internal_run and (
-                    hold is None or not hold.effects_settled or not attempts
+                    hold is None or not hold.effects_settled or (not attempts and not ordinary_observed)
                 ):
                     child_held[key] += max(floor_amount - exposure, 0)
             for key in _DIMENSIONS:

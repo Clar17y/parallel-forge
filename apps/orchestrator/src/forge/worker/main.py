@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import traceback
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.agents.runtime_factory import SubscriptionRuntimeAdapter
@@ -22,9 +24,12 @@ from forge.application.ports.epic_decomposition import DecompositionGateway
 from forge.application.ports.operations import OperationAdapter
 from forge.application.ports.repository import RepositoryReader
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.epic_dispatch_worker import EpicDispatchWorker
+from forge.application.services.epic_eligibility import EpicEligibilityService
 from forge.application.services.epic_lifecycle import EpicLifecycleService
+from forge.application.services.epic_run_bridge import EpicLaunchWork, EpicRunBridgeService
 from forge.application.services.recovery import RecoveryError, RecoveryService
-from forge.application.services.runs import RunCommandService, RunUnitOfWork
+from forge.application.services.runs import RunCommandService, RunService, RunUnitOfWork
 from forge.application.services.subscription_decision_recovery import (
     SubscriptionDecisionRecovery,
     is_transient_recovery_error,
@@ -307,6 +312,23 @@ async def run_worker(
             asyncio.create_task(_poll(control_worker, stop_event, poll_interval)),
         ]
         if getattr(settings, "process_role", None) == "worker":
+            eligibility = EpicEligibilityService(
+                lambda: PostgresUnitOfWork(factory), data_root=str(settings.data_root)
+            )
+            dispatch = EpicDispatchWorker(
+                lambda: PostgresUnitOfWork(factory),
+                bridge=EpicRunBridgeService(
+                    lambda: cast(EpicLaunchWork, PostgresUnitOfWork(factory)),
+                    run_service=RunService(
+                        lambda: cast(RunUnitOfWork, PostgresUnitOfWork(factory)), settings=settings
+                    ),
+                    eligibility=eligibility,
+                    epic_ceiling=settings.epic_cumulative_budget,
+                    child_hold=settings.subscription_attempt_budget,
+                ),
+                eligibility=eligibility,
+            )
+            polls.append(asyncio.create_task(_poll_epic_dispatch(dispatch, stop_event, poll_interval)))
             epic_controls = EpicLifecycleService(
                 lambda: PostgresUnitOfWork(factory),
                 commands=RunCommandService(
@@ -474,6 +496,28 @@ async def _poll_epic_controls(
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
             except TimeoutError:
                 pass
+
+
+async def _poll_epic_dispatch(
+    worker: EpicDispatchWorker, stop_event: asyncio.Event, poll_interval: float
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await worker.run_once()
+        except Exception as error:  # noqa: BLE001 - one failed epoch cannot stop the worker
+            frames = traceback.extract_tb(error.__traceback__)
+            owned = [frame for frame in frames if "forge" in frame.filename.replace("\\", "/").split("/")]
+            frame = owned[-1] if owned else frames[-1] if frames else None
+            sqlstate = getattr(error.orig, "sqlstate", None) if isinstance(error, DBAPIError) else None
+            logger.warning(
+                "Epic dispatch polling failed (%s, SQLSTATE %s at %s:%s); retrying durable work",
+                type(error).__name__, sqlstate or "none", frame.name if frame else "unknown",
+                frame.lineno if frame else 0,
+            )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+        except TimeoutError:
+            pass
 
 
 async def _poll_brainstorms(

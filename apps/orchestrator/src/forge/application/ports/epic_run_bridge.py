@@ -40,5 +40,6 @@ class EligibilityPort(Protocol):
     """Only server-owned producers can attest integrated predecessors."""
 
     async def evidence(
-        self, *, epic_id: UUID, item_ids: Sequence[UUID], base_sha: str
+        self, *, epic_id: UUID, execution_id: UUID, item_ids: Sequence[UUID],
+        base_ref: str, base_sha: str
     ) -> Sequence[DependencyEvidence]: ...

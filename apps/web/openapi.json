@@ -3180,6 +3180,29 @@
       "DependencyEvidence": {
         "additionalProperties": false,
         "properties": {
+          "blocker_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker Code"
+          },
+          "handoff_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Handoff Id"
+          },
           "integrated_sha": {
             "anyOf": [
               {
@@ -4072,6 +4095,163 @@
         "title": "EpicCreateRequest",
         "type": "object"
       },
+      "EpicDispatchProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "blocker_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker Code"
+          },
+          "claim_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Expires At"
+          },
+          "claim_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Item Id"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "enabled_by_actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled By Actor Id"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_id",
+          "version",
+          "enabled",
+          "profile_id",
+          "profile_version",
+          "enabled_by_actor_id",
+          "claim_item_id",
+          "claim_expires_at",
+          "blocker_code"
+        ],
+        "title": "EpicDispatchProjection",
+        "type": "object"
+      },
+      "EpicDispatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "expected_dispatch_version": {
+            "minimum": 0.0,
+            "title": "Expected Dispatch Version",
+            "type": "integer"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_dispatch_version",
+          "enabled"
+        ],
+        "title": "EpicDispatchRequest",
+        "type": "object"
+      },
       "EpicDraftUpdateRequest": {
         "additionalProperties": false,
         "description": "Closed epic draft update request body.",
@@ -4146,6 +4326,16 @@
             ],
             "title": "Control Version"
           },
+          "dispatch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDispatchProjection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "execution": {
             "$ref": "#/components/schemas/EpicExecutionSnapshot"
           },
@@ -4154,6 +4344,14 @@
               "$ref": "#/components/schemas/EpicIntentProjection"
             },
             "title": "Intents",
+            "type": "array"
+          },
+          "items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EpicItemEligibility"
+            },
+            "title": "Items",
             "type": "array"
           },
           "owner_actions": {
@@ -4284,6 +4482,79 @@
           "refusal"
         ],
         "title": "EpicIntentProjection",
+        "type": "object"
+      },
+      "EpicItemEligibility": {
+        "additionalProperties": false,
+        "properties": {
+          "blocker_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker Code"
+          },
+          "completion_evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DependencyEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependency_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/DependencyEvidence"
+            },
+            "title": "Dependency Evidence",
+            "type": "array"
+          },
+          "disposition": {
+            "enum": [
+              "required",
+              "deferred"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "blocked",
+              "deferred",
+              "active",
+              "verified"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "disposition",
+          "status",
+          "blocker_code",
+          "dependency_evidence",
+          "completion_evidence"
+        ],
+        "title": "EpicItemEligibility",
         "type": "object"
       },
       "EpicLaunchRequest": {
@@ -11433,7 +11704,7 @@
   },
   "info": {
     "title": "Parallel Forge",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -14462,6 +14733,135 @@
           }
         ],
         "summary": "Control"
+      }
+    },
+    "/api/epics/{epic_id}/executions/{execution_id}/dispatch": {
+      "get": {
+        "operationId": "get_dispatch_api_epics__epic_id__executions__execution_id__dispatch_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Execution Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicDispatchProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Get Dispatch"
+      },
+      "put": {
+        "operationId": "configure_dispatch_api_epics__epic_id__executions__execution_id__dispatch_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicDispatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicDispatchProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Configure Dispatch"
       }
     },
     "/api/epics/{epic_id}/graph-adoptions": {

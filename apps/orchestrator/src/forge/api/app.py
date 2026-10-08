@@ -56,6 +56,8 @@ from forge.application.services.epic_brainstorm import (
 from forge.application.services.epic_brief import EpicBriefService
 from forge.application.services.epic_budget import EpicBudgetService
 from forge.application.services.epic_decomposition import EpicDecompositionService
+from forge.application.services.epic_dispatch import EpicDispatchService
+from forge.application.services.epic_eligibility import EpicEligibilityService
 from forge.application.services.epic_items import EpicItemsService
 from forge.application.services.epic_lifecycle import EpicLifecycleService
 from forge.application.services.epic_run_bridge import EpicRunBridgeService
@@ -179,15 +181,22 @@ def create_app(
     resolved_run_service = run_service or RunService(
         resolved_uow_factory, settings=resolved_settings
     )
+    resolved_epic_eligibility_service = EpicEligibilityService(
+        resolved_uow_factory, data_root=str(resolved_settings.data_root)
+    )
+    resolved_epic_dispatch_service = EpicDispatchService(resolved_uow_factory)
     resolved_epic_run_bridge_service = epic_run_bridge_service or EpicRunBridgeService(
         resolved_uow_factory,
         run_service=resolved_run_service,
+        eligibility=resolved_epic_eligibility_service,
         epic_ceiling=resolved_settings.epic_cumulative_budget,
         child_hold=resolved_settings.subscription_attempt_budget,
     )
     resolved_run_command_service = run_command_service or RunCommandService(resolved_uow_factory)
     resolved_epic_lifecycle_service = EpicLifecycleService(
-        resolved_uow_factory, commands=resolved_run_command_service
+        resolved_uow_factory, commands=resolved_run_command_service,
+        eligibility=resolved_epic_eligibility_service,
+        dispatch=resolved_epic_dispatch_service,
     )
     resolved_epic_budget_service = EpicBudgetService(
         resolved_uow_factory,
@@ -253,6 +262,7 @@ def create_app(
     app.state.epic_items_service = resolved_epic_items_service
     app.state.epic_run_bridge_service = resolved_epic_run_bridge_service
     app.state.epic_lifecycle_service = resolved_epic_lifecycle_service
+    app.state.epic_dispatch_service = resolved_epic_dispatch_service
     app.state.epic_budget_service = resolved_epic_budget_service
     resolved_brainstorm_budget = (
         epic_brainstorm_budget

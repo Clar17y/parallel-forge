@@ -1013,6 +1013,16 @@ async def paused_task_quiescence_exemptions(
     """Prove physical task stops independently of whole-run resumption authority."""
     from forge.persistence.repositories.mutations import MutationRepositoryError
 
+    # Ordinary runs have no stopped subscription tasks to exempt. Avoid a Run
+    # FOR UPDATE in that case: read-only epic proof otherwise contends with the
+    # separate lifecycle worker even after every child effect has settled.
+    has_paused_stop = await session.scalar(
+        select(SubscriptionTaskStop.id)
+        .where(SubscriptionTaskStop.run_id == run_id, SubscriptionTaskStop.state == "paused")
+        .limit(1)
+    )
+    if has_paused_stop is None:
+        return ()
     run = await session.get(Run, run_id, with_for_update=True, populate_existing=True)
     if run is None:
         return ()

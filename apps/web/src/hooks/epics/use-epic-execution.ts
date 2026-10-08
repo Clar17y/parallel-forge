@@ -7,6 +7,8 @@ import type {
   EpicChildProjection,
   EpicControlReceipt,
   EpicControlRequest,
+  EpicDispatchRequest,
+  EpicExecutionDispatch,
   EpicExecutionProjection,
   EpicExecutionSnapshot,
   EpicIntentProjection,
@@ -16,6 +18,10 @@ import type {
 
 function executionIdFromCommandPath(path: string): string | null {
   return path.match(/\/executions\/([^/?]+)\/commands(?:[/?]|$)/)?.[1] ?? null;
+}
+
+function executionIdFromDispatchPath(path: string): string | null {
+  return path.match(/\/executions\/([^/?]+)\/dispatch(?:[/?]|$)/)?.[1] ?? null;
 }
 
 export interface StartExecutionOptions {
@@ -53,7 +59,6 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
   // Execution discovery
   const executionsPath = epicId ? `/epics/${epicId}/executions` : null;
   const executionsApi = useApi<EpicExecutionProjection[]>(executionsPath, {
-    refreshIntervalMs: 5000,
     keepPreviousOnRefresh: true,
   });
 
@@ -97,6 +102,12 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
     if (requestedExecutionId === executionId) refreshExecution();
     refreshExecutions();
   }), [executionId, refreshExecution, refreshExecutions, registerCompletion, setExecutionId]);
+  useEffect(() => registerCompletion('execution-dispatch', (_value, request) => {
+    const requestedExecutionId = executionIdFromDispatchPath(request.path);
+    if (!requestedExecutionId) return;
+    setExecutionId(requestedExecutionId);
+    if (requestedExecutionId === executionId) refreshExecution();
+  }), [executionId, refreshExecution, registerCompletion, setExecutionId]);
 
   const startExecution = useCallback(
     async (options: StartExecutionOptions | number) => {
@@ -146,6 +157,26 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
     [epicId, activeExecutionId, execute]
   );
 
+  const setSequentialDispatch = useCallback(
+    async (enabled: boolean, expectedDispatchVersion: number, profileId?: string | null, profileVersion?: number | null) => {
+      if (!activeExecutionId) throw new Error('Cannot configure dispatch without an execution ID.');
+      const body: EpicDispatchRequest = {
+        schema_version: 1,
+        expected_dispatch_version: expectedDispatchVersion,
+        enabled,
+        ...(profileId !== undefined ? { profile_id: profileId } : {}),
+        ...(profileVersion !== undefined ? { profile_version: profileVersion } : {}),
+      };
+      return execute<EpicExecutionDispatch>(
+        'PUT',
+        `/epics/${epicId}/executions/${activeExecutionId}/dispatch`,
+        body as unknown as Record<string, unknown>,
+        { kind: 'execution-dispatch' },
+      );
+    },
+    [activeExecutionId, epicId, execute],
+  );
+
   const execution = executionApi.value ?? null;
   const isPendingDiscovery = !activeExecutionId;
 
@@ -170,6 +201,7 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
     loading: executionApi.loading || (!executionId && executionsApi.loading),
     failed: executionApi.failed,
     refresh: refreshAll,
+    refreshExecutions,
     isPendingDiscovery,
     controlState,
     controlVersion,
@@ -180,6 +212,7 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
     blockerCode,
     startExecution,
     sendCommand,
+    setSequentialDispatch,
     mutations,
   };
 }

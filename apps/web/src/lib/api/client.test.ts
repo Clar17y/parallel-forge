@@ -36,6 +36,35 @@ test('validation errors expose bounded field identifiers without raw messages or
   try { await api('/projects'); } catch (error) { expect(JSON.stringify(error)).not.toContain('secret'); }
 });
 
+test('epic launch conflicts retain bounded workflow warnings for the owner action', async () => {
+  const detail = {
+    code: 'epic_launch_blocked',
+    blocker_codes: ['predecessor_unverified', 'active_child'],
+    actual_epic_version: 7,
+    owner_action: 'retry_with_owner_override',
+  };
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+    detail: { ...detail, private_text: 'server-only details' },
+  }), { status: 409 }));
+  await expect(api('/epics/one/work-item-runs')).rejects.toMatchObject({
+    status: 409, code: 'epic_launch_blocked', detail,
+  });
+  try { await api('/epics/one/work-item-runs'); } catch (error) {
+    expect(JSON.stringify(error)).not.toContain('server-only');
+  }
+});
+
+test.each([
+  { code: 'epic_launch_blocked', blocker_codes: ['private detail'], actual_epic_version: 7, owner_action: 'retry_with_owner_override' },
+  { code: 'epic_launch_blocked', blocker_codes: ['active_child'], actual_epic_version: 0, owner_action: 'retry_with_owner_override' },
+  { code: 'epic_launch_blocked', blocker_codes: ['active_child'], actual_epic_version: 7, owner_action: 'arbitrary-action' },
+])('malformed epic launch conflicts keep the safe generic error', async detail => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ detail }), { status: 409 }));
+  await expect(api('/epics/one/work-item-runs')).rejects.toMatchObject({
+    status: 409, code: 'stale-projection',
+  });
+});
+
 test('rejects path escapes before fetch and clears CSRF on expired session', async () => {
   const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 401 }));
   await expect(api('/../outside')).rejects.toThrow();

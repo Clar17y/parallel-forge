@@ -79,3 +79,18 @@ def test_stopped_upgrade_runs_in_the_history_aware_postgres_docker_job() -> None
         if "-m" in command[command.index("pytest") + 1 :]:
             marker = command[command.index("-m", command.index("pytest")) + 1]
             assert marker == "docker"
+
+
+def test_epic_browser_delivery_has_chromium_and_production_web_before_it_runs() -> None:
+    workflow = _load_workflow(WORKFLOWS / "browser-acceptance.yml")
+    steps = workflow["jobs"]["browser-acceptance"]["steps"]
+    path = "tests/epic_acceptance/test_three_item_process.py"
+    selected = [index for index, step in enumerate(steps) if path in step.get("run", "")]
+    assert len(selected) == 1, "The browser workflow must exercise the epic delivery chain"
+    selected_index = selected[0]
+    assert steps[selected_index]["env"]["FORGE_EPIC_BROWSER_TEST"] == "1"
+    commands_before = [step.get("run", "") for step in steps[:selected_index]]
+    assert any("playwright install --with-deps chromium" in run for run in commands_before)
+    assert any("npm run build:web" in run for run in commands_before), (
+        "The epic browser fixture starts production Next, so its build must already exist"
+    )

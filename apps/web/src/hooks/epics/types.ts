@@ -150,10 +150,15 @@ export interface AuthoringOutcome {
 }
 
 // Delivery / Execution Schemas
+export type EpicItemEligibility = components['schemas']['EpicItemEligibility'];
+export type EpicExecutionDispatch = components['schemas']['EpicDispatchProjection'];
+export type EpicDispatchRequest = components['schemas']['EpicDispatchRequest'];
 export type EpicExecutionProjection = components['schemas']['EpicExecutionProjection'];
 export type EpicExecutionSnapshot = components['schemas']['EpicExecutionSnapshot'];
 export type EpicChildProjection = components['schemas']['EpicChildProjection'];
 export type EpicAttempt = components['schemas']['EpicAttempt'];
+export type EpicAttemptResponse = components['schemas']['EpicAttemptResponse'];
+export type EpicLaunchRequest = components['schemas']['EpicLaunchRequest'];
 export type EpicControlRequest = components['schemas']['EpicControlRequest'];
 export type EpicControlReceipt = components['schemas']['EpicControlReceipt'];
 export type ExecutionStartRequest = components['schemas']['ExecutionStartRequest'];

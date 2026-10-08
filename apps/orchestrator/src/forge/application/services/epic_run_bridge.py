@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Protocol, Self
 from uuid import UUID, uuid4
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.ports.epic_brief import EpicBriefRepository
 from forge.application.ports.epic_items import EpicItemsRepository
@@ -26,19 +28,39 @@ from forge.domain.epic_run_bridge import (
 )
 from forge.domain.operation import canonical_digest
 from forge.domain.payload import validate_durable_payload
-from forge.domain.run import RunState
+from forge.domain.run import RunSnapshot, RunState
 from forge.domain.subscription import TaskBudget
+from forge.persistence.models.epic_dispatch import EpicDispatchSetting
 from forge.persistence.repositories.tasks import MAX_BODY_BYTES
 
 _TERMINAL = {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
 
 
 class EpicLaunchWork(RunUnitOfWork, Protocol):
+    session: AsyncSession
     epics: EpicBriefRepository
     epic_items: EpicItemsRepository
     epic_run_bridge: EpicRunBridgeRepository
 
     async def __aenter__(self) -> Self: ...
+
+
+async def latest_required_child_failed(
+    attempts: Sequence[EpicAttempt], execution_id: UUID,
+    get_run: Callable[[UUID], Awaitable[RunSnapshot]],
+) -> bool:
+    """Use durable latest attempts, never an older failed retry or readiness snapshot."""
+    latest: dict[UUID, EpicAttempt] = {}
+    for attempt in attempts:
+        if attempt.execution_id != execution_id or attempt.item_disposition != "required":
+            continue
+        previous = latest.get(attempt.item_id)
+        if previous is None or attempt.attempt_number > previous.attempt_number:
+            latest[attempt.item_id] = attempt
+    for attempt in latest.values():
+        if (await get_run(attempt.run_id)).state in {RunState.FAILED, RunState.CANCELLED}:
+            return True
+    return False
 
 
 class EpicRunBridgeService:
@@ -180,6 +202,7 @@ class EpicRunBridgeService:
         epic_id: UUID,
         idempotency_key: str,
         request: LaunchRequest,
+        dispatch_claim_token: UUID | None = None,
     ) -> EpicAttempt:
         request = _request(request)
         digest = canonical_digest(
@@ -203,6 +226,20 @@ class EpicRunBridgeService:
             # Epic -> project is the fixed admission lock order. Every launch,
             # including an override, passes through this same serial fence.
             epic = await work.epics.get(epic_id, for_update=True)
+            if dispatch_claim_token is not None:
+                claim = await work.session.get(EpicDispatchSetting, request.execution_id)
+                if (
+                    claim is None or not claim.enabled
+                    or claim.epic_id != epic_id
+                    or claim.claim_item_id != request.item_id
+                    or claim.claim_token != dispatch_claim_token
+                    or claim.claim_expires_at is None
+                    or claim.claim_expires_at <= datetime.now(UTC)
+                    or claim.actor_id != actor.actor_id
+                    or claim.session_id != actor.session_id
+                    or request.owner_override
+                ):
+                    raise EpicExecutionBindingConflict("dispatch claim is stale")
             brief = await work.epics.get_revision(epic_id, request.brief_revision_id)
             graph = await work.epic_items.get_revision(epic_id, request.graph_revision_id)
             if brief.content_digest != request.brief_digest:
@@ -217,14 +254,14 @@ class EpicRunBridgeService:
             if item is None:
                 raise GraphBindingConflict("item is not in saved graph")
             blockers: list[str] = []
-            if epic.version != request.expected_epic_version:
+            if dispatch_claim_token is None and epic.version != request.expected_epic_version:
                 blockers.append("epic_version_stale")
-            if (request.brief_revision_id, request.brief_digest) != (
+            if dispatch_claim_token is None and (request.brief_revision_id, request.brief_digest) != (
                 epic.accepted_brief_revision_id,
                 epic.accepted_brief_digest,
             ):
                 blockers.append("brief_not_accepted")
-            if (request.graph_revision_id, request.graph_digest) != (
+            if dispatch_claim_token is None and (request.graph_revision_id, request.graph_digest) != (
                 epic.accepted_graph_revision_id,
                 epic.accepted_graph_digest,
             ):
@@ -235,6 +272,7 @@ class EpicRunBridgeService:
             blockers.extend(budget_blockers)
             project = await work.projects.get(epic.project_id, for_update=True)
             inspection = self._runs.inspect_base(project)
+            fresh_execution = request.execution_id is None
             if request.execution_id is None:
                 execution = await work.epic_run_bridge.create_execution(
                     epic_id=epic_id,
@@ -264,24 +302,22 @@ class EpicRunBridgeService:
             if control_state is not None and control_state != "ACTIVE":
                 blockers.append("execution_not_active")
             prior = await work.epic_run_bridge.list_attempts(epic_id)
+            failure_blocker_position = len(blockers)
             if item.disposition == "deferred":
                 blockers.append("item_deferred")
-            for value in prior:
-                previous_run = await work.runs.get_for_update(value.run_id)
-                if previous_run.state not in _TERMINAL:
-                    blockers.append("active_child")
-                elif not (await work.runs.prove_quiescent(value.run_id)).is_quiescent:
-                    blockers.append("child_effects_unsettled")
+            child_blocker_position = len(blockers)
             # A trusted producer can provide positive proof. With none, each
             # dependency stays unknown and default progression remains blocked.
             for _ in range(3):
                 reported = (
                     await self._eligibility.evidence(
                         epic_id=epic_id,
+                        execution_id=execution_id,
                         item_ids=item.dependency_item_ids,
+                        base_ref=inspection.base_ref,
                         base_sha=inspection.base_sha,
                     )
-                    if self._eligibility is not None and item.dependency_item_ids
+                    if self._eligibility is not None and item.dependency_item_ids and not fresh_execution
                     else ()
                 )
                 final_inspection = self._runs.inspect_base(project)
@@ -317,6 +353,19 @@ class EpicRunBridgeService:
             ]
             if any(value.status != "verified" for value in evidence):
                 blockers.append("predecessor_unverified")
+            # Evidence may insert a handoff whose FK references an earlier run.
+            # Locking that run before the producer returns would deadlock the
+            # separate read/verification transaction.
+            child_blockers: list[str] = []
+            for value in prior:
+                previous_run = await work.runs.get_for_update(value.run_id)
+                if previous_run.state not in _TERMINAL:
+                    child_blockers.append("active_child")
+                elif not (await work.runs.prove_quiescent(value.run_id)).is_quiescent:
+                    child_blockers.append("child_effects_unsettled")
+            blockers[child_blocker_position:child_blocker_position] = child_blockers
+            if await latest_required_child_failed(prior, execution_id, work.runs.get_for_update):
+                blockers.insert(failure_blocker_position, "predecessor_failed")
             if blockers and not request.owner_override:
                 raise EpicLaunchConflict(blockers, actual_epic_version=epic.version)
             body, context_digest = build_task_context(

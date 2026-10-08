@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Panel } from '@/components/ui/panel';
@@ -9,6 +9,37 @@ import { useEpicExecution } from '@/hooks/epics/use-epic-execution';
 import { useEpicWorkspace } from '@/hooks/epics/use-epic-workspace';
 import { EvidenceDetails } from './evidence-details';
 import { EpicBudgetPanel } from './epic-budget-panel';
+import { useEpicWorkItemRuns } from '@/hooks/epics/use-epic-work-item-runs';
+import type { EpicAttemptResponse } from '@/hooks/epics/types';
+
+const blockerLabels: Record<string, string> = {
+  epic_version_stale: 'The epic changed. Refresh before launching.',
+  brief_not_accepted: 'The selected brief is not accepted for this execution.',
+  graph_not_accepted: 'The selected graph is not accepted for this execution.',
+  execution_not_active: 'This execution is not active.',
+  item_deferred: 'This work item is saved as deferred.',
+  active_child: 'Another child run is still active.',
+  child_effects_unsettled: 'A previous child run still has unsettled effects.',
+  repository_base_moved: 'The repository base changed since the execution snapshot.',
+  predecessor_unverified: 'A predecessor has not been verified as integrated.',
+  predecessor_integration_unverified: 'The predecessor is not verified as integrated.',
+  integration_ref_unavailable: 'The project integration branch is unavailable.',
+  integration_ref_changed: 'The integration branch changed during verification.',
+  predecessor_not_started: 'The prerequisite work item has not started.',
+  predecessor_failed: 'The prerequisite run failed or was cancelled.',
+};
+
+function blockerText(code: string | null | undefined): string {
+  return code ? blockerLabels[code] ?? `The server reported: ${code.replaceAll('_', ' ')}.` : 'The server has not provided a blocker.';
+}
+
+function readinessLabel(status: string, blockerCode: string | null): string {
+  if (status === 'verified') return 'Integrated and verified';
+  if (status === 'ready') return 'Ready to launch';
+  if (status === 'active') return 'Run active';
+  if (status === 'deferred') return 'Deferred';
+  return `Blocked: ${blockerText(blockerCode)}`;
+}
 
 export function DeliveryWorkspace({
   epicId,
@@ -21,8 +52,9 @@ export function DeliveryWorkspace({
 }) {
   const delivery = useEpicExecution(epicId, initialExecutionId);
   const workspace = useEpicWorkspace(epicId);
+  const workItemRuns = useEpicWorkItemRuns(epicId);
   const [manualIdInput, setManualIdInput] = useState('');
-  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ text: string; executionId: string | null } | null>(null);
 
   // Owner override start controls
   const [isStartingNew, setIsStartingNew] = useState(false);
@@ -30,6 +62,22 @@ export function DeliveryWorkspace({
   const [selectedBriefId, setSelectedBriefId] = useState('');
   const [selectedGraphId, setSelectedGraphId] = useState('');
   const [overrideNote, setOverrideNote] = useState('');
+  const [selectedItemId, setSelectedItemId] = useState('');
+  const [launchOverride, setLaunchOverride] = useState(false);
+  const [launchNote, setLaunchNote] = useState('');
+  const [launchedAttempt, setLaunchedAttempt] = useState<EpicAttemptResponse | null>(null);
+  const currentLaunchExecutionId = delivery.executionId ?? delivery.execution?.execution.execution_id ?? null;
+  const [launchExecutionId, setLaunchExecutionId] = useState(currentLaunchExecutionId);
+  if (launchExecutionId !== currentLaunchExecutionId) {
+    setLaunchExecutionId(currentLaunchExecutionId);
+    setSelectedItemId('');
+    setLaunchOverride(false);
+    setLaunchNote('');
+    setLaunchedAttempt(null);
+    if (actionNotice?.executionId !== currentLaunchExecutionId) {
+      setActionNotice(null);
+    }
+  }
 
   const {
     executionId,
@@ -41,6 +89,7 @@ export function DeliveryWorkspace({
     loading,
     failed,
     refresh,
+    refreshExecutions,
     isPendingDiscovery,
     controlState,
     controlVersion,
@@ -50,25 +99,66 @@ export function DeliveryWorkspace({
     blockerCode,
     startExecution,
     sendCommand,
+    setSequentialDispatch,
     mutations,
   } = delivery;
   const registerCompletion = mutations.registerCompletion;
+  const {
+    error: mutationError,
+    conflict: mutationConflict,
+    executionId: mutationExecutionId,
+    hasPendingRetry,
+    clearError,
+  } = mutations;
+  const isExecutionScopedMutation = ['execution-command', 'execution-dispatch', 'work-item-launch'].includes(mutations.actionKind ?? '');
+
+  const previousExecutionIdRef = useRef(currentLaunchExecutionId);
+  useEffect(() => {
+    if (previousExecutionIdRef.current !== currentLaunchExecutionId) {
+      previousExecutionIdRef.current = currentLaunchExecutionId;
+      if (isExecutionScopedMutation && mutationExecutionId && mutationExecutionId !== currentLaunchExecutionId &&
+          (mutationError || mutationConflict) && !hasPendingRetry) {
+        clearError();
+      }
+    }
+  }, [clearError, currentLaunchExecutionId, hasPendingRetry, isExecutionScopedMutation, mutationConflict, mutationError, mutationExecutionId]);
 
   useEffect(() => {
     const unregisterStart = registerCompletion('execution-start', value => {
-      if ((value as { execution_id?: string }).execution_id) {
-        setActionNotice('Execution started; loading frozen progress.');
+      const newId = (value as { execution_id?: string }).execution_id ?? null;
+      if (newId) {
+        setActionNotice({ text: 'Execution started; loading frozen progress.', executionId: newId });
       }
     });
     const unregisterCommand = registerCompletion('execution-command', (_value, request) => {
+      const commandExecId = request.path.match(/\/executions\/([^/?]+)\/commands/)?.[1] ?? null;
+      if (commandExecId && commandExecId !== currentLaunchExecutionId) return;
       const action = request.body.action;
       if (action === 'pause' || action === 'resume' || action === 'cancel') {
         const label = (action as string)[0].toUpperCase() + (action as string).slice(1);
-        setActionNotice(`${label} requested; waiting for server confirmation.`);
+        setActionNotice({ text: `${label} requested; waiting for server confirmation.`, executionId: commandExecId });
       }
     });
-    return () => { unregisterStart(); unregisterCommand(); };
-  }, [registerCompletion]);
+    const unregisterWorkItem = registerCompletion('work-item-launch', value => {
+      const attempt = value as EpicAttemptResponse;
+      if (attempt.execution_id === currentLaunchExecutionId) {
+        setLaunchedAttempt(attempt);
+        setActionNotice({ text: 'Work item launched; the run retains its normal approval gates.', executionId: attempt.execution_id });
+        setLaunchNote('');
+      }
+      refresh();
+    });
+    const unregisterDispatch = registerCompletion('execution-dispatch', (_value, request) => {
+      const dispatchExecId = request.path.match(/\/executions\/([^/?]+)\/dispatch/)?.[1] ?? null;
+      if (dispatchExecId && dispatchExecId !== currentLaunchExecutionId) {
+        refresh();
+        return;
+      }
+      setActionNotice({ text: request.body.enabled ? 'Sequential delivery enabled.' : 'Sequential delivery disabled.', executionId: dispatchExecId });
+      refresh();
+    });
+    return () => { unregisterStart(); unregisterCommand(); unregisterWorkItem(); unregisterDispatch(); };
+  }, [currentLaunchExecutionId, registerCompletion, refresh]);
 
   const savedGraphs = workspace.acceptedGraph && !workspace.graphRevisions.some(graph => graph.graph_revision_id === workspace.acceptedGraph?.graph_revision_id)
     ? [...workspace.graphRevisions, workspace.acceptedGraph]
@@ -148,6 +238,21 @@ export function DeliveryWorkspace({
     }
   };
 
+  const handleDispatchToggle = async () => {
+    if (!executionSnapshot || mutationPending) return;
+    const current = execution?.dispatch;
+    try {
+      await setSequentialDispatch(
+        !(current?.enabled ?? false),
+        current?.version ?? 0,
+        current?.profile_id ?? null,
+        current?.profile_version ?? null,
+      );
+    } catch {
+      // The mutation store retains version conflicts or the exact uncertain request.
+    }
+  };
+
   const handleManualIdSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (!mutations.hasPendingRetry && !mutations.loading && manualIdInput.trim()) {
@@ -164,10 +269,11 @@ export function DeliveryWorkspace({
 
   const frozenGraph = graphRevId
     ? workspace.graphRevisions.find(revision => revision.graph_revision_id === graphRevId)
+      ?? (workspace.acceptedGraph?.graph_revision_id === graphRevId ? workspace.acceptedGraph : undefined)
     : undefined;
   const frozenItems = new Map((frozenGraph?.items ?? []).map(item => [item.item_id, item]));
   const mutationPending = mutations.loading || mutations.hasPendingRetry;
-  const isDeliveryAction = !mutations.actionKind || ['execution-start', 'execution-command'].includes(mutations.actionKind);
+  const isDeliveryAction = !mutations.actionKind || ['execution-start', 'execution-command', 'execution-dispatch'].includes(mutations.actionKind);
 
   const effectiveState = (controlState ?? '').toUpperCase();
   const isSucceeded = effectiveState === 'SUCCEEDED';
@@ -179,6 +285,51 @@ export function DeliveryWorkspace({
 
   const hasUnsettledChildren = children.some(c => !c.effects_settled);
   const hasControlVersion = controlVersion !== null;
+  const nextReadyItem = execution?.items?.find(item => item.status === 'ready');
+  const firstBlockedItem = execution?.items?.find(item => item.status === 'blocked');
+
+  const executionAttempts = children
+    .map(c => c.attempt)
+    .sort((a, b) => {
+      if (a.created_at !== b.created_at) {
+        return a.created_at.localeCompare(b.created_at);
+      }
+      return a.attempt_number - b.attempt_number;
+    });
+
+  const latestChildByItemId = new Map<string, (typeof children)[number]>();
+  for (const child of children) {
+    const existing = latestChildByItemId.get(child.attempt.item_id);
+    if (!existing || child.attempt.attempt_number > existing.attempt.attempt_number) {
+      latestChildByItemId.set(child.attempt.item_id, child);
+    }
+  }
+
+  const launchWorkItem = async () => {
+    if (!executionSnapshot || !selectedItemId || mutationPending) return;
+    try {
+      await workItemRuns.launch({
+        schema_version: 1,
+        expected_epic_version: epicVersion,
+        execution_id: executionSnapshot.execution_id,
+        brief_revision_id: executionSnapshot.brief_revision_id,
+        brief_digest: executionSnapshot.brief_digest,
+        graph_revision_id: executionSnapshot.graph_revision_id,
+        graph_digest: executionSnapshot.graph_digest,
+        item_id: selectedItemId,
+        owner_override: launchOverride,
+        ...(launchOverride && launchNote.trim() ? { override_note: launchNote.trim() } : {}),
+      });
+    } catch {
+      // The shared mutation store retains definitive blockers or the exact uncertain request.
+    }
+  };
+
+  const isExecutionMatchingMutation = !mutations.executionId || mutations.executionId === currentLaunchExecutionId;
+  const launchBlockers = (isExecutionMatchingMutation && mutations.actionKind === 'work-item-launch')
+    ? (mutations.errorDetail?.blocker_codes ?? [])
+    : [];
+  const isWorkItemLaunchError = mutations.actionKind === 'work-item-launch' && !!mutations.error && isExecutionMatchingMutation;
 
   return (
     <div className="delivery-workspace space-y-6">
@@ -186,6 +337,9 @@ export function DeliveryWorkspace({
       {mutations.hasPendingRetry && !mutations.shared && (
         <div role="alert" className="p-4 bg-[var(--warning-soft)] text-[var(--warning)] rounded border border-[var(--border)] space-y-2">
           <p className="font-semibold">Network or server error. Mutation outcome uncertain.</p>
+          <p>{mutations.executionId
+            ? `The original request belongs to execution ${mutations.executionId}.`
+            : 'The original request belongs to this epic.'}</p>
           <div className="flex space-x-2">
             <Button variant="primary" disabled={mutations.loading} onClick={() => { void mutations.retryPending().catch(() => undefined); }}>
               {mutations.loading ? 'Retrying…' : 'Retry original request'}
@@ -194,11 +348,13 @@ export function DeliveryWorkspace({
         </div>
       )}
 
-      {mutations.conflict && isDeliveryAction && (
+      {mutations.conflict && isDeliveryAction && isExecutionMatchingMutation && (
         <div role="alert" className="p-4 bg-[var(--danger-soft)] text-[var(--danger)] rounded border border-[var(--border)] space-y-1">
           <p className="font-semibold">
             {mutations.actionKind === 'execution-command'
               ? 'Conflict: Execution version has changed concurrently.'
+              : mutations.actionKind === 'execution-dispatch'
+              ? 'Conflict: Sequential delivery settings changed on the server.'
               : 'Conflict: The epic version changed on the server before starting execution.'}
           </p>
           <Button variant="secondary" onClick={() => { mutations.clearError(); refresh(); }}>
@@ -207,16 +363,16 @@ export function DeliveryWorkspace({
         </div>
       )}
 
-      {mutations.error && !mutations.conflict && isDeliveryAction && (
+      {mutations.error && !mutations.conflict && isDeliveryAction && isExecutionMatchingMutation && (
         <div role="alert" className="p-4 bg-[var(--danger-soft)] text-[var(--danger)] rounded border border-[var(--border)] space-y-2">
           <p>{mutations.error}</p>
           <Button variant="quiet" onClick={mutations.clearError}>Dismiss message</Button>
         </div>
       )}
 
-      {actionNotice && (
+      {actionNotice && (!actionNotice.executionId || actionNotice.executionId === currentLaunchExecutionId) && (
         <div role="status" className="p-3 bg-[var(--success-soft)] text-[var(--success)] rounded text-sm">
-          {actionNotice}
+          {actionNotice.text}
         </div>
       )}
 
@@ -245,6 +401,14 @@ export function DeliveryWorkspace({
                 </option>
               ))}
             </select>
+            <Button
+              type="button"
+              variant="quiet"
+              disabled={mutationPending || executionsLoading}
+              onClick={() => refreshExecutions()}
+            >
+              Refresh Discovery
+            </Button>
           </div>
           {!isStartingNew && (
             <Button
@@ -275,6 +439,18 @@ export function DeliveryWorkspace({
                   ? 'No executions discovered for this epic yet. You can start an execution using the current accepted pair or alternate saved sources, or load an execution by ID.'
                   : 'Start a new execution epoch. Previous frozen executions will remain available in history.'}
               </p>
+              {(executionsFailed || executions.length === 0 || isPendingDiscovery) && (
+                <div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={mutationPending || executionsLoading}
+                    onClick={() => refreshExecutions()}
+                  >
+                    {executionsFailed ? 'Retry Discovery' : 'Refresh Discovery'}
+                  </Button>
+                </div>
+              )}
             </div>
 
             <form onSubmit={handleManualIdSubmit} className="flex flex-col sm:flex-row gap-2">
@@ -511,6 +687,12 @@ export function DeliveryWorkspace({
                   ? 'The execution is paused. Resume it when ready; any active child gate remains in place.'
                   : children.some(c => c.pending_gate || c.retained_gate)
                   ? `Review the ${children.find(c => c.pending_gate || c.retained_gate)?.pending_gate ?? children.find(c => c.pending_gate || c.retained_gate)?.retained_gate} gate for the active child run.`
+                  : nextReadyItem
+                  ? `Next ready work item: ${frozenItems.get(nextReadyItem.item_id)?.title ?? 'Saved work item'}. Launch it below or enable sequential delivery.`
+                  : firstBlockedItem
+                  ? `Delivery is waiting: ${blockerText(firstBlockedItem.blocker_code)} Review its server evidence below.`
+                  : execution?.items?.length
+                  ? 'The server has no ready item to launch. Review the saved statuses below.'
                   : 'Execution is active.'}
               </p>
             </Panel>
@@ -528,6 +710,41 @@ export function DeliveryWorkspace({
               )}
             </Panel>
           </div>
+
+          <Panel
+            title="Sequential Delivery"
+            description="When enabled, Forge may admit the next eligible saved item after integration is verified. Existing child plan, PR and merge gates remain in place."
+          >
+            <div className="space-y-3 text-sm">
+              <p className="font-medium">Sequential delivery is {execution.dispatch?.enabled ? 'on.' : 'off.'}</p>
+              {execution.dispatch?.blocker_code && (
+                <div role="status" className="p-3 border border-[var(--warning)] bg-[var(--warning-soft)] rounded text-[var(--warning)]">
+                  {blockerText(execution.dispatch.blocker_code)} The server will decide whether the requested change can proceed.
+                </div>
+              )}
+              <p className="text-[var(--muted)]">
+                The server currently reports {execution.dispatch?.enabled ? 'automatic sequential admission enabled' : 'automatic admission disabled'} for this execution. Enabling it does not approve a child run or declare integration complete.
+              </p>
+              <EvidenceDetails summary="Inspect sequential delivery settings">
+                <span>dispatch version: {execution.dispatch?.version ?? 0}</span>
+                <span>profile_id: {execution.dispatch?.profile_id ?? 'null'}</span>
+                <span>profile_version: {execution.dispatch?.profile_version ?? 'null'}</span>
+                <span>enabled_by_actor_id: {execution.dispatch?.enabled_by_actor_id ?? 'null'}</span>
+                <span>claim_item_id: {execution.dispatch?.claim_item_id ?? 'null'}</span>
+                <span>claim_expires_at: {execution.dispatch?.claim_expires_at ?? 'null'}</span>
+                {execution.dispatch?.blocker_code && <span>blocker_code: {execution.dispatch.blocker_code}</span>}
+              </EvidenceDetails>
+              <Button
+                variant={execution.dispatch?.enabled ? 'secondary' : 'primary'}
+                disabled={mutationPending || !executionSnapshot || (mutations.conflict && mutations.actionKind === 'execution-dispatch')}
+                onClick={() => { void handleDispatchToggle(); }}
+              >
+                {mutationPending && mutations.actionKind === 'execution-dispatch'
+                  ? 'Saving delivery setting…'
+                  : execution.dispatch?.enabled ? 'Disable Sequential Delivery' : 'Enable Sequential Delivery'}
+              </Button>
+            </div>
+          </Panel>
 
           {/* Recent Intents & Refusals */}
           {intents.length > 0 ? (
@@ -644,15 +861,22 @@ export function DeliveryWorkspace({
           {/* Item Progression */}
           <Panel title="Work-Item Progression">
             {!frozenGraph && <p role="status" className="mb-3 text-sm text-[var(--muted)]">Details for this frozen graph are {workspace.loadingGraphRevisions ? 'loading' : 'unavailable'}.</p>}
+            {(!execution.items || execution.items.length === 0) && <p className="mb-3 text-sm text-[var(--muted)]">No server readiness items are available for this execution; no status is inferred from the saved graph or child run state.</p>}
             <div className="space-y-2">
               {(frozenGraph?.items ?? []).map((it, idx) => {
-                const child = children.find(c => c.attempt.item_id === it.item_id);
+                const child = latestChildByItemId.get(it.item_id);
+                const readiness = execution.items?.find(item => item.item_id === it.item_id);
                 return (
                   <div key={it.item_id} className="p-3 border border-[var(--border)] rounded text-sm flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 min-w-0 break-words">
                     <div className="flex flex-wrap items-center gap-2 min-w-0">
                       <span className="font-semibold">#{idx + 1} {it.title}</span>
                       <StatusBadge label={it.disposition ?? 'required'} tone={it.disposition === 'deferred' ? 'warning' : 'neutral'} />
-                      {child && <StatusBadge label={child.run_state.replaceAll('_', ' ')} tone="info" />}
+                      {readiness && <StatusBadge
+                        label={readinessLabel(readiness.status, readiness.blocker_code)}
+                        tone={readiness.status === 'verified' ? 'success' : readiness.status === 'blocked' ? 'danger' : readiness.status === 'deferred' ? 'warning' : 'info'}
+                      />}
+                      {!readiness && <StatusBadge label="Readiness unavailable" tone="warning" />}
+                      {child && <span className="text-xs text-[var(--muted)]">Child run status: {child.run_state.replaceAll('_', ' ')}</span>}
                     </div>
                     {child && (
                       <Link href={`/runs/${child.attempt.run_id}`} className="text-xs text-[var(--focus)] hover:underline">
@@ -663,10 +887,133 @@ export function DeliveryWorkspace({
                       <span>item_id: {it.item_id}</span>
                       {it.item_digest && <span>item_digest: {it.item_digest}</span>}
                     </EvidenceDetails>
+                    {readiness && <EvidenceDetails summary="Inspect readiness evidence">
+                      <span>server readiness: {readiness.status}</span>
+                      <span>disposition: {readiness.disposition}</span>
+                      <span>blocker_code: {readiness.blocker_code ?? 'null'}</span>
+                      {readiness.completion_evidence && <div className="pt-1">
+                        <span>completion evidence status: {readiness.completion_evidence.status}</span>
+                        <span>completion blocker_code: {readiness.completion_evidence.blocker_code ?? 'null'}</span>
+                        <span>predecessor_run_id: {readiness.completion_evidence.predecessor_run_id ?? 'null'}</span>
+                        <span>integrated_sha: {readiness.completion_evidence.integrated_sha ?? 'null'}</span>
+                        <span>handoff_id: {readiness.completion_evidence.handoff_id ?? 'null'}</span>
+                      </div>}
+                      {!readiness.completion_evidence && <span>completion evidence: none</span>}
+                      {readiness.dependency_evidence.map(evidence => <div key={evidence.item_id} className="pt-1">
+                        <span>dependency item_id: {evidence.item_id}</span>
+                        <span>dependency status: {evidence.status}</span>
+                        <span>dependency blocker_code: {evidence.blocker_code ?? 'null'}</span>
+                        <span>predecessor_run_id: {evidence.predecessor_run_id ?? 'null'}</span>
+                        <span>integrated_sha: {evidence.integrated_sha ?? 'null'}</span>
+                        <span>handoff_id: {evidence.handoff_id ?? 'null'}</span>
+                      </div>)}
+                    </EvidenceDetails>}
                   </div>
                 );
               })}
             </div>
+          </Panel>
+
+          <Panel
+            title="Manual Work-Item Launch"
+            description="Launch a saved item from this execution. The server checks readiness; child runs keep their normal plan, PR and merge gates."
+          >
+            {!frozenGraph ? (
+              <p role="status" className="text-sm text-[var(--muted)]">
+                The frozen saved graph is {workspace.loadingGraphRevisions ? 'loading' : 'unavailable'}; no item can be launched until its saved source is available.
+              </p>
+            ) : frozenGraph.items.length === 0 ? (
+              <p className="text-sm text-[var(--muted)]">This saved graph has no work items to launch.</p>
+            ) : (
+              <div className="space-y-3">
+                <label htmlFor="manual-work-item" className="block text-sm font-medium">Saved work item</label>
+                <select
+                  id="manual-work-item"
+                  className="w-full max-w-2xl px-3 py-2 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"
+                  value={selectedItemId}
+                  disabled={mutationPending}
+                  onChange={event => setSelectedItemId(event.target.value)}
+                >
+                  <option value="">Choose an item from the frozen graph</option>
+                  {frozenGraph.items.map(item => (
+                    <option key={item.item_id} value={item.item_id}>
+                      {item.title} · {item.disposition ?? 'required'}
+                    </option>
+                  ))}
+                </select>
+                {selectedItemId && frozenItems.get(selectedItemId) && (
+                  <p className="text-sm text-[var(--muted)]">
+                    {frozenItems.get(selectedItemId)?.outcome} · saved disposition: {frozenItems.get(selectedItemId)?.disposition ?? 'required'}
+                  </p>
+                )}
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={launchOverride}
+                    disabled={mutationPending}
+                    onChange={event => setLaunchOverride(event.target.checked)}
+                  />
+                  <span>Owner override: launch despite server-reported workflow warnings</span>
+                </label>
+                {launchOverride && (
+                  <div className="p-3 border border-[var(--warning)] bg-[var(--warning-soft)] rounded space-y-2">
+                    <p className="text-sm font-medium text-[var(--warning)]">The server will retain the saved disposition and any unresolved dependency evidence.</p>
+                    <label htmlFor="manual-launch-note" className="block text-sm">Override note (optional)</label>
+                    <input
+                      id="manual-launch-note"
+                      className="w-full max-w-2xl px-3 py-2 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"
+                      value={launchNote}
+                      maxLength={2048}
+                      disabled={mutationPending}
+                      onChange={event => setLaunchNote(event.target.value)}
+                    />
+                  </div>
+                )}
+                {isWorkItemLaunchError && (
+                  <div role="alert" className="p-3 border border-[var(--warning)] bg-[var(--warning-soft)] rounded space-y-2 text-sm">
+                    <p>{launchBlockers.length ? 'The server blocked this launch:' : mutations.error}</p>
+                    {launchBlockers.length > 0 && <ul className="list-disc pl-5">
+                      {launchBlockers.map(code => <li key={code}>{blockerLabels[code] ?? `The server reported: ${code.replaceAll('_', ' ')}.`}</li>)}
+                    </ul>}
+                    {launchBlockers.length > 0 && <EvidenceDetails summary="Inspect server launch evidence">
+                      <span>blocker_codes: {launchBlockers.join(', ')}</span>
+                      <span>actual_epic_version: {mutations.errorDetail?.actual_epic_version}</span>
+                    </EvidenceDetails>}
+                    {!launchOverride && launchBlockers.length > 0 && <p>Choose the owner override to make a new, explicit launch request.</p>}
+                  </div>
+                )}
+                {launchedAttempt && launchedAttempt.execution_id === executionSnapshot?.execution_id && (
+                  <div role="status" className="p-3 border border-[var(--border)] rounded space-y-2 text-sm">
+                    <p>Server created attempt {launchedAttempt.attempt_number} for the saved {launchedAttempt.item_disposition} item. This is a run launch, not a completion or integration claim.</p>
+                    {launchedAttempt.blocker_codes.length > 0 && <p className="text-[var(--warning)]">Warnings retained: {launchedAttempt.blocker_codes.map(code => blockerLabels[code] ?? code.replaceAll('_', ' ')).join('; ')}</p>}
+                    <Link className="text-[var(--focus)] hover:underline" href={`/runs/${launchedAttempt.run_id}`}>Open launched run</Link>
+                    <EvidenceDetails summary="Inspect launch receipt">
+                      <span>attempt_id: {launchedAttempt.attempt_id}</span>
+                      <span>run_id: {launchedAttempt.run_id}</span>
+                      <span>task_id: {launchedAttempt.task_id}</span>
+                      <span>execution_id: {launchedAttempt.execution_id}</span>
+                    </EvidenceDetails>
+                  </div>
+                )}
+                {executionAttempts.length > 0 && (
+                  <div className="space-y-2">
+                    <h3 className="font-medium text-sm">Saved attempts in this execution</h3>
+                    {executionAttempts.map(attempt => (
+                      <div key={attempt.attempt_id} className="flex flex-wrap items-center gap-2 text-sm border-t border-[var(--border)] pt-2">
+                        <span>Attempt {attempt.attempt_number} · {frozenItems.get(attempt.item_id)?.title ?? 'Saved work item'} · {attempt.item_disposition}</span>
+                        <Link className="text-[var(--focus)] hover:underline" href={`/runs/${attempt.run_id}`}>Open run</Link>
+                        {attempt.blocker_codes.length > 0 && <span className="text-[var(--warning)]">Warnings: {attempt.blocker_codes.map(code => blockerLabels[code] ?? code.replaceAll('_', ' ')).join(', ')}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <Button
+                  variant="primary"
+                  disabled={!selectedItemId || mutationPending || !executionSnapshot || executionSnapshot.epic_id !== epicId}
+                  onClick={() => { void launchWorkItem(); }}
+                >Launch Work Item</Button>
+              </div>
+            )}
           </Panel>
 
           {/* Shared Epic Budget Panel */}

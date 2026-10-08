@@ -21,6 +21,11 @@ from forge.application.services.epic_budget import (
     EpicBudgetProjection,
     EpicBudgetReceipt,
 )
+from forge.application.services.epic_dispatch import (
+    EpicDispatchConflict,
+    EpicDispatchProjection,
+    EpicDispatchRequest,
+)
 from forge.application.services.epic_lifecycle import (
     EpicControlReceipt,
     EpicControlRequest,
@@ -124,6 +129,51 @@ def router_for() -> APIRouter:
             raise HTTPException(
                 status_code=409, detail={"blocker_codes": error.blocker_codes}
             ) from None
+        except Exception as error:  # noqa: BLE001
+            raise translate_error(error) from None
+
+    @router.get(
+        "/epics/{epic_id}/executions/{execution_id}/dispatch",
+        response_model=EpicDispatchProjection,
+    )
+    async def get_dispatch(
+        epic_id: UUID,
+        execution_id: UUID,
+        request: Request,
+        _actor: AuthenticatedActor = Depends(require_operator),  # noqa: B008
+    ) -> EpicDispatchProjection:
+        try:
+            return EpicDispatchProjection.model_validate(
+                await request.app.state.epic_dispatch_service.get(epic_id, execution_id)
+            )
+        except EpicExecutionNotFound:
+            raise HTTPException(status_code=404, detail="execution not found") from None
+        except Exception as error:  # noqa: BLE001
+            raise translate_error(error) from None
+
+    @router.put(
+        "/epics/{epic_id}/executions/{execution_id}/dispatch",
+        response_model=EpicDispatchProjection,
+    )
+    async def configure_dispatch(
+        epic_id: UUID,
+        execution_id: UUID,
+        body: EpicDispatchRequest,
+        request: Request,
+        idempotency_key: str = Depends(require_idempotency_key),
+        actor: AuthenticatedActor = Depends(require_operator_mutation),  # noqa: B008
+    ) -> EpicDispatchProjection:
+        try:
+            return EpicDispatchProjection.model_validate(
+                await request.app.state.epic_dispatch_service.configure(
+                    actor=actor, epic_id=epic_id, execution_id=execution_id,
+                    idempotency_key=idempotency_key, request=body,
+                )
+            )
+        except EpicExecutionNotFound:
+            raise HTTPException(status_code=404, detail="execution not found") from None
+        except EpicDispatchConflict:
+            raise HTTPException(status_code=409, detail="dispatch version is stale") from None
         except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
 

@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-CURRENT_REVISION = "20261004_0034"
+CURRENT_REVISION = "20261007_0037"
 V01_TABLES = {
     "recovery_barrier",
     "api_mutations",
@@ -70,7 +70,14 @@ EXPECTED_TABLES = V01_TABLES | {
     "epic_brainstorm_quota_admissions",
     "epic_brainstorm_budget_ledgers",
     "epic_executions",
+    "epic_execution_controls",
+    "epic_control_intents",
+    "epic_child_budget_holds",
+    "epic_admission_scan_cursor",
+    "epic_budget_admission_permits",
     "epic_item_attempts",
+    "epic_completion_handoffs",
+    "epic_dispatch_settings",
     "jev_evaluations",
     "capability_evidence",
     "capability_probe_diagnostics",
@@ -720,8 +727,11 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
         ("epic_brainstorm_receipts", "response"),
         ("epic_brainstorm_audit", "detail"),
         ("epic_brainstorm_budget_ledgers", "ceiling"),
+        ("epic_brainstorm_budget_ledgers", "disabled_dimensions"),
         ("epic_item_attempts", "blocker_codes"),
         ("epic_item_attempts", "dependency_evidence"),
+        ("epic_child_budget_holds", "budget_payload"),
+        ("epic_budget_admission_permits", "warnings"),
         ("subscription_profile_versions", "payload"),
         ("subscription_envelopes", "payload"),
         ("subscription_tasks", "payload"),
@@ -751,6 +761,10 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
         ("jev_evaluations", "scores"),
     }
     alternate_primary_keys = {
+        "epic_execution_controls": {"execution_id": Uuid},
+        "epic_child_budget_holds": {"attempt_id": Uuid},
+        "epic_admission_scan_cursor": {"id": Integer},
+        "epic_dispatch_settings": {"execution_id": Uuid},
         "epic_brainstorm_quota_admissions": {"attempt_id": Uuid},
         "epic_brainstorm_budget_ledgers": {"epic_id": Uuid},
         "subscription_application_diagnostics": {"attempt_id": Uuid},

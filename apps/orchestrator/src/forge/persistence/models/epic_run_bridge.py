@@ -73,6 +73,15 @@ class EpicExecutionControl(Base):
     """Mutable authority for an immutable execution source snapshot."""
 
     __tablename__ = "epic_execution_controls"
+    __table_args__ = (
+        Index("ix_epic_execution_controls_epic", "epic_id"),
+        # Migration 0035 is already released with convention-prefixed names.
+        CheckConstraint("version >= 1", name="ck_epic_execution_controls_version"),
+        CheckConstraint(
+            "state IN ('ACTIVE','PAUSE_REQUESTED','PAUSED','RESUME_REQUESTED','CANCEL_REQUESTED','BLOCKED','SUCCEEDED','CANCELLED')",
+            name="ck_epic_execution_controls_state",
+        ),
+    )
     execution_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("epic_executions.id", ondelete="RESTRICT"), primary_key=True
     )
@@ -95,6 +104,7 @@ class EpicControlIntent(Base):
         UniqueConstraint(
             "execution_id", "control_version", "run_id", name="uq_epic_control_intent_child"
         ),
+        Index("ix_epic_control_intents_pending", "status", "execution_id"),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     execution_id: Mapped[UUID] = mapped_column(
@@ -203,6 +213,7 @@ class EpicChildBudgetHold(Base):
     """Run-level exposure floor until child process and effects settle."""
 
     __tablename__ = "epic_child_budget_holds"
+    __table_args__ = (Index("ix_epic_child_budget_holds_epic", "epic_id"),)
     attempt_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("epic_item_attempts.id", ondelete="RESTRICT"), primary_key=True
     )
@@ -221,6 +232,7 @@ class EpicBudgetAdmissionPermit(Base):
     """One authenticated owner authorization for a concrete bound child run."""
 
     __tablename__ = "epic_budget_admission_permits"
+    __table_args__ = (Index("ix_epic_budget_admission_permits_run", "run_id", "created_at"),)
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     epic_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("epics.id", ondelete="RESTRICT"), nullable=False

@@ -1,5 +1,5 @@
-import { resetEpicMutationStoreForTesting } from '@/hooks/epics/use-epic-mutations';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { EpicMutationProvider, resetEpicMutationStoreForTesting, useEpicMutations } from '@/hooks/epics/use-epic-mutations';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { DeliveryWorkspace } from './delivery-workspace';
@@ -77,6 +77,7 @@ describe('DeliveryWorkspace', () => {
     ],
     intents: [],
     owner_actions: [],
+    items: [],
   };
 
   const frozenGraph: GraphRevisionResponse = {
@@ -615,6 +616,66 @@ describe('DeliveryWorkspace', () => {
     expect(await screen.findByText('Conflict: Execution version has changed concurrently.')).toBeInTheDocument();
   });
 
+  test('hides an execution-command conflict when the route changes to another execution', async () => {
+    const nextExecutionId = '99999999-9999-4999-8999-999999999999';
+    const nextProjection = {
+      ...defaultProjection,
+      execution: { ...defaultProjection.execution, execution_id: nextExecutionId },
+    };
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/executions` && !init?.method) return [defaultProjection, nextProjection] as T;
+      if (path === `/epics/${epicId}/executions/${executionId}` && (!init?.method || init.method === 'GET')) return defaultProjection as T;
+      if (path === `/epics/${epicId}/executions/${nextExecutionId}` && (!init?.method || init.method === 'GET')) return nextProjection as T;
+      if (path === `/epics/${epicId}/executions/${executionId}/commands` && init?.method === 'POST') throw new ApiError(409, 'version-conflict');
+      return undefined as T;
+    });
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Pause Execution' }));
+    expect(await screen.findByText('Conflict: Execution version has changed concurrently.')).toBeInTheDocument();
+
+    rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={nextExecutionId} epicVersion={7} />);
+    await waitFor(() => expect(screen.getByText(`execution_id: ${nextExecutionId}`)).toBeInTheDocument());
+    expect(screen.queryByText('Conflict: Execution version has changed concurrently.')).not.toBeInTheDocument();
+  });
+
+  test.each([
+    ['brief-edit', `/epics/${epicId}`, 'Epic version conflict'],
+    ['budget-edit', `/epics/${epicId}/budget`, 'Budget version conflict'],
+    ['execution-start', `/epics/${epicId}/executions`, 'Epic version conflict'],
+  ])('preserves epic-scoped %s feedback after the displayed execution changes', async (kind, path, errorText) => {
+    const nextExecutionId = '99999999-9999-4999-8999-999999999999';
+    const nextProjection = {
+      ...defaultProjection,
+      execution: { ...defaultProjection.execution, execution_id: nextExecutionId },
+    };
+    vi.mocked(api).mockImplementation(async <T,>(requestedPath: string, init?: RequestInit) => {
+      if (requestedPath === `/epics/${epicId}/executions` && !init?.method) return [defaultProjection, nextProjection] as T;
+      if (requestedPath === `/epics/${epicId}/executions/${executionId}` && (!init?.method || init.method === 'GET')) return defaultProjection as T;
+      if (requestedPath === `/epics/${epicId}/executions/${nextExecutionId}` && (!init?.method || init.method === 'GET')) return nextProjection as T;
+      if (requestedPath === path && init?.method) throw new ApiError(409, 'version-conflict');
+      return undefined as T;
+    });
+
+    function MutationProbe({ selectedExecutionId }: { selectedExecutionId: string }) {
+      const mutations = useEpicMutations(epicId);
+      return <>
+        <DeliveryWorkspace epicId={epicId} initialExecutionId={selectedExecutionId} epicVersion={7} />
+        <button onClick={() => { void mutations.execute('PATCH', path, {}, { kind }).catch(() => undefined); }}>Create epic-scoped conflict</button>
+        <output aria-label="Mutation error">{mutations.error}</output>
+      </>;
+    }
+
+    const { rerender } = render(
+      <EpicMutationProvider epicId={epicId}><MutationProbe selectedExecutionId={executionId} /></EpicMutationProvider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Create epic-scoped conflict' }));
+    expect(await screen.findByLabelText('Mutation error')).toHaveTextContent(errorText);
+
+    rerender(<EpicMutationProvider epicId={epicId}><MutationProbe selectedExecutionId={nextExecutionId} /></EpicMutationProvider>);
+    await waitFor(() => expect(screen.getByText(`execution_id: ${nextExecutionId}`)).toBeInTheDocument());
+    expect(screen.getByLabelText('Mutation error')).toHaveTextContent(errorText);
+  });
+
   test('shows epic version conflict on execution-start 409', async () => {
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/epics/${epicId}/executions` && init?.method === 'POST') throw new ApiError(409, 'version-conflict');
@@ -872,5 +933,336 @@ describe('DeliveryWorkspace', () => {
     // Actual frozen IDs remain unchanged
     expect(screen.getByText(`brief_revision_id: ${briefRevId}`)).toBeInTheDocument();
     expect(screen.getByText(`graph_revision_id: ${graphRevId}`)).toBeInTheDocument();
+  });
+
+  test.each(['empty', 'failed'] as const)('explicit discovery refresh on %s discovery finds new execution', async initial => {
+    let executionsCalls = 0;
+    let shouldFail = initial === 'failed';
+    let hasNewExecution = false;
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path === `/epics/${epicId}/executions`) {
+        executionsCalls += 1;
+        if (shouldFail) {
+          throw new Error('Discovery error');
+        }
+        return (hasNewExecution ? [defaultProjection] : []) as T;
+      }
+      if (path === `/epics/${epicId}/executions/${executionId}`) return defaultProjection as T;
+      return undefined as T;
+    });
+
+    render(<DeliveryWorkspace epicId={epicId} epicVersion={7} />);
+
+    // Explicit refresh is available even before an execution is discovered.
+    const retryBtn = await screen.findByRole('button', { name: initial === 'failed' ? 'Retry Discovery' : 'Refresh Discovery' });
+    expect(retryBtn).toBeInTheDocument();
+    expect(executionsCalls).toBe(1);
+
+    shouldFail = false;
+    hasNewExecution = true;
+    await userEvent.click(retryBtn);
+
+    // After retry, execution is discovered and loaded
+    expect(await screen.findByText('Frozen Execution Progress')).toBeInTheDocument();
+    expect(executionsCalls).toBe(2);
+  });
+
+  test('discovered executions bar provides explicit discovery refresh', async () => {
+    let executionsCalls = 0;
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path === `/epics/${epicId}/executions`) {
+        executionsCalls += 1;
+        return [defaultProjection] as T;
+      }
+      if (path === `/epics/${epicId}/executions/${executionId}`) return defaultProjection as T;
+      return undefined as T;
+    });
+
+    render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+    const refreshBtn = await screen.findByRole('button', { name: 'Refresh Discovery' });
+    expect(refreshBtn).toBeInTheDocument();
+    expect(executionsCalls).toBe(1);
+
+    await userEvent.click(refreshBtn);
+    expect(executionsCalls).toBe(2);
+  });
+
+  test('worker-created attempts appear in saved history and progress reflects latest retry without browser launch callbacks', async () => {
+    vi.useFakeTimers();
+    try {
+      const emptyProjection: EpicExecutionProjection = {
+        ...defaultProjection,
+        children: [],
+      };
+
+      let currentProjection = emptyProjection;
+      vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+        if (path === `/epics/${epicId}/executions`) return [defaultProjection] as T;
+        if (path === `/epics/${epicId}/executions/${executionId}`) return currentProjection as T;
+        return undefined as T;
+      });
+
+      render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText('Frozen Execution Progress')).toBeInTheDocument();
+      expect(screen.queryByText('Saved attempts in this execution')).not.toBeInTheDocument();
+
+      // 1. Worker adds first attempt: selected execution update brings it into saved history
+      const attempt1Child = {
+        attempt: {
+          ...defaultProjection.children[0].attempt,
+          attempt_id: 'att-1',
+          attempt_number: 1,
+          run_id: '11111111-run-1111',
+        },
+        run_version: 1,
+        run_state: 'FAILED' as const,
+        effects_settled: true,
+        pending_gate: null,
+        retained_gate: null,
+      };
+      currentProjection = {
+        ...defaultProjection,
+        children: [attempt1Child],
+      };
+
+      // The selected-execution poll observes the worker's new attempt.
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(screen.getByText('Saved attempts in this execution')).toBeInTheDocument();
+      expect(screen.getByText(/Attempt 1 · Frozen authentication delivery · required/i)).toBeInTheDocument();
+      expect(screen.getByText('Child run status: FAILED')).toBeInTheDocument();
+      const progression = screen.getByRole('heading', { name: 'Work-Item Progression' }).closest('section')!;
+      const savedAttempts = screen.getByText('Saved attempts in this execution').closest('div')!;
+      expect(within(progression).getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/11111111-run-1111');
+      expect(within(savedAttempts).getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/11111111-run-1111');
+
+      // 2. Worker appends later retry: history retains BOTH, progress shows latest run and state
+      const attempt2Child = {
+        attempt: {
+          ...defaultProjection.children[0].attempt,
+          attempt_id: 'att-2',
+          attempt_number: 2,
+          run_id: '22222222-run-2222',
+        },
+        run_version: 2,
+        run_state: 'IMPLEMENTING' as const,
+        effects_settled: false,
+        pending_gate: null,
+        retained_gate: null,
+      };
+      currentProjection = {
+        ...defaultProjection,
+        children: [attempt1Child, attempt2Child],
+      };
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(screen.getByText(/Attempt 1 · Frozen authentication delivery · required/i)).toBeInTheDocument();
+      expect(screen.getByText(/Attempt 2 · Frozen authentication delivery · required/i)).toBeInTheDocument();
+      // Progress points to latest attempt (Attempt 2)
+      expect(screen.getByText('Child run status: IMPLEMENTING')).toBeInTheDocument();
+      expect(within(progression).getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/22222222-run-2222');
+      const savedLinks = within(savedAttempts).getAllByRole('link', { name: 'Open run' });
+      expect(savedLinks.map(l => l.getAttribute('href'))).toEqual(['/runs/11111111-run-1111', '/runs/22222222-run-2222']);
+      expect(vi.mocked(api).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+      expect(vi.mocked(api).mock.calls.some(([path]) => path === `/epics/${epicId}/work-item-runs`)).toBe(false);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  test('switching execution with shared item UUID does not leak cross-execution history', async () => {
+    const execAId = executionId;
+    const execBId = '99999999-9999-4999-8999-999999999999';
+
+    const projectionA: EpicExecutionProjection = {
+      ...defaultProjection,
+      execution: { ...defaultProjection.execution, execution_id: execAId },
+      children: [
+        {
+          attempt: {
+            ...defaultProjection.children[0].attempt,
+            execution_id: execAId,
+            attempt_id: 'att-a-1',
+            attempt_number: 1,
+            run_id: 'aaaa-run-1',
+          },
+          run_version: 1,
+          run_state: 'IMPLEMENTING' as const,
+          effects_settled: false,
+          pending_gate: null,
+          retained_gate: null,
+        },
+      ],
+    };
+
+    const projectionB: EpicExecutionProjection = {
+      ...defaultProjection,
+      execution: { ...defaultProjection.execution, execution_id: execBId },
+      children: [
+        {
+          attempt: {
+            ...defaultProjection.children[0].attempt,
+            execution_id: execBId,
+            attempt_id: 'att-b-1',
+            attempt_number: 1,
+            run_id: 'bbbb-run-1',
+          },
+          run_version: 1,
+          run_state: 'COMPLETED' as const,
+          effects_settled: true,
+          pending_gate: null,
+          retained_gate: null,
+        },
+      ],
+    };
+
+    let resolveB: ((value: EpicExecutionProjection) => void) | undefined;
+    const pendingB = new Promise<EpicExecutionProjection>(resolve => { resolveB = resolve; });
+
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path === `/epics/${epicId}/executions`) return [projectionA, projectionB] as T;
+      if (path === `/epics/${epicId}/executions/${execAId}`) return projectionA as T;
+      if (path === `/epics/${epicId}/executions/${execBId}`) return await pendingB as T;
+      return undefined as T;
+    });
+
+    const { rerender } = render(<DeliveryWorkspace epicId={epicId} initialExecutionId={execAId} epicVersion={7} />);
+    expect(await screen.findByText('Saved attempts in this execution')).toBeInTheDocument();
+    const progressionA = screen.getByRole('heading', { name: 'Work-Item Progression' }).closest('section')!;
+    expect(within(progressionA).getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/aaaa-run-1');
+
+    // Switch to B via route
+    rerender(<DeliveryWorkspace epicId={epicId} initialExecutionId={execBId} epicVersion={7} />);
+    expect(screen.queryByText('Saved attempts in this execution')).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('link', { name: 'Open run' }).map(link => link.getAttribute('href'))).not.toContain('/runs/aaaa-run-1');
+    await act(async () => { resolveB?.(projectionB); });
+    await waitFor(() => {
+      const progressionB = screen.getByRole('heading', { name: 'Work-Item Progression' }).closest('section')!;
+      expect(within(progressionB).getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/bbbb-run-1');
+    });
+    // History contains only B's attempt
+    const savedAttemptsB = screen.getByText('Saved attempts in this execution').closest('div')!;
+    expect(within(savedAttemptsB).getAllByRole('link', { name: 'Open run' }).map(link => link.getAttribute('href'))).toEqual(['/runs/bbbb-run-1']);
+    expect(screen.getAllByRole('link', { name: 'Open run' }).map(link => link.getAttribute('href'))).not.toContain('/runs/aaaa-run-1');
+    expect(screen.getByText('Child run status: COMPLETED')).toBeInTheDocument();
+  });
+
+  test('progress links highest attempt_number per item regardless of array ordering without mutating server data', async () => {
+    // Test unordered, reversed, and multiple items
+    const originalChildren = [
+      // Item 1: older attempt 1
+      {
+        attempt: {
+          ...defaultProjection.children[0].attempt,
+          item_id: item1Id,
+          attempt_id: 'att-item1-1',
+          attempt_number: 1,
+          run_id: 'run-item1-att1',
+        },
+        run_version: 1,
+        run_state: 'CANCELLED' as const,
+        effects_settled: true,
+        pending_gate: null,
+        retained_gate: null,
+      },
+      // Item 2: newer attempt 2 (placed before item 1 attempt 2)
+      {
+        attempt: {
+          ...defaultProjection.children[0].attempt,
+          item_id: item2Id,
+          attempt_id: 'att-item2-2',
+          attempt_number: 2,
+          run_id: 'run-item2-att2',
+        },
+        run_version: 2,
+        run_state: 'FAILED' as const,
+        effects_settled: true,
+        pending_gate: null,
+        retained_gate: null,
+      },
+      // Item 1: newer attempt 2
+      {
+        attempt: {
+          ...defaultProjection.children[0].attempt,
+          item_id: item1Id,
+          attempt_id: 'att-item1-2',
+          attempt_number: 2,
+          run_id: 'run-item1-att2',
+        },
+        run_version: 2,
+        run_state: 'IMPLEMENTING' as const,
+        effects_settled: false,
+        pending_gate: null,
+        retained_gate: null,
+      },
+      // Item 2: older attempt 1 (placed after item 2 attempt 2)
+      {
+        attempt: {
+          ...defaultProjection.children[0].attempt,
+          item_id: item2Id,
+          attempt_id: 'att-item2-1',
+          attempt_number: 1,
+          run_id: 'run-item2-att1',
+        },
+        run_version: 1,
+        run_state: 'CANCELLED' as const,
+        effects_settled: true,
+        pending_gate: null,
+        retained_gate: null,
+      },
+    ];
+
+    // Freeze array to detect and prevent any in-place mutation
+    const frozenChildren = Object.freeze([...originalChildren]);
+
+    const unorderedProjection: EpicExecutionProjection = {
+      ...defaultProjection,
+      children: frozenChildren as typeof defaultProjection.children,
+    };
+
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path === `/epics/${epicId}/executions`) return [unorderedProjection] as T;
+      if (path === `/epics/${epicId}/executions/${executionId}`) return unorderedProjection as T;
+      return undefined as T;
+    });
+
+    render(<DeliveryWorkspace epicId={epicId} initialExecutionId={executionId} epicVersion={7} />);
+
+    // Item 1: highest attempt is 2 (IMPLEMENTING, run-item1-att2)
+    // Item 2: highest attempt is 2 (FAILED, run-item2-att2)
+    const progression = (await screen.findByRole('heading', { name: 'Work-Item Progression' })).closest('section')!;
+    const progressionLinks = within(progression).getAllByRole('link', { name: 'Open run' });
+    const progressionHrefs = progressionLinks.map(l => l.getAttribute('href'));
+
+    // Work-Item Progression section links:
+    expect(progressionHrefs).toContain('/runs/run-item1-att2');
+    expect(progressionHrefs).toContain('/runs/run-item2-att2');
+    expect(progressionHrefs).not.toContain('/runs/run-item1-att1');
+    expect(progressionHrefs).not.toContain('/runs/run-item2-att1');
+
+    // Child run status in progression:
+    expect(screen.getByText('Child run status: IMPLEMENTING')).toBeInTheDocument();
+    expect(screen.getByText('Child run status: FAILED')).toBeInTheDocument();
+
+    // History remains complete (all 4 attempts shown in saved attempts section)
+    expect(screen.getByText(/Attempt 1 · Frozen authentication delivery/)).toBeInTheDocument();
+    expect(screen.getByText(/Attempt 2 · Frozen authentication delivery/)).toBeInTheDocument();
+    expect(screen.getByText(/Attempt 1 · Frozen integration check/)).toBeInTheDocument();
+    expect(screen.getByText(/Attempt 2 · Frozen integration check/)).toBeInTheDocument();
+
+    const savedAttempts = screen.getByText('Saved attempts in this execution').closest('div')!;
+    const savedLinks = within(savedAttempts).getAllByRole('link', { name: 'Open run' });
+    const savedHrefs = savedLinks.map(l => l.getAttribute('href'));
+    expect(savedHrefs).toContain('/runs/run-item1-att1');
+    expect(savedHrefs).toContain('/runs/run-item1-att2');
+    expect(savedHrefs).toContain('/runs/run-item2-att1');
+    expect(savedHrefs).toContain('/runs/run-item2-att2');
+
+    // Ensure the original server array was NOT mutated in place
+    expect(frozenChildren[0].attempt.run_id).toBe('run-item1-att1');
+    expect(frozenChildren[1].attempt.run_id).toBe('run-item2-att2');
+    expect(frozenChildren[2].attempt.run_id).toBe('run-item1-att2');
+    expect(frozenChildren[3].attempt.run_id).toBe('run-item2-att1');
   });
 });
