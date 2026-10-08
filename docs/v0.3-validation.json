@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "status": "local repair candidate verified; awaiting authorized final hosted verification; unpublished",
+  "status": "owner-accepted recorded validation for v0.3; unmerged; unpublished",
   "candidate": {
     "baseline_commit": "11b088d8f1cf9479139fa84852b38bb50074d996",
-    "worktree_parent_commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
-    "observed_at_utc": "2026-10-08T11:53:49.992334+00:00",
+    "worktree_parent_commit": "2e9d6c8177f46b37215ffdea0d586a88f6b4076c",
+    "observed_at_utc": "2026-10-08T18:25:22.399304+00:00",
     "migration_head_observed": "20261007_0037",
     "integrated_source_stable": true,
     "post_review_source_sha256": {
@@ -39,7 +39,7 @@
     },
     "source_snapshot_sha256": "54e81532d5fcfe7afbb538ce2dfe573162d96e2448f17ee6166587d70ad13ab2",
     "binding": "Hashes identify the named repaired code/test files, independently of this documentation file. The final documentation commit can differ from a test commit without changing exercised inputs. Checks below retain their actual tested candidate and limits; historical checks are not rebound by refreshing this map.",
-    "verification_status": "All ten collected failures repaired and their affected Linux suite passes; retained unchanged evidence remains applicable. No final full hosted success claimed."
+    "verification_status": "All ten collected failures pass in the affected Linux suite; the owner accepts recorded local checks and matching earlier hosted results for v0.3. Final full hosted verification is unrun and optional."
   },
   "environment": {
     "python": "3.14.5",
@@ -291,13 +291,13 @@
     "claude_opus_5_5": "authentication expired; not a quota-exhaustion result",
     "initial_review_candidate_ref": "2327275629e910449ecf90722fec4a16d913397c",
     "latest_codex_observed": {
-      "candidate_ref": "cf712a61ab61196a499fd1d303141488d86a16e4",
-      "verdict_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6049205658",
-      "status": "No major issues on cf712a6; new local test/CI/evidence changes need a fresh current-head verdict after publication."
+      "candidate_ref": "2e9d6c8177f46b37215ffdea0d586a88f6b4076c",
+      "verdict_url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6059490017",
+      "status": "No major issues on the unchanged verified code/test source. Policy publication review is tracked live on the PR."
     }
   },
   "hosted_ci": {
-    "observed_at_utc": "2026-10-08T11:53:49.992334+00:00",
+    "observed_at_utc": "2026-10-08T18:25:22.399304+00:00",
     "snapshot_only": true,
     "runs": [
       {
@@ -355,6 +355,14 @@
         "status": "completed",
         "conclusion": "success",
         "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37704195585"
+      },
+      {
+        "id": 37773756766,
+        "workflow": "PR smoke",
+        "head": "2e9d6c8177f46b37215ffdea0d586a88f6b4076c",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37773756766"
       }
     ],
     "matching_reuse": {
@@ -372,23 +380,23 @@
         "reason": "Supervisor startup inputs unchanged"
       }
     },
-    "current_candidate": "Latest pushed full run37704421620 failed on cf712a6 after5595passes. The remaining2736cases were collected locally; all10failures are now repaired and independently present as passing cases in the affected Linux receipt. Complete hosted backend/runtime verification is still pending.",
+    "current_candidate": "Full run 37704421620 failed on cf712a6 after 5,595 passes. The remaining 2,736 cases were collected locally and all ten failures now pass in the 101-case affected Linux receipt. PR smoke 37773756766 passed on 2e9d6c8. Final full hosted verification is unrun; the owner made it optional for v0.3 and declined further CI.",
     "cost_control": {
-      "observed_at_utc": "2026-10-08T08:46:05.119587+01:00",
+      "observed_at_utc": "2026-10-08T18:25:22.399304+00:00",
       "user_steering": "ok but you just spammed a ton of github action usage because the CI gate keeps failing",
       "acknowledged_cause": "Repeated full fail-fast workflow dispatches exposed one failure per expensive run instead of batching the remaining failures locally.",
-      "current_boundary": "No hosted dispatches, reruns or pushes during the local repair batch.",
-      "acceptance_plan": "Collect the complete unrun deterministic tail locally without fail-fast, adjudicate related findings together, run affected checks, inspect a stable candidate and bind integrated Jev review before any push.",
+      "current_boundary": "Owner declined further CI. Publish only the evidence-policy documentation with [skip ci]; no Actions dispatch or rerun.",
+      "acceptance_plan": "Accept recorded local checks and matching existing hosted evidence under release_acceptance.owner_decision.",
       "repository_ci_policy": "Full CI dispatches and reruns require explicit authorization for that specific run, including runs triggered by opening or updating a PR.",
-      "next_hosted_run": "Undecided pending concrete, passing local candidate and runtime-budget evidence; no run authorized or launched by this record.",
+      "next_hosted_run": "None planned or authorized for this release.",
       "billing": "Actual monetary cost is unknown; no billing amount inferred.",
       "latest_description_update": {
         "observed_at_utc": "2026-10-08T10:17:02.654844+01:00",
         "operation": "PR description only; no push, review request or workflow dispatch",
         "body_sha256": "1e60cbb1e9c944583ddacb0e3d45b0af643c563b8607454e0f7e4cca72f5d86e"
       },
-      "hosted_operations_since_complaint": 0,
-      "next_full_run": "not_dispatched_or_approved; prepare stable locally passing candidate first",
+      "hosted_operations_since_complaint": 1,
+      "next_full_run": "Optional under the owner-selected v0.3 policy; declined, not authorized and not dispatched.",
       "runtime_evidence": {
         "hosted_prefix_seconds": 5393.82,
         "local_tail_seconds": 2867.7140708779916,
@@ -396,13 +404,15 @@
         "different_environments": true,
         "proposed_postgres_job_limit_minutes": 180,
         "reason": "Combined observed phase times exceed previous 120 minute cap; actual hosted duration remains unproved."
-      }
+      },
+      "hosted_operations_definition": "Actions workflow runs: one automatic smoke on 2e9d6c8 after the completed local batch, before the latest owner refusal.",
+      "hosted_actions_since_latest_owner_decision": 0
     }
   },
   "publication": {
     "pull_request": "https://github.com/Clar17y/parallel-forge/pull/88",
     "state_observed": "OPEN",
-    "pushed_parent_commit": "cf712a61ab61196a499fd1d303141488d86a16e4",
+    "pushed_parent_commit": "2e9d6c8177f46b37215ffdea0d586a88f6b4076c",
     "release_published": false
   },
   "merge": "unmerged",
@@ -1200,5 +1210,72 @@
         "Final full hosted CI requires specific owner authorization. No merge or release authorization."
       ]
     }
-  ]
+  ],
+  "release_acceptance": {
+    "policy": "owner-selected recorded local acceptance and matching existing hosted evidence",
+    "status": "accepted",
+    "owner_decision": {
+      "actor": "Clar17y",
+      "authority": "explicit repository owner instruction in this session",
+      "recorded_at_utc": "2026-10-08T18:25:22.399304+00:00",
+      "instruction": "nope no approval I'm not spending any more time on CI. If it's part of some \"requirement\" for v0.3 to ship then change the requirement",
+      "action": "Accept recorded local checks and matching existing hosted evidence for v0.3 shipping; make a new full CI run optional and decline further CI.",
+      "source_candidate": "2e9d6c8177f46b37215ffdea0d586a88f6b4076c",
+      "source_snapshot_sha256": "54e81532d5fcfe7afbb538ce2dfe573162d96e2448f17ee6166587d70ad13ab2",
+      "pull_request": "https://github.com/Clar17y/parallel-forge/pull/88"
+    },
+    "additional_full_ci": {
+      "required": false,
+      "state": "not_run",
+      "authorized": false,
+      "planned": false,
+      "reason": "Owner declined further CI and changed the v0.3 shipping requirement."
+    },
+    "accepted_evidence": {
+      "linux_affected_suite": {
+        "tests": 101,
+        "failures": 0,
+        "errors": 0,
+        "skips": 0,
+        "all_ten_original_failures_present_and_passing": true,
+        "junit_path": ".llm-output/repair-batch-linux/affected.xml",
+        "junit_sha256": "c2be5773b8a030ddf9ff4ce517690b24c9447b6acbd5935cd3771c26e17745ed"
+      },
+      "windows_planner_permissions_installations": {
+        "tests": 77,
+        "failures": 0
+      },
+      "matching_docker_suite": {
+        "tests": 18,
+        "failures": 0,
+        "errors": 0,
+        "skips": 0
+      },
+      "matching_previous_results": "Retained source-bound backend, web, browser, supervisor and migration checks listed in this document.",
+      "pr_smoke": {
+        "head": "2e9d6c8177f46b37215ffdea0d586a88f6b4076c",
+        "conclusion": "success",
+        "run": 37773756766,
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/37773756766"
+      },
+      "codex": {
+        "head": "2e9d6c8177f46b37215ffdea0d586a88f6b4076c",
+        "status": "no major issues",
+        "url": "https://github.com/Clar17y/parallel-forge/pull/88#issuecomment-6059490017",
+        "repaired_prior_findings": 11,
+        "resolved_inline_conversations": 9
+      }
+    },
+    "warnings": [
+      "Final full hosted Python/runtime verification is unrun; it has not been reported as passing.",
+      "The earlier hosted full run on cf712a6 and the original ten-failure local tail remain failed receipts.",
+      "Local repaired Linux verification used Python 3.14.2/Node 24.19.0; a complete current hosted Python 3.14.5/Node 24.20.0 result is unproved.",
+      "The existing unproved cases and source-specific evidence limits remain recorded."
+    ],
+    "remaining_publication_gates": [
+      "Codeowner approval and resolved conversations required by the GitHub branch rule.",
+      "Immediate explicit human authorization before merge."
+    ],
+    "documentation_publication": "Use [skip ci] for this documentation-only policy update; no Actions run is planned."
+  }
 }

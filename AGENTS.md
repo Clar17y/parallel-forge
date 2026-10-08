@@ -49,6 +49,19 @@ configure the Forge application's runtime roles or grant them unrestricted
 shell, provider credentials, CLI bypass flags or release authority. Subscription
 runtime adapters must preserve the runtime boundaries below.
 
+### v0.3 release acceptance
+
+The owner may accept the recorded local acceptance checks and matching existing
+hosted evidence in `docs/v0.3-validation.json`, or choose an additional hosted
+full CI run. A new full CI run is optional for v0.3 shipping. Record the owner's
+choice, the tested source snapshot, actual results and remaining unproved cases
+in the release evidence; retain failed receipts and identify unrun checks.
+
+For PR #88, the owner's 2026-10-08 instruction selects the recorded evidence
+and declines further CI. Documentation-only updates of that verified source
+use `[skip ci]` to avoid starting Actions runs. Codeowner review, resolved review
+conversations and immediate explicit human merge authorization still apply.
+
 ## Owner overrides in every plan
 
 - Workflow controls are soft defaults. Every planned approval, readiness,
