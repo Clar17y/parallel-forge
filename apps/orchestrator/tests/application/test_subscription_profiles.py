@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from forge.api.schemas.subscription_profiles import ProfileResponse
 from forge.application.ports.mutations import ApiMutationRecord
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.subscription_profiles import (
@@ -109,7 +110,9 @@ async def test_profile_jev_is_saved_without_changing_legacy_request_identity():
         }}],
     }
     legacy = ProfileBody.model_validate(body)
-    expected = _digest(legacy.model_dump(mode="json", exclude={"jev"}))
+    historical = legacy.model_dump(mode="json", exclude={"jev"})
+    del historical["preferences"][0]["token_budget"]
+    expected = _digest(historical)
     old = await service.create(actor=actor, idempotency_key="old", request=legacy)
     assert work.reservation["request_digest"] == expected
     configured = ProfileBody.model_validate(body | {"jev": {"mode": "on", "allow_remote": True}})
@@ -117,3 +120,34 @@ async def test_profile_jev_is_saved_without_changing_legacy_request_identity():
     assert new.jev == JevPolicy(mode="on", allow_remote=True)
     assert old.jev is None
     assert work.reservation["request_digest"] != expected
+
+
+@pytest.mark.asyncio
+async def test_profile_token_defaults_are_saved_projected_and_change_request_identity():
+    work = Work()
+    service = SubscriptionProfileService(lambda: work)
+    actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
+    body = {"preferences": [{"purpose": "primary", "preferred_route": {
+        "provider": "openai", "client": "codex", "model": "gpt-test",
+    }}]}
+    old = await service.create(
+        actor=actor, idempotency_key="old", request=ProfileBody.model_validate(body)
+    )
+    old_digest = work.reservation["request_digest"]
+    configured_body = {"preferences": [body["preferences"][0] | {
+        "token_budget": {"max_input_tokens": 0, "max_output_tokens": 100}
+    }]}
+    configured = await service.create(
+        actor=actor, idempotency_key="new",
+        request=ProfileBody.model_validate(configured_body),
+    )
+    assert work.reservation["request_digest"] != old_digest
+    assert "token_budget" not in ProfileResponse.from_profile(old).preferences[0]
+    assert ProfileResponse.from_profile(configured).preferences[0]["token_budget"] == {
+        "max_input_tokens": 0, "max_output_tokens": 100,
+    }
+    for invalid in (-1, 1.5, True, "20"):
+        with pytest.raises(ValueError):
+            ProfileBody.model_validate({"preferences": [body["preferences"][0] | {
+                "token_budget": {"max_input_tokens": invalid}
+            }]})

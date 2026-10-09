@@ -7,6 +7,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { useEpicBudget } from '@/hooks/epics/use-epic-budget';
 import { EvidenceDetails } from './evidence-details';
 import type { TaskBudget } from '@/hooks/epics/types';
+import { TokenBudgetSlider } from '@/components/model-selection/token-budget-slider';
 
 interface DimensionConfig {
   key: string;
@@ -414,13 +415,31 @@ export function EpicBudgetPanel({
                 const unlimited = disabledDims.includes(dim.key);
                 const isBlank = editCeilings[dim.key] == null || Number.isNaN(editCeilings[dim.key]);
                 const showBlankError = Boolean(dim.mandatory && !unlimited && isBlank);
+                const isTokenDimension = dim.key === 'input_tokens' || dim.key === 'output_tokens';
 
                 return (
                   <div key={dim.key} className="space-y-1">
-                    <label htmlFor={`ceiling-input-${dim.key}`} className="block font-medium text-xs">
-                      {dim.inputLabel}
-                    </label>
-                    <input
+                    {isTokenDimension && isBlank ? <span className="block font-medium text-xs">{dim.inputLabel}</span> :
+                      <label htmlFor={`ceiling-input-${dim.key}${isTokenDimension ? '-range' : ''}`} className="block font-medium text-xs">{dim.inputLabel}</label>}
+                    {isTokenDimension ? (
+                      <div id={`ceiling-input-${dim.key}`} className={unlimited || mutationPending ? 'opacity-50 pointer-events-none' : ''}>
+                        {editCeilings[dim.key] != null ? <TokenBudgetSlider
+                          label={dim.inputLabel}
+                          dimension={dim.key === 'input_tokens' ? 'input' : 'output'}
+                          idPrefix={`ceiling-input-${dim.key}`}
+                          hideLabel
+                          value={editCeilings[dim.key]!}
+                          rangeMax={1_000_000}
+                          min={0}
+                          disabled={unlimited || mutationPending}
+                          onChange={value => handleCeilingChange(dim.key, value)}
+                        /> : <div className="flex items-center justify-between gap-2 py-2 text-sm text-[var(--muted)]">
+                          <span>Unlimited</span>
+                          <Button type="button" variant="quiet" disabled={unlimited || mutationPending} onClick={() => handleCeilingChange(dim.key, 0)}>Set ceiling</Button>
+                        </div>}
+                        {editCeilings[dim.key] != null && <Button type="button" variant="quiet" aria-label={`${dim.inputLabel} use unlimited`} disabled={unlimited || mutationPending} onClick={() => handleCeilingChange(dim.key, null)}>Use unlimited</Button>}
+                      </div>
+                    ) : <input
                       id={`ceiling-input-${dim.key}`}
                       type="number"
                       min={0}
@@ -429,7 +448,7 @@ export function EpicBudgetPanel({
                       placeholder={unlimited ? 'Unlimited' : dim.mandatory ? 'Required numeric cap' : 'Unlimited (null)'}
                       disabled={unlimited || mutationPending}
                       onChange={e => handleCeilingChange(dim.key, e.target.value === '' ? null : Number(e.target.value))}
-                    />
+                    />}
                     {showBlankError ? (
                       <p role="alert" className="text-xs text-[var(--danger)]">
                         Numeric ceiling is required when enabled.

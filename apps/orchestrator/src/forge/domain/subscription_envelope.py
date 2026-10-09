@@ -39,4 +39,9 @@ def freeze_profile(
             for preference in profile.preferences
             if preference.fallback_routes
         ),
+        role_token_budgets=tuple(
+            (preference.purpose, preference.token_budget)
+            for preference in profile.preferences
+            if preference.token_budget is not None
+        ),
     )

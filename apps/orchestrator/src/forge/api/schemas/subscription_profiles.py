@@ -47,6 +47,10 @@ class ProfileResponse(BaseModel):
                         "purpose": p.purpose.value,
                         "preferred_route": _route(p.preferred_route),
                         "fallback_routes": [_route(r) for r in p.fallback_routes],
+                        **({"token_budget": {
+                            "max_input_tokens": p.token_budget.max_input_tokens,
+                            "max_output_tokens": p.token_budget.max_output_tokens,
+                        }} if p.token_budget is not None else {}),
                     }
                     for p in value.preferences
                 ],

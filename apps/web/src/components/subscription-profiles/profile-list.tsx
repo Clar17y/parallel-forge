@@ -87,6 +87,7 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
         </p>
       )}
 
+      <details className="saved-profile-history"><summary>Saved profile history ({profiles.length})</summary>
       <section aria-label="Immutable profile versions">
         <h2>Immutable profile versions</h2>
         <p className="meta">
@@ -229,6 +230,7 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
           );
         })}
       </section>
+      </details>
 
       <section aria-label="Profile editor container">
         {selected && (

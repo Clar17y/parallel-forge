@@ -1,0 +1,24 @@
+.row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) minmax(12rem, 1fr) minmax(6rem, 8rem) auto;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  margin: 0.35rem 0;
+}
+
+.title { margin: 0; font-size: 0.95rem; }
+.choice select, .reasoning select { min-height: 2.5rem; width: 100%; }
+.advanced { font-size: 0.875rem; }
+.advanced[open] { grid-column: 1 / -1; padding-top: 0.5rem; }
+.fallback { border-top: 1px solid var(--border); padding: 0.75rem 0; }
+
+@media (max-width: 700px) {
+  .row { grid-template-columns: minmax(0, 1fr) auto; }
+  .title { grid-column: 1 / -1; }
+  .choice { grid-column: 1 / -1; }
+  .reasoning { grid-column: 1; }
+  .advanced { grid-column: 2; }
+}

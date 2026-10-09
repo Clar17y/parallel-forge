@@ -21,6 +21,7 @@ from forge.domain.subscription import (
     RouteSpec,
     SpecialistPurpose,
     TaskBudget,
+    TokenBudgetDefaults,
 )
 from forge.domain.tool import ToolName
 
@@ -531,6 +532,227 @@ def test_primary_child_uses_frozen_envelope_route_instead_of_primary_route() -> 
     assert child.route == primary.envelope.route_for(SpecialistPurpose.ROUTINE_IMPLEMENTATION)
     assert child.route != primary.task.route
     assert child.budget.max_duration_seconds == 30
+
+
+@pytest.mark.parametrize(
+    ("budget", "expected_input", "expected_output", "fails"),
+    [
+        (None, 40, 20, False),
+        ({"max_tool_calls": 2}, 40, 20, False),
+        ({"max_input_tokens": 5}, 5, 20, False),
+        ({"max_input_tokens": None}, None, 20, True),
+        ({"max_output_tokens": 9}, 40, 9, False),
+    ],
+)
+def test_child_token_defaults_respect_presence_and_parent_authority(
+    budget, expected_input, expected_output, fails
+):
+    primary = _request(purpose=SpecialistPurpose.PRIMARY)
+    primary = replace(
+        primary,
+        task=replace(primary.task, budget=replace(
+            primary.task.budget, max_input_tokens=40, max_output_tokens=50
+        )),
+        envelope=replace(primary.envelope, role_token_budgets=((
+            SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+            TokenBudgetDefaults(max_input_tokens=80, max_output_tokens=20),
+        ),)),
+    )
+    child = {
+        "task_id": str(uuid4()),
+        "purpose": "routine_implementation",
+        "owned_paths": ["src/a.py"],
+        "max_repairs": 0,
+    }
+    if budget is not None:
+        child["budget"] = {
+            "max_duration_seconds": 30,
+            "max_tool_calls": 2,
+            "max_named_checks": 1,
+            "max_provider_attempts": 1,
+            "max_repairs": 0,
+            **budget,
+        }
+    payload = {"kind": "delegate", "rationale": "split", "children": [child]}
+    if fails:
+        with pytest.raises(ProtocolError):
+            decode_final(payload, primary)
+    else:
+        actual = decode_final(payload, primary).decision.child_tasks[0]
+        assert (actual.budget.max_input_tokens, actual.budget.max_output_tokens) == (
+            expected_input, expected_output
+        )
+
+
+def test_explicit_unlimited_child_token_budget_overrides_default_when_parent_allows_it():
+    primary = _request(purpose=SpecialistPurpose.PRIMARY)
+    primary = replace(primary, envelope=replace(primary.envelope, role_token_budgets=((
+        SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        TokenBudgetDefaults(max_input_tokens=10),
+    ),)))
+    child = {
+        "task_id": str(uuid4()), "purpose": "routine_implementation",
+        "owned_paths": ["src/a.py"], "max_repairs": 0,
+        "budget": {
+            "max_duration_seconds": 30, "max_tool_calls": 2,
+            "max_named_checks": 1, "max_provider_attempts": 1,
+            "max_repairs": 0, "max_input_tokens": None,
+        },
+    }
+    actual = decode_final(
+        {"kind": "delegate", "rationale": "split", "children": [child]}, primary
+    ).decision.child_tasks[0]
+    assert actual.budget.max_input_tokens is None
+    with pytest.raises(ProtocolError):
+        decode_final(
+            {"kind": "delegate", "rationale": "split", "children": [child | {"budget": None}]},
+            primary,
+        )
+
+
+@pytest.mark.parametrize(
+    ("defaults", "parent_input", "parent_output", "expected", "fails"),
+    [
+        (None, 40, 50, None, True),
+        (TokenBudgetDefaults(), 40, 50, None, True),
+        (TokenBudgetDefaults(max_input_tokens=10), 40, 50, None, True),
+        (TokenBudgetDefaults(max_output_tokens=10), 40, 50, None, True),
+        (TokenBudgetDefaults(max_input_tokens=10), None, None, (10, None), False),
+        (TokenBudgetDefaults(max_output_tokens=10), None, None, (None, 10), False),
+        (TokenBudgetDefaults(max_input_tokens=80, max_output_tokens=5), 40, 50, (40, 5), False),
+    ],
+)
+def test_partial_child_budget_only_overlays_configured_token_dimensions(
+    defaults, parent_input, parent_output, expected, fails
+):
+    primary = _request(purpose=SpecialistPurpose.PRIMARY)
+    role_defaults = (
+        () if defaults is None else ((SpecialistPurpose.ROUTINE_IMPLEMENTATION, defaults),)
+    )
+    primary = replace(
+        primary,
+        task=replace(primary.task, budget=replace(
+            primary.task.budget,
+            max_input_tokens=parent_input,
+            max_output_tokens=parent_output,
+        )),
+        envelope=replace(primary.envelope, role_token_budgets=role_defaults),
+    )
+    child = {
+        "task_id": str(uuid4()), "purpose": "routine_implementation",
+        "owned_paths": ["src/a.py"], "max_repairs": 0,
+        "budget": {
+            "max_duration_seconds": 30, "max_tool_calls": 2,
+            "max_named_checks": 1, "max_provider_attempts": 1,
+            "max_repairs": 0,
+        },
+    }
+    payload = {"kind": "delegate", "rationale": "split", "children": [child]}
+    if fails:
+        with pytest.raises(ProtocolError):
+            decode_final(payload, primary)
+    else:
+        budget = decode_final(payload, primary).decision.child_tasks[0].budget
+        assert (budget.max_input_tokens, budget.max_output_tokens) == expected
+
+
+def _strict_delegate_payload(primary):
+    from pydantic import TypeAdapter
+
+    child = replace(
+        primary.task,
+        task_id=uuid4(), parent_task_id=primary.task.task_id,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        route=primary.envelope.route_for(SpecialistPurpose.ROUTINE_IMPLEMENTATION),
+        owned_paths=("src/a.py",),
+    )
+    payload = TypeAdapter(LogicalTaskContract).dump_python(child, mode="json")
+    for authority in ("run_id", "parent_task_id", "route"):
+        del payload[authority]
+    return {"kind": "delegate", "rationale": "split", "children": [payload]}
+
+
+@pytest.mark.parametrize(
+    ("defaults", "parent_input", "parent_output", "input_choice", "output_choice", "expected"),
+    [
+        (TokenBudgetDefaults(max_input_tokens=100, max_output_tokens=0), 40, 30,
+         "role_default", "role_default", (40, 0)),
+        (TokenBudgetDefaults(max_input_tokens=0), 40, 30,
+         "role_default", "role_default", (0, 30)),
+        (TokenBudgetDefaults(max_output_tokens=12), 40, 30,
+         "role_default", "role_default", (40, 12)),
+        (None, 40, 30, "role_default", "role_default", (40, 30)),
+        (TokenBudgetDefaults(), None, None, "role_default", "role_default", (None, None)),
+        (TokenBudgetDefaults(max_input_tokens=100, max_output_tokens=0), 40, 30,
+         5, "role_default", (5, 0)),
+        (TokenBudgetDefaults(max_input_tokens=100, max_output_tokens=0), 40, None,
+         "role_default", None, (40, None)),
+    ],
+)
+def test_strict_provider_delegate_can_select_frozen_role_token_defaults(
+    defaults, parent_input, parent_output, input_choice, output_choice, expected
+):
+    from forge.agents.subscription_protocol import output_schema
+    from forge.domain.subscription import decode_subscription_record, encode_subscription_record
+    from jsonschema import Draft202012Validator
+
+    primary = _request(purpose=SpecialistPurpose.PRIMARY)
+    role_defaults = (
+        () if defaults is None else ((SpecialistPurpose.ROUTINE_IMPLEMENTATION, defaults),)
+    )
+    primary = replace(
+        primary,
+        task=replace(primary.task, budget=replace(
+            primary.task.budget,
+            max_input_tokens=parent_input,
+            max_output_tokens=parent_output,
+        )),
+        envelope=replace(primary.envelope, role_token_budgets=role_defaults),
+    )
+    decision = _strict_delegate_payload(primary)
+    decision["children"][0]["budget"]["max_input_tokens"] = input_choice
+    decision["children"][0]["budget"]["max_output_tokens"] = output_choice
+    assert Draft202012Validator(output_schema(primary)).is_valid({"decision": decision})
+    child = decode_final(decision, primary).decision.child_tasks[0]
+    assert decode_subscription_record(encode_subscription_record(child)) == child
+    resolved = child.budget
+    assert (resolved.max_input_tokens, resolved.max_output_tokens) == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "schema_valid"),
+    [
+        ("max_input_tokens", "unsupported_default", False),
+        ("max_tool_calls", "role_default", False),
+        ("max_input_tokens", 41, True),
+        ("max_output_tokens", None, True),
+        ("budget", None, False),
+    ],
+)
+def test_strict_provider_rejects_invalid_budget_choices(field, value, schema_valid):
+    from forge.agents.subscription_protocol import output_schema
+    from jsonschema import Draft202012Validator
+
+    primary = _request(purpose=SpecialistPurpose.PRIMARY)
+    primary = replace(
+        primary,
+        task=replace(primary.task, budget=replace(
+            primary.task.budget, max_input_tokens=40, max_output_tokens=30
+        )),
+        envelope=replace(primary.envelope, role_token_budgets=((
+            SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+            TokenBudgetDefaults(max_input_tokens=10, max_output_tokens=10),
+        ),)),
+    )
+    decision = _strict_delegate_payload(primary)
+    target = decision["children"][0]
+    if field == "budget":
+        target["budget"] = value
+    else:
+        target["budget"][field] = value
+    assert Draft202012Validator(output_schema(primary)).is_valid({"decision": decision}) is schema_valid
+    with pytest.raises(ProtocolError):
+        decode_final(decision, primary)
 
 
 @pytest.mark.parametrize("field", ["run_id", "task_id", "attempt_id"])

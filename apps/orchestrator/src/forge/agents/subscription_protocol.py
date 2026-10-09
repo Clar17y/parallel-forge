@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -36,7 +37,7 @@ from forge.domain.subscription_decision_policy import (
     WORKER_DECISIONS,
     decision_allowed,
 )
-from forge.domain.subscription_delegation import validate_child_authority
+from forge.domain.subscription_delegation import budget_with_role_defaults, validate_child_authority
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
 
@@ -191,6 +192,26 @@ def _child(payload: object, request: SubscriptionInvocationRequest) -> LogicalTa
         if purpose is SpecialistPurpose.PRIMARY:
             raise ValueError
         binding = request.envelope.route_for(purpose)
+        parent_budget = request.task.budget
+        if "budget" in payload:
+            raw_budget = payload["budget"]
+            if not isinstance(raw_budget, Mapping):
+                raise ValueError("child budget must be an object")
+            explicit_keys = set(raw_budget)
+            budget_payload = dict(raw_budget)
+            defaults = request.envelope.token_budget_for(purpose)
+            seeded = budget_with_role_defaults(parent_budget, request.envelope, purpose)
+            for name in ("max_input_tokens", "max_output_tokens"):
+                if budget_payload.get(name) == "role_default" or (
+                    name not in explicit_keys
+                    and defaults is not None
+                    and getattr(defaults, name) is not None
+                ):
+                    budget_payload[name] = getattr(seeded, name)
+        else:
+            budget_payload = TypeAdapter(type(parent_budget)).dump_python(
+                budget_with_role_defaults(parent_budget, request.envelope, purpose), mode="json"
+            )
         child = _record(
             LogicalTaskContract,
             {
@@ -198,12 +219,7 @@ def _child(payload: object, request: SubscriptionInvocationRequest) -> LogicalTa
                 "run_id": str(request.attempt.run_id),
                 "parent_task_id": str(request.attempt.task_id),
                 "route": TypeAdapter(type(binding)).dump_python(binding, mode="json"),
-                "budget": payload.get(
-                    "budget",
-                    TypeAdapter(type(request.task.budget)).dump_python(
-                        request.task.budget, mode="json"
-                    ),
-                ),
+                "budget": budget_payload,
             },
         )
         validate_child_authority(request.task, child, request.envelope)
@@ -401,6 +417,15 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
     ):
         child = TypeAdapter(LogicalTaskContract).json_schema()
         definitions.update(child.pop("$defs", {}))
+        budget_schema = deepcopy(definitions["TaskBudget"])
+        for name in ("max_input_tokens", "max_output_tokens"):
+            token_schema = budget_schema["properties"][name]
+            token_schema["anyOf"].append({"const": "role_default", "type": "string"})
+            token_schema["description"] = (
+                "Use role_default for the frozen role budget, unless this task needs an explicit "
+                "integer or null override."
+            )
+        child["properties"]["budget"] = budget_schema
         for authority in ("run_id", "parent_task_id", "route"):
             child["properties"].pop(authority, None)
         child["required"] = [key for key in child.get("required", []) if key in child["properties"]]

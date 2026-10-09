@@ -1,6 +1,46 @@
 """Shared delegation authority checks for decoding and durable application."""
 
-from forge.domain.subscription import ExecutionEnvelope, LogicalTaskContract, SpecialistPurpose
+from dataclasses import replace
+
+from forge.domain.subscription import (
+    ExecutionEnvelope,
+    LogicalTaskContract,
+    SpecialistPurpose,
+    TaskBudget,
+)
+
+
+def budget_with_role_defaults(
+    parent_budget: TaskBudget,
+    envelope: ExecutionEnvelope,
+    purpose: SpecialistPurpose,
+    *,
+    clamp_to_parent: bool = True,
+) -> TaskBudget:
+    """Seed absent token dimensions without enlarging a finite parent authority."""
+    defaults = envelope.token_budget_for(purpose)
+    if defaults is None:
+        return parent_budget
+    input_limit = defaults.max_input_tokens
+    output_limit = defaults.max_output_tokens
+    if input_limit is None:
+        input_limit = parent_budget.max_input_tokens
+    elif clamp_to_parent and parent_budget.max_input_tokens is not None:
+        input_limit = min(input_limit, parent_budget.max_input_tokens)
+    if output_limit is None:
+        output_limit = parent_budget.max_output_tokens
+    elif clamp_to_parent and parent_budget.max_output_tokens is not None:
+        output_limit = min(output_limit, parent_budget.max_output_tokens)
+    if (input_limit, output_limit) == (
+        parent_budget.max_input_tokens,
+        parent_budget.max_output_tokens,
+    ):
+        return parent_budget
+    return replace(
+        parent_budget,
+        max_input_tokens=input_limit,
+        max_output_tokens=output_limit,
+    )
 
 
 def validate_child_authority(
