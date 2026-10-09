@@ -8,7 +8,12 @@ import pytest
 from forge.application.ports.epic_brainstorm import BriefInput
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.epic_brainstorm import EpicBrainstormService
-from forge.domain.epic_brainstorm import BrainstormConflict, FrozenBriefContent, FrozenRequirement
+from forge.domain.epic_brainstorm import (
+    AuthoringJobSnapshot,
+    BrainstormConflict,
+    FrozenBriefContent,
+    FrozenRequirement,
+)
 from forge.domain.subscription import RouteBinding, RouteSpec, TaskBudget
 from forge.domain.subscription_quota import QuotaPolicy
 from forge.persistence.models.epic_brainstorm import BrainstormJobRow
@@ -49,6 +54,37 @@ class BriefFixture:
         self.saved.append((source_job_id, proposal.digest, result))
         self.current = replace(self.current, epic_version=expected_version + 1)
         return result
+
+
+def _outcome_row(*, current_attempt_id=None, state="queued", failure=None):
+    route = RouteSpec(provider="fake", client="fake", model="fixture")
+    snapshot = AuthoringJobSnapshot(
+        job_id=uuid4(),
+        epic_id=uuid4(),
+        project_id=uuid4(),
+        conversation_id=uuid4(),
+        input_brief_revision_id=None,
+        input_brief_digest=None,
+        input_draft_digest="a" * 64,
+        expected_epic_version=1,
+        conversation_version=2,
+        prompt_turn_id=uuid4(),
+        route=RouteBinding(requested=route, effective=route),
+        budget=TaskBudget(max_provider_attempts=2),
+        reservation_id=uuid4(),
+    )
+    return SimpleNamespace(
+        id=snapshot.job_id,
+        epic_id=snapshot.epic_id,
+        snapshot=PostgresBrainstormRepository.snapshot_payload(snapshot),
+        current_attempt_id=current_attempt_id,
+        version=1,
+        state=state,
+        proposal_digest=None,
+        proposal=None,
+        adopted_revision_id=None,
+        failure=failure,
+    )
 
 
 @pytest.mark.asyncio
@@ -319,15 +355,9 @@ async def test_sibling_outcome_marks_unreserved_unknown_cumulative_dimensions(
     repository = PostgresBrainstormRepository(session)
     repository._epic_attempts = AsyncMock(return_value=[unknown, known])
     repository._attempt_scopes = AsyncMock(return_value={})
-    row = SimpleNamespace(
-        id=uuid4(),
-        epic_id=uuid4(),
+    row = _outcome_row(
         current_attempt_id=known.id,
-        version=1,
         state="failed",
-        proposal_digest=None,
-        proposal=None,
-        adopted_revision_id=None,
         failure="invalid_output",
     )
     outcome = await repository.outcome(row)
@@ -367,17 +397,7 @@ async def test_queued_sibling_reports_prior_cost_currency_without_current_attemp
     repository._attempt_scopes = AsyncMock(
         return_value={prior.id: (route, QuotaPolicy().key_for(route))}
     )
-    row = SimpleNamespace(
-        id=uuid4(),
-        epic_id=uuid4(),
-        current_attempt_id=None,
-        version=1,
-        state="queued",
-        proposal_digest=None,
-        proposal=None,
-        adopted_revision_id=None,
-        failure=None,
-    )
+    row = _outcome_row()
     outcome = await repository.outcome(row)
     assert outcome.currency == "USD"
     assert outcome.cumulative_usage.estimated_api_cost_minor == 7
@@ -411,17 +431,7 @@ async def test_mixed_legacy_costs_do_not_report_a_false_single_currency() -> Non
     repository._attempt_scopes = AsyncMock(
         return_value={attempt.id: (route, QuotaPolicy().key_for(route)) for attempt in attempts}
     )
-    row = SimpleNamespace(
-        id=uuid4(),
-        epic_id=uuid4(),
-        current_attempt_id=None,
-        version=1,
-        state="queued",
-        proposal_digest=None,
-        proposal=None,
-        adopted_revision_id=None,
-        failure=None,
-    )
+    row = _outcome_row()
     outcome = await repository.outcome(row)
     assert outcome.currency is None
     assert outcome.cumulative_usage.estimated_api_cost_minor == 0

@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from forge.application.services.subscription_profiles import RouteInput
+
 
 class _Request(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -28,6 +30,7 @@ class JobSubmit(_Request):
     prompt_turn_id: UUID
     expected_epic_version: int = Field(ge=1)
     expected_conversation_version: int = Field(ge=1)
+    requested_route: RouteInput | None = None
 
 
 class JobControl(_Request):

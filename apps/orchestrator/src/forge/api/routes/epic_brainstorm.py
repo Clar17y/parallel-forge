@@ -88,7 +88,9 @@ def router_for() -> APIRouter:
         project_id: UUID = Query(),
         _actor: AuthenticatedActor = Depends(require_operator),
     ) -> tuple[BrainstormThread, ...]:
-        return await _service(request).threads(epic_id=epic_id, project_id=project_id)
+        return await _service(request).threads(
+            epic_id=epic_id, project_id=project_id, kind="brainstorm"
+        )
 
     @router.post("/epics/{epic_id}/brainstorm-conversations/{conversation_id}/turns")
     async def append(
@@ -133,6 +135,7 @@ def router_for() -> APIRouter:
                 expected_conversation_version=body.expected_conversation_version,
                 actor=actor,
                 key=key,
+                requested_route=body.requested_route.route() if body.requested_route else None,
             )
         except ValueError as error:
             raise _error(error) from None

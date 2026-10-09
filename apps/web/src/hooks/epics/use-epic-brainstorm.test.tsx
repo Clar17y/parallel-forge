@@ -102,11 +102,13 @@ describe('useEpicBrainstorm', () => {
     });
     const { result } = renderHook(() => useEpicBrainstorm(epicId, projectId));
     await waitFor(() => expect(result.current.turns).toHaveLength(1));
-    await act(async () => { await result.current.submitJob(thread.conversation_id, operator.turn_id, 12, thread.conversation_version); });
+    const idempotencyKey = `brainstorm:${epicId}:${thread.conversation_id}:${operator.turn_id}`;
+    await act(async () => { await result.current.submitJob(thread.conversation_id, operator.turn_id, 12, thread.conversation_version, idempotencyKey); });
     expect(result.current.selectedJobId).toBe('new-job');
 
     expect(api).toHaveBeenCalledWith(`/epics/${epicId}/brainstorm-conversations/${thread.conversation_id}/jobs`, expect.objectContaining({
       method: 'POST',
+      headers: expect.objectContaining({ 'Idempotency-Key': idempotencyKey }),
       body: JSON.stringify({ schema_version: 1, project_id: projectId, prompt_turn_id: operator.turn_id, expected_epic_version: 12, expected_conversation_version: 3 }),
     }));
   });

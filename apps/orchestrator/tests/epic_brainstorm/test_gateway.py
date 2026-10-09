@@ -557,8 +557,8 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
         "f=recv('model/list'); send({'id':f['id'],'result':{'data':[{'id':'gpt-5.6-luna','supportedReasoningEfforts':[{'reasoningEffort':'medium'}]}]}})\n"
         "f=recv('config/read'); send({'id':f['id'],'result':{'config':{}}})\n"
         "f=recv('thread/start'); assert f['params']['model']=='gpt-5.6-luna' and len(f['params']['dynamicTools'][0]['tools'])==4; send({'id':f['id'],'result':{'thread':{'id':'thread-1'},'model':'gpt-5.6-luna'}})\n"
-        "f=recv('turn/start'); assert f['params']['effort']=='medium' and 'proposal' in f['params']['outputSchema']['properties']; send({'id':f['id'],'result':{'turn':{'id':'turn-1'}}})\n"
-        f"proposal={{'proposal':{{'turn_id':'{job.prompt_turn_id}','problem':'Protocol proposal','requirements':['One']}}}}\n"
+        "f=recv('turn/start'); schema=f['params']['outputSchema']; props=schema['properties']['proposal']['properties']; assert f['params']['effort']=='medium' and 'proposal' in schema['properties'] and '$defs' in schema and props['requirement_criteria']['type']=='array'; send({'id':f['id'],'result':{'turn':{'id':'turn-1'}}})\n"
+        f"proposal={{'proposal':{{'turn_id':'{job.prompt_turn_id}','problem':'Protocol proposal','requirements':['One'],'requirement_criteria':[{{'requirement':'One','criteria':['Within five minutes']}}]}}}}\n"
         + (
             "send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread-1','turnId':'turn-1','tokenUsage':{'total':{'inputTokens':7,'outputTokens':9,'cachedInputTokens':0}}}})\n"
             if outcome in {"success", "nonzero"}
@@ -614,6 +614,7 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
             (item.outcome, item.return_code) for _, item in lifecycle.results
         ]
         assert result.proposal is not None and result.proposal.problem == "Protocol proposal"
+        assert result.proposal.requirement_criteria == {"One": ("Within five minutes",)}
     assert result.telemetry is not None
     assert result.telemetry.input_tokens == (7 if outcome in {"success", "nonzero"} else None)
     assert result.telemetry.output_tokens == (9 if outcome in {"success", "nonzero"} else None)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -676,7 +676,13 @@ class PostgresBrainstormRepository:
         validate_invocation_context(snapshot, history)
         return history
 
-    async def threads(self, epic_id: UUID, project_id: UUID) -> tuple[BrainstormThread, ...]:
+    async def threads(
+        self,
+        epic_id: UUID,
+        project_id: UUID,
+        *,
+        kind: Literal["brainstorm", "decomposition"] | None = None,
+    ) -> tuple[BrainstormThread, ...]:
         conversations = (
             await self.session.scalars(
                 select(BrainstormConversation)
@@ -697,8 +703,12 @@ class PostgresBrainstormRepository:
             )
         ).all()
         by_conversation: dict[UUID, list[UUID]] = {row.id: [] for row in conversations}
+        conversation_kinds: dict[UUID, set[str]] = {row.id: set() for row in conversations}
         for job in jobs:
-            by_conversation[job.conversation_id].append(job.id)
+            job_kind = self.decode_snapshot(job).kind
+            conversation_kinds[job.conversation_id].add(job_kind)
+            if kind is None or job_kind == kind:
+                by_conversation[job.conversation_id].append(job.id)
         return tuple(
             BrainstormThread(
                 conversation_id=row.id,
@@ -706,6 +716,7 @@ class PostgresBrainstormRepository:
                 job_ids=tuple(by_conversation[row.id]),
             )
             for row in conversations
+            if kind is None or not conversation_kinds[row.id] or kind in conversation_kinds[row.id]
         )
 
     async def append(self, conversation: BrainstormConversation, turn: BrainstormTurn) -> int:
@@ -872,16 +883,16 @@ class PostgresBrainstormRepository:
                 and current_cost == 0
             )
         )
+        snapshot = self.decode_snapshot(row)
         return AuthoringOutcome.model_validate(
             {
                 "job_id": row.id,
                 "job_version": row.version,
                 "state": row.state,
+                "route": snapshot.route.effective,
                 "proposal_digest": row.proposal_digest,
                 "proposal": (
-                    _parse_proposal(row.proposal, self.decode_snapshot(row).kind)
-                    if row.proposal
-                    else None
+                    _parse_proposal(row.proposal, snapshot.kind) if row.proposal else None
                 ),
                 "adopted_revision_id": row.adopted_revision_id,
                 "failure": row.failure,

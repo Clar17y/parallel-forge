@@ -21,7 +21,7 @@ function NewEpicContent() {
       <header className="border-b border-[var(--border)] pb-4">
         <h1 className="text-2xl font-bold">Create New Epic</h1>
         <p className="text-sm text-[var(--muted)]">
-          Start a project epic with a requirements brief and work-item backlog.
+          Start with a rough idea. You can brainstorm with the assistant, review a proposed brief, or edit requirements yourself.
         </p>
       </header>
 

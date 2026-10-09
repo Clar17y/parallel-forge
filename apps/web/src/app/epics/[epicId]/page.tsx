@@ -7,10 +7,12 @@ import { EpicMutationProvider, useEpicMutations } from '@/hooks/epics/use-epic-m
 import { EpicWorkspaceProvider, useEpicWorkspace } from '@/hooks/epics/use-epic-workspace';
 import { EvidenceDetails } from '@/components/epics/evidence-details';
 import { Button } from '@/components/ui/button';
+import { Panel } from '@/components/ui/panel';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { BriefEditor } from '@/components/epics/brief-editor';
 import { GraphEditor } from '@/components/epics/graph-editor';
 import { AuthoringWorkspace } from '@/components/epics/authoring-workspace';
+import { DecompositionWorkspace } from '@/components/epics/decomposition-workspace';
 import { DeliveryWorkspace } from '@/components/epics/delivery-workspace';
 
 type WorkspaceTab = 'brief' | 'graph' | 'authoring' | 'delivery';
@@ -19,7 +21,7 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const tab = searchParams.get('tab');
-  const initialTab: WorkspaceTab = tab && ['brief', 'graph', 'authoring', 'delivery'].includes(tab) ? tab as WorkspaceTab : 'brief';
+  const initialTab: WorkspaceTab = tab && ['brief', 'graph', 'authoring', 'delivery'].includes(tab) ? tab as WorkspaceTab : 'authoring';
   const executionId = searchParams.get('execution_id');
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(initialTab);
@@ -141,11 +143,18 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
       {/* Main Section Navigation */}
       <nav aria-label="Epic sections" className="flex flex-wrap border-b border-[var(--border)] gap-2 pb-1">
         <Button
+          variant={activeTab === 'authoring' ? 'primary' : 'quiet'}
+          aria-current={activeTab === 'authoring' ? 'page' : undefined}
+          onClick={() => selectSection('authoring')}
+        >
+          Brainstorm
+        </Button>
+        <Button
           variant={activeTab === 'brief' ? 'primary' : 'quiet'}
           aria-current={activeTab === 'brief' ? 'page' : undefined}
           onClick={() => selectSection('brief')}
         >
-          Requirements Brief
+          Manual Requirements Brief
         </Button>
         <Button
           variant={activeTab === 'graph' ? 'primary' : 'quiet'}
@@ -153,13 +162,6 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
           onClick={() => selectSection('graph')}
         >
           Work-Item Graph
-        </Button>
-        <Button
-          variant={activeTab === 'authoring' ? 'primary' : 'quiet'}
-          aria-current={activeTab === 'authoring' ? 'page' : undefined}
-          onClick={() => selectSection('authoring')}
-        >
-          Authoring & Brainstorm
         </Button>
         <Button
           variant={activeTab === 'delivery' ? 'primary' : 'quiet'}
@@ -172,13 +174,26 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
 
       {/* Tab Panels */}
       <div>
-        <div hidden={activeTab !== 'brief'}><BriefEditor epicId={epicId} /></div>
-        <div hidden={activeTab !== 'graph'}><GraphEditor epicId={epicId} /></div>
+        <div hidden={activeTab !== 'brief'}><BriefEditor epicId={epicId} onBrainstorm={() => selectSection('authoring')} /></div>
+        <div hidden={activeTab !== 'graph'}>
+          <GraphEditor epicId={epicId} />
+          <Panel
+            title="Work-item graph decomposition"
+            description="Use assistant decomposition conversations to propose and adopt versioned work-item graphs."
+          >
+            <DecompositionWorkspace
+              epicId={epicId}
+              projectId={epic.project_id}
+              epicVersion={epic.version}
+            />
+          </Panel>
+        </div>
         <div hidden={activeTab !== 'authoring'}>
           <AuthoringWorkspace
             epicId={epicId}
             projectId={epic.project_id}
             epicVersion={epic.version}
+            onReviewBrief={() => selectSection('brief')}
           />
         </div>
         <div hidden={activeTab !== 'delivery'}>

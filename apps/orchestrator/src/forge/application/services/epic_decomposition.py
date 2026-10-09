@@ -72,7 +72,9 @@ class EpicDecompositionService:
         epic_id: UUID,
         project_id: UUID,
     ) -> tuple[BrainstormThread, ...]:
-        return await self._authoring.threads(epic_id=epic_id, project_id=project_id)
+        return await self._authoring.threads(
+            epic_id=epic_id, project_id=project_id, kind="decomposition"
+        )
 
     async def append(
         self,

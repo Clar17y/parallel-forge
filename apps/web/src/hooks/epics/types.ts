@@ -96,6 +96,7 @@ export interface AuthoringOutcome {
   job_id: string;
   job_version: number;
   state: BrainstormState;
+  route?: { provider: string; client: string; model: string; effort: string } | null;
   proposal_digest?: string | null;
   proposal?: BrainstormProposal | DecompositionProposal | null;
   adopted_revision_id?: string | null;

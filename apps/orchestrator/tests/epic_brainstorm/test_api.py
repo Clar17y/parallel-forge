@@ -3,8 +3,10 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from forge.api.routes.epic_brainstorm import router_for
+from forge.api.routes.epic_decomposition import router_for as decomposition_router_for
 from forge.application.ports.epic_brainstorm import BriefInput
 from forge.application.services.epic_brainstorm import EpicBrainstormService
+from forge.application.services.epic_decomposition import EpicDecompositionService
 from forge.domain.subscription import RouteBinding, RouteSpec, TaskBudget
 from forge.persistence.models.project import Project
 from forge.settings import Settings
@@ -51,7 +53,11 @@ async def test_session_csrf_and_cross_subject_boundaries(brainstorm_session_fact
         route=RouteBinding(requested=route, effective=route),
         budget=TaskBudget(max_provider_attempts=1),
     )
+    app.state.epic_decomposition_service = EpicDecompositionService(
+        None, authoring_service=app.state.epic_brainstorm_service
+    )
     app.include_router(router_for(), prefix="/api")
+    app.include_router(decomposition_router_for(), prefix="/api")
     headers = {
         "Host": "127.0.0.1:3000",
         "Origin": "http://127.0.0.1:3000",
@@ -71,6 +77,7 @@ async def test_session_csrf_and_cross_subject_boundaries(brainstorm_session_fact
         created = await client.post(path, json=payload, headers=headers)
         assert created.status_code == 200
         conversation_id = created.json()["conversation_id"]
+        conversation_version = created.json()["version"]
         wrong = await client.get(
             f"{path}/{conversation_id}/turns?project_id={uuid4()}", headers=headers
         )
@@ -80,3 +87,16 @@ async def test_session_csrf_and_cross_subject_boundaries(brainstorm_session_fact
                 f"{path}/{conversation_id}/turns?project_id={project_id}", headers=headers
             )
         ).status_code == 200
+        brainstorm_threads = await client.get(f"{path}?project_id={project_id}", headers=headers)
+        decomposition_threads = await client.get(
+            f"/api/epics/{epic_id}/decomposition-conversations?project_id={project_id}",
+            headers=headers,
+        )
+        assert brainstorm_threads.json() == [
+            {
+                "conversation_id": conversation_id,
+                "conversation_version": conversation_version,
+                "job_ids": [],
+            }
+        ]
+        assert decomposition_threads.json() == brainstorm_threads.json()

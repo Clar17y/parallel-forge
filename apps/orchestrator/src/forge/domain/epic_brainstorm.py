@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from forge.domain.epic_decomposition import DecompositionProposal
 from forge.domain.operation import canonical_digest
 from forge.domain.payload import validate_durable_payload
-from forge.domain.subscription import RouteBinding, TaskBudget
+from forge.domain.subscription import RouteBinding, RouteSpec, TaskBudget
 
 
 class BrainstormConflict(ValueError):
@@ -391,6 +391,7 @@ class AuthoringOutcome(_Closed):
     job_id: UUID
     job_version: int = Field(ge=1)
     state: BrainstormState
+    route: RouteSpec | None = None
     proposal_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", max_length=64)
     proposal: BrainstormProposal | DecompositionProposal | None = None
     adopted_revision_id: UUID | None = None

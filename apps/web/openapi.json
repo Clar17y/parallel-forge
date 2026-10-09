@@ -1199,6 +1199,16 @@
               }
             ]
           },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RouteSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "schema_version": {
             "const": 1,
             "default": 1,
@@ -6027,6 +6037,16 @@
             "title": "Prompt Turn Id",
             "type": "string"
           },
+          "requested_route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RouteInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "schema_version": {
             "const": 1,
             "default": 1,
@@ -8423,6 +8443,42 @@
           "model"
         ],
         "title": "RouteInput",
+        "type": "object"
+      },
+      "RouteSpec": {
+        "description": "Concrete route identity for provider, client, model, effort, auth and billing.",
+        "properties": {
+          "auth_mode": {
+            "$ref": "#/components/schemas/AuthMode",
+            "default": "subscription"
+          },
+          "billing_mode": {
+            "$ref": "#/components/schemas/BillingMode",
+            "default": "allowance_only"
+          },
+          "client": {
+            "title": "Client",
+            "type": "string"
+          },
+          "effort": {
+            "$ref": "#/components/schemas/ReasoningEffort",
+            "default": "low"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "client",
+          "model"
+        ],
+        "title": "RouteSpec",
         "type": "object"
       },
       "RunCommandRequest": {

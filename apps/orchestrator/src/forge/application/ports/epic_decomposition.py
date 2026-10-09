@@ -74,6 +74,7 @@ class DecompositionAuthoringPort(Protocol):
         *,
         epic_id: UUID,
         project_id: UUID,
+        kind: Literal["brainstorm", "decomposition"] = "decomposition",
     ) -> tuple[BrainstormThread, ...]: ...
 
     async def append(

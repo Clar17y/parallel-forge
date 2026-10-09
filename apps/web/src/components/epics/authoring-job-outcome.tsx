@@ -36,6 +36,7 @@ export function AuthoringJobOutcome({
           <StatusBadge label={formatState(outcome.state)} tone={outcome.state === 'failed' ? 'danger' : outcome.state === 'proposed' ? 'success' : 'info'} />
           <StatusBadge label={settlementLabel} tone={settlementTone} />
         </div>
+        {outcome.route && <p>Model: {outcome.route.model} · Effort: {outcome.route.effort}</p>}
         {outcome.failure && <p role="alert">The job reported: {formatState(outcome.failure)}.</p>}
         <p>Usage: {outcome.usage_known === true ? 'measured' : outcome.usage_known === false ? 'unknown' : 'not yet reported'}.</p>
         {usage && (
