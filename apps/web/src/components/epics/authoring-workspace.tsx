@@ -195,22 +195,26 @@ export function AuthoringWorkspace({
   onReviewBrief?: () => void;
 }) {
   const brainstorm = useEpicBrainstorm(epicId, projectId);
+  const subject = `${epicId}:${projectId}`;
   const [inputText, setInputText] = useState('');
   const [routeChoice, setRouteChoice] = useState<BrainstormRoute | null>(null);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
-  const [savedMessageState, setSavedMessage] = useState<SavedSend | false | null>(null);
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [savedMessageState, setSavedMessageState] = useState<{ subject: string; value: SavedSend | false } | null>(null);
+  const [sendErrorState, setSendErrorState] = useState<{ subject: string; value: string | null } | null>(null);
+  const setSavedMessage = useCallback((value: SavedSend | false) => setSavedMessageState({ subject, value }), [subject]);
+  const setSendError = useCallback((value: string | null) => setSendErrorState({ subject, value }), [subject]);
+  const sendError = sendErrorState?.subject === subject ? sendErrorState.value : null;
   const [assistancePending, setAssistancePending] = useState(false);
   const sendLock = useRef(false);
   const sendIntent = useRef(false);
   const lifecycle = useRef({ active: false, subject: '' });
-  const subject = `${epicId}:${projectId}`;
   const savedSendKey = `epic_saved_brainstorm_send_${epicId}`;
   const pendingRouteKey = `epic_pending_brainstorm_route_${epicId}`;
   const currentEpicVersion = useRef(epicVersion);
   const hydrated = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);
-  const restoredSavedMessage = hydrated && savedMessageState === null ? readSavedSend(savedSendKey, epicVersion) : null;
-  const savedMessage = savedMessageState === false ? null : savedMessageState ?? restoredSavedMessage;
+  const localSavedMessage = savedMessageState?.subject === subject ? savedMessageState.value : null;
+  const restoredSavedMessage = hydrated && localSavedMessage === null ? readSavedSend(savedSendKey, epicVersion) : null;
+  const savedMessage = localSavedMessage === false ? null : localSavedMessage ?? restoredSavedMessage;
   const {
     threads,
     activeConversationId,
@@ -263,7 +267,7 @@ export function AuthoringWorkspace({
     const recovered: SavedSend = { ...current, submission: undefined, retryGeneration: (current.retryGeneration ?? 0) + 1 };
     saveSavedSend(savedSendKey, recovered);
     if (isCurrentInstance()) setSavedMessage(recovered);
-  }, [isCurrentInstance, savedSendKey]);
+  }, [isCurrentInstance, savedSendKey, setSavedMessage]);
 
   const markObsolete = useCallback((saved: SavedSend, text: string) => {
     const current = readSavedSend(savedSendKey, currentEpicVersion.current);
@@ -271,7 +275,7 @@ export function AuthoringWorkspace({
     const obsolete = { ...current, obsoleteText: text };
     saveSavedSend(savedSendKey, obsolete);
     if (isCurrentInstance()) setSavedMessage(obsolete);
-  }, [isCurrentInstance, savedSendKey]);
+  }, [isCurrentInstance, savedSendKey, setSavedMessage]);
 
   useEffect(() => {
     const clearSubmittedPrompt = (_receipt: unknown, request: { body: Record<string, unknown> }) => {
@@ -387,7 +391,7 @@ export function AuthoringWorkspace({
       sendLock.current = false;
       if (isCurrentInstance()) setAssistancePending(false);
     }
-  }, [appendTurn, epicId, isCurrentInstance, markObsolete, pendingRouteKey, projectId, rejectSavedSubmission, savedSendKey, submitJob]);
+  }, [appendTurn, epicId, isCurrentInstance, markObsolete, pendingRouteKey, projectId, rejectSavedSubmission, savedSendKey, setSavedMessage, setSendError, submitJob]);
 
   useEffect(() => {
     if (mutations.conflict && mutations.actionKind === 'job-submit' && !mutations.hasPendingRetry) {
@@ -436,7 +440,7 @@ export function AuthoringWorkspace({
       setAssistancePending(false);
     });
     return () => { unregisterStart(); unregisterTurn(); unregisterJob(); };
-  }, [epicVersion, pendingRouteKey, registerCompletion, requestAssistance, savedSendKey]);
+  }, [epicVersion, pendingRouteKey, registerCompletion, requestAssistance, savedSendKey, setSavedMessage, setSendError]);
 
   const handleSendTurn = async (event: FormEvent) => {
     event.preventDefault();
@@ -476,6 +480,23 @@ export function AuthoringWorkspace({
   };
 
   const recoverableSavedMessage = savedMessage;
+
+  const replaceSavedRouteAndRetry = () => {
+    if (!recoverableSavedMessage || sendLock.current || mutationPending || mutations.pendingMutation ||
+      assistancePending || loading || isUnavailable || !isCurrentInstance()) return;
+    sendLock.current = true;
+    const current = readSavedSend(savedSendKey, currentEpicVersion.current);
+    if (!current || JSON.stringify(current) !== JSON.stringify(recoverableSavedMessage) ||
+      current.submission || current.repost) {
+      sendLock.current = false;
+      setSavedMessage(current ?? false);
+      return;
+    }
+    const replaced = { ...current, route: routeChoice };
+    saveSavedSend(savedSendKey, replaced);
+    setSavedMessage(replaced);
+    void requestAssistance(replaced, true, true);
+  };
 
   const handleAdopt = async () => {
     if (isUnavailable || !outcome?.proposal || !outcome.proposal_digest || outcome.state !== 'proposed') return;
@@ -664,9 +685,17 @@ export function AuthoringWorkspace({
         <p>{recoverableSavedMessage?.obsoleteText
           ? 'A newer message followed your saved message. Reposting your text will make it the latest prompt for assistant help.'
           : sendError ?? 'Your message is saved. Start assistant help when you are ready.'}</p>
+        {recoverableSavedMessage && <p className="text-sm">Saved assistant model: {recoverableSavedMessage.route
+          ? `${recoverableSavedMessage.route.model} · ${recoverableSavedMessage.route.effort}` : 'Project default'}. Retrying uses this saved choice.</p>}
         <Button variant="secondary" disabled={mutationPending || assistancePending || loading || isUnavailable || !recoverableSavedMessage} onClick={() => recoverableSavedMessage && void requestAssistance(recoverableSavedMessage, false, true)}>
           {assistancePending ? 'Starting assistant…' : recoverableSavedMessage?.obsoleteText ? 'Repost message and retry assistant' : 'Retry assistant help'}
         </Button>
+        {recoverableSavedMessage && <Button variant="secondary"
+          disabled={mutationPending || !!mutations.pendingMutation || assistancePending || loading || isUnavailable ||
+            !!recoverableSavedMessage.submission || !!recoverableSavedMessage.repost}
+          onClick={replaceSavedRouteAndRetry}>
+          Use {routeChoice ? 'selected model' : 'project default'} and {recoverableSavedMessage.obsoleteText ? 'repost message' : 'retry assistant'}
+        </Button>}
       </div>}
 
       {outcome && ['queued', 'running', 'quota_wait', 'capacity_wait', 'reconciling'].includes(outcome.state) && <p role="status">The assistant is working on your idea. You can add context while you wait.</p>}

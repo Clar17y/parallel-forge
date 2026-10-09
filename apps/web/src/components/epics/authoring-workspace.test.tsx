@@ -209,6 +209,172 @@ describe('AuthoringWorkspace', () => {
     expect(directReads).toBe(2);
   });
 
+  test('explicitly replaces an unsubmitted saved route with the selected project default before retry', async () => {
+    const savedTurn = { ...turns[0], turn_id: 'saved-route-turn', text: 'Track repairs by depot.' };
+    const oldRoute = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    const defaultRoute = { ...oldRoute, model: 'gpt-6-luna', effort: 'medium' };
+    const savedKey = `epic_saved_brainstorm_send_${epicId}`;
+    sessionStorage.setItem(savedKey, JSON.stringify({ conversationId, version: 2, expectedEpicVersion: 9, route: oldRoute }));
+    const jobs: RequestInit[] = [];
+    let saves = 0;
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
+      if (path.startsWith('/subscription-runtime')) return { workers: [] } as T;
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations` && init?.method === 'POST') { saves += 1; return { conversation_id: conversationId, version: 2 } as T; }
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return [savedTurn] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init); return { schema_version: 1, job_id: 'replacement-job', job_version: 1, state: 'queued', replay_key: 'key' } as T;
+      }
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    expect(await screen.findByText(/Saved assistant model: gpt-6-astra · low/)).toBeInTheDocument();
+    expect(jobs).toHaveLength(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Use project default and retry assistant' }));
+    await waitFor(() => expect(jobs).toHaveLength(1));
+    expect(JSON.parse(String(jobs[0].body))).toMatchObject({ prompt_turn_id: savedTurn.turn_id, expected_conversation_version: 2 });
+    expect(JSON.parse(String(jobs[0].body))).not.toHaveProperty('requested_route');
+    expect(saves).toBe(0);
+    expect(sessionStorage.getItem(savedKey)).toBeNull();
+  });
+
+  test.each(['saved', 'selected'] as const)('%s choice remains explicit when a saved default is retried', async action => {
+    const savedTurn = { ...turns[0], turn_id: 'default-recovery-turn', text: 'Preserve the original idea.' };
+    const alternate = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    const defaultRoute = { ...alternate, model: 'gpt-6-luna', effort: 'medium' };
+    const savedKey = `epic_saved_brainstorm_send_${epicId}`;
+    sessionStorage.setItem(savedKey, JSON.stringify({ conversationId, version: 2, expectedEpicVersion: 9, route: null }));
+    const jobs: RequestInit[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
+      if (path.startsWith('/subscription-runtime')) return { workers: [{ state: 'current', routes: [alternate] }] } as T;
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return [savedTurn] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init); return { schema_version: 1, job_id: 'default-recovery-job', job_version: 1, state: 'queued', replay_key: 'key' } as T;
+      }
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    expect(await screen.findByText(/Saved assistant model: Project default/)).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Model' }), JSON.stringify(['openai', 'codex_app_server', 'gpt-6-astra']));
+    expect(jobs).toHaveLength(0);
+    await userEvent.click(screen.getByRole('button', { name: action === 'saved' ? 'Retry assistant help' : 'Use selected model and retry assistant' }));
+    await waitFor(() => expect(jobs).toHaveLength(1));
+    const body = JSON.parse(String(jobs[0].body));
+    expect(body.prompt_turn_id).toBe(savedTurn.turn_id);
+    if (action === 'selected') expect(body.requested_route).toEqual(alternate);
+    else expect(body).not.toHaveProperty('requested_route');
+  });
+
+  test('explicit replacement reposts an obsolete saved prompt with its original text and a new turn identity', async () => {
+    const original = { ...turns[0], turn_id: 'obsolete-replacement-turn', text: 'Keep this text.' };
+    const later = { ...turns[1], turn_id: 'later-turn' };
+    const reposted = { ...original, turn_id: 'replacement-repost-turn' };
+    const oldRoute = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    sessionStorage.setItem(`epic_saved_brainstorm_send_${epicId}`, JSON.stringify({
+      conversationId, version: 2, expectedEpicVersion: 9, route: oldRoute, obsoleteText: original.text,
+    }));
+    let latest = [original, later];
+    const appends: RequestInit[] = [];
+    const jobs: RequestInit[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return latest as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns` && init?.method === 'POST') {
+        appends.push(init); latest = [original, later, reposted]; return { version: 4 } as T;
+      }
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init); return { schema_version: 1, job_id: 'repost-replacement-job', job_version: 1, state: 'queued', replay_key: 'key' } as T;
+      }
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    expect(await screen.findByText(/Saved assistant model: gpt-6-astra · low/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Use project default and repost message' }));
+    await waitFor(() => expect(jobs).toHaveLength(1));
+    expect(appends).toHaveLength(1);
+    expect(JSON.parse(String(appends[0].body))).toMatchObject({ text: original.text, expected_conversation_version: 3 });
+    expect(new Headers(appends[0].headers).get('Idempotency-Key')).toContain(':repost:0');
+    expect(JSON.parse(String(jobs[0].body))).toMatchObject({ prompt_turn_id: reposted.turn_id, expected_conversation_version: 4 });
+    expect(JSON.parse(String(jobs[0].body))).not.toHaveProperty('requested_route');
+  });
+
+  test('an old recovery button cannot replace a saved send that became attempted before its click', async () => {
+    const route = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    const savedKey = `epic_saved_brainstorm_send_${epicId}`;
+    const saved = { conversationId, version: 2, expectedEpicVersion: 9, route };
+    sessionStorage.setItem(savedKey, JSON.stringify(saved));
+    const jobs: RequestInit[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') jobs.push(init);
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    const replacement = await screen.findByRole('button', { name: 'Use project default and retry assistant' });
+    expect(replacement).toBeEnabled();
+    const submission = { turnId: turns[0].turn_id, expectedEpicVersion: 9, idempotencyKey: 'already-attempted-key' };
+    sessionStorage.setItem(savedKey, JSON.stringify({ ...saved, submission }));
+    await userEvent.click(replacement);
+    expect(jobs).toHaveLength(0);
+    expect(JSON.parse(sessionStorage.getItem(savedKey)!)).toMatchObject({ route, submission });
+    expect(screen.getByRole('button', { name: 'Use project default and retry assistant' })).toBeDisabled();
+  });
+
+  test('replacement uses in-memory recovery when saved-send storage writes and removal are denied', async () => {
+    const route = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    const savedKey = `epic_saved_brainstorm_send_${epicId}`;
+    const savedTurn = { ...turns[0], turn_id: 'storage-replacement-turn' };
+    sessionStorage.setItem(savedKey, JSON.stringify({ conversationId, version: 2, expectedEpicVersion: 9, route }));
+    const originalSet = Storage.prototype.setItem;
+    const originalRemove = Storage.prototype.removeItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+      if (key === savedKey) throw new DOMException('Storage denied');
+      return originalSet.call(this, key, value);
+    });
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (this: Storage, key) {
+      if (key === savedKey) throw new DOMException('Storage denied');
+      return originalRemove.call(this, key);
+    });
+    const jobs: RequestInit[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return [savedTurn] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init); return { schema_version: 1, job_id: 'storage-replacement-job', job_version: 1, state: 'queued', replay_key: 'key' } as T;
+      }
+      return undefined as T;
+    });
+    const first = render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Use project default and retry assistant' }));
+    await waitFor(() => expect(jobs).toHaveLength(1));
+    expect(JSON.parse(String(jobs[0].body))).not.toHaveProperty('requested_route');
+    expect(sessionStorage.getItem(savedKey)).not.toBeNull();
+    first.unmount();
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    expect(screen.queryByRole('button', { name: 'Retry assistant help' })).not.toBeInTheDocument();
+    expect(jobs).toHaveLength(1);
+  });
+
+  test('changing epic and project on the same workspace does not show the old saved-route recovery', async () => {
+    const route = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    sessionStorage.setItem(`epic_saved_brainstorm_send_${epicId}`, JSON.stringify({ conversationId, version: 2, expectedEpicVersion: 9, route }));
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.includes('brainstorm-conversations?')) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}` && !init?.signal) throw new Error('offline');
+      return undefined as T;
+    });
+    const view = render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    expect(await screen.findByText(/Saved assistant model: gpt-6-astra · low/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry assistant help' }));
+    await screen.findByText(/We could not start the assistant yet/);
+    view.rerender(<AuthoringWorkspace epicId="another-epic" projectId="another-project" epicVersion={1} />);
+    expect(screen.queryByText(/Saved assistant model: gpt-6-astra · low/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Use project default and retry assistant' })).not.toBeInTheDocument();
+  });
+
   test('uses the current epic version when an unsubmitted saved turn is recovered after a failed read', async () => {
     const selectedRoute = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
     const savedTurn = { ...turns[0], turn_id: 'saved-current-version' };
@@ -296,7 +462,9 @@ describe('AuthoringWorkspace', () => {
     expect(requests[1].key).not.toBe(requests[0].key);
   });
 
-  test.each(['default', 'alternate'] as const)('explicitly reposts an obsolete saved %s prompt after an older assistant turn wins the race', async routeKind => {
+  test.each([
+    ['default', 'saved'], ['alternate', 'saved'], ['alternate', 'replaced'],
+  ] as const)('explicitly reposts an obsolete %s prompt with its %s route after a confirmed conflict', async (routeKind, recovery) => {
     const original = { ...turns[0], turn_id: 'saved-original', text: 'Track repairs by depot.' };
     const assistant = { ...turns[1], turn_id: 'older-assistant' };
     const reposted = { ...original, turn_id: 'reposted-original' };
@@ -326,13 +494,14 @@ describe('AuthoringWorkspace', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Retry assistant help' }));
     await screen.findByRole('button', { name: 'Repost message and retry assistant' });
     expect(appends).toHaveLength(0);
-    await userEvent.click(screen.getByRole('button', { name: 'Repost message and retry assistant' }));
+    await userEvent.click(screen.getByRole('button', { name: recovery === 'replaced'
+      ? 'Use project default and repost message' : 'Repost message and retry assistant' }));
     await waitFor(() => expect(jobs).toHaveLength(2));
     expect(appends).toHaveLength(1);
     expect(JSON.parse(jobs[1].body as string)).toEqual({
       schema_version: 1, project_id: projectId, prompt_turn_id: reposted.turn_id,
       expected_epic_version: 9, expected_conversation_version: 4,
-      ...(routeKind === 'alternate' ? { requested_route: selectedRoute } : {}),
+      ...(routeKind === 'alternate' && recovery === 'saved' ? { requested_route: selectedRoute } : {}),
     });
     expect(sessionStorage.getItem(savedKey)).toBeNull();
   });
@@ -358,6 +527,7 @@ describe('AuthoringWorkspace', () => {
     const first = render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Retry assistant help' }));
     await screen.findByRole('button', { name: 'Retry original request' });
+    expect(screen.getByRole('button', { name: 'Use project default and retry assistant' })).toBeDisabled();
     first.unmount();
     render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={10} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Retry original request' }));
@@ -399,6 +569,7 @@ describe('AuthoringWorkspace', () => {
     const first = render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Repost message and retry assistant' }));
     await screen.findByRole('button', { name: 'Retry original request' });
+    expect(screen.getByRole('button', { name: 'Use project default and repost message' })).toBeDisabled();
     expect(jobs).toHaveLength(0);
     expect(JSON.parse(sessionStorage.getItem(savedKey)!).repost).toBeUndefined();
     first.unmount();
@@ -774,6 +945,7 @@ describe('AuthoringWorkspace', () => {
     });
     const first = render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
     expect(jobs).toHaveLength(0);
+    expect(await screen.findByRole('button', { name: 'Use project default and retry assistant' })).toBeDisabled();
     await userEvent.click(await screen.findByRole('button', { name: 'Retry original request' }));
     await waitFor(() => expect(jobs).toHaveLength(1));
     expect(JSON.parse(String(jobs[0].body))).not.toHaveProperty('requested_route');
