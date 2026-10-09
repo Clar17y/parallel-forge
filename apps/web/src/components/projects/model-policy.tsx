@@ -1,6 +1,13 @@
+import { useId } from 'react';
 import type { components } from '@/lib/api/schema';
 import { Field } from './form-fields';
 import { TokenBudgetSlider } from '../model-selection/token-budget-slider';
+import {
+  getModelReasoningSupport,
+  reasoningEffortChoices,
+  validateReasoningSetting,
+  type ApiReasoningEffort,
+} from '../model-selection/api-reasoning';
 
 type Model = components['schemas']['AgentModelPolicy'];
 const googleModelChoices = [
@@ -17,11 +24,24 @@ export const defaultModel: Model = {
   max_tool_calls: 100,
   max_duration_seconds: 1800,
   max_cost_minor: 1000,
+  reasoning_effort: null,
 };
 
 export function ModelPolicy({ role, value, onChange, errors = {} }: {
   role: string; value: Model; onChange: (value: Model) => void; errors?: Record<string, string>;
 }) {
+  const reasoningId = useId();
+  const reasoningSupport = getModelReasoningSupport(value.provider, value.model);
+  const reasoningError =
+    errors.reasoning_effort ??
+    validateReasoningSetting(
+      value.provider,
+      value.model,
+      value.reasoning_effort as ApiReasoningEffort | null
+    );
+  const helpId = `${reasoningId}-help`;
+  const errorId = `${reasoningId}-error`;
+
   return (
     <fieldset>
       <legend>{role} model and budget</legend>
@@ -45,6 +65,62 @@ export function ModelPolicy({ role, value, onChange, errors = {} }: {
           )}
         </select>
       </label>
+      <label htmlFor={reasoningId}>
+        {role} reasoning strength
+        <select
+          id={reasoningId}
+          aria-label={`${role} reasoning strength`}
+          aria-invalid={reasoningError ? 'true' : undefined}
+          aria-describedby={reasoningError ? errorId : helpId}
+          value={value.reasoning_effort ?? ''}
+          onChange={event => {
+            const raw = event.target.value;
+            const effort = raw ? (raw as ApiReasoningEffort) : null;
+            onChange({ ...value, reasoning_effort: effort });
+          }}
+        >
+          {reasoningEffortChoices.filter(choice =>
+            choice.value === '' || reasoningSupport.supportedEfforts.includes(choice.value)
+          ).map(choice => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
+          {value.reasoning_effort &&
+            !reasoningSupport.supportedEfforts.includes(
+              value.reasoning_effort as ApiReasoningEffort
+            ) && (
+              <option value={value.reasoning_effort}>
+                Unsupported: {value.reasoning_effort}
+              </option>
+            )}
+        </select>
+      </label>
+      <p
+        id={helpId}
+        className="field-hint"
+        style={{
+          fontSize: '0.8rem',
+          color: 'var(--muted-foreground, #666)',
+          margin: '0 0 4px',
+        }}
+      >
+        Token limits cap usage while reasoning strength controls thinking.
+        {reasoningSupport.note && ` ${reasoningSupport.note}`}
+      </p>
+      {reasoningError && (
+        <p
+          id={errorId}
+          role="alert"
+          style={{
+            fontSize: '0.8rem',
+            color: 'var(--destructive, #d32f2f)',
+            margin: '0 0 4px',
+          }}
+        >
+          {reasoningError}
+        </p>
+      )}
       <details>
         <summary>Advanced model and budget</summary>
         <Field

@@ -9,7 +9,7 @@ import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final, NoReturn, Protocol, TypeAlias, cast, runtime_checkable
+from typing import Final, Literal, NoReturn, Protocol, TypeAlias, cast, runtime_checkable
 
 from forge.application.ports.provider_credentials import (
     ProviderCredentialError,
@@ -47,6 +47,48 @@ _STREAM_CLOSE_TIMEOUT_SECONDS: Final = 0.05
 _monotonic = time.monotonic
 
 AdkTool: TypeAlias = BaseTool | BaseToolset  # noqa: UP040 - runtime isinstance support
+
+_GEMINI_2_5_PRESETS: Final[dict[str, int]] = {
+    "low": 1024,
+    "medium": 4096,
+    "high": 8192,
+}
+
+_GEMINI_3_LEVELS: Final[dict[str, types.ThinkingLevel]] = {
+    "low": types.ThinkingLevel.LOW,
+    "medium": types.ThinkingLevel.MEDIUM,
+    "high": types.ThinkingLevel.HIGH,
+}
+
+_GEMINI_2_5_RE: Final = re.compile(r"\Agemini-2\.5-(?:flash|pro)(?:-[a-z0-9.]+)?\Z")
+_GEMINI_3_FLASH_OR_31_PRO_RE: Final = re.compile(
+    r"\Agemini-(?:3\.[58]-flash|3\.1-pro)(?:-[a-z0-9.]+)?\Z"
+)
+_GEMINI_3_PRO_OLDER_RE: Final = re.compile(r"\Agemini-3(?:\.0)?-pro(?:-[a-z0-9.]+)?\Z")
+
+
+def build_adk_thinking_config(
+    model: str, effort: str | None
+) -> types.ThinkingConfig | None:
+    """Build typed Google GenAI ThinkingConfig for supported Gemini models."""
+    if effort is None:
+        return None
+    if effort not in ("low", "medium", "high"):
+        raise AdkRuntimeError(f"Invalid reasoning effort {effort!r}")
+
+    if _GEMINI_2_5_RE.fullmatch(model) is not None:
+        return types.ThinkingConfig(thinking_budget=_GEMINI_2_5_PRESETS[effort])
+
+    if _GEMINI_3_FLASH_OR_31_PRO_RE.fullmatch(model) is not None:
+        return types.ThinkingConfig(thinking_level=_GEMINI_3_LEVELS[effort])
+
+    if _GEMINI_3_PRO_OLDER_RE.fullmatch(model) is not None:
+        if effort == "medium":
+            raise AdkRuntimeError("Medium reasoning effort is not supported on older Gemini 3 Pro")
+        return types.ThinkingConfig(thinking_level=_GEMINI_3_LEVELS[effort])
+
+    raise AdkRuntimeError(f"Reasoning effort is not supported for model {model!r}")
+
 
 
 class AdkRuntimeError(RuntimeError):
@@ -377,6 +419,7 @@ class AdkInvocation:
     max_duration_ms: int
     max_cost_minor: int
     cost_estimator: AdkCostEstimator | None = field(default=None, repr=False, compare=False)
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
     def __post_init__(self) -> None:
         name = _strict_text(self.agent_name, maximum=96)
@@ -408,13 +451,20 @@ class AdkInvocation:
         _strict_nonnegative_int32(self.max_cost_minor)
         if self.cost_estimator is not None and not callable(self.cost_estimator):
             raise AdkInvocationInvalid()
+        if self.reasoning_effort is not None and self.reasoning_effort not in (
+            "low",
+            "medium",
+            "high",
+        ):
+            raise AdkInvocationInvalid()
 
     def __repr__(self) -> str:
         return (
             "AdkInvocation("
             f"agent_name={self.agent_name!r}, model={self.model!r}, "
             f"tools={len(self.tools)}, has_instruction={bool(self.instruction)}, "
-            f"has_payload={bool(self.user_payload_json)})"
+            f"has_payload={bool(self.user_payload_json)}, "
+            f"reasoning_effort={self.reasoning_effort!r})"
         )
 
 
@@ -721,6 +771,14 @@ class AdkRuntime:
                 model=request.model,
                 client_kwargs={"api_key": credential, "vertexai": False},
             )
+            thinking_config = build_adk_thinking_config(
+                request.model, request.reasoning_effort
+            )
+            generate_content_config = (
+                types.GenerateContentConfig(thinking_config=thinking_config)
+                if thinking_config is not None
+                else None
+            )
             agent = LlmAgent(
                 name=request.agent_name,
                 model=model,
@@ -729,6 +787,7 @@ class AdkRuntime:
                 output_schema=request.output_schema,
                 tools=list(request.tools),
                 after_model_callback=reject_invalid_function_call_ids,
+                generate_content_config=generate_content_config,
             )
             sessions = InMemorySessionService()  # type: ignore[no-untyped-call]
             runner = Runner(
@@ -809,4 +868,5 @@ __all__ = [
     "AdkRuntimeProtocol",
     "AdkTool",
     "AdkUsageSummary",
+    "build_adk_thinking_config",
 ]

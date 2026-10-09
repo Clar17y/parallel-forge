@@ -125,6 +125,7 @@ class AgentModelPolicy(BaseModel):
     max_tool_calls: int = Field(default=100, ge=0)
     max_duration_seconds: int = Field(default=1800, ge=1)
     max_cost_minor: int = Field(default=1000, ge=0)
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
     @field_validator("provider", "model")
     @classmethod

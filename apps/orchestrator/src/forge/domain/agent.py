@@ -7,7 +7,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import replace
 from enum import StrEnum
-from typing import Self
+from typing import Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -584,6 +584,7 @@ class AgentRequest(BaseModel):
     instruction_digest: str = Field(min_length=64, max_length=64)
     allowed_tools: tuple[ToolName, ...]
     budget: AgentBudget
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
     @field_validator("execution_id", "run_id", "task_id")
     @classmethod

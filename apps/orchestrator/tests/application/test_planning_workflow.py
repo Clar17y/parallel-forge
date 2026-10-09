@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -565,6 +565,38 @@ def _build_fixture(
     work.commands.add(command)
 
     return service, gateway, work, command, policy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "low", "medium", "high"])
+async def test_planning_binds_saved_reasoning_and_preserves_policy_document(
+    tmp_path: Path, effort: str | None,
+) -> None:
+    service, gateway, work, command, _ = _build_fixture(tmp_path)
+    document = json.loads(json.dumps(work.projects.policy_record.document))
+    for role in ("planner", "developer", "reviewer"):
+        document[f"{role}_model"].pop("reasoning_effort", None)
+    if effort is not None:
+        document["planner_model"]["reasoning_effort"] = effort
+        document["developer_model"]["reasoning_effort"] = "high" if effort != "high" else "low"
+        document["reviewer_model"]["reasoning_effort"] = "medium"
+    document["planner_model"]["max_input_tokens"] = 75000
+    saved_bytes = canonical_json_bytes(document)
+    saved_digest = hashlib.sha256(saved_bytes).hexdigest()
+    work.projects.policy_record = replace(
+        work.projects.policy_record, document=document, policy_digest=saved_digest,
+    )
+
+    outcome = await service.execute(command, work)
+
+    assert outcome.run_state is RunState.AWAITING_PLAN_APPROVAL
+    assert len(gateway.requests) == 1
+    request = gateway.requests[0]
+    assert request.reasoning_effort == effort
+    assert request.budget.max_input_tokens == 75000
+    assert request.budget.max_output_tokens == 16000
+    assert canonical_json_bytes(work.projects.policy_record.document) == saved_bytes
+    assert work.projects.policy_record.policy_digest == saved_digest
 
 
 @pytest.mark.asyncio
