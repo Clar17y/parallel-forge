@@ -413,7 +413,7 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                                 type="button"
                                 className={`text-xs px-2.5 py-1 rounded border ${
                                   isSelected
-                                    ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
+                                    ? 'bg-[var(--accent)] text-[var(--accent-foreground)] border-[var(--accent)]'
                                     : 'bg-[var(--surface)] text-[var(--muted)] border-[var(--border)] hover:border-[var(--control-border)]'
                                 }`}
                                 aria-pressed={isSelected}
@@ -449,7 +449,7 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                                 type="button"
                                 className={`text-xs px-2.5 py-1 rounded border ${
                                   isDep
-                                    ? 'bg-[var(--info)] text-white border-[var(--info)]'
+                                    ? 'bg-[var(--info)] text-[var(--info-foreground)] border-[var(--info)]'
                                     : 'bg-[var(--surface)] text-[var(--muted)] border-[var(--border)]'
                                 }`}
                                 aria-pressed={Boolean(isDep)}
