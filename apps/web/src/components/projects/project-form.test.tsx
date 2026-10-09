@@ -18,6 +18,7 @@ test('submits named argv and defaults database off with separate path lists', as
   const save = vi.fn().mockResolvedValue(undefined);
   render(<ProjectForm onSave={save} />);
   const user = await identity();
+  for (const details of screen.getAllByText('Advanced model and budget')) await user.click(details);
   expect(screen.getByLabelText('Local remediation limit')).toHaveValue(3);
   expect(screen.getByLabelText('Remote remediation limit')).toHaveValue(3);
   await user.click(screen.getByRole('button', { name: 'Add command' }));
@@ -31,6 +32,31 @@ test('submits named argv and defaults database off with separate path lists', as
     commands: [expect.objectContaining({ kind: 'test', name: 'test', argv: ['npm', 'test'] })],
     database: { enabled: false }, allowed_environment_files: ['.env.example'], secret_paths: ['.env', '.env.local'],
   }));
+});
+
+test('saves selected Google model while retaining exact custom project budgets', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProjectForm onSave={save} initial={{ planner_model: {
+    provider: 'google', model: 'legacy-custom-model', max_input_tokens: 900000, max_output_tokens: 37000,
+    max_tool_calls: 123, max_duration_seconds: 7400, max_cost_minor: 3333,
+  } }} />);
+  const user = await identity();
+  await user.selectOptions(screen.getByLabelText('Planner model'), JSON.stringify(['google', 'gemini-3.5-flash']));
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save.mock.calls[0][0].planner_model).toEqual({
+    provider: 'google', model: 'gemini-3.5-flash', max_input_tokens: 900000, max_output_tokens: 37000,
+    max_tool_calls: 123, max_duration_seconds: 7400, max_cost_minor: 3333,
+  });
+});
+
+test('round-trips an untouched custom project model and out-of-range owner budget', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  const planner = { provider: 'custom-provider', model: 'custom-model-v9', max_input_tokens: 900000,
+    max_output_tokens: 45000, max_tool_calls: 125, max_duration_seconds: 7400, max_cost_minor: 6000 };
+  render(<ProjectForm onSave={save} initial={{ planner_model: planner }} />);
+  await identity();
+  await userEvent.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save.mock.calls[0][0].planner_model).toEqual(planner);
 });
 
 test('keeps legacy Jev policy absent until an operator explicitly configures it', async () => {

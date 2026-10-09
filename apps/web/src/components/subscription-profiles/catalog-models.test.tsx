@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ProfileEditor } from './profile-editor';
 import { defaultRolePreferences, extractNumericVersion, compareNumericVersions, deriveModelFromCatalogs } from './models';
+import { routePresetIdentity } from '@/components/model-selection/model-presets';
 import { SubscriptionRuntimeStatus } from './runtime-status';
 import type { SubscriptionModelCatalogPage, SubscriptionModelCatalogView } from './models';
 
@@ -170,42 +171,51 @@ describe('numeric versioning and catalog derivation', () => {
 });
 
 describe('profile editor catalog choices and interactions', () => {
-  test('model choices are scoped to provider + client and display freshness', async () => {
+  test('model presets span providers and atomically select a complete route', async () => {
     render(<ProfileEditor catalogPage={catalogPage} onSave={vi.fn()} />);
-
-    // Initially route is blank; set provider and client
-    const providerInput = screen.getByLabelText('Preferred route provider');
-    const clientInput = screen.getByLabelText('Preferred route client');
-    await userEvent.type(providerInput, 'openai');
-    await userEvent.type(clientInput, 'codex_app_server');
-
-    // Metadata displays source and freshness
-    expect(screen.getByText('Catalog source:')).toBeInTheDocument();
-    expect(screen.getByText('Freshness:')).toBeInTheDocument();
-    expect(screen.getByText(/Current provider catalog choices/i)).toBeInTheDocument();
-
-    // Model choices select has OpenAI Codex models
-    const modelChoiceSelect = screen.getByLabelText('Preferred route model choice');
-    expect(modelChoiceSelect).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /GPT-7 Sol/i })).toBeInTheDocument();
-
-    // Selecting a model updates the model input
-    await userEvent.selectOptions(modelChoiceSelect, 'gpt-7-sol');
-    expect(screen.getByLabelText('Preferred route model')).toHaveValue('gpt-7-sol');
+    const modelChoiceSelect = screen.getByLabelText('Primary model');
+    const gemini = Array.from((modelChoiceSelect as HTMLSelectElement).options).find(option => option.textContent?.includes('Gemini 4 Flash'))!;
+    expect(Array.from((modelChoiceSelect as HTMLSelectElement).options).some(option => option.textContent?.includes('GPT-7 Sol'))).toBe(true);
+    await userEvent.selectOptions(modelChoiceSelect, gemini.value);
+    await userEvent.click(screen.getAllByText('Advanced')[0]);
+    expect(screen.getByLabelText('Primary provider')).toHaveValue('google');
+    expect(screen.getByLabelText('Primary client')).toHaveValue('gemini_cli');
+    expect(screen.getByLabelText('Primary custom model')).toHaveValue('gemini-4-flash');
+    expect(screen.getByLabelText('Primary reasoning')).toHaveValue('medium');
   });
 
-  test('switching provider/client filters model choices dynamically', async () => {
-    render(<ProfileEditor catalogPage={catalogPage} onSave={vi.fn()} />);
+  test('catalog presets distinguish the same model id across provider and client', () => {
+    const choices = [
+      { provider: 'openai', client: 'codex', model: 'same-id', effort: 'low' as const },
+      { provider: 'google', client: 'gemini', model: 'same-id', effort: 'low' as const },
+    ];
+    expect(new Set(choices.map(routePresetIdentity)).size).toBe(2);
+    const sameProvider = [
+      { provider: 'google', client: 'gemini_cli', model: 'same-id', effort: 'low' as const },
+      { provider: 'google', client: 'other_google_client', model: 'same-id', effort: 'low' as const },
+    ];
+    expect(new Set(sameProvider.map(routePresetIdentity)).size).toBe(2);
+  });
 
-    const providerInput = screen.getByLabelText('Preferred route provider');
-    const clientInput = screen.getByLabelText('Preferred route client');
-
-    await userEvent.type(providerInput, 'anthropic');
-    await userEvent.type(clientInput, 'claude_code');
-
-    const modelChoiceSelect = screen.getByLabelText('Preferred route model choice');
-    expect(screen.getByRole('option', { name: /Claude Opus 6/i })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: /GPT-7 Sol/i })).not.toBeInTheDocument();
+  test('selects and saves the same model id from a different client while preserving supported reasoning', async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const catalogs: SubscriptionModelCatalogView[] = [
+      { provider: 'google', client: 'client_a', source: 'provider', status: 'available', observed_at: '2026-10-01T00:00:00Z', stale: false, models: [{ id: 'same-id', label: 'Same model', efforts: ['medium', 'high'] }], message: '' },
+      { provider: 'google', client: 'client_b', source: 'provider', status: 'available', observed_at: '2026-10-01T00:00:00Z', stale: false, models: [{ id: 'same-id', label: 'Same model', efforts: ['medium'] }], message: '' },
+    ];
+    render(<ProfileEditor catalogPage={{ catalogs, observed_at: '2026-10-01T00:00:00Z' }} onSave={save} />);
+    const model = screen.getByLabelText('Primary model') as HTMLSelectElement;
+    const clientA = Array.from(model.options).find(option => option.textContent?.includes('client a'))!;
+    await userEvent.selectOptions(model, clientA.value);
+    await userEvent.selectOptions(screen.getByLabelText('Primary reasoning'), 'medium');
+    const clientB = Array.from(model.options).find(option => option.textContent?.includes('client b'))!;
+    await userEvent.selectOptions(model, clientB.value);
+    expect(screen.getByLabelText('Primary reasoning')).toHaveValue('medium');
+    await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
+    expect(save.mock.calls[0][0].preferences[0].preferred_route).toEqual({
+      provider: 'google', client: 'client_b', model: 'same-id', effort: 'medium',
+      auth_mode: 'subscription', billing_mode: 'allowance_only',
+    });
   });
 
   test('allows explicit custom entry and preserves custom saved values when obsolete', async () => {
@@ -253,13 +263,8 @@ describe('profile editor catalog choices and interactions', () => {
       />
     );
 
-    // The obsolete saved model is preserved in the input and select
-    const role2ModelInput = screen.getAllByLabelText('Preferred route model')[1];
+    const role2ModelInput = screen.getByLabelText('Complex implementer custom model');
     expect(role2ModelInput).toHaveValue('gpt-5.6-terra');
-
-    const role2ModelChoiceSelect = screen.getAllByLabelText('Preferred route model choice')[1];
-    expect(role2ModelChoiceSelect).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /Custom \/ uncataloged: gpt-5.6-terra/i })).toBeInTheDocument();
 
     // User can type an arbitrary custom model
     await userEvent.clear(role2ModelInput);
@@ -286,28 +291,20 @@ describe('profile editor catalog choices and interactions', () => {
 
   test('fallback routes offer model choices and custom entry', async () => {
     render(<ProfileEditor catalogPage={catalogPage} onSave={vi.fn()} />);
-
-    await userEvent.click(screen.getByRole('button', { name: 'Add fallback route' }));
-
-    const fbProvider = screen.getByLabelText('Fallback route 1 provider');
-    const fbClient = screen.getByLabelText('Fallback route 1 client');
-    await userEvent.type(fbProvider, 'google');
-    await userEvent.type(fbClient, 'gemini_cli');
-
-    const fbModelChoice = screen.getByLabelText('Fallback route 1 model choice');
-    expect(fbModelChoice).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /Gemini 4 Flash/i })).toBeInTheDocument();
-
-    await userEvent.selectOptions(fbModelChoice, 'gemini-4-flash');
-    expect(screen.getByLabelText('Fallback route 1 model')).toHaveValue('gemini-4-flash');
+    await userEvent.click(screen.getAllByText('Advanced')[0]);
+    await userEvent.click(screen.getAllByRole('button', { name: 'Add fallback route' })[0]);
+    const fbModelChoice = screen.getByLabelText('Primary fallback route 1 model');
+    const gemini = Array.from((fbModelChoice as HTMLSelectElement).options).find(option => option.textContent?.includes('Gemini 4 Flash'))!;
+    await userEvent.selectOptions(fbModelChoice, gemini.value);
+    expect(screen.getByLabelText('Primary fallback route 1 custom model')).toHaveValue('gemini-4-flash');
   });
 
   test('changing role purpose does not remount role section or destroy focus/draft', async () => {
     render(<ProfileEditor catalogPage={catalogPage} onSave={vi.fn()} />);
 
-    const providerInput = screen.getByLabelText('Preferred route provider');
-    await userEvent.type(providerInput, 'openai');
-    const modelInput = screen.getByLabelText('Preferred route model');
+    await userEvent.click(screen.getAllByText('Advanced')[0]);
+    const modelInput = screen.getByLabelText('Primary custom model');
+    await userEvent.clear(modelInput);
     await userEvent.type(modelInput, 'draft-in-progress');
 
     // Change purpose from primary to security
@@ -319,7 +316,7 @@ describe('profile editor catalog choices and interactions', () => {
 
     // Focus remains on purposeSelect and draft input text is preserved!
     expect(purposeSelect).toHaveFocus();
-    expect(screen.getByLabelText('Preferred route model')).toHaveValue('draft-in-progress');
+    expect(screen.getAllByLabelText('Security reviewer custom model')[0]).toHaveValue('draft-in-progress');
   });
 
   test('handles late catalog load without overwriting existing draft edits', async () => {
@@ -340,7 +337,9 @@ describe('profile editor catalog choices and interactions', () => {
     render(<ProfileEditor onSave={vi.fn()} />);
 
     // User starts typing before catalogs arrive
-    const modelInput = screen.getByLabelText('Preferred route model');
+    await userEvent.click(screen.getAllByText('Advanced')[0]);
+    const modelInput = screen.getByLabelText('Primary custom model');
+    await userEvent.clear(modelInput);
     await userEvent.type(modelInput, 'user-typed-draft');
 
     // Now catalogs arrive late
@@ -348,7 +347,7 @@ describe('profile editor catalog choices and interactions', () => {
 
     // Verify draft was NOT overwritten
     await waitFor(() => {
-      expect(screen.getByLabelText('Preferred route model')).toHaveValue('user-typed-draft');
+      expect(screen.getByLabelText('Primary custom model')).toHaveValue('user-typed-draft');
     });
   });
 
@@ -360,19 +359,19 @@ describe('profile editor catalog choices and interactions', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(catalogPage)));
     vi.stubGlobal('fetch', fetcher);
     render(<ProfileEditor onSave={vi.fn()} />);
-    await userEvent.type(screen.getByLabelText('Preferred route provider'), 'openai');
-    await userEvent.type(screen.getByLabelText('Preferred route client'), 'codex_app_server');
-    await screen.findByRole('option', { name: /GPT-7 Sol/i });
-    const model = screen.getByLabelText('Preferred route model');
+    await waitFor(() => expect(Array.from((screen.getByLabelText('Primary model') as HTMLSelectElement).options).some(option => option.textContent?.includes('GPT-7 Sol'))).toBe(true));
+    await userEvent.click(screen.getAllByText('Advanced')[0]);
+    const model = screen.getByLabelText('Primary custom model');
+    await userEvent.clear(model);
     await userEvent.type(model, 'custom-draft');
     const refreshButton = screen.getByRole('button', { name: 'Refresh model choices' });
     await userEvent.click(refreshButton);
     expect(refreshButton).toBeDisabled();
     await act(async () => { failRefresh(new Error('offline')); });
     expect(screen.getByRole('alert')).toHaveTextContent('Model choices unavailable');
-    expect(screen.getByRole('option', { name: /GPT-7 Sol/i })).toBeInTheDocument();
+    expect(Array.from((screen.getByLabelText('Primary model') as HTMLSelectElement).options).some(option => option.textContent?.includes('GPT-7 Sol'))).toBe(true);
     expect(model).toHaveValue('custom-draft');
-    expect(screen.getByLabelText('Preferred route catalog status')).toHaveTextContent('unverified');
+    expect(screen.getByRole('alert')).toHaveTextContent('Model choices unavailable');
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(model).toHaveValue('custom-draft');

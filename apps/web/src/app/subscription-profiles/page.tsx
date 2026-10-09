@@ -20,7 +20,7 @@ export default function SubscriptionProfilesPage() {
         </p>
       </header>
 
-      <SubscriptionRuntimeStatus />
+      <details><summary>Worker and client reports</summary><SubscriptionRuntimeStatus /></details>
 
       <Button type="button" disabled={profiles.refreshing} onClick={profiles.refresh}>Refresh profile history</Button>
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, Self
 from uuid import UUID, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from forge.application.ports.audit import AuditRepository
 from forge.application.ports.mutations import ApiMutationRecord, MutationRepository
@@ -25,6 +25,7 @@ from forge.domain.subscription import (
     RolePreference,
     RouteSpec,
     SpecialistPurpose,
+    TokenBudgetDefaults,
 )
 
 
@@ -71,17 +72,28 @@ class RouteInput(BaseModel):
         return RouteSpec(**self.model_dump())
 
 
+class TokenBudgetDefaultsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_input_tokens: StrictInt | None = Field(default=None, ge=0)
+    max_output_tokens: StrictInt | None = Field(default=None, ge=0)
+
+    def defaults(self) -> TokenBudgetDefaults:
+        return TokenBudgetDefaults(**self.model_dump())
+
+
 class PreferenceInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     purpose: SpecialistPurpose
     preferred_route: RouteInput
     fallback_routes: tuple[RouteInput, ...] = Field(default=(), max_length=16)
+    token_budget: TokenBudgetDefaultsInput | None = None
 
     def preference(self) -> RolePreference:
         return RolePreference(
             purpose=self.purpose,
             preferred_route=self.preferred_route.route(),
             fallback_routes=tuple(route.route() for route in self.fallback_routes),
+            token_budget=None if self.token_budget is None else self.token_budget.defaults(),
         )
 
 
@@ -126,7 +138,7 @@ class SubscriptionProfileService:
         self, *, actor: ProfileActor, idempotency_key: str, request: ProfileBody
     ) -> OperatorProfile:
         body = _coerce(request, ProfileBody)
-        digest = _digest(body.model_dump(mode="json", exclude={"jev"} if body.jev is None else set()))
+        digest = _digest(_request_payload(body))
         async with self._unit_of_work_factory() as work:
             receipt = await work.mutations.reserve(
                 actor_id=actor.actor_id,
@@ -159,9 +171,7 @@ class SubscriptionProfileService:
         request: ProfileVersionRequest,
     ) -> OperatorProfile:
         body = _coerce(request, ProfileVersionRequest)
-        digest = _digest({"profile_id": str(profile_id), "request": body.model_dump(
-            mode="json", exclude={"jev"} if body.jev is None else set()
-        )})
+        digest = _digest({"profile_id": str(profile_id), "request": _request_payload(body)})
         async with self._unit_of_work_factory() as work:
             receipt = await work.mutations.reserve(
                 actor_id=actor.actor_id,
@@ -337,6 +347,14 @@ def _digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
+
+
+def _request_payload(body: ProfileBody) -> dict[str, object]:
+    payload = body.model_dump(mode="json", exclude={"jev"} if body.jev is None else set())
+    for preference in payload["preferences"]:
+        if preference["token_budget"] is None:
+            del preference["token_budget"]
+    return payload
 
 
 def _actor_source(actor: ProfileActor) -> str:

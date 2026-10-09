@@ -12,20 +12,30 @@ from forge.domain.run import RunState
 from forge.domain.scheduling import ScheduleTask
 from forge.domain.subscription import (
     AcceptanceCriterion,
+    ExecutionEnvelope,
     LogicalTaskContract,
     SpecialistPurpose,
     TaskBudget,
     decode_subscription_record,
     encode_subscription_record,
 )
+from forge.domain.subscription_delegation import budget_with_role_defaults
 from forge.domain.tool import repository_resource_identity
 
 _EVENT = "run.subscription_planning_started"
 
 
 class SubscriptionPlanningService:
-    def __init__(self, primary_budget: TaskBudget) -> None:
+    def __init__(self, primary_budget: TaskBudget, *, explicit_primary_budget: bool = False) -> None:
         self._budget = primary_budget
+        self._explicit_primary_budget = explicit_primary_budget
+
+    def _primary_budget(self, envelope: ExecutionEnvelope) -> TaskBudget:
+        if self._explicit_primary_budget:
+            return self._budget
+        return budget_with_role_defaults(
+            self._budget, envelope, SpecialistPurpose.PRIMARY, clamp_to_parent=False
+        )
 
     async def execute(self, command: CommandEnvelope, work: UnitOfWork) -> UUID:
         fenced = await work.commands.assert_current_lease(command)
@@ -95,13 +105,14 @@ class SubscriptionPlanningService:
         task = await work.tasks.get(run.task_id, for_update=True)
         if task.project_id != run.project_id:
             raise CommandRecoveryRequired("subscription planning task binding differs")
+        primary_budget = self._primary_budget(envelope)
         primary = LogicalTaskContract(
             run_id=run.id,
             task_id=primary_id,
             purpose=SpecialistPurpose.PRIMARY,
             route=envelope.route_for(SpecialistPurpose.PRIMARY),
-            budget=self._budget,
-            max_repairs=self._budget.max_repairs,
+            budget=primary_budget,
+            max_repairs=primary_budget.max_repairs,
             typed_acceptance=(
                 AcceptanceCriterion(
                     criterion_id="approved-plan",
