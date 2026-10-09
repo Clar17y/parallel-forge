@@ -12,7 +12,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from forge.domain.paths import normalize_policy_paths, union_policy_paths
-from forge.domain.reasoning import reasoning_effort_error
+from forge.domain.reasoning import gemini_cli_composite_error, reasoning_effort_error
 from forge.domain.review import FindingSeverity, ReviewFinding
 
 _SHELL_META = re.compile(r"[\r\n;&|$`()<>`]")
@@ -133,6 +133,15 @@ class AgentModelPolicy(BaseModel):
     def model_text_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("model policy text must not be blank")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def model_must_not_be_cli_composite(cls, value: str, info: ValidationInfo) -> str:
+        if info.data.get("provider") == "google":
+            error = gemini_cli_composite_error(value)
+            if error:
+                raise ValueError(error)
         return value
 
     @field_validator("reasoning_effort")

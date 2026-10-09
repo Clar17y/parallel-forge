@@ -16,7 +16,7 @@ from forge.application.ports.provider_credentials import (
     ProviderCredentialResolverPort,
     validate_provider_secret_reference,
 )
-from forge.domain.reasoning import reasoning_model_family
+from forge.domain.reasoning import parse_gemini_cli_composite_id, reasoning_model_family
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.google_llm import Gemini
@@ -65,6 +65,8 @@ def build_adk_thinking_config(
     model: str, effort: str | None
 ) -> types.ThinkingConfig | None:
     """Build typed Google GenAI ThinkingConfig for supported Gemini models."""
+    if parse_gemini_cli_composite_id(model) is not None:
+        raise AdkRuntimeError(f"CLI composite model {model!r} is not an API model")
     if effort is None:
         return None
     if effort not in ("low", "medium", "high"):
@@ -75,7 +77,7 @@ def build_adk_thinking_config(
         raise AdkRuntimeError(f"Reasoning effort is not supported for model {model!r}")
     if family[0] == "gemini_2_5":
         return types.ThinkingConfig(thinking_budget=_GEMINI_2_5_PRESETS[effort])
-    if family[0] in {"gemini_3_levels", "gemini_3_pro"}:
+    if family[0] == "gemini_3_levels":
         return types.ThinkingConfig(thinking_level=_GEMINI_3_LEVELS[effort])
     raise AdkRuntimeError("Reasoning effort is not supported")
 

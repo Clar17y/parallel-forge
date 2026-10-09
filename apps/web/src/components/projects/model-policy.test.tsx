@@ -79,23 +79,30 @@ test('explains preset thinking budgets for Gemini 2.5 models without altering ou
   expect(screen.getByText(/Preset thinking budgets for 2\.5: Low \(1,024 tokens\), Medium \(4,096 tokens\), High \(8,192 tokens\)\. Output token limits remain unchanged\./)).toBeVisible();
 });
 
-test('restricts choices and flags unsupported explicit reasoning on older Gemini 3 Pro', async () => {
+test('flags unsupported explicit reasoning on older Gemini 3 Pro and allows recovery to Automatic', async () => {
   const change = vi.fn();
-  // If an older Gemini 3 Pro has medium saved, it shows as unsupported and invalid
   const custom = { ...defaultModel, provider: 'google', model: 'gemini-3.0-pro', reasoning_effort: 'medium' as const };
   render(<ModelPolicy role="Reviewer" value={custom} onChange={change} />);
   const selector = screen.getByLabelText('Reviewer reasoning strength');
   expect(selector).toHaveAttribute('aria-invalid', 'true');
   expect(screen.getByRole('option', { name: 'Unsupported: medium' })).toBeInTheDocument();
-  expect(screen.getByRole('alert')).toHaveTextContent(/Reasoning strength "medium" is not supported for gemini-3\.0-pro/);
+  expect(screen.getByRole('alert')).toHaveTextContent(/Reasoning strength is not supported for model "gemini-3\.0-pro"/);
 
-  // Switching to valid High removes error and updates only reasoning_effort
-  await userEvent.selectOptions(selector, 'high');
+  // Switching to default/automatic removes error and updates reasoning_effort to null
+  await userEvent.selectOptions(selector, '');
   expect(change).toHaveBeenLastCalledWith(expect.objectContaining({
     provider: 'google',
     model: 'gemini-3.0-pro',
-    reasoning_effort: 'high',
+    reasoning_effort: null,
   }));
+});
+
+test('flags CLI composite identity in ModelPolicy even with automatic reasoning', () => {
+  const custom = { ...defaultModel, provider: 'google', model: 'gemini-3.8-flash-medium', reasoning_effort: null };
+  render(<ModelPolicy role="Planner" value={custom} onChange={vi.fn()} />);
+  const selector = screen.getByLabelText('Planner reasoning strength');
+  expect(selector).toHaveAttribute('aria-invalid', 'true');
+  expect(screen.getByRole('alert')).toHaveTextContent(/CLI composite identity/);
 });
 
 test('preserves custom and high precision token limits when changing reasoning', async () => {

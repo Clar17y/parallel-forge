@@ -48,6 +48,28 @@ async def test_policy_append_rejects_unsupported_reasoning_before_service_call(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["planner_model", "developer_model", "reviewer_model"])
+@pytest.mark.parametrize("effort", [None, "medium"])
+async def test_policy_append_rejects_cli_composite_model_before_service_call(
+    task10_client, task10_route_context, route_headers, role, effort
+) -> None:
+    payload = {"expected_policy_version": 1, role: {
+        "provider": "google", "model": "gemini-3.8-flash-medium", "reasoning_effort": effort
+    }}
+    with pytest.raises(ValidationError) as error:
+        ProjectPolicyUpdateRequest.model_validate(payload)
+    assert (role, "model") in [tuple(item["loc"]) for item in error.value.errors()]
+    response = await task10_client.post(
+        f"/api/projects/{task10_route_context.project.id}/policy-versions",
+        headers={**route_headers, "Idempotency-Key": f"policy-invalid-cli-{role}-{effort}"},
+        json=payload,
+    )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid request"}
+    assert task10_route_context.projects.update_calls == []
+
+
+@pytest.mark.asyncio
 async def test_policy_history_requires_auth_and_valid_version_and_bounds_missing_errors(
     task10_client, task10_route_context, route_headers, monkeypatch
 ) -> None:

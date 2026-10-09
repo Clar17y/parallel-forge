@@ -161,6 +161,12 @@ def test_agent_model_policy_default_reasoning_effort_is_none() -> None:
     ("provider", "model", "effort"),
     [
         ("google", "gemini-3-pro", "medium"),
+        ("google", "gemini-3-pro", "low"),
+        ("google", "gemini-3.0-pro", "high"),
+        ("google", "gemini-3.1-pro", "low"),
+        ("google", "gemini-3.8-flash-latest", "low"),
+        ("google", "gemini-3.8-flash-madeup", "medium"),
+        ("google", "gemini-3.8-flash-preview", "high"),
         ("Google", "gemini-3.5-flash", "low"),
         ("google", " Gemini-3.5-flash", "low"),
         ("google", "gemini-3.5-flash\n", "low"),
@@ -181,8 +187,8 @@ def test_agent_model_policy_rejects_unsupported_explicit_reasoning(
     [
         ("gemini-2.5-flash", "low"), ("gemini-2.5-pro", "medium"),
         ("gemini-3.5-flash", "high"), ("gemini-3.8-flash", "medium"),
-        ("gemini-3.1-pro", "low"), ("gemini-3-pro", "low"),
-        ("gemini-3.0-pro", "high"),
+        ("gemini-3.1-pro-preview", "low"),
+        ("gemini-3.1-pro-preview-customtools", "high"),
     ],
 )
 def test_agent_model_policy_accepts_runtime_supported_combinations(model: str, effort: str) -> None:
@@ -277,6 +283,26 @@ def test_build_adk_thinking_config_omits_config_when_none() -> None:
 
 
 @pytest.mark.parametrize(
+    "cli_model",
+    [
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-max",
+        "gemini-3.8-flash-xhigh",
+        "gemini-3.8-flash-none",
+        "gemini-2.5-flash-medium",
+    ],
+)
+@pytest.mark.parametrize("effort", [None, "medium"])
+def test_build_adk_thinking_config_rejects_cli_composite_ids(
+    cli_model: str, effort: str | None
+) -> None:
+    with pytest.raises(AdkRuntimeError):
+        build_adk_thinking_config(cli_model, effort)
+
+
+@pytest.mark.parametrize(
     ("model", "effort", "expected_level"),
     [
         ("gemini-3.8-flash", "low", types.ThinkingLevel.LOW),
@@ -285,9 +311,12 @@ def test_build_adk_thinking_config_omits_config_when_none() -> None:
         ("gemini-3.5-flash", "low", types.ThinkingLevel.LOW),
         ("gemini-3.5-flash", "medium", types.ThinkingLevel.MEDIUM),
         ("gemini-3.5-flash", "high", types.ThinkingLevel.HIGH),
-        ("gemini-3.1-pro", "low", types.ThinkingLevel.LOW),
-        ("gemini-3.1-pro", "medium", types.ThinkingLevel.MEDIUM),
-        ("gemini-3.1-pro", "high", types.ThinkingLevel.HIGH),
+        ("gemini-3.1-pro-preview", "low", types.ThinkingLevel.LOW),
+        ("gemini-3.1-pro-preview", "medium", types.ThinkingLevel.MEDIUM),
+        ("gemini-3.1-pro-preview", "high", types.ThinkingLevel.HIGH),
+        ("gemini-3.1-pro-preview-customtools", "low", types.ThinkingLevel.LOW),
+        ("gemini-3.1-pro-preview-customtools", "medium", types.ThinkingLevel.MEDIUM),
+        ("gemini-3.1-pro-preview-customtools", "high", types.ThinkingLevel.HIGH),
     ],
 )
 def test_build_adk_thinking_config_gemini_3_models(
@@ -297,30 +326,6 @@ def test_build_adk_thinking_config_gemini_3_models(
     assert config is not None
     assert config.thinking_level == expected_level
     assert config.thinking_budget is None
-
-
-@pytest.mark.parametrize(
-    ("model", "effort", "expected_level"),
-    [
-        ("gemini-3-pro", "low", types.ThinkingLevel.LOW),
-        ("gemini-3-pro", "high", types.ThinkingLevel.HIGH),
-        ("gemini-3.0-pro", "low", types.ThinkingLevel.LOW),
-        ("gemini-3.0-pro", "high", types.ThinkingLevel.HIGH),
-    ],
-)
-def test_build_adk_thinking_config_older_gemini_3_pro(
-    model: str, effort: str, expected_level: types.ThinkingLevel
-) -> None:
-    config = build_adk_thinking_config(model, effort)
-    assert config is not None
-    assert config.thinking_level == expected_level
-    assert config.thinking_budget is None
-
-
-@pytest.mark.parametrize("model", ["gemini-3-pro", "gemini-3.0-pro"])
-def test_build_adk_thinking_config_older_gemini_3_pro_rejects_medium(model: str) -> None:
-    with pytest.raises(AdkRuntimeError):
-        build_adk_thinking_config(model, "medium")
 
 
 @pytest.mark.parametrize(
@@ -343,7 +348,21 @@ def test_build_adk_thinking_config_gemini_2_5_models(
     assert config.thinking_level is None
 
 
-@pytest.mark.parametrize("unsupported_model", ["gemini-1.5-pro", "gemini-1.5-flash", "custom-model", "gpt-4o"])
+@pytest.mark.parametrize(
+    "unsupported_model",
+    [
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+        "gemini-3-pro",
+        "gemini-3.0-pro",
+        "gemini-3.1-pro",
+        "gemini-3.8-flash-latest",
+        "gemini-3.8-flash-preview",
+        "gemini-3.8-flash-madeup",
+        "custom-model",
+        "gpt-4o",
+    ],
+)
 def test_build_adk_thinking_config_rejects_unsupported_model(unsupported_model: str) -> None:
     with pytest.raises(AdkRuntimeError):
         build_adk_thinking_config(unsupported_model, "low")
@@ -422,6 +441,7 @@ async def test_gateway_threads_reasoning_effort_to_invocation_and_repairs() -> N
     [
         ("gemini-3.8-flash", "medium", types.ThinkingLevel.MEDIUM, None),
         ("gemini-2.5-flash", "low", None, 1024),
+        ("gemini-3.1-pro-preview", "high", types.ThinkingLevel.HIGH, None),
         ("gemini-3.5-flash", None, None, None),
     ],
 )
@@ -475,6 +495,7 @@ async def test_adk_runtime_scripted_agent_config(
     assert result.finish_reason == AdkFinishReason.COMPLETED
     assert len(captured_agents) == 1
     agent = captured_agents[0]
+    assert agent.model.model == model
     config = agent.generate_content_config
     if effort is None:
         assert config is None or config.thinking_config is None
@@ -494,11 +515,42 @@ def test_all_three_roles_policy_binding() -> None:
         default_branch="main",
         planner_model=AgentModelPolicy(model="gemini-3.8-flash", reasoning_effort="low"),
         developer_model=AgentModelPolicy(model="gemini-3.5-flash", reasoning_effort="medium"),
-        reviewer_model=AgentModelPolicy(model="gemini-3.1-pro", reasoning_effort="high"),
+        reviewer_model=AgentModelPolicy(model="gemini-3.1-pro-preview", reasoning_effort="high"),
     )
     assert policy.planner_model.reasoning_effort == "low"
     assert policy.developer_model.reasoning_effort == "medium"
     assert policy.reviewer_model.reasoning_effort == "high"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-3.5-flash",
+        "gemini-3.8-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-preview-customtools",
+    ],
+)
+@pytest.mark.parametrize("effort", ["low", "medium", "high"])
+def test_exact_allowlist_matrix_domain_and_runtime(model: str, effort: str) -> None:
+    policy = AgentModelPolicy(model=model, reasoning_effort=cast(Any, effort))
+    assert policy.reasoning_effort == effort
+    config = build_adk_thinking_config(model, effort)
+    assert config is not None
+    if "2.5" in model:
+        presets = {"low": 1024, "medium": 4096, "high": 8192}
+        assert config.thinking_budget == presets[effort]
+        assert config.thinking_level is None
+    else:
+        levels = {
+            "low": types.ThinkingLevel.LOW,
+            "medium": types.ThinkingLevel.MEDIUM,
+            "high": types.ThinkingLevel.HIGH,
+        }
+        assert config.thinking_level == levels[effort]
+        assert config.thinking_budget is None
 
 
 def test_legacy_policy_digest_preservation() -> None:

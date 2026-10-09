@@ -21,6 +21,44 @@ export const reasoningEffortChoices: Array<{
   { value: 'high', label: 'High (deeper)' },
 ];
 
+const BUDGET_REASONING_MODELS = new Set([
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+]);
+
+const LEVEL_REASONING_MODELS = new Set([
+  'gemini-3.5-flash',
+  'gemini-3.8-flash',
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-pro-preview-customtools',
+]);
+
+const RESERVED_CLI_EFFORTS = new Set([
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'maximum',
+  'ultra',
+  'minimal',
+  'none',
+  'auto',
+]);
+
+export function getGeminiCliComposite(model?: string | null): { baseModel: string; effort: string } | null {
+  if (!model) return null;
+  const lastDash = model.lastIndexOf('-');
+  if (lastDash <= 0) return null;
+  const prefix = model.slice(0, lastDash);
+  const suffix = model.slice(lastDash + 1).toLowerCase();
+  if (!prefix.startsWith('gemini-')) return null;
+  if (RESERVED_CLI_EFFORTS.has(suffix)) {
+    return { baseModel: prefix, effort: suffix };
+  }
+  return null;
+}
+
 export function getModelReasoningSupport(
   provider?: string | null,
   model?: string | null
@@ -36,8 +74,16 @@ export function getModelReasoningSupport(
     };
   }
 
-  // Gemini 2.5 Flash / Pro
-  if (matchesExact(/^gemini-2\.5-(?:flash|pro)(?:-[a-z0-9.]+)?$/, exactModel)) {
+  const cliComposite = getGeminiCliComposite(exactModel);
+  if (cliComposite) {
+    return {
+      supported: false,
+      supportedEfforts: [],
+      unsupportedReason: `Model "${exactModel}" is a CLI composite identity; use base API model "${cliComposite.baseModel}" with separately selected reasoning instead.`,
+    };
+  }
+
+  if (BUDGET_REASONING_MODELS.has(exactModel)) {
     return {
       supported: true,
       supportedEfforts: ['low', 'medium', 'high'],
@@ -45,20 +91,10 @@ export function getModelReasoningSupport(
     };
   }
 
-  // Gemini 3.8 Flash, 3.5 Flash, 3.1 Pro
-  if (matchesExact(/^gemini-(?:3\.[58]-flash|3\.1-pro)(?:-[a-z0-9.]+)?$/, exactModel)) {
+  if (LEVEL_REASONING_MODELS.has(exactModel)) {
     return {
       supported: true,
       supportedEfforts: ['low', 'medium', 'high'],
-    };
-  }
-
-  // Older Gemini 3 Pro
-  if (matchesExact(/^gemini-3(?:\.0)?-pro(?:-[a-z0-9.]+)?$/, exactModel)) {
-    return {
-      supported: true,
-      supportedEfforts: ['low', 'high'],
-      note: 'Gemini 3 Pro supports Low and High reasoning strength only.',
     };
   }
 
@@ -69,15 +105,16 @@ export function getModelReasoningSupport(
   };
 }
 
-function matchesExact(pattern: RegExp, value: string): boolean {
-  return pattern.exec(value)?.[0] === value;
-}
-
 export function validateReasoningSetting(
   provider?: string | null,
   model?: string | null,
   effort?: ApiReasoningEffort | string | null
 ): string | null {
+  const exactModel = model ?? '';
+  const cliComposite = (provider ?? 'google') === 'google' ? getGeminiCliComposite(exactModel) : null;
+  if (cliComposite) {
+    return `Model "${exactModel}" is a CLI composite identity; use base API model "${cliComposite.baseModel}" with separately selected reasoning instead.`;
+  }
   if (!effort) {
     return null;
   }

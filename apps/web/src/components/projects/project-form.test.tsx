@@ -49,9 +49,15 @@ test('saves selected Google model while retaining exact custom project budgets',
   });
 });
 
-test('round-trips an untouched custom project model and out-of-range owner budget', async () => {
+test.each([
+  ['custom-provider', 'custom-model-v9'],
+  ['custom-provider', 'gemini-3.8-flash-medium'],
+  ['google', ' gemini-3.8-flash-medium'],
+  ['google', 'gemini-3.8-flash-medium '],
+  ['google', 'gemini-3.8-flash-medium\n'],
+])('round-trips an untouched custom model %s/%s and out-of-range owner budget', async (provider, model) => {
   const save = vi.fn().mockResolvedValue(undefined);
-  const planner = { provider: 'custom-provider', model: 'custom-model-v9', max_input_tokens: 900000,
+  const planner = { provider, model, max_input_tokens: 900000,
     max_output_tokens: 45000, max_tool_calls: 125, max_duration_seconds: 7400, max_cost_minor: 6000 };
   render(<ProjectForm onSave={save} initial={{ planner_model: planner }} />);
   await identity();
@@ -112,6 +118,62 @@ test('changing a compatible model to an unsupported identity blocks submit and a
   await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
   expect(save.mock.calls[1][0].planner_model).toEqual({
     provider: 'google', model: 'gemini-3.5-flash', reasoning_effort: 'medium',
+    max_input_tokens: 900000, max_output_tokens: 45000, max_tool_calls: 125,
+    max_duration_seconds: 7400, max_cost_minor: 6000,
+  });
+});
+
+test('blocks CLI route model in None mode and recovers when owner selects supported base ID', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  const planner = {
+    provider: 'google', model: 'gemini-3.8-flash-medium', reasoning_effort: null,
+    max_input_tokens: 900000, max_output_tokens: 45000, max_tool_calls: 125,
+    max_duration_seconds: 7400, max_cost_minor: 6000,
+  };
+  render(<ProjectForm onSave={save} initial={{ planner_model: planner }} />);
+  const user = await identity();
+  const reasoning = screen.getByLabelText('Planner reasoning strength') as HTMLSelectElement;
+  expect(reasoning.validationMessage).toContain('CLI composite identity');
+  expect(screen.getByRole('option', { name: 'Custom / saved: gemini-3.8-flash-medium' })).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.getByTestId('section-disclosure-api-models')).toHaveAttribute('open');
+
+  await user.selectOptions(screen.getByLabelText('Planner model'), JSON.stringify(['google', 'gemini-3.8-flash']));
+  expect(reasoning.validationMessage).toBe('');
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  expect(save.mock.calls[0][0].planner_model).toEqual({
+    provider: 'google', model: 'gemini-3.8-flash', reasoning_effort: null,
+    max_input_tokens: 900000, max_output_tokens: 45000, max_tool_calls: 125,
+    max_duration_seconds: 7400, max_cost_minor: 6000,
+  });
+});
+
+test('blocks CLI route model in explicit mode and recovers when owner selects supported base ID', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  const planner = {
+    provider: 'google', model: 'gemini-3.8-flash-medium', reasoning_effort: 'medium' as const,
+    max_input_tokens: 900000, max_output_tokens: 45000, max_tool_calls: 125,
+    max_duration_seconds: 7400, max_cost_minor: 6000,
+  };
+  render(<ProjectForm onSave={save} initial={{ planner_model: planner }} />);
+  const user = await identity();
+  const reasoning = screen.getByLabelText('Planner reasoning strength') as HTMLSelectElement;
+  expect(reasoning.validationMessage).toContain('CLI composite identity');
+  expect(screen.getByRole('option', { name: 'Custom / saved: gemini-3.8-flash-medium' })).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.getByTestId('section-disclosure-api-models')).toHaveAttribute('open');
+
+  await user.selectOptions(screen.getByLabelText('Planner model'), JSON.stringify(['google', 'gemini-3.8-flash']));
+  expect(reasoning.validationMessage).toBe('');
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  expect(save.mock.calls[0][0].planner_model).toEqual({
+    provider: 'google', model: 'gemini-3.8-flash', reasoning_effort: 'medium',
     max_input_tokens: 900000, max_output_tokens: 45000, max_tool_calls: 125,
     max_duration_seconds: 7400, max_cost_minor: 6000,
   });
