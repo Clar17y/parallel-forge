@@ -35,6 +35,7 @@ from forge.agents.gemini_session import GeminiSession
 from forge.agents.subscription_protocol import (
     ProtocolError,
     ProviderToolCall,
+    _strict_output_objects,
     decode_tool_call,
     json_value,
     parse_json,
@@ -79,12 +80,38 @@ class AuthoringProviderFailure(Exception):
 
 def authoring_schema(kind: str = "brainstorm") -> dict[str, object]:
     model = DecompositionProposal if kind == "decomposition" else BrainstormProposal
-    return {
+    proposal_schema = model.model_json_schema()
+    definitions = proposal_schema.pop("$defs", {})
+    if kind != "decomposition":
+        properties = proposal_schema.get("properties")
+        if not isinstance(properties, dict):
+            raise ValueError("authoring proposal schema has no properties")
+        properties["requirement_criteria"] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "requirement": {"type": "string"},
+                    "criteria": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 64,
+                    },
+                },
+                "required": ["requirement", "criteria"],
+                "additionalProperties": False,
+            },
+            "maxItems": 32,
+        }
+    schema: dict[str, object] = {
         "type": "object",
-        "properties": {"proposal": model.model_json_schema()},
+        "properties": {"proposal": proposal_schema},
         "required": ["proposal"],
         "additionalProperties": False,
+        "$defs": definitions,
     }
+    _strict_output_objects(schema)
+    return schema
 
 
 def authoring_prompt(job: AuthoringJobSnapshot, turns: tuple[BrainstormTurn, ...]) -> str:
@@ -106,7 +133,14 @@ def authoring_prompt(job: AuthoringJobSnapshot, turns: tuple[BrainstormTurn, ...
     action = (
         "Propose a decomposition of this epic into child work items with dependency relationships. "
         if job.kind == "decomposition"
-        else "Propose a revision to this epic brief. "
+        else (
+            "Collaboratively develop this epic brief from the current draft, even when it is "
+            "empty, incomplete, or only a rough idea. Help clarify the desired outcomes, scope, "
+            "requirements, and concrete acceptance criteria; do not require the operator to "
+            "supply a full brief first. Preserve confirmed decisions and existing acceptance "
+            "criteria when iterating. Put unconfirmed guesses in assumptions, and surface the "
+            "few most important unanswered choices in open_questions. "
+        )
     )
     return (
         f"{action}Read repository context only through the "
@@ -123,8 +157,33 @@ def proposal_from_output(
     if not isinstance(value, Mapping) or set(value) != {"proposal"}:
         raise ProtocolError("invalid authoring result envelope")
     model = DecompositionProposal if job.kind == "decomposition" else BrainstormProposal
+    proposal_value = value["proposal"]
+    if job.kind == "brainstorm" and isinstance(proposal_value, Mapping):
+        wire_criteria = proposal_value.get("requirement_criteria")
+        if isinstance(wire_criteria, (list, tuple)):
+            if len(wire_criteria) > 32:
+                raise ProtocolError("invalid authoring proposal")
+            criteria: dict[str, list[str]] = {}
+            for entry in wire_criteria:
+                if (
+                    not isinstance(entry, Mapping)
+                    or set(entry) != {"requirement", "criteria"}
+                    or type(entry.get("requirement")) is not str
+                    or not isinstance(entry.get("criteria"), (list, tuple))
+                    or any(type(item) is not str for item in entry["criteria"])
+                ):
+                    raise ProtocolError("invalid authoring proposal")
+                requirement = entry["requirement"]
+                assert isinstance(requirement, str)
+                if requirement in criteria:
+                    raise ProtocolError("invalid authoring proposal")
+                values = entry["criteria"]
+                assert isinstance(values, (list, tuple))
+                criteria[requirement] = list(values)
+            proposal_value = dict(proposal_value)
+            proposal_value["requirement_criteria"] = criteria
     try:
-        proposal = model.model_validate(value["proposal"])
+        proposal = model.model_validate(proposal_value)
     except ValidationError, TypeError, ValueError:
         raise ProtocolError("invalid authoring proposal") from None
     if proposal.turn_id != job.prompt_turn_id:

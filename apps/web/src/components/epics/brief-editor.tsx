@@ -62,7 +62,7 @@ function BriefListRows({
   );
 }
 
-export function BriefEditor({ epicId }: { epicId: string }) {
+export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrainstorm?: () => void }) {
   const workspace = useEpicWorkspace(epicId);
   const [viewTab, setViewTab] = useState<'editor' | 'accepted' | 'history'>('editor');
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
@@ -193,6 +193,9 @@ export function BriefEditor({ epicId }: { epicId: string }) {
 
   return (
     <div className="brief-workspace space-y-6">
+      {onBrainstorm && <Panel title="Start with an idea" description="A rough idea is enough. Brainstorm with the assistant, then review any proposed brief before adopting it.">
+        <Button variant="secondary" onClick={onBrainstorm}>Get help brainstorming</Button>
+      </Panel>}
       {/* Navigation tabs */}
       <nav aria-label="Brief views" className="flex space-x-2 border-b border-[var(--border)] pb-2">
         <Button

@@ -30,9 +30,11 @@ from forge.domain.subscription import (
     AuthMode,
     BillingMode,
     RouteBinding,
+    RouteSpec,
     SpecialistPurpose,
     TaskBudget,
     decode_subscription_record,
+    encode_subscription_record,
 )
 from forge.persistence.models.epic_brainstorm import (
     BrainstormAttemptRow,
@@ -49,6 +51,22 @@ class BrainstormConfiguredRoute:
     budget: TaskBudget
     profile_id: UUID | None
     profile_version: int | None
+
+
+_LOCAL_CLIENTS = {
+    ("openai", "codex_app_server"),
+    ("google", "gemini_cli"),
+    ("google", "antigravity_cli"),
+    ("anthropic", "claude_code"),
+}
+
+
+def _validate_requested_route(route: RouteSpec) -> None:
+    if (route.provider, route.client) not in _LOCAL_CLIENTS or (
+        route.auth_mode is not AuthMode.SUBSCRIPTION
+        or route.billing_mode is not BillingMode.ALLOWANCE_ONLY
+    ):
+        raise ValueError("brainstorm route requires a supported local subscription client and allowance")
 
 
 async def project_brainstorm_route(
@@ -218,8 +236,13 @@ class EpicBrainstormService:
         key: str,
         expected_snapshot: AuthoringJobSnapshot | None = None,
         kind: Literal["brainstorm", "decomposition"] = "brainstorm",
+        requested_route: RouteSpec | None = None,
     ) -> AuthoringReceipt:
         kind = expected_snapshot.kind if expected_snapshot is not None else kind
+        if requested_route is not None:
+            if kind != "brainstorm":
+                raise ValueError("explicit route is only available for brainstorming")
+            _validate_requested_route(requested_route)
         request = {
             "schema_version": 1,
             "action": "submit",
@@ -236,6 +259,8 @@ class EpicBrainstormService:
         }
         if kind != "brainstorm":
             request["kind"] = kind
+        if requested_route is not None:
+            request["requested_route"] = encode_subscription_record(requested_route)
         digest = canonical_digest(request)
         async with self.sessions() as session, session.begin():
             repository = PostgresBrainstormRepository(session)
@@ -273,6 +298,13 @@ class EpicBrainstormService:
                 )
             )
             validate_brainstorm_budget(selection.budget)
+            if requested_route is not None:
+                selection = BrainstormConfiguredRoute(
+                    RouteBinding(requested=requested_route, effective=requested_route),
+                    selection.budget,
+                    selection.profile_id,
+                    selection.profile_version,
+                )
             job_id = expected_snapshot.job_id if expected_snapshot else uuid4()
             snapshot = AuthoringJobSnapshot(
                 job_id=job_id,
@@ -347,9 +379,15 @@ class EpicBrainstormService:
             await repository.conversation(epic_id, project_id, conversation_id)
             return await repository.turns(conversation_id)
 
-    async def threads(self, *, epic_id: UUID, project_id: UUID) -> tuple[BrainstormThread, ...]:
+    async def threads(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        kind: Literal["brainstorm", "decomposition"] | None = None,
+    ) -> tuple[BrainstormThread, ...]:
         async with self.sessions() as session:
-            return await PostgresBrainstormRepository(session).threads(epic_id, project_id)
+            return await PostgresBrainstormRepository(session).threads(epic_id, project_id, kind=kind)
 
     async def cancel(
         self,

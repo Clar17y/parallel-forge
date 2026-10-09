@@ -12,7 +12,7 @@ const mockReplace = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush, replace: mockReplace }),
   usePathname: () => window.location.pathname,
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URL(window.location.href).searchParams,
 }));
 
 vi.mock('@/lib/api/client', () => ({
@@ -59,6 +59,7 @@ describe('Epics App Pages', () => {
   beforeEach(() => { resetEpicMutationStoreForTesting();
     vi.clearAllMocks();
     sessionStorage.clear();
+    window.history.replaceState({}, '', '/');
   });
 
   afterEach(() => { resetEpicMutationStoreForTesting();
@@ -127,12 +128,18 @@ describe('Epics App Pages', () => {
     });
 
     expect(await screen.findByText('Core Architecture Epic')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Requirements Brief/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Manual Requirements Brief/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Brainstorm' })).toHaveAttribute('aria-current', 'page');
+    expect(await screen.findByLabelText('What are you trying to accomplish?')).toBeInTheDocument();
+    const decompositionComposer = screen.getByLabelText('Decomposition message or instruction');
+    expect(decompositionComposer).not.toBeVisible();
     expect(screen.getByRole('button', { name: /Work-Item Graph/i })).toBeInTheDocument();
 
     // Switch to Work-Item Graph tab
     const graphTabBtn = screen.getByRole('button', { name: /Work-Item Graph/i });
     await userEvent.click(graphTabBtn);
+    expect(await screen.findByLabelText('Decomposition message or instruction')).toBe(decompositionComposer);
+    expect(decompositionComposer).toBeVisible();
 
     expect(screen.getByText(/Work-Item Decomposition/i)).toBeInTheDocument();
 
@@ -141,6 +148,63 @@ describe('Epics App Pages', () => {
     await userEvent.click(deliveryTabBtn);
 
     expect(screen.getByRole('heading', { name: /Execution Discovery/i })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Manual Requirements Brief/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Get help brainstorming' }));
+    expect(screen.getByLabelText('What are you trying to accomplish?')).toBeInTheDocument();
+  });
+
+  test.each([
+    ['brief', 'Manual Requirements Brief'],
+    ['graph', 'Work-Item Graph'],
+    ['authoring', 'Brainstorm'],
+    ['delivery', 'Delivery & Progress'],
+  ])('preserves the explicit %s workspace deep link', async (tab, label) => {
+    window.history.replaceState({}, '', `/epics/${epicId}?tab=${tab}`);
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path === `/epics/${epicId}`) return mockEpic as T;
+      if (path.endsWith('/brief-revisions') || path.endsWith('/graph-revisions')) return [] as T;
+      if (path.endsWith('/accepted-brief') || path.endsWith('/accepted-graph')) return undefined as T;
+      return [] as T;
+    });
+    await act(async () => { render(<EpicPage params={Promise.resolve({ epicId })} />); });
+    expect(await screen.findByRole('button', { name: label })).toHaveAttribute('aria-current', 'page');
+  });
+
+  test('review action after adoption opens the manual editor in place and preserves local edits', async () => {
+    const thread = { conversation_id: 'saved-conversation', conversation_version: 3, job_ids: ['current-job'] };
+    const selectedProposal = {
+      schema_version: 1,
+      turn_id: 'proposal-turn',
+      problem: 'Proposal problem',
+      outcomes: [], scope: [], exclusions: [], requirements: [], decisions: [], assumptions: [], open_questions: [],
+    };
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}`) return mockEpic as T;
+      if (path === `/epics/${epicId}/brief-revisions` || path === `/epics/${epicId}/graph-revisions`) return [] as T;
+      if (path === `/epics/${epicId}/accepted-brief` || path === `/epics/${epicId}/accepted-graph`) return undefined as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations?project_id=${projectId}`) return [thread] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${thread.conversation_id}/turns?project_id=${projectId}`) {
+        return [{ schema_version: 1, turn_id: 'proposal-turn', conversation_id: thread.conversation_id, role: 'assistant', text: 'Review this proposal', pending: false, proposal: selectedProposal }] as T;
+      }
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job?project_id=${projectId}`) return {
+        schema_version: 1, job_id: 'current-job', job_version: 7, state: 'proposed', proposal_digest: 'a'.repeat(64), proposal: selectedProposal,
+        adopted_revision_id: null, failure: null, usage_known: false, process_settled: true, usage: null, unknown_usage_fields: [],
+      } as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job/adopt` && init?.method === 'POST') return { brief_revision_id: 'adopted-revision' } as T;
+      return [] as T;
+    });
+    await act(async () => { render(<EpicPage params={Promise.resolve({ epicId })} />); });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Manual Requirements Brief' }));
+    const title = await screen.findByLabelText('Title');
+    await userEvent.clear(title);
+    await userEvent.type(title, 'Local title to keep');
+    await userEvent.click(screen.getByRole('button', { name: 'Get help brainstorming' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Adopt proposed brief' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Review or edit the adopted brief' }));
+
+    expect(screen.getByRole('button', { name: 'Manual Requirements Brief' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByLabelText('Title')).toHaveValue('Local title to keep');
   });
 
   test('an uppercase UUID route keeps one workspace query, dirty draft and shared delivery guard', async () => {
@@ -160,14 +224,14 @@ describe('Epics App Pages', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Delivery & Progress' }));
     expect(screen.getByRole('button', { name: 'Start Execution' })).toBeEnabled();
-    await userEvent.click(screen.getByRole('button', { name: 'Requirements Brief' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Manual Requirements Brief' }));
     await userEvent.clear(title);
     await userEvent.type(title, 'Local title retained');
     await userEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     expect(await screen.findByRole('button', { name: 'Retry original request' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Delivery & Progress' }));
     expect(screen.getByRole('button', { name: 'Start Execution' })).toBeDisabled();
-    await userEvent.click(screen.getByRole('button', { name: 'Requirements Brief' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Manual Requirements Brief' }));
     expect(screen.getByDisplayValue('Local title retained')).toBeInTheDocument();
     expect(epicReads()).toHaveLength(1);
     const writes = vi.mocked(api).mock.calls.filter(([, init]) => init?.method === 'PATCH');

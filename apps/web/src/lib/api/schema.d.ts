@@ -2015,6 +2015,7 @@ export interface components {
             /** Proposal Digest */
             proposal_digest?: string | null;
             reservation?: components["schemas"]["BrainstormReservation"] | null;
+            route?: components["schemas"]["RouteSpec"] | null;
             /**
              * Schema Version
              * @default 1
@@ -4073,6 +4074,7 @@ export interface components {
              * Format: uuid
              */
             prompt_turn_id: string;
+            requested_route?: components["schemas"]["RouteInput"] | null;
             /**
              * Schema Version
              * @default 1
@@ -4901,6 +4903,24 @@ export interface components {
         };
         /** RouteInput */
         RouteInput: {
+            /** @default subscription */
+            auth_mode: components["schemas"]["AuthMode"];
+            /** @default allowance_only */
+            billing_mode: components["schemas"]["BillingMode"];
+            /** Client */
+            client: string;
+            /** @default low */
+            effort: components["schemas"]["ReasoningEffort"];
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+        };
+        /**
+         * RouteSpec
+         * @description Concrete route identity for provider, client, model, effort, auth and billing.
+         */
+        RouteSpec: {
             /** @default subscription */
             auth_mode: components["schemas"]["AuthMode"];
             /** @default allowance_only */

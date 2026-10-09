@@ -9,6 +9,7 @@ import type {
   BrainstormThread,
   BrainstormTurn,
 } from './types';
+import type { BrainstormRoute } from '@/components/epics/brainstorm-model-choice';
 
 function readSelection() {
   if (typeof window === 'undefined') return { conversationId: null, jobId: null };
@@ -197,7 +198,7 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
     { schema_version: 1, project_id: projectId, text }, { kind: 'conversation-start' },
   ), [epicId, execute, projectId]);
 
-  const appendTurn = useCallback((conversationId: string, expectedConvVersion: number, text: string) => execute<{ version: number }>(
+  const appendTurn = useCallback((conversationId: string, expectedConvVersion: number, text: string, idempotencyKey?: string) => execute<{ version: number }>(
     'POST', `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns`,
     {
       schema_version: 1,
@@ -205,10 +206,10 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
       expected_conversation_version: expectedConvVersion,
       text,
       pending: false,
-    }, { kind: 'conversation-turn' },
+    }, { kind: 'conversation-turn', idempotencyKey },
   ), [epicId, execute, projectId]);
 
-  const submitJob = useCallback((conversationId: string, promptTurnId: string, expectedEpicVersion: number, expectedConvVersion: number) => execute<AuthoringReceipt>(
+  const submitJob = useCallback((conversationId: string, promptTurnId: string, expectedEpicVersion: number, expectedConvVersion: number, idempotencyKey?: string, requestedRoute?: BrainstormRoute) => execute<AuthoringReceipt>(
     'POST', `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs`,
     {
       schema_version: 1,
@@ -216,7 +217,8 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
       prompt_turn_id: promptTurnId,
       expected_epic_version: expectedEpicVersion,
       expected_conversation_version: expectedConvVersion,
-    }, { kind: 'job-submit' },
+      ...(requestedRoute ? { requested_route: requestedRoute } : {}),
+    }, { kind: 'job-submit', idempotencyKey },
   ), [epicId, execute, projectId]);
 
   const adoptProposal = useCallback((jobIdValue: string, proposalDigest: string, expectedJobVersion: number, expectedEpicVersion: number) => execute<{ brief_revision_id: string }>(
