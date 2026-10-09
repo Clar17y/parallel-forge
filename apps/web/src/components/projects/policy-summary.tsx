@@ -160,7 +160,9 @@ export function PolicySummary({ policy }: { policy: PolicyResponse }) {
       {/* Delivery and remediation */}
       {(doc.allowed_merge_methods !== undefined ||
         doc.local_remediation_limit !== undefined ||
-        doc.remote_remediation_limit !== undefined) && (
+        doc.remote_remediation_limit !== undefined ||
+        doc.publication_blocking_severities !== undefined ||
+        doc.merge_blocking_severities !== undefined) && (
         <section className={styles.section}>
           <h3 className={styles.sectionTitle}>Delivery &amp; remediation</h3>
           <div className={styles.metaRow}>
@@ -179,6 +181,17 @@ export function PolicySummary({ policy }: { policy: PolicyResponse }) {
                 Remote remediation limit: <strong>{String(doc.remote_remediation_limit)}</strong>
               </span>
             )}
+            {([
+              ['publication_blocking_severities', 'Publication blocking severities'],
+              ['merge_blocking_severities', 'Merge blocking severities'],
+            ] as const).map(([key, label]) => {
+              const severities = doc[key];
+              return <span key={key}>
+                {label}: <strong>{Array.isArray(severities)
+                  ? severities.length ? severities.join(', ') : 'None'
+                  : 'Unspecified'}</strong>
+              </span>;
+            })}
           </div>
         </section>
       )}

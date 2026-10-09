@@ -167,3 +167,29 @@ test('shows model reasoning strength separately from inspectable exact token bud
   const modelDetails = screen.getByText('Reasoning: high').closest('details');
   expect(modelDetails).not.toHaveAttribute('open');
 });
+
+test.each([
+  { name: 'custom severities', document: {
+    publication_blocking_severities: ['minor', 'blocker'], merge_blocking_severities: ['major'],
+  }, publication: 'minor, blocker', merge: 'major' },
+  { name: 'empty severity sets', document: {
+    publication_blocking_severities: [], merge_blocking_severities: [],
+  }, publication: 'None', merge: 'None' },
+  { name: 'partial policy', document: {
+    publication_blocking_severities: ['major'],
+  }, publication: 'major', merge: 'Unspecified' },
+  { name: 'merge-only policy', document: {
+    merge_blocking_severities: ['minor'],
+  }, publication: 'Unspecified', merge: 'minor' },
+  { name: 'legacy delivery settings', document: {
+    allowed_merge_methods: ['squash'],
+  }, publication: 'Unspecified', merge: 'Unspecified' },
+])('shows delivery blocking severities without opening the raw document: $name', ({ document, publication, merge }) => {
+  render(<PolicySummary policy={{ ...samplePolicy, document }} />);
+  const delivery = screen.getByRole('heading', { name: 'Delivery & remediation' }).closest('section')!;
+  expect(within(delivery).getByText('Publication blocking severities:').closest('span'))
+    .toHaveTextContent(`Publication blocking severities: ${publication}`);
+  expect(within(delivery).getByText('Merge blocking severities:').closest('span'))
+    .toHaveTextContent(`Merge blocking severities: ${merge}`);
+  expect(screen.getByTestId('raw-document-disclosure')).not.toHaveAttribute('open');
+});
