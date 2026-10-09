@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Loader2 } from 'lucide-react';
+import { Activity } from 'lucide-react';
 import type { components } from '@/lib/api/schema';
 import { formatDate } from '@/lib/format';
 import { isActiveRunPhase } from './run-presentation';
@@ -9,13 +9,13 @@ export function RunList({ items }: { items: components['schemas']['RunListItem']
   return <div className="table-scroll"><table><thead><tr>
     {['Task', 'Project', 'Phase', 'Next gate', 'Remediation', 'Elapsed', 'Estimated cost', 'Updated', 'PR'].map(label => <th key={label} scope="col">{label}</th>)}
   </tr></thead><tbody>{items.map(item => {
-    const isExecuting = isActiveRunPhase(item.state);
+    const isActivePhase = isActiveRunPhase(item.state);
     return <tr key={item.run_id}>
       <td><Link href={`/runs/${item.run_id}`}>{item.task_title}</Link>{item.attention_required && <p>Attention required</p>}</td>
       <td><Link href={`/projects/${item.project_id}`}>{item.project_name}</Link></td>
       <td>
         <span className="inline-flex items-center gap-1.5">
-          {isExecuting ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none text-[var(--info)] flex-none" aria-hidden="true" /> : null}
+          {isActivePhase ? <Activity className="w-3.5 h-3.5 text-[var(--info)] flex-none" aria-hidden="true" /> : null}
           {item.state.replaceAll('_', ' ')}
         </span>
       </td>
