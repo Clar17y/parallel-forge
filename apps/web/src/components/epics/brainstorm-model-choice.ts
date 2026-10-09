@@ -39,14 +39,14 @@ export function runtimeFreshMs(runtime: Runtime | undefined): number {
     : 45_000;
 }
 
-export function availableBrainstormRoutes(runtime: Runtime | undefined, receivedAt: number, now: number): {
+export function availableBrainstormRoutes(runtime: Runtime | undefined, startedAt: number, now: number): {
   routes: BrainstormRoute[];
   expiresAt: number | null;
 } {
   if (!runtime) return { routes: [], expiresAt: null };
   const freshMs = runtimeFreshMs(runtime);
   const observedAt = Date.parse(runtime.observed_at);
-  const pageExpiry = receivedAt + freshMs;
+  const pageExpiry = startedAt + freshMs;
   if (now >= pageExpiry) return { routes: [], expiresAt: null };
   const routes: BrainstormRoute[] = [];
   let expiresAt: number | null = null;
@@ -56,7 +56,7 @@ export function availableBrainstormRoutes(runtime: Runtime | undefined, received
     const observedAge = Number.isFinite(observedAt) && Number.isFinite(lastSeenAt) && observedAt >= lastSeenAt
       ? observedAt - lastSeenAt
       : 0;
-    const workerExpiry = Math.min(pageExpiry, receivedAt + Math.max(0, freshMs - observedAge));
+    const workerExpiry = Math.min(pageExpiry, startedAt + Math.max(0, freshMs - observedAge));
     if (now >= workerExpiry) continue;
     for (const candidate of worker.routes ?? []) {
       if (candidate.configured === false || candidate.admitted === false || candidate.effective_reason === 'stale_worker') continue;

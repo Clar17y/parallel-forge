@@ -114,7 +114,7 @@ test.each(['pending', 'failed'] as const)('expires a retained route while refres
         return await new Promise<T>(() => {});
       }
       const observed = new Date().toISOString();
-      return { observed_at: observed, fresh_for_seconds: 1, workers: [
+      return { observed_at: observed, fresh_for_seconds: 2, workers: [
         { state: 'current', last_seen_at: observed, routes: [{ ...alternate, admitted: true, configured: true }] },
       ] } as T;
     }
@@ -333,6 +333,72 @@ test('returns from an explicit default-model effort to the project default when 
   view.rerender(<BrainstormModelPicker projectId="project" choice={high} onChange={onChange} />);
   fireEvent.change(screen.getByRole('combobox', { name: 'Effort' }), { target: { value: 'medium' } });
   expect(onChange).toHaveBeenLastCalledWith(null);
+});
+
+test('does not offer a first runtime observation delivered after its request window', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-09T12:00:00Z'));
+  let complete!: (value: unknown) => void;
+  const observed = new Date().toISOString();
+  const page = { observed_at: observed, fresh_for_seconds: 45, workers: [
+    { state: 'current', last_seen_at: observed, routes: [{ ...alternate, admitted: true, configured: true }] },
+  ] };
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.includes('subscription-profile')) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
+    if (path.includes('subscription-runtime')) return await new Promise<T>(resolve => { complete = value => resolve(value as T); });
+    return undefined as T;
+  });
+  const view = render(<BrainstormModelPicker projectId="project" choice={null} onChange={vi.fn()} />);
+  try {
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(60_000); await Promise.resolve(); });
+    await act(async () => { complete(page); await Promise.resolve(); });
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled();
+    expect(screen.queryByRole('option', { name: /gpt-6-astra/ })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+test('a distinct refreshed observation delivered late cannot reopen an expired route', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-09T12:00:00Z'));
+  const onChange = vi.fn();
+  let complete!: (value: unknown) => void;
+  let reads = 0;
+  const page = (observed: string) => ({ observed_at: observed, fresh_for_seconds: 45, workers: [
+    { state: 'current', last_seen_at: observed, routes: [{ ...alternate, admitted: true, configured: true }] },
+  ] });
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.includes('subscription-profile')) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
+    if (path.includes('subscription-runtime')) {
+      reads += 1;
+      return reads === 1 ? page(new Date().toISOString()) as T
+        : await new Promise<T>(resolve => { complete = value => resolve(value as T); });
+    }
+    return undefined as T;
+  });
+  const view = render(<BrainstormModelPicker projectId="project" choice={null} onChange={onChange} />);
+  try {
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(0); await Promise.resolve(); });
+    expect(screen.getByRole('option', { name: /gpt-6-astra/ })).toBeInTheDocument();
+    view.rerender(<BrainstormModelPicker projectId="project" choice={alternate} onChange={onChange} />);
+    expect(onChange).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(15_000); await Promise.resolve(); });
+    expect(reads).toBe(2);
+    const refreshed = page(new Date().toISOString());
+    await act(async () => { vi.advanceTimersByTime(60_000); await Promise.resolve(); });
+    expect(screen.queryByRole('option', { name: /gpt-6-astra/ })).not.toBeInTheDocument();
+    expect(onChange).toHaveBeenCalledWith(null, 'unavailable');
+    await act(async () => { complete(refreshed); await Promise.resolve(); });
+    expect(screen.queryByRole('option', { name: /gpt-6-astra/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('default');
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
 });
 
 test('changing effort on the default model creates an explicit configured choice', async () => {

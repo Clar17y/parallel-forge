@@ -37,6 +37,65 @@ test('background refresh keeps the snapshot and never overlaps a pending request
   expect(fetcher.mock.calls).toHaveLength(2);
 });
 
+test('displayed values carry their request start and settlement times through refresh and failure', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(100_000);
+  let first!: (response: Response) => void;
+  let second!: (response: Response) => void;
+  vi.spyOn(globalThis, 'fetch')
+    .mockImplementationOnce(() => new Promise(resolve => { first = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { second = resolve; }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  const hook = renderHook(() => useApi<{ id: string }>('/tasks', {
+    keepPreviousOnRefresh: true, keepPreviousOnError: true,
+  }));
+  expect(hook.result.current.valueStartedAt).toBeUndefined();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); first(new Response('{"id":"first"}')); });
+  expect(hook.result.current.value?.id).toBe('first');
+  expect(hook.result.current.valueStartedAt).toBe(100_000);
+  expect(hook.result.current.valueSettledAt).toBe(160_000);
+
+  act(() => { hook.result.current.refresh(); });
+  expect(hook.result.current.valueStartedAt).toBe(100_000);
+  expect(hook.result.current.valueSettledAt).toBe(160_000);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); second(new Response('{"id":"second"}')); });
+  expect(hook.result.current.value?.id).toBe('second');
+  expect(hook.result.current.valueStartedAt).toBe(160_000);
+  expect(hook.result.current.valueSettledAt).toBe(165_000);
+
+  act(() => { hook.result.current.refresh(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+  expect(hook.result.current.failed).toBe(true);
+  expect(hook.result.current.value?.id).toBe('second');
+  expect(hook.result.current.valueStartedAt).toBe(160_000);
+  expect(hook.result.current.valueSettledAt).toBe(165_000);
+});
+
+test('discarded error values and late responses cannot publish value timing', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(100_000);
+  let first!: (response: Response) => void;
+  vi.spyOn(globalThis, 'fetch')
+    .mockImplementationOnce(() => new Promise(resolve => { first = resolve; }))
+    .mockResolvedValueOnce(new Response('{"id":"second"}'))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  const hook = renderHook(({ path }) => useApi<{ id: string }>(path, { keepPreviousOnRefresh: true }),
+    { initialProps: { path: '/first' } });
+  vi.setSystemTime(105_000);
+  hook.rerender({ path: '/second' });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(hook.result.current.value?.id).toBe('second');
+  expect(hook.result.current.valueStartedAt).toBe(105_000);
+  expect(hook.result.current.valueSettledAt).toBe(105_000);
+  await act(async () => { first(new Response('{"id":"late"}')); });
+  expect(hook.result.current.value?.id).toBe('second');
+  act(() => { hook.result.current.refresh(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(hook.result.current.value).toBeUndefined();
+  expect(hook.result.current.valueStartedAt).toBeUndefined();
+  expect(hook.result.current.valueSettledAt).toBeUndefined();
+});
+
 test('refresh synchronously returns exact request tokens and retains the displayed token until that request installs', async () => {
   vi.useFakeTimers();
   let complete!: (response: Response) => void;
@@ -107,12 +166,16 @@ test('an opted-in failed refresh retains its last successful value and marks it 
     keepPreviousOnError: true,
   }));
   await waitFor(() => expect(hook.result.current.value?.id).toBe('first'));
+  const firstStartedAt = hook.result.current.valueStartedAt;
+  const firstSettledAt = hook.result.current.valueSettledAt;
   act(() => { hook.result.current.refresh(); });
   expect(hook.result.current.value?.id).toBe('first');
   await act(async () => { failRefresh(new Error('offline')); });
   expect(hook.result.current.failed).toBe(true);
   expect(hook.result.current.value?.id).toBe('first');
   expect(hook.result.current.token).toBe(0);
+  expect(hook.result.current.valueStartedAt).toBe(firstStartedAt);
+  expect(hook.result.current.valueSettledAt).toBe(firstSettledAt);
   act(() => { hook.result.current.refresh(); });
   await waitFor(() => expect(hook.result.current.value?.id).toBe('recovered'));
   expect(hook.result.current.failed).toBe(false);

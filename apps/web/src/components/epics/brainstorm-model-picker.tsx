@@ -22,32 +22,34 @@ export function BrainstormModelPicker({ projectId, choice, onChange, disabled = 
     keepPreviousOnRefresh: true,
     keepPreviousOnError: true,
   });
-  const [snapshot, setSnapshot] = useState<{ token: number; observedAt: string; receivedAt: number } | null>(null);
+  const [snapshot, setSnapshot] = useState<{ token: number; observedAt: string; startedAt: number } | null>(null);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!runtime.value || snapshot?.token === runtime.token) return;
     const observedAt = runtime.value.observed_at;
     const freshMs = runtimeFreshMs(runtime.value);
     const timer = setTimeout(() => {
-      const receivedAt = Date.now();
+      const settledAt = Date.now();
       setSnapshot(previous => ({
         token: runtime.token,
         observedAt,
-        receivedAt: previous && previous.observedAt === observedAt
-          ? previous.receivedAt : receivedAt,
+        startedAt: previous && previous.observedAt === observedAt
+          ? previous.startedAt : runtime.valueStartedAt ?? settledAt,
       }));
-      setNow(receivedAt);
+      setNow(settledAt);
       setPollMs(Math.max(1000, Math.min(15000, freshMs / 2)));
     }, 0);
     return () => clearTimeout(timer);
-  }, [runtime.token, runtime.value, snapshot?.token]);
-  const receivedAt = snapshot && snapshot.observedAt === runtime.value?.observed_at ? snapshot.receivedAt : now;
-  const availability = availableBrainstormRoutes(runtime.value, receivedAt, now);
+  }, [runtime.token, runtime.value, runtime.valueStartedAt, snapshot?.token]);
+  const startedAt = snapshot && snapshot.observedAt === runtime.value?.observed_at
+    ? snapshot.startedAt : runtime.valueStartedAt ?? now;
+  const effectiveNow = Math.max(now, runtime.valueSettledAt ?? now);
+  const availability = availableBrainstormRoutes(runtime.value, startedAt, effectiveNow);
   useEffect(() => {
     if (availability.expiresAt === null) return;
-    const timer = setTimeout(() => setNow(Date.now()), Math.max(1, availability.expiresAt - now + 1));
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(1, availability.expiresAt - effectiveNow + 1));
     return () => clearTimeout(timer);
-  }, [availability.expiresAt, now]);
+  }, [availability.expiresAt, effectiveNow]);
   const preferred = profile.value?.preferences?.find(item => item.purpose === 'exploration')?.preferred_route;
   const defaultRoute = toBrainstormRoute(preferred);
   const configured = availability.routes;

@@ -33,6 +33,15 @@ test('unknown freshness timestamps have a bounded fallback and never disable the
   expect(availableBrainstormRoutes(available, 1000, 46_000).routes).toHaveLength(0);
 });
 
+test('worker report age reduces a timely request window without comparing server and client clocks', () => {
+  const available = {
+    observed_at: '2035-01-01T00:00:00Z', fresh_for_seconds: 45,
+    workers: [{ state: 'current', last_seen_at: '2034-12-31T23:59:30Z', routes: [{ ...route, effort: 'low', admitted: true }] }],
+  } as unknown as Parameters<typeof availableBrainstormRoutes>[0];
+  expect(availableBrainstormRoutes(available, 100_000, 110_000).routes).toHaveLength(1);
+  expect(availableBrainstormRoutes(available, 100_000, 115_000).routes).toHaveLength(0);
+});
+
 test.each([
   { effort: ['maximum'] },
   { provider: 'google', client: ['gemini_cli'], effort: 'medium' },
