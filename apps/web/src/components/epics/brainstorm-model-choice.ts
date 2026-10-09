@@ -29,3 +29,41 @@ export function toBrainstormRoute(value: unknown): BrainstormRoute | null {
   return { provider: value.provider, client: value.client, model: value.model, effort: value.effort,
     auth_mode: 'subscription', billing_mode: 'allowance_only' };
 }
+
+type Runtime = components['schemas']['SubscriptionRuntimeStatusPage'];
+
+export function runtimeFreshMs(runtime: Runtime | undefined): number {
+  const seconds = runtime?.fresh_for_seconds;
+  return Number.isFinite(seconds) && seconds !== undefined && seconds > 0
+    ? Math.min(seconds, 45) * 1000
+    : 45_000;
+}
+
+export function availableBrainstormRoutes(runtime: Runtime | undefined, receivedAt: number, now: number): {
+  routes: BrainstormRoute[];
+  expiresAt: number | null;
+} {
+  if (!runtime) return { routes: [], expiresAt: null };
+  const freshMs = runtimeFreshMs(runtime);
+  const observedAt = Date.parse(runtime.observed_at);
+  const pageExpiry = receivedAt + freshMs;
+  if (now >= pageExpiry) return { routes: [], expiresAt: null };
+  const routes: BrainstormRoute[] = [];
+  let expiresAt: number | null = null;
+  for (const worker of runtime.workers ?? []) {
+    if (worker.state !== 'current') continue;
+    const lastSeenAt = Date.parse(worker.last_seen_at);
+    const observedAge = Number.isFinite(observedAt) && Number.isFinite(lastSeenAt) && observedAt >= lastSeenAt
+      ? observedAt - lastSeenAt
+      : 0;
+    const workerExpiry = Math.min(pageExpiry, receivedAt + Math.max(0, freshMs - observedAge));
+    if (now >= workerExpiry) continue;
+    for (const candidate of worker.routes ?? []) {
+      if (candidate.configured === false || candidate.admitted === false || candidate.effective_reason === 'stale_worker') continue;
+      const route = toBrainstormRoute(candidate);
+      if (route) routes.push(route);
+    }
+    if (expiresAt === null || workerExpiry < expiresAt) expiresAt = workerExpiry;
+  }
+  return { routes, expiresAt };
+}

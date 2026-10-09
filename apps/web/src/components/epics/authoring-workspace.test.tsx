@@ -578,10 +578,17 @@ describe('AuthoringWorkspace', () => {
     const savedTurn = { ...turns[0], turn_id: 'uncertain-turn' };
     let startCount = 0;
     let jobCount = 0;
+    let runtimeReads = 0;
     const jobRequests: Array<[string, RequestInit | undefined]> = [];
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
-      if (path.startsWith('/subscription-runtime')) return { workers: [{ state: 'current', routes: [defaultRoute, selectedRoute] }] } as T;
+      if (path.startsWith('/subscription-runtime')) {
+        runtimeReads += 1;
+        const observed = new Date().toISOString();
+        return { observed_at: observed, fresh_for_seconds: 2, workers: [{
+          state: jobCount ? 'stale' : 'current', last_seen_at: observed, routes: [defaultRoute, selectedRoute],
+        }] } as T;
+      }
       if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return (jobCount > 1
         ? [{ conversation_id: conversationId, conversation_version: 2, job_ids: ['uncertain-job'] }]
         : []) as T;
@@ -607,6 +614,9 @@ describe('AuthoringWorkspace', () => {
     await screen.findByRole('button', { name: 'Retry original request' });
     expect(startCount).toBe(1);
     expect(jobCount).toBe(1);
+    expect(await screen.findByText(/selected model is no longer available/i, {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(runtimeReads).toBeGreaterThan(1);
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('default');
 
     await userEvent.click(screen.getByRole('button', { name: 'Retry original request' }));
     await waitFor(() => expect(jobCount).toBe(2));
@@ -622,6 +632,42 @@ describe('AuthoringWorkspace', () => {
     expect(screen.queryByRole('button', { name: 'Retry assistant help' })).not.toBeInTheDocument();
     expect(startCount).toBe(1);
     expect(jobCount).toBe(2);
+  });
+
+  test('uses the project default for a new message after its explicit route loses availability', async () => {
+    const selectedRoute = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    const defaultRoute = { ...selectedRoute, model: 'gpt-6-luna', effort: 'medium' };
+    const savedTurn = { ...turns[0], turn_id: 'after-route-loss', text: 'A fresh idea.' };
+    let unavailable = false;
+    const jobs: RequestInit[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
+      if (path.startsWith('/subscription-runtime')) {
+        const observed = new Date().toISOString();
+        return { observed_at: observed, fresh_for_seconds: 2, workers: [{
+          state: unavailable ? 'stale' : 'current', last_seen_at: observed, routes: [defaultRoute, selectedRoute],
+        }] } as T;
+      }
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations` && init?.method === 'POST') return { conversation_id: conversationId, version: 2 } as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return [savedTurn] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init); return { job_id: 'default-after-loss' } as T;
+      }
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await screen.findByRole('option', { name: /gpt-6-astra/ });
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Model' }), JSON.stringify(['openai', 'codex_app_server', 'gpt-6-astra']));
+    unavailable = true;
+    await screen.findByText(/selected model is no longer available/i, {}, { timeout: 3000 });
+    await userEvent.type(screen.getByLabelText('What are you trying to accomplish?'), savedTurn.text);
+    await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }));
+    await waitFor(() => expect(jobs).toHaveLength(1));
+    expect(JSON.parse(jobs[0].body as string)).toEqual({
+      schema_version: 1, project_id: projectId, prompt_turn_id: savedTurn.turn_id,
+      expected_epic_version: 9, expected_conversation_version: 2,
+    });
   });
 
   test.each([

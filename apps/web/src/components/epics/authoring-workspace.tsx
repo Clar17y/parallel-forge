@@ -197,6 +197,7 @@ export function AuthoringWorkspace({
   const brainstorm = useEpicBrainstorm(epicId, projectId);
   const [inputText, setInputText] = useState('');
   const [routeChoice, setRouteChoice] = useState<BrainstormRoute | null>(null);
+  const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [savedMessageState, setSavedMessage] = useState<SavedSend | false | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [assistancePending, setAssistancePending] = useState(false);
@@ -249,6 +250,11 @@ export function AuthoringWorkspace({
   }, [epicVersion, subject]);
 
   const isCurrentInstance = useCallback(() => lifecycle.current.active && lifecycle.current.subject === subject, [subject]);
+
+  const changeRouteChoice = useCallback((route: BrainstormRoute | null, reason?: 'unavailable') => {
+    setRouteChoice(route);
+    setRouteNotice(reason === 'unavailable' ? 'The selected model is no longer available. Review the project default before your next message.' : null);
+  }, []);
 
   const rejectSavedSubmission = useCallback((saved: SavedSend) => {
     const current = readSavedSend(savedSendKey, currentEpicVersion.current);
@@ -635,7 +641,8 @@ export function AuthoringWorkspace({
       <form onSubmit={handleSendTurn} className="space-y-3">
         <label htmlFor="turn-text" className="block text-sm font-medium">What are you trying to accomplish?</label>
         <p className="text-sm text-[var(--muted)]">A rough idea is enough. The assistant will ask questions and suggest a draft for you to review.</p>
-        <BrainstormModelPicker projectId={projectId} choice={routeChoice} onChange={setRouteChoice} />
+        <BrainstormModelPicker projectId={projectId} choice={routeChoice} onChange={changeRouteChoice} />
+        {routeNotice && <p role="status" className="text-sm text-[var(--muted)]">{routeNotice}</p>}
         <textarea
           id="turn-text"
           className="w-full px-3 py-2 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)] focus:border-[var(--focus)] focus:outline-none min-h-[80px]"
