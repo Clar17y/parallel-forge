@@ -1,7 +1,9 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import Link from 'next/link';
+import { Loader2 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { QuotaStatusCard, QuotaStatusList } from './quota-status';
 import { TaskControls, TaskControlSummary } from './task-controls';
@@ -28,7 +30,7 @@ export function TaskInspector({ runId }: { runId: string }) {
       <button type="button" onClick={tasks.refresh}>Refresh tasks</button>
     </div>
     {tasks.refreshing && !tasks.loading ? <p role="status">Refreshing task state…</p> : null}
-    {tasks.loading ? <p role="status">Loading tasks…</p> : tasks.failed ?
+    {tasks.loading ? <LoadingStatus>Loading tasks…</LoadingStatus> : tasks.failed ?
       <p role="alert">Task inspection unavailable. Use Refresh tasks to retry.</p> :
       tasks.value && !tasks.value.subscription ? <p>Legacy run: subscription tasks do not apply.</p> : tasks.value ? <>
         <p>Candidate: {tasks.value.candidate_state ?? 'Unknown'} · epoch {unknown(tasks.value.candidate_epoch)}</p>
@@ -41,7 +43,8 @@ export function TaskInspector({ runId }: { runId: string }) {
             <button type="button" aria-expanded={selected === task.task_id}
               aria-label={`Inspect ${task.purpose} task ${task.task_id}`}
               onClick={() => setSelected(selected === task.task_id ? null : task.task_id)}
-              className="text-left font-semibold underline underline-offset-4">
+              className="inline-flex items-center gap-1.5 text-left font-semibold underline underline-offset-4">
+              {task.state === 'running' ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none text-[var(--info)] flex-none" aria-hidden="true" /> : null}
               {task.purpose} · {task.state}
             </button>
             <p className="text-sm">Task {task.task_id}</p>
@@ -94,7 +97,7 @@ function Attempts({ runId, task, runVersion, runAllowsExecution, runIsTerminal, 
   const [offset, setOffset] = useState(0);
   const [receiptGeneration, setReceiptGeneration] = useState<Record<string, number>>({});
   const attempts = useApi<AttemptPage>(`/runs/${runId}/subscription-tasks/${taskId}/attempts?offset=${offset}&limit=${pageSize}`, { refreshIntervalMs: 5000, keepPreviousOnRefresh: true });
-  if (attempts.loading) return <p role="status">Loading attempts…</p>;
+  if (attempts.loading) return <LoadingStatus>Loading attempts…</LoadingStatus>;
   if (!attempts.value) return <p role="alert">Attempts unavailable. <button onClick={attempts.refresh}>Retry attempts</button></p>;
   return <div className="space-y-3 border-t border-slate-300 pt-3">
     <button type="button" onClick={attempts.refresh}>Refresh attempts</button>

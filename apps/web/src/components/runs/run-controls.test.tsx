@@ -1,5 +1,5 @@
 import { StrictMode } from 'react';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, expect, test, vi } from 'vitest';
 import { RunControls } from './run-controls';
@@ -23,6 +23,23 @@ const planArtifact = {
   steps: ['Implement changes'], required_checks: ['test'], risks: ['None'],
   security_considerations: [], dependency_changes: [],
 };
+
+test('run action progress changes from evidence check to the actual command request', async () => {
+  const value = projection({ available_commands: [{ name: 'pause', expected_run_version: 7, requires_feedback: false }] });
+  let finishCheck!: (projectionValue: typeof value) => void;
+  let finishCommand!: (value: { id: string }) => void;
+  const onRefresh = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finishCheck = resolve; }))
+    .mockResolvedValue(value);
+  vi.mocked(mutate).mockImplementationOnce(() => new Promise(resolve => { finishCommand = resolve; }));
+  render(<RunControls projection={value} onRefresh={onRefresh} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Pause' }));
+  expect(screen.getByRole('status')).toHaveTextContent('Checking current run evidence…');
+  await act(async () => finishCheck(value));
+  await userEvent.click(await screen.findByRole('button', { name: 'Confirm pause' }));
+  expect(screen.getByRole('status')).toHaveTextContent('Submitting run command…');
+  await act(async () => finishCommand({ id: 'command-1' }));
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+});
 
 test.each((['pr', 'merge'] as const).flatMap(gate =>
   ['success', 'acceptance mismatch', 'contents mismatch'].map(scenario => ({ gate, scenario })),

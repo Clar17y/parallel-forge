@@ -1,4 +1,5 @@
 "use client";
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -6,5 +7,5 @@ import { useRouter } from 'next/navigation';
 export default function Home() {
   const router = useRouter();
   useEffect(() => { router.replace('/runs'); }, [router]);
-  return <p role="status">Opening runs…</p>;
+  return <LoadingStatus>Opening runs…</LoadingStatus>;
 }

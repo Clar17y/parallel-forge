@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
@@ -569,7 +570,7 @@ export function DeliveryWorkspace({
         </Panel>
       )}
 
-      {loading && !execution && <p role="status">Loading execution projection…</p>}
+      {loading && !execution && <LoadingStatus>Loading execution projection…</LoadingStatus>}
 
       {failed && !execution && (
         <div role="alert" className="p-4 bg-[var(--danger-soft)] text-[var(--danger)] rounded border border-[var(--border)] space-y-2">

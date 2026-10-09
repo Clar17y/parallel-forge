@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Panel } from '@/components/ui/panel';
@@ -253,7 +254,7 @@ export function EpicBudgetPanel({
   const mutationPending = mutations.loading || mutations.hasPendingRetry || isRebasing;
 
   if (loading && !budget) {
-    return <p role="status">Loading budget projection…</p>;
+    return <LoadingStatus>Loading budget projection…</LoadingStatus>;
   }
 
   if (failed && !budget) {

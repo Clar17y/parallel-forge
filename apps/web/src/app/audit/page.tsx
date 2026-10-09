@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useRef, useState, type FormEvent } from 'react';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
@@ -100,7 +101,7 @@ export default function AuditPage() {
         <Button onClick={audit.refresh} disabled={audit.loading}>Refresh audit</Button>
       </div>
 
-      {audit.loading && <p role="status">Loading audit…</p>}
+      {audit.loading && <LoadingStatus>Loading audit…</LoadingStatus>}
       {audit.failed && (
         <p role="alert">
           Audit unavailable. <Button onClick={audit.refresh}>Retry</Button>

@@ -224,6 +224,7 @@ export function NewRunForm({ projects, onCreated }: {
               <Button
                 type="submit"
                 variant="primary"
+                busy={pending}
                 disabled={pending || !project || (!locked && !validSource)}
               >
                 {pending ? 'Creating…' : (locked && error) || correctionAllowed ? 'Retry creation' : 'Create run'}

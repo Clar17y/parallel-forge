@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Panel } from '@/components/ui/panel';
@@ -118,7 +119,7 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
   const titleChanged = draftTitle !== epic?.title;
 
   if (loading && !epic) {
-    return <p role="status">Loading epic requirements brief…</p>;
+    return <LoadingStatus>Loading epic requirements brief…</LoadingStatus>;
   }
 
   if (failed && !epic) {
@@ -658,7 +659,7 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
           title="Brief Revision History"
           description="Immutable snapshots saved on the server. Adopting a different revision clears accepted graph eligibility."
         >
-          {loadingBriefRevisions && briefRevisions.length === 0 && <p role="status">Loading brief history…</p>}
+          {loadingBriefRevisions && briefRevisions.length === 0 && <LoadingStatus>Loading brief history…</LoadingStatus>}
           {failedBriefRevisions && <div role="alert" className="space-y-2">
             <p>Brief history could not be loaded.</p>
             <Button variant="secondary" onClick={refreshBriefRevisions}>Retry brief history</Button>

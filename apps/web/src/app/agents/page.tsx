@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import Link from 'next/link';
 import { PolicyBrowser } from '@/components/projects/policy-browser';
 import { useApi } from '@/hooks/use-api';
@@ -31,7 +32,7 @@ export default function AgentsPage() {
     </>}</PolicyBrowser>
     <section><h2>Current configured prompts</h2>
       <p>These digests describe the server’s current prompt files. Each execution records its own frozen prompt evidence; these values do not reconstruct past executions.</p>
-      {prompts.loading && <p role="status">Loading prompt metadata…</p>}
+      {prompts.loading && <LoadingStatus>Loading prompt metadata…</LoadingStatus>}
       {prompts.failed && <p role="alert">Prompt metadata unavailable. <button onClick={prompts.refresh}>Retry</button></p>}
       {prompts.value && <ul>{prompts.value.map(prompt => <li key={prompt.role}>{prompt.role} · {prompt.version}<br /><code>{prompt.digest}</code></li>)}</ul>}
     </section>

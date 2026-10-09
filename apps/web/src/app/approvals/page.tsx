@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import { ApprovalCard } from '@/components/approvals/approval-card';
 import { useApi } from '@/hooks/use-api';
@@ -10,7 +11,7 @@ export default function ApprovalsPage() {
   return <><h1>Approvals</h1>
     <p>Open a run to refresh and review its exact evidence before approving.</p>
     <button onClick={approvals.refresh} disabled={approvals.loading}>Refresh approvals</button>
-    {approvals.loading && <p role="status">Loading approvals…</p>}
+    {approvals.loading && <LoadingStatus>Loading approvals…</LoadingStatus>}
     {approvals.failed && <p role="alert">Approvals unavailable. <button onClick={approvals.refresh}>Retry</button></p>}
     {approvals.value && <>
       {!approvals.value.items.length && <p>No pending approvals on this page.</p>}

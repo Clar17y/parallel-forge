@@ -1468,4 +1468,109 @@ describe('AuthoringWorkspace', () => {
     expect(screen.queryByText('There is no available graph decomposition request contract yet.')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Decomposition message or instruction')).not.toBeInTheDocument();
   });
+
+  test('prominently distinguishes quota wait from active agent execution', async () => {
+    const quotaOutcome = {
+      ...proposedOutcome,
+      state: 'quota_wait' as const,
+      proposal: null,
+      proposal_digest: null,
+      process_settled: false,
+    };
+    mockAuthoring(quotaOutcome as any);
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    expect(await screen.findByText('Waiting for model quota')).toBeInTheDocument();
+    expect(screen.getByText(/The assistant is waiting for model quota\./)).toBeInTheDocument();
+    expect(screen.queryByText(/The assistant is working on your idea\./)).not.toBeInTheDocument();
+    // Verify no active spinner on waiting
+    const statusEl = screen.getByRole('region', { name: /Waiting for model quota/i });
+    expect(statusEl).toHaveAttribute('data-executing', 'false');
+    expect(statusEl.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+  });
+
+  test('prominently distinguishes capacity wait from active agent execution', async () => {
+    const capacityOutcome = {
+      ...proposedOutcome,
+      state: 'capacity_wait' as const,
+      proposal: null,
+      proposal_digest: null,
+      process_settled: false,
+    };
+    mockAuthoring(capacityOutcome as any);
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    expect(await screen.findByText('Waiting for execution capacity')).toBeInTheDocument();
+    expect(screen.getByText(/The assistant is waiting for execution capacity\./)).toBeInTheDocument();
+    expect(screen.queryByText(/The assistant is working on your idea\./)).not.toBeInTheDocument();
+    const capEl = screen.getByRole('region', { name: /Waiting for execution capacity/i });
+    expect(capEl).toHaveAttribute('data-executing', 'false');
+    expect(capEl.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+  });
+
+  test('failed status read retaining running outcome reports last known state and avoids claiming confirmed live execution', async () => {
+    const runningOutcome = {
+      ...proposedOutcome,
+      state: 'running' as const,
+      proposal: null,
+      proposal_digest: null,
+      process_settled: false,
+    };
+    let outcomeCalls = 0;
+    let finishRefresh!: (value: unknown) => void;
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [thread] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return turns as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job?project_id=${projectId}`) {
+        outcomeCalls++;
+        if (outcomeCalls === 1) return runningOutcome as T;
+        if (outcomeCalls === 2) throw new Error('network down');
+        if (outcomeCalls === 3) return await new Promise<unknown>(resolve => { finishRefresh = resolve; }) as T;
+        return { ...runningOutcome, state: 'proposed', proposal, proposal_digest: proposedOutcome.proposal_digest } as T;
+      }
+      return undefined as T;
+    });
+
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    expect(await screen.findByText('Assistant drafting proposal')).toBeInTheDocument();
+    expect(screen.getByText(/The assistant is working on your idea\./)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('region', { name: /Last known state: Running/i })).toHaveAttribute('data-executing', 'false'), { timeout: 5000 });
+    expect(screen.getByRole('button', { name: 'Cancel assistant job' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry authoring' }));
+    expect(screen.getByRole('region', { name: /Last known state: Running/i }).querySelector('svg.animate-spin')).not.toBeInTheDocument();
+    await act(async () => finishRefresh({ ...runningOutcome, state: 'proposed', proposal, proposal_digest: proposedOutcome.proposal_digest }));
+    expect(await screen.findByText('Proposal ready for review')).toBeInTheDocument();
+  });
+
+  test('cancel request shows its action rather than a new prompt submission', async () => {
+    let finishCancel!: (value: unknown) => void;
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [thread] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return turns as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job?project_id=${projectId}`) return { ...proposedOutcome, state: 'running', proposal: null, proposal_digest: null } as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job/cancel` && init?.method === 'POST') return await new Promise<unknown>(resolve => { finishCancel = resolve; }) as T;
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel assistant job' }));
+    expect(screen.getByText('Requesting cancellation')).toBeInTheDocument();
+    expect(screen.queryByText('Submitting prompt')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send message' })).not.toHaveAttribute('aria-busy', 'true');
+    await act(async () => finishCancel({ schema_version: 1, job_id: 'current-job', job_version: 8, state: 'cancel_requested', replay_key: 'k' }));
+  });
+
+  test('reopened selected job shows a checking state until its first outcome arrives', async () => {
+    window.history.replaceState({}, '', `/epics/${epicId}?conversation_id=${conversationId}&job_id=current-job`);
+    let finishOutcome!: (value: unknown) => void;
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [thread] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return turns as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job?project_id=${projectId}`) return await new Promise<unknown>(resolve => { finishOutcome = resolve; }) as T;
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    const checking = await screen.findByRole('region', { name: 'Checking assistant status' });
+    expect(checking).toHaveAttribute('data-executing', 'true');
+    expect(screen.queryByText('Proposal ready for review')).not.toBeInTheDocument();
+    await act(async () => finishOutcome(proposedOutcome));
+    expect(await screen.findByText('Proposal ready for review')).toBeInTheDocument();
+  });
 });

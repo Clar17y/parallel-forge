@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
@@ -8,7 +9,7 @@ export default function EvaluationsPage() {
   const evaluations = useApi<components['schemas']['ListPage_EvaluationItem_']>(`/evaluations?offset=${offset}&limit=25`);
   return <><h1>Evaluations</h1><p>Persisted fixture results and model usage. Pending or missing results do not establish a pass.</p>
     <button onClick={evaluations.refresh} disabled={evaluations.loading}>Refresh evaluations</button>
-    {evaluations.loading && <p role="status">Loading evaluations…</p>}
+    {evaluations.loading && <LoadingStatus>Loading evaluations…</LoadingStatus>}
     {evaluations.failed && <p role="alert">Evaluations unavailable. <button onClick={evaluations.refresh}>Retry</button></p>}
     {evaluations.value && <>{!evaluations.value.items.length && <p>No evaluations on this page.</p>}
       {evaluations.value.items.map(item => <article key={`${item.suite_id}:${item.case_id ?? 'suite'}`}>

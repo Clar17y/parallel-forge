@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Panel } from '@/components/ui/panel';
@@ -82,7 +83,7 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
   };
 
   if (loading && !epic) {
-    return <p role="status">Loading epic graph workspace…</p>;
+    return <LoadingStatus>Loading epic graph workspace…</LoadingStatus>;
   }
 
   if (failed && !epic) {
@@ -527,7 +528,7 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
           title="Graph Revision History"
           description="Saved graph revisions. Adopting a revision validates that its bound brief matches current accepted brief."
         >
-          {loadingGraphRevisions && graphRevisions.length === 0 && <p role="status">Loading graph history…</p>}
+          {loadingGraphRevisions && graphRevisions.length === 0 && <LoadingStatus>Loading graph history…</LoadingStatus>}
           {failedGraphRevisions && <div role="alert" className="space-y-2">
             <p>Graph history could not be loaded.</p>
             <Button variant="secondary" onClick={refreshGraphRevisions}>Retry graph history</Button>

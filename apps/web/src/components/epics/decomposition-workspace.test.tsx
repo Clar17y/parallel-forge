@@ -622,4 +622,45 @@ describe('DecompositionWorkspace', () => {
     await waitFor(() => expect(vi.mocked(api).mock.calls.filter(([path]) => path === `/epics/${epicId}/graph-revisions`).length).toBeGreaterThan(graphReadsBeforeReplay));
     expect(api).toHaveBeenCalledWith(`/epics/${epicId}/accepted-graph`, expect.anything());
   });
+
+  test('saving a decomposition turn shows only the save request and never claims a job was submitted', async () => {
+    let finishSave!: (value: unknown) => void;
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/decomposition-conversations?`)) return [thread] as T;
+      if (path === `/epics/${epicId}/decomposition-conversations/${conversationId}/turns?project_id=${projectId}`) return turns as T;
+      if (path === `/epics/${epicId}/decomposition-jobs/decomp-job-1?project_id=${projectId}`) return proposedOutcome as T;
+      if (path === `/epics/${epicId}/decomposition-conversations/${conversationId}/turns` && init?.method === 'POST') return await new Promise<unknown>(resolve => { finishSave = resolve; }) as T;
+      if (path.startsWith(`/epics/${epicId}/brief-revisions`) || path.startsWith(`/epics/${epicId}/graph-revisions`)) return [] as T;
+      if (path === `/epics/${epicId}`) return { epic_id: epicId, version: 9, project_id: projectId } as T;
+      return undefined as T;
+    });
+    render(<DecompositionWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await userEvent.type(await screen.findByLabelText('Decomposition message or instruction'), 'One more constraint');
+    await userEvent.click(screen.getByRole('button', { name: 'Send decomposition message' }));
+    expect(screen.getByText('Saving decomposition message')).toBeInTheDocument();
+    expect(screen.queryByText('Submitting prompt')).not.toBeInTheDocument();
+    expect(vi.mocked(api).mock.calls.some(([path]) => path === `/epics/${epicId}/decomposition-conversations/${conversationId}/jobs`)).toBe(false);
+    await act(async () => finishSave({ version: 3 }));
+  });
+
+  test('accepted decomposition receipt remains visible while its first outcome read is delayed', async () => {
+    let finishOutcome!: (value: AuthoringOutcome) => void;
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/decomposition-conversations?`)) return [thread] as T;
+      if (path === `/epics/${epicId}/decomposition-conversations/${conversationId}/turns?project_id=${projectId}`) return turns as T;
+      if (path === `/epics/${epicId}/decomposition-jobs/decomp-job-1?project_id=${projectId}`) return proposedOutcome as T;
+      if (path === `/epics/${epicId}/decomposition-conversations/${conversationId}/jobs` && init?.method === 'POST') return { schema_version: 1, job_id: 'new-decomp-job', job_version: 1, state: 'queued', replay_key: 'rk' } as T;
+      if (path === `/epics/${epicId}/decomposition-jobs/new-decomp-job?project_id=${projectId}`) return await new Promise<unknown>(resolve => { finishOutcome = resolve; }) as T;
+      if (path.startsWith(`/epics/${epicId}/brief-revisions`) || path.startsWith(`/epics/${epicId}/graph-revisions`)) return [] as T;
+      if (path === `/epics/${epicId}`) return { epic_id: epicId, version: 9, project_id: projectId } as T;
+      return undefined as T;
+    });
+    render(<DecompositionWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Generate proposed decomposition' }));
+    const checking = await screen.findByRole('region', { name: /Job submitted · checking assistant status/i });
+    expect(checking).toHaveAttribute('data-executing', 'true');
+    expect(screen.queryByText('Proposal ready for review')).not.toBeInTheDocument();
+    await act(async () => finishOutcome({ ...proposedOutcome, job_id: 'new-decomp-job', job_version: 1, state: 'queued', proposal: null, proposal_digest: null }));
+    expect(await screen.findByText('Assistant job queued')).toBeInTheDocument();
+  });
 });

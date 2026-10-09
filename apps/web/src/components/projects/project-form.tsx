@@ -7,6 +7,7 @@ import { CommandEditor } from './command-editor';
 import { Field, lines } from './form-fields';
 import { JevSettings } from './jev-settings';
 import { defaultModel, ModelPolicy } from './model-policy';
+import { Button } from '@/components/ui/button';
 
 export type ProjectInput = components['schemas']['ProjectCreateRequest'];
 export const projectDefaults: ProjectInput = {
@@ -89,7 +90,7 @@ export function ProjectForm({ onSave, initial, policyOnly = false }: {
     </fieldset>
     {error && <p role="alert">{error}</p>}
     {!!Object.keys(errors).length && <ul aria-label="Validation errors">{Object.entries(errors).map(([path, message]) => <li key={path}>{path}: {message}</li>)}</ul>}
-    <button disabled={pending} type="submit">{pending ? 'Saving…' : policyOnly ? 'Create policy version' : 'Register project'}</button>
+    <Button disabled={pending} busy={pending} type="submit">{pending ? 'Saving…' : policyOnly ? 'Create policy version' : 'Register project'}</Button>
   </form>;
 }
 

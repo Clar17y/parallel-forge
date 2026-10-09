@@ -132,6 +132,7 @@ export function EpicCreateForm({
         <Button
           type="submit"
           variant="primary"
+          busy={mutations.loading && request?.kind === 'create'}
           disabled={mutations.loading || mutations.hasPendingRetry || !title.trim() || !selectedProjectId || !projects.length}
         >
           {mutations.loading ? 'Creating epic…' : 'Create Epic'}

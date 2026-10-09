@@ -196,3 +196,31 @@ test('retained error data never crosses to another path', async () => {
   await waitFor(() => expect(hook.result.current.failed).toBe(true));
   expect(hook.result.current.value).toBeUndefined();
 });
+
+test('retained failed value stays stale through a hanging retry and repeated failure until a successful read', async () => {
+  let retry!: (response: Response) => void;
+  vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"id":"running"}'))
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockImplementationOnce(() => new Promise(resolve => { retry = resolve; }))
+    .mockRejectedValueOnce(new Error('still offline'))
+    .mockResolvedValueOnce(new Response('{"id":"proposed"}'));
+  const hook = renderHook(() => useApi<{ id: string }>('/jobs/one', {
+    keepPreviousOnRefresh: true, keepPreviousOnError: true,
+  }));
+  await waitFor(() => expect(hook.result.current.value?.id).toBe('running'));
+  act(() => { hook.result.current.refresh(); });
+  await waitFor(() => expect(hook.result.current.failed).toBe(true));
+  expect(hook.result.current.valueStale).toBe(true);
+  act(() => { hook.result.current.refresh(); });
+  expect(hook.result.current.failed).toBe(false);
+  expect(hook.result.current.valueStale).toBe(true);
+  await act(async () => retry(new Response(null, { status: 503 })));
+  expect(hook.result.current.valueStale).toBe(true);
+  act(() => { hook.result.current.refresh(); });
+  await waitFor(() => expect(hook.result.current.failed).toBe(true));
+  expect(hook.result.current.valueStale).toBe(true);
+  act(() => { hook.result.current.refresh(); });
+  await waitFor(() => expect(hook.result.current.value?.id).toBe('proposed'));
+  expect(hook.result.current.valueStale).toBe(false);
+});

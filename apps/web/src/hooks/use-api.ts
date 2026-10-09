@@ -85,6 +85,7 @@ export function useApi<T>(path: string | null, {
     valueSettledAt: shown?.valueSettledAt,
     token: shown?.valueToken ?? 0,
     failed: current?.failed ?? false,
+    valueStale: shown?.value !== undefined && shown.failed,
     loading: path !== null && !current && shown?.value === undefined,
     refreshing: path !== null && !current,
     refresh,

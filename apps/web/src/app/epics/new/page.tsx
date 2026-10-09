@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -25,7 +26,7 @@ function NewEpicContent() {
         </p>
       </header>
 
-      {projectsApi.loading && <p role="status">Loading projects…</p>}
+      {projectsApi.loading && <LoadingStatus>Loading projects…</LoadingStatus>}
 
       {projectsApi.failed && (
         <div role="alert" className="p-4 bg-[var(--danger-soft)] text-[var(--danger)] rounded border border-[var(--border)]">
@@ -56,7 +57,7 @@ function NewEpicContent() {
 
 export default function NewEpicPage() {
   return (
-    <Suspense fallback={<p role="status">Loading new epic form…</p>}>
+    <Suspense fallback={<LoadingStatus>Loading new epic form…</LoadingStatus>}>
       <NewEpicContent />
     </Suspense>
   );

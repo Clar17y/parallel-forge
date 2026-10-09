@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import { parsePlan, PlanContent } from './plan-content';
@@ -11,7 +12,7 @@ export function PlanPanel({ projection }: { projection: components['schemas']['R
     <section aria-label="Plan evidence">
       <h2>Plan</h2>
       {!digest && <p>No plan has been published yet.</p>}
-      {artifact.loading && <p role="status">Loading plan evidence…</p>}
+      {artifact.loading && <LoadingStatus>Loading plan evidence…</LoadingStatus>}
       {(artifact.failed || (artifact.value && !plan)) && (
         <p role="alert">
           Plan evidence unavailable. <button onClick={artifact.refresh}>Retry</button>

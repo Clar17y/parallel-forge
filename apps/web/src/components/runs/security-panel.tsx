@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
@@ -25,7 +26,7 @@ export function SecurityPanel({ projection }: { projection: components['schemas'
     <h3>Residual risks</h3><p>Repository content and command output are untrusted. Container isolation and output redaction reduce exposure but do not make arbitrary project code trustworthy. Review evidence before authorizing remote publication or merge.</p>
     <h3>Approval history</h3><p>Records describe past decisions and their current invalidation status. Available actions come from the current run controls.</p>
     <button disabled={approvals.loading} onClick={approvals.refresh}>Refresh approvals</button>
-    {approvals.loading && <p role="status">Loading approval history…</p>}
+    {approvals.loading && <LoadingStatus>Loading approval history…</LoadingStatus>}
     {approvals.failed && <p role="alert">Approval history unavailable. <button onClick={approvals.refresh}>Retry</button></p>}
     {approvals.value && <>{!approvals.value.items.length && <p>No approvals recorded on this page.</p>}
       {approvals.value.items.map(item => <article key={item.id}><h4>{item.gate} approval</h4>

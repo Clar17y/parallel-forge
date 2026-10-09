@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { Suspense, use, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -84,7 +85,7 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
 
 
   if (workspace.loading && !epic) {
-    return <div className="space-y-4">{recovery}<p role="status">Loading epic workspace…</p></div>;
+    return <div className="space-y-4">{recovery}<LoadingStatus>Loading epic workspace…</LoadingStatus></div>;
   }
 
   if (workspace.failed && !epic) {
@@ -215,7 +216,7 @@ function EpicPageInner({ params }: { params: Promise<{ epicId: string }> }) {
 
 export default function EpicPage({ params }: { params: Promise<{ epicId: string }> }) {
   return (
-    <Suspense fallback={<p role="status">Loading epic workspace…</p>}>
+    <Suspense fallback={<LoadingStatus>Loading epic workspace…</LoadingStatus>}>
       <EpicPageInner params={params} />
     </Suspense>
   );

@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
@@ -11,7 +12,7 @@ export function ChecksPanel({ projection }: { projection: components['schemas'][
   return <section aria-label="Check evidence"><h2>Checks</h2>
     <section><h3>Local validation</h3><p>Runner: {projection.security.runner_mode}</p>
       <button onClick={history.refresh} disabled={history.loading}>Refresh check history</button>
-      {history.loading && <p role="status">Loading check history…</p>}
+      {history.loading && <LoadingStatus>Loading check history…</LoadingStatus>}
       {history.failed && <p role="alert">Check history unavailable. <button onClick={history.refresh}>Retry</button></p>}
       {history.value && !history.value.items.length && <p>No local validation checks recorded.</p>}
       {history.value?.items.map(check => <article key={check.id}><h4>{check.name}</h4>

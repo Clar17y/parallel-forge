@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Panel } from '@/components/ui/panel';
@@ -8,6 +9,8 @@ import { useEpicDecomposition } from '@/hooks/epics/use-epic-decomposition';
 import { useEpicWorkspace } from '@/hooks/epics/use-epic-workspace';
 import { EvidenceDetails } from './evidence-details';
 import { AuthoringJobOutcome } from './authoring-job-outcome';
+import { describeAuthoringOutcome } from './authoring-presentation';
+import { ActivityStatus } from '@/components/ui/activity-status';
 import type {
   BrainstormProposal,
   DecompositionProposal,
@@ -162,6 +165,9 @@ export function DecompositionWorkspace({
     setActiveConversationId,
     turns,
     outcome,
+    outcomeStale,
+    outcomeChecking,
+    jobReceiptAccepted,
     loading,
     isUnavailable,
     refresh,
@@ -177,6 +183,16 @@ export function DecompositionWorkspace({
     adoptedGraphRevisionId,
     mutations,
   } = decomp;
+
+  const activeRequestKind = mutations.loading ? mutations.pendingMutation?.kind : null;
+  const isSubmitting = !!(activeRequestKind && ['decomp-conversation-start', 'decomp-conversation-turn', 'decomp-job-submit'].includes(activeRequestKind));
+  const activityDesc = describeAuthoringOutcome(
+    isSubmitting ? null : outcome,
+    {
+      requestKind: activeRequestKind && activeRequestKind.startsWith('decomp-') ? activeRequestKind : null,
+      stale: outcomeStale,
+    }
+  );
 
   const currentEpicVersion = workspace.epic?.version ?? epicVersion;
   const activeThread = threads.find(thread => thread.conversation_id === activeConversationId);
@@ -304,7 +320,7 @@ export function DecompositionWorkspace({
         </div>
       )}
 
-      {loading && <p role="status">Loading decomposition…</p>}
+      {loading && <LoadingStatus>Loading decomposition…</LoadingStatus>}
       {(adoptedGraphRevisionId || outcome?.adopted_revision_id) && (
         <p role="status" className="p-3 bg-[var(--success-soft)] text-[var(--success)] rounded text-sm">
           Proposed decomposition adopted as a new graph revision.
@@ -350,6 +366,20 @@ export function DecompositionWorkspace({
         )}
       </div>
 
+      {outcomeChecking && !isSubmitting && activityDesc.state === 'idle' ? (
+        <ActivityStatus title={jobReceiptAccepted ? 'Job submitted · checking assistant status' : 'Checking assistant status'}
+          description="Waiting for the selected decomposition job’s current status." tone="info" isExecuting />
+      ) : activityDesc && (activityDesc.state !== 'idle' || outcome) ? (
+        <ActivityStatus
+          title={activityDesc.title}
+          description={activityDesc.description}
+          tone={activityDesc.tone}
+          isExecuting={activityDesc.isExecuting}
+          isWaiting={activityDesc.isWaiting}
+          actionRequired={activityDesc.actionRequired}
+        />
+      ) : null}
+
       <div className="space-y-4">
         {turns.length === 0 ? (
           <p className="p-6 bg-[var(--surface-muted)] rounded border border-[var(--border)] text-center text-sm text-[var(--muted)]">
@@ -364,6 +394,7 @@ export function DecompositionWorkspace({
             (matchingOutcome && adoptedGraphRevisionId)
           );
           const canAdopt =
+            !isSubmitting && !outcomeStale &&
             matchingOutcome?.state === 'proposed' &&
             !!matchingOutcome.proposal_digest &&
             !isAdopted;
@@ -414,8 +445,8 @@ export function DecompositionWorkspace({
 
       {outcome && (
         <>
-          <AuthoringJobOutcome outcome={outcome} title="Decomposition assistant job" />
-          {outcome.state === 'cancel_requested' && (
+          <AuthoringJobOutcome outcome={outcome} title="Decomposition assistant job" stale={outcomeStale} />
+          {outcome.state === 'cancel_requested' && !outcomeStale && (
             <p role="status">Cancellation requested. Waiting for the process to settle.</p>
           )}
           <div className="flex flex-wrap gap-2">
@@ -490,9 +521,10 @@ export function DecompositionWorkspace({
         <Button
           type="submit"
           variant="primary"
+          busy={!!(activeRequestKind && ['decomp-conversation-start', 'decomp-conversation-turn'].includes(activeRequestKind))}
           disabled={mutationPending || isUnavailable || !inputText.trim()}
         >
-          {mutations.loading
+          {activeRequestKind && ['decomp-conversation-start', 'decomp-conversation-turn'].includes(activeRequestKind)
             ? 'Sending…'
             : activeConversationId
               ? 'Send decomposition message'
@@ -508,11 +540,12 @@ export function DecompositionWorkspace({
           >
             <Button
               variant="secondary"
+              busy={activeRequestKind === 'decomp-job-submit'}
               disabled={mutationPending || isUnavailable || !activeThread}
               onClick={() => { void handleSubmitJob(); }}
             >
-              {mutations.pendingMutation?.kind === 'decomp-job-submit'
-                ? 'Decomposition request pending'
+              {activeRequestKind === 'decomp-job-submit'
+                ? 'Submitting decomposition job…'
                 : 'Generate proposed decomposition'}
             </Button>
           </Panel>
