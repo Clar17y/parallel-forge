@@ -10,7 +10,7 @@ export function UnifiedDiff({ text, artifactDigest, truncated: sourceTruncated }
     {diff.files.map((file, index) => <section key={index}><h3>{file.header}</h3><p>{file.status}{file.binary ? ' · Binary file' : ''}</p>
       <div className="overflow-x-auto"><table><caption className="sr-only">Diff for {file.header}</caption>
         <thead><tr><th scope="col">Old line</th><th scope="col">New line</th><th scope="col">Change</th></tr></thead>
-        <tbody>{file.lines.map((line, index) => <tr key={index} className={line.kind === 'added' ? 'bg-green-950/20' : line.kind === 'removed' ? 'bg-red-950/20' : undefined}>
+        <tbody>{file.lines.map((line, index) => <tr key={index} className={line.kind === 'added' ? 'diff-added-row' : line.kind === 'removed' ? 'diff-removed-row' : undefined}>
           <td>{line.oldLine ?? ''}</td><td>{line.newLine ?? ''}</td><td><pre>{line.text}</pre></td>
         </tr>)}</tbody>
       </table></div>

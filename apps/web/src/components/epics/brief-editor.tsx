@@ -508,7 +508,7 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
               <BriefListRows
                 rows={draftContent.decisions ?? []}
                 field="decisions"
-                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
+                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-[var(--surface)] text-[var(--text)]"
                 update={(idx, val) => updateItem('decisions', idx, val)}
                 remove={idx => removeItem('decisions', idx)}
               />
@@ -525,7 +525,7 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
               <BriefListRows
                 rows={draftContent.assumptions ?? []}
                 field="assumptions"
-                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
+                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-[var(--surface)] text-[var(--text)]"
                 update={(idx, val) => updateItem('assumptions', idx, val)}
                 remove={idx => removeItem('assumptions', idx)}
               />
@@ -542,7 +542,7 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
               <BriefListRows
                 rows={draftContent.open_questions ?? []}
                 field="open_questions"
-                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-white"
+                inputClassName="flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded bg-[var(--surface)] text-[var(--text)]"
                 update={(idx, val) => updateItem('open_questions', idx, val)}
                 remove={idx => removeItem('open_questions', idx)}
               />

@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { Menu, Plus, X } from 'lucide-react';
 import { Navigation, navigationGroups, isActivePath } from './navigation';
 import { Button } from '@/components/ui/button';
+import { AppearanceControl } from '@/components/theme/theme-provider';
 
 export function AppShell({ children }: { children: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -21,6 +22,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Link href="/runs" className="brand" aria-label="Forge runs"><span className="brand-mark" aria-hidden="true" />Forge</Link>
         <span className="topbar-context">{context}</span>
         <div className="topbar-actions"><span className="environment-label meta">Local control plane</span>
+          <AppearanceControl />
           <Link href="/runs/new" className="button" data-variant="primary"><Plus aria-hidden="true" />New run</Link>
         </div>
       </header>
