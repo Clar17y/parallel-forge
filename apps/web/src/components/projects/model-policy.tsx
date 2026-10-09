@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import type { components } from '@/lib/api/schema';
 import { Field } from './form-fields';
 import { TokenBudgetSlider } from '../model-selection/token-budget-slider';
@@ -31,6 +31,7 @@ export function ModelPolicy({ role, value, onChange, errors = {} }: {
   role: string; value: Model; onChange: (value: Model) => void; errors?: Record<string, string>;
 }) {
   const reasoningId = useId();
+  const reasoningSelect = useRef<HTMLSelectElement>(null);
   const reasoningSupport = getModelReasoningSupport(value.provider, value.model);
   const reasoningError =
     errors.reasoning_effort ??
@@ -41,6 +42,14 @@ export function ModelPolicy({ role, value, onChange, errors = {} }: {
     );
   const helpId = `${reasoningId}-help`;
   const errorId = `${reasoningId}-error`;
+
+  useEffect(() => {
+    reasoningSelect.current?.setCustomValidity(validateReasoningSetting(
+      value.provider,
+      value.model,
+      value.reasoning_effort as ApiReasoningEffort | null
+    ) ?? '');
+  }, [value.provider, value.model, value.reasoning_effort]);
 
   return (
     <fieldset>
@@ -68,6 +77,7 @@ export function ModelPolicy({ role, value, onChange, errors = {} }: {
       <label htmlFor={reasoningId}>
         {role} reasoning strength
         <select
+          ref={reasoningSelect}
           id={reasoningId}
           aria-label={`${role} reasoning strength`}
           aria-invalid={reasoningError ? 'true' : undefined}

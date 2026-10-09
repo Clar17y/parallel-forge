@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from forge.domain.paths import normalize_policy_paths, union_policy_paths
+from forge.domain.reasoning import reasoning_effort_error
 from forge.domain.review import FindingSeverity, ReviewFinding
 
 _SHELL_META = re.compile(r"[\r\n;&|$`()<>`]")
@@ -132,6 +133,20 @@ class AgentModelPolicy(BaseModel):
     def model_text_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("model policy text must not be blank")
+        return value
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def explicit_reasoning_must_be_supported(
+        cls, value: str | None, info: ValidationInfo
+    ) -> str | None:
+        if value is not None:
+            provider = info.data.get("provider")
+            model = info.data.get("model")
+            if isinstance(provider, str) and isinstance(model, str):
+                error = reasoning_effort_error(provider, model, value)
+                if error:
+                    raise ValueError(error)
         return value
 
 

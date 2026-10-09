@@ -4,7 +4,9 @@ from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
+from forge.api.schemas.projects import ProjectPolicyUpdateRequest
 from forge.persistence.repositories.projects import PolicyNotFound
+from pydantic import ValidationError
 
 
 @pytest.mark.asyncio
@@ -22,6 +24,27 @@ async def test_reads_requested_policy_version_without_returning_current_policy(
     assert response.json()["version"] == 2
     assert response.json()["policy_digest"] == "c" * 64
     read.assert_awaited_once_with(project.id, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["planner_model", "developer_model", "reviewer_model"])
+async def test_policy_append_rejects_unsupported_reasoning_before_service_call(
+    task10_client, task10_route_context, route_headers, role
+) -> None:
+    payload = {"expected_policy_version": 1, role: {
+        "provider": "google", "model": "gemini-3-pro", "reasoning_effort": "medium"
+    }}
+    with pytest.raises(ValidationError) as error:
+        ProjectPolicyUpdateRequest.model_validate(payload)
+    assert (role, "reasoning_effort") in [tuple(item["loc"]) for item in error.value.errors()]
+    response = await task10_client.post(
+        f"/api/projects/{task10_route_context.project.id}/policy-versions",
+        headers={**route_headers, "Idempotency-Key": f"policy-invalid-{role}"},
+        json=payload,
+    )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid request"}
+    assert task10_route_context.projects.update_calls == []
 
 
 @pytest.mark.asyncio

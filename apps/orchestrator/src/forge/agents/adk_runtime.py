@@ -16,6 +16,7 @@ from forge.application.ports.provider_credentials import (
     ProviderCredentialResolverPort,
     validate_provider_secret_reference,
 )
+from forge.domain.reasoning import reasoning_model_family
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.google_llm import Gemini
@@ -60,13 +61,6 @@ _GEMINI_3_LEVELS: Final[dict[str, types.ThinkingLevel]] = {
     "high": types.ThinkingLevel.HIGH,
 }
 
-_GEMINI_2_5_RE: Final = re.compile(r"\Agemini-2\.5-(?:flash|pro)(?:-[a-z0-9.]+)?\Z")
-_GEMINI_3_FLASH_OR_31_PRO_RE: Final = re.compile(
-    r"\Agemini-(?:3\.[58]-flash|3\.1-pro)(?:-[a-z0-9.]+)?\Z"
-)
-_GEMINI_3_PRO_OLDER_RE: Final = re.compile(r"\Agemini-3(?:\.0)?-pro(?:-[a-z0-9.]+)?\Z")
-
-
 def build_adk_thinking_config(
     model: str, effort: str | None
 ) -> types.ThinkingConfig | None:
@@ -76,18 +70,14 @@ def build_adk_thinking_config(
     if effort not in ("low", "medium", "high"):
         raise AdkRuntimeError(f"Invalid reasoning effort {effort!r}")
 
-    if _GEMINI_2_5_RE.fullmatch(model) is not None:
+    family = reasoning_model_family("google", model)
+    if family is None or effort not in family[1]:
+        raise AdkRuntimeError(f"Reasoning effort is not supported for model {model!r}")
+    if family[0] == "gemini_2_5":
         return types.ThinkingConfig(thinking_budget=_GEMINI_2_5_PRESETS[effort])
-
-    if _GEMINI_3_FLASH_OR_31_PRO_RE.fullmatch(model) is not None:
+    if family[0] in {"gemini_3_levels", "gemini_3_pro"}:
         return types.ThinkingConfig(thinking_level=_GEMINI_3_LEVELS[effort])
-
-    if _GEMINI_3_PRO_OLDER_RE.fullmatch(model) is not None:
-        if effort == "medium":
-            raise AdkRuntimeError("Medium reasoning effort is not supported on older Gemini 3 Pro")
-        return types.ThinkingConfig(thinking_level=_GEMINI_3_LEVELS[effort])
-
-    raise AdkRuntimeError(f"Reasoning effort is not supported for model {model!r}")
+    raise AdkRuntimeError("Reasoning effort is not supported")
 
 
 

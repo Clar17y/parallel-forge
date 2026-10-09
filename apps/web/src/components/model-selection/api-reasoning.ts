@@ -25,10 +25,10 @@ export function getModelReasoningSupport(
   provider?: string | null,
   model?: string | null
 ): ReasoningSupport {
-  const normProvider = (provider ?? 'google').trim().toLowerCase();
-  const normModel = (model ?? '').trim().toLowerCase();
+  const exactProvider = provider ?? 'google';
+  const exactModel = model ?? '';
 
-  if (normProvider !== 'google') {
+  if (exactProvider !== 'google') {
     return {
       supported: false,
       supportedEfforts: [],
@@ -37,7 +37,7 @@ export function getModelReasoningSupport(
   }
 
   // Gemini 2.5 Flash / Pro
-  if (/^gemini-2\.5-(?:flash|pro)(?:-[a-z0-9.]+)?$/.test(normModel)) {
+  if (matchesExact(/^gemini-2\.5-(?:flash|pro)(?:-[a-z0-9.]+)?$/, exactModel)) {
     return {
       supported: true,
       supportedEfforts: ['low', 'medium', 'high'],
@@ -46,7 +46,7 @@ export function getModelReasoningSupport(
   }
 
   // Gemini 3.8 Flash, 3.5 Flash, 3.1 Pro
-  if (/^gemini-(?:3\.[58]-flash|3\.1-pro)(?:-[a-z0-9.]+)?$/.test(normModel)) {
+  if (matchesExact(/^gemini-(?:3\.[58]-flash|3\.1-pro)(?:-[a-z0-9.]+)?$/, exactModel)) {
     return {
       supported: true,
       supportedEfforts: ['low', 'medium', 'high'],
@@ -54,7 +54,7 @@ export function getModelReasoningSupport(
   }
 
   // Older Gemini 3 Pro
-  if (/^gemini-3(?:\.0)?-pro(?:-[a-z0-9.]+)?$/.test(normModel)) {
+  if (matchesExact(/^gemini-3(?:\.0)?-pro(?:-[a-z0-9.]+)?$/, exactModel)) {
     return {
       supported: true,
       supportedEfforts: ['low', 'high'],
@@ -67,6 +67,10 @@ export function getModelReasoningSupport(
     supportedEfforts: [],
     unsupportedReason: `Reasoning strength is not supported for model "${model}".`,
   };
+}
+
+function matchesExact(pattern: RegExp, value: string): boolean {
+  return pattern.exec(value)?.[0] === value;
 }
 
 export function validateReasoningSetting(

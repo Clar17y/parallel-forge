@@ -157,6 +157,43 @@ def test_agent_model_policy_default_reasoning_effort_is_none() -> None:
     assert policy.reasoning_effort is None
 
 
+@pytest.mark.parametrize(
+    ("provider", "model", "effort"),
+    [
+        ("google", "gemini-3-pro", "medium"),
+        ("Google", "gemini-3.5-flash", "low"),
+        ("google", " Gemini-3.5-flash", "low"),
+        ("google", "gemini-3.5-flash\n", "low"),
+        ("google\n", "gemini-3.5-flash", "low"),
+        ("other", "gemini-3.5-flash", "low"),
+        ("google", "custom-model", "high"),
+    ],
+)
+def test_agent_model_policy_rejects_unsupported_explicit_reasoning(
+    provider: str, model: str, effort: str
+) -> None:
+    with pytest.raises(ValidationError, match="reasoning_effort"):
+        AgentModelPolicy(provider=provider, model=model, reasoning_effort=cast(Any, effort))
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [
+        ("gemini-2.5-flash", "low"), ("gemini-2.5-pro", "medium"),
+        ("gemini-3.5-flash", "high"), ("gemini-3.8-flash", "medium"),
+        ("gemini-3.1-pro", "low"), ("gemini-3-pro", "low"),
+        ("gemini-3.0-pro", "high"),
+    ],
+)
+def test_agent_model_policy_accepts_runtime_supported_combinations(model: str, effort: str) -> None:
+    assert AgentModelPolicy(model=model, reasoning_effort=cast(Any, effort)).reasoning_effort == effort
+
+
+@pytest.mark.parametrize("provider,model", [("custom-provider", "custom-model"), ("google", "legacy-model")])
+def test_agent_model_policy_keeps_automatic_for_custom_identities(provider: str, model: str) -> None:
+    assert AgentModelPolicy(provider=provider, model=model).reasoning_effort is None
+
+
 @pytest.mark.parametrize("effort", ["low", "medium", "high"])
 def test_agent_model_policy_accepts_valid_reasoning_efforts(effort: str) -> None:
     policy = AgentModelPolicy(reasoning_effort=cast(Any, effort))
@@ -188,7 +225,7 @@ def test_agent_model_policy_legacy_payload_roundtrip() -> None:
 
 def test_agent_model_policy_changing_reasoning_preserves_other_fields() -> None:
     original = AgentModelPolicy(
-        provider="google-custom",
+        provider="google",
         model="gemini-3.8-flash",
         max_input_tokens=200_000,
         max_output_tokens=32_000,

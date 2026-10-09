@@ -59,6 +59,64 @@ test('round-trips an untouched custom project model and out-of-range owner budge
   expect(save.mock.calls[0][0].planner_model).toEqual(planner);
 });
 
+test('blocks incompatible saved reasoning in the real form and allows owner recovery to Automatic', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  const planner = {
+    provider: 'google', model: 'gemini-3-pro', reasoning_effort: 'medium' as const,
+    max_input_tokens: 900000, max_output_tokens: 45000, max_tool_calls: 125,
+    max_duration_seconds: 7400, max_cost_minor: 6000,
+  };
+  render(<ProjectForm onSave={save} initial={{ planner_model: planner }} />);
+  const user = await identity();
+  const reasoning = screen.getByLabelText('Planner reasoning strength') as HTMLSelectElement;
+  expect(reasoning).toHaveValue('medium');
+  expect(reasoning.validationMessage).toContain('not supported');
+
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.getByTestId('section-disclosure-api-models')).toHaveAttribute('open');
+
+  await user.selectOptions(reasoning, '');
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  expect(save.mock.calls[0][0].planner_model).toEqual({ ...planner, reasoning_effort: null });
+});
+
+test('changing a compatible model to an unsupported identity blocks submit and a compatible edit recovers', async () => {
+  const save = vi.fn().mockRejectedValueOnce(new ApiError(422, 'validation', {
+    'planner_model.reasoning_effort': 'Correct the planner reasoning setting.',
+  })).mockResolvedValue(undefined);
+  render(<ProjectForm onSave={save} initial={{ planner_model: {
+    provider: 'google', model: 'gemini-3.5-flash', reasoning_effort: 'medium',
+    max_input_tokens: 900000, max_output_tokens: 45000, max_tool_calls: 125,
+    max_duration_seconds: 7400, max_cost_minor: 6000,
+  } }} />);
+  const user = await identity();
+  await user.click(screen.getByText(/API models & budgets/));
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  expect(screen.getByText('Correct the planner reasoning setting.')).toBeInTheDocument();
+  await user.click(screen.getAllByText('Advanced model and budget')[0]);
+  const model = screen.getByLabelText('Planner custom model');
+  await user.clear(model);
+  await user.type(model, 'gemini-3-pro');
+  const reasoning = screen.getByLabelText('Planner reasoning strength') as HTMLSelectElement;
+  expect(reasoning.validationMessage).toContain('not supported');
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save).toHaveBeenCalledTimes(1);
+
+  await user.clear(model);
+  await user.type(model, 'gemini-3.5-flash');
+  expect(reasoning.validationMessage).toBe('');
+  await user.click(screen.getByRole('button', { name: 'Register project' }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+  expect(save.mock.calls[1][0].planner_model).toEqual({
+    provider: 'google', model: 'gemini-3.5-flash', reasoning_effort: 'medium',
+    max_input_tokens: 900000, max_output_tokens: 45000, max_tool_calls: 125,
+    max_duration_seconds: 7400, max_cost_minor: 6000,
+  });
+});
+
 test('keeps legacy Jev policy absent until an operator explicitly configures it', async () => {
   const save = vi.fn().mockResolvedValue(undefined);
   render(<ProjectForm onSave={save} />);
