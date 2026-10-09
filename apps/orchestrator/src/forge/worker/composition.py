@@ -589,7 +589,10 @@ def compose_worker_handlers(
     )
     start_planning_handler = PlanningHandler(
         planning_service,
-        subscription_service=SubscriptionPlanningService(settings.subscription_primary_budget),
+        subscription_service=SubscriptionPlanningService(
+            settings.subscription_primary_budget,
+            explicit_primary_budget="subscription_primary_budget" in settings.model_fields_set,
+        ),
     )
 
     inspector = repository_inspector or LocalGitRepositoryInspector()

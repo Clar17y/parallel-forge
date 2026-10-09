@@ -393,6 +393,24 @@ describe('EpicBudgetPanel', () => {
     expect(toolCallInput).toHaveValue(50);
   });
 
+  test('allows an explicit null token ceiling and preserves the other token cap', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) return mockBudget as T;
+      if (path === `/epics/${epicId}/budget` && init?.method === 'PUT') return { ...mockBudget, version: 4 } as T;
+      return undefined as T;
+    });
+    render(<EpicBudgetPanel epicId={epicId} />);
+    await screen.findByText('Shared Epic Budget & Ceilings');
+    await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Input tokens ceiling use unlimited' }));
+    expect(screen.queryByRole('slider', { name: 'Input tokens ceiling' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
+    const put = vi.mocked(api).mock.calls.find(([path, init]) => path === `/epics/${epicId}/budget` && init?.method === 'PUT');
+    const body = JSON.parse(put![1]?.body as string);
+    expect(body.ceiling.max_input_tokens).toBeNull();
+    expect(body.ceiling.max_output_tokens).toBe(20000);
+  });
+
   test('formats duration ceiling in seconds without dividing by 1000 or labeling as ms', async () => {
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) {
@@ -563,9 +581,11 @@ describe('EpicBudgetPanel', () => {
     // Mandatory duration placeholder when enabled and blank must NOT claim "Unlimited (null)"
     expect(durationInput).toHaveAttribute('placeholder', 'Required numeric cap');
 
-    const inputTokensInput = screen.getByLabelText(/Input tokens ceiling/i);
-    // Nullable dimension placeholder when null
-    expect(inputTokensInput).toHaveAttribute('placeholder', 'Unlimited (null)');
+    expect(screen.getAllByText('Unlimited (null)').length).toBeGreaterThan(0);
+    const setInputCeiling = screen.getByRole('button', { name: 'Set ceiling' });
+    expect(setInputCeiling).toBeEnabled();
+    await userEvent.click(setInputCeiling);
+    expect(screen.getByRole('slider', { name: 'Input tokens ceiling' })).toHaveValue('0');
 
     // When disabled via Unlimited checkbox
     await userEvent.click(screen.getByLabelText(/Unlimited duration/i));

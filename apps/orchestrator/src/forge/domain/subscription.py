@@ -375,12 +375,27 @@ class RouteBinding:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TokenBudgetDefaults:
+    """Optional cumulative token ceilings for new tasks of one role."""
+
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("max_input_tokens", "max_output_tokens"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{name} must be a nonnegative integer or None")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RolePreference:
     """Operator preference for one specialist purpose with optional fallbacks."""
 
     purpose: SpecialistPurpose
     preferred_route: RouteSpec
     fallback_routes: tuple[RouteSpec, ...] = ()
+    token_budget: TokenBudgetDefaults | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.purpose, SpecialistPurpose):
@@ -397,6 +412,8 @@ class RolePreference:
             raise ValueError("fallback routes must not contain duplicates")
         if self.purpose is SpecialistPurpose.PRIMARY and fallbacks:
             raise ValueError("primary fallback prohibited")
+        if self.token_budget is not None and not isinstance(self.token_budget, TokenBudgetDefaults):
+            raise TypeError("token_budget must be TokenBudgetDefaults")
         object.__setattr__(self, "fallback_routes", fallbacks)
 
 
@@ -448,6 +465,7 @@ class ExecutionEnvelope:
     safety_policy_version: int
     routes: tuple[tuple[SpecialistPurpose, RouteBinding], ...]
     allowed_fallbacks: tuple[tuple[SpecialistPurpose, tuple[RouteSpec, ...]], ...] = ()
+    role_token_budgets: tuple[tuple[SpecialistPurpose, TokenBudgetDefaults], ...] = ()
     billing_mode: BillingMode = BillingMode.ALLOWANCE_ONLY
     created_at: datetime | None = None
 
@@ -515,6 +533,22 @@ class ExecutionEnvelope:
             fallback_map[fallback_purpose] = frozen_fallbacks
         object.__setattr__(self, "routes", tuple(route_map.items()))
         object.__setattr__(self, "allowed_fallbacks", tuple(fallback_map.items()))
+        budget_map: dict[SpecialistPurpose, TokenBudgetDefaults] = {}
+        for purpose, budget in self.role_token_budgets:
+            if not isinstance(purpose, SpecialistPurpose) or purpose not in route_map:
+                raise ValueError("token budget purpose must have a bound route")
+            if purpose in budget_map:
+                raise ValueError("duplicate token budget purpose")
+            if not isinstance(budget, TokenBudgetDefaults):
+                raise TypeError("role token budget must be TokenBudgetDefaults")
+            budget_map[purpose] = budget
+        object.__setattr__(self, "role_token_budgets", tuple(budget_map.items()))
+
+    def token_budget_for(self, purpose: SpecialistPurpose) -> TokenBudgetDefaults | None:
+        for configured_purpose, budget in self.role_token_budgets:
+            if configured_purpose is purpose:
+                return budget
+        return None
 
     def route_for(self, purpose: SpecialistPurpose) -> RouteBinding:
         """Lookup route binding for the given specialist purpose."""
@@ -1397,6 +1431,7 @@ _RECORD_TYPES: Mapping[str, type[object]] = MappingProxyType(
             ModelMapping,
             RouteMapping,
             RolePreference,
+            TokenBudgetDefaults,
             OperatorProfile,
             ExecutionEnvelope,
             TaskLineage,
@@ -1489,7 +1524,11 @@ def _subscription_record_payload(record: object) -> dict[str, object]:
                 "$record": type(value).__name__,
                 "fields": [
                     [field.name, encode(getattr(value, field.name))] for field in fields(value)
-                    if not (isinstance(value, OperatorProfile) and field.name == "jev" and value.jev is None)
+                    if not (
+                        (isinstance(value, OperatorProfile) and field.name == "jev" and value.jev is None)
+                        or (isinstance(value, RolePreference) and field.name == "token_budget" and value.token_budget is None)
+                        or (isinstance(value, ExecutionEnvelope) and field.name == "role_token_budgets" and not value.role_token_budgets)
+                    )
                 ],
             }
         if isinstance(value, (tuple, frozenset)):
@@ -1590,6 +1629,10 @@ def decode_subscription_record(payload: Mapping[str, object]) -> object:
             expected_fields = {field.name for field in fields(cls)}  # type: ignore[arg-type]
             if cls is OperatorProfile and "jev" not in encoded_fields:
                 expected_fields.remove("jev")  # Preserve existing encoded profiles and digests.
+            if cls is RolePreference and "token_budget" not in encoded_fields:
+                expected_fields.remove("token_budget")
+            if cls is ExecutionEnvelope and "role_token_budgets" not in encoded_fields:
+                expected_fields.remove("role_token_budgets")
             if set(encoded_fields) != expected_fields:
                 raise ValueError("invalid subscription record field shape")
             return cls(**{key: decode(item) for key, item in encoded_fields.items()})
@@ -1640,6 +1683,7 @@ __all__ = [
     "TaskBudget",
     "TaskHandoff",
     "TaskLineage",
+    "TokenBudgetDefaults",
     "ToolCallBinding",
     "UnknownTelemetryPolicy",
     "WaitDecision",

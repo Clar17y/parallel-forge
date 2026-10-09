@@ -68,8 +68,13 @@ describe('SubscriptionProfilesPage', () => {
 
     expect(screen.getByRole('heading', { name: 'Subscription profiles' })).toBeInTheDocument();
     expect(screen.getByText(/Manage versioned requested routes and explicit fallbacks/i)).toBeInTheDocument();
+    expect(screen.getByText('Worker and client reports')).toBeInTheDocument();
+    expect(screen.getByText('Worker and client reports').closest('details')).not.toHaveAttribute('open');
+    await userEvent.click(screen.getByText('Worker and client reports'));
+    expect(await screen.findByText('Subscription readiness')).toBeInTheDocument();
 
     // Profiles load and display
+    await userEvent.click(screen.getByText(/Saved profile history/));
     expect(await screen.findByRole('heading', { name: /Profile test-profile-1/i })).toBeInTheDocument();
   });
 
@@ -111,27 +116,29 @@ describe('SubscriptionProfilesPage', () => {
 
     render(<SubscriptionProfilesPage />);
 
+    await userEvent.click(await screen.findByText(/Saved profile history/));
     expect(await screen.findByRole('heading', { name: /Profile test-profile-1/i })).toBeInTheDocument();
 
     // Open append editor
     await userEvent.click(screen.getByRole('button', { name: 'Append from latest version 1' }));
     expect(screen.getByRole('heading', { name: 'Append profile version 2' })).toBeInTheDocument();
-    const model = screen.getByLabelText('Preferred route model');
+    await userEvent.click(screen.getByText('Advanced'));
+    const model = screen.getByLabelText('Primary custom model');
     await userEvent.clear(model);
     await userEvent.type(model, 'draft-model');
     model.focus();
     await userEvent.click(screen.getByRole('button', { name: 'Refresh profile history' }));
     model.focus();
-    expect(screen.getByLabelText('Preferred route model')).toBe(model);
+    expect(screen.getByLabelText('Primary custom model')).toBe(model);
     expect(model).toHaveFocus();
     await act(async () => { failRefresh(new Error('offline')); });
     expect(screen.getByRole('alert')).toHaveTextContent('Showing the last loaded history');
-    expect(screen.getByLabelText('Preferred route model')).toBe(model);
+    expect(screen.getByLabelText('Primary custom model')).toBe(model);
     expect(model).toHaveValue('draft-model');
     expect(screen.getByRole('button', { name: 'Append version 2' })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByText(/Showing the last loaded history/)).not.toBeInTheDocument());
-    expect(screen.getByLabelText('Preferred route model')).toBe(model);
+    expect(screen.getByLabelText('Primary custom model')).toBe(model);
     expect(model).toHaveValue('draft-model');
     expect(screen.getByRole('button', { name: 'Append version 2' })).toBeEnabled();
   });

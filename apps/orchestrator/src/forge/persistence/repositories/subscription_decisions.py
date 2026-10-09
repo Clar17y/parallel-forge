@@ -73,7 +73,7 @@ from forge.domain.subscription import (
     is_read_only,
     validate_task_dag,
 )
-from forge.domain.subscription_delegation import validate_child_authority
+from forge.domain.subscription_delegation import budget_with_role_defaults, validate_child_authority
 from forge.domain.subscription_execution import SUBSCRIPTION_WORK_STATES
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
 from forge.persistence.models import RunEvent
@@ -141,7 +141,10 @@ def _selected_review_task(
         parent_task_id=parent.task_id,
         purpose=SpecialistPurpose.INDEPENDENT_REVIEW,
         route=route,
-        budget=replace(parent.budget, max_repairs=0),
+        budget=replace(
+            budget_with_role_defaults(parent.budget, envelope, SpecialistPurpose.INDEPENDENT_REVIEW),
+            max_repairs=0,
+        ),
         max_repairs=0,
         typed_acceptance=(
             AcceptanceCriterion(

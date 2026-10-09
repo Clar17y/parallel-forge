@@ -4,20 +4,17 @@ import { useId, useMemo, useState } from 'react';
 import type { components } from '@/lib/api/schema';
 import { useApi } from '@/hooks/use-api';
 import { Button } from '@/components/ui/button';
-import { ProviderBadge, getProviderCue } from '@/components/ui/provider-badge';
 import { profileLabel } from './labels';
 import {
   defaultRolePreferences,
-  offlineRoleSeeds,
-  selectCatalogForRoute,
-  type ReasoningEffort,
   type Route,
   type Preference,
   type SubscriptionModelCatalogPage,
-  type SubscriptionModelCatalogView,
-  type SubscriptionModelOption,
 } from './models';
 import { JevSettings, type JevPolicy } from '@/components/projects/jev-settings';
+import { effortLabel, reasoningOptions, routePresetIdentity, routePresets, withCurrentRoute, type RoutePreset } from '@/components/model-selection/model-presets';
+import styles from '@/components/model-selection/role-selector.module.css';
+import { TokenBudgetSlider, tokenReference } from '@/components/model-selection/token-budget-slider';
 
 type ProfileCreate = components['schemas']['ProfileCreateRequest'];
 type ProfileAppend = components['schemas']['ProfileAppendRequest'];
@@ -40,14 +37,6 @@ const purposes: components['schemas']['SpecialistPurpose'][] = [
   'verification',
 ];
 
-const efforts: ReasoningEffort[] = [
-  'none',
-  'low',
-  'medium',
-  'high',
-  'maximum',
-];
-
 const defaultRoute = (): Route => ({
   provider: '',
   client: '',
@@ -57,222 +46,92 @@ const defaultRoute = (): Route => ({
   billing_mode: 'allowance_only',
 });
 
-const defaultPreference = (purpose: Preference['purpose'] = 'primary'): Preference => ({
-  purpose,
-  preferred_route: defaultRoute(),
-  fallback_routes: [],
-});
-
-const seedRoutes = offlineRoleSeeds.flatMap(seed => [seed.preferred, ...seed.fallbacks]);
-const seedModelIds = new Set(seedRoutes.map(route => route.model));
-
 function RouteFields({
   route,
   label,
   update,
-  catalogs,
-  catalogLoading,
-  catalogFailed,
+  presets,
 }: {
   route: Route;
   label: string;
   update: (change: Partial<Route>) => void;
-  catalogs?: SubscriptionModelCatalogView[];
-  catalogLoading?: boolean;
-  catalogFailed?: boolean;
+  presets: RoutePreset[];
 }) {
-  const cue = getProviderCue(route.provider);
-  const suggestionId = useId();
-
-  // Derive known providers across catalogs and offline seeds
-  const knownProviders = useMemo(() => {
-    const set = new Set(seedRoutes.map(route => route.provider));
-    catalogs?.forEach(c => {
-      if (c.provider) set.add(c.provider);
-    });
-    return Array.from(set).sort();
-  }, [catalogs]);
-
-  // Derive available clients for the selected provider
-  const availableClients = useMemo(() => {
-    const providerLower = route.provider.trim().toLowerCase();
-    if (!providerLower) return [];
-    const set = new Set<string>();
-    seedRoutes.forEach(seed => {
-      if (seed.provider.toLowerCase() === providerLower) set.add(seed.client);
-    });
-    catalogs?.forEach(c => {
-      if (c.provider.toLowerCase() === providerLower && c.client) set.add(c.client);
-    });
-    return Array.from(set).sort();
-  }, [catalogs, route.provider]);
-
-  const activeCatalog = useMemo(() => {
-    return selectCatalogForRoute(catalogs, route.provider, route.client);
-  }, [catalogs, route.provider, route.client]);
-
-  const catalogModels: SubscriptionModelOption[] = activeCatalog?.models ?? [];
-  const isCatalogModel = catalogModels.some(m => m.id === route.model);
-  const isSeed = seedModelIds.has(route.model.trim());
-  const currentProviderReport = activeCatalog?.source === 'provider' &&
-    activeCatalog.status === 'available' && !activeCatalog.stale &&
-    !!activeCatalog.observed_at && Number.isFinite(Date.parse(activeCatalog.observed_at));
-
+  const [customReasoning, setCustomReasoning] = useState(false);
+  const choices = useMemo(() => withCurrentRoute(presets, route), [presets, route]);
+  const identity = route.provider && route.client && route.model ? routePresetIdentity(route) : '';
+  const selected = choices.find(choice => routePresetIdentity(choice) === identity);
   return (
-    <fieldset className="card-provider" data-provider={cue.tone} style={{ margin: '12px 0' }}>
-      <legend style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <span>{label}</span>
-        {route.provider.trim() && <ProviderBadge provider={route.provider} />}
-        {isCatalogModel ? (
-          <span className="meta text-xs" style={{ fontWeight: 'normal' }}>
-            ({catalogFailed ? 'Retained catalog / unverified' :
-              currentProviderReport ? 'Current provider report' :
-              activeCatalog?.source === 'configured' ? 'Configured choice / unverified' :
-                'Historical provider report / unverified'})
-          </span>
-        ) : isSeed ? (
-          <span className="meta text-xs" style={{ fontWeight: 'normal' }}>
-            (Suggestion / unverified)
-          </span>
-        ) : null}
-      </legend>
+    <>
+      <label className={styles.choice}>
+        <span className="sr-only">{label} model</span>
+        <select
+            aria-label={`${label} model`}
+            value={identity}
+            onChange={event => {
+              const chosen = choices.find(
+                choice => routePresetIdentity(choice) === event.target.value
+              );
+              if (chosen) {
+                update({
+                  provider: chosen.provider,
+                  client: chosen.client,
+                  model: chosen.model,
+                  effort: chosen.efforts.includes(route.effort) ? route.effort : chosen.defaultEffort,
+                });
+                setCustomReasoning(false);
+              }
+            }}
+          >
+            <option value="">Choose a model…</option>
+            {choices.map(choice => (
+                <option key={routePresetIdentity(choice)} value={routePresetIdentity(choice)}>
+                {choice.label}
+              </option>
+            ))}
+        </select>
+      </label>
+      <label className={styles.reasoning}>
+        <span className="sr-only">{label} reasoning</span>
+        <select aria-label={`${label} reasoning`} value={route.effort}
+          onChange={event => {
+            if (event.target.value === '__custom__') setCustomReasoning(true);
+            else update({ effort: event.target.value as Route['effort'] });
+          }}>
+          {reasoningOptions(selected, route.effort, customReasoning).map(value => <option key={value} value={value}>{effortLabel(value)}</option>)}
+          {!customReasoning && <option value="__custom__">More levels…</option>}
+        </select>
+      </label>
+    </>
+  );
+}
 
-      {activeCatalog ? (
-        <div
-          className="catalog-metadata meta text-xs"
-          aria-label={`${label} catalog status`}
-          style={{ marginBottom: '8px' }}
-        >
-          <span>
-            Catalog source: <strong>{activeCatalog.source}</strong>
-          </span>{' '}
-          ·{' '}
-          <span>
-            Status: <strong>{activeCatalog.status}</strong>
-          </span>{' '}
-          ·{' '}
-          <span>
-            Freshness: <strong>{activeCatalog.stale ? 'Stale' : 'Current'}</strong>
-          </span>
-          {activeCatalog.observed_at ? (
-            <>
-              {' '}
-              · Observed: <time dateTime={activeCatalog.observed_at}>{activeCatalog.observed_at}</time>
-            </>
-          ) : null}
-          {activeCatalog.message ? <> · {activeCatalog.message}</> : null}
-          {catalogFailed ? <> · Latest catalog refresh failed; retained choices are unverified.</> : null}
-        </div>
-      ) : route.provider && route.client && !catalogLoading ? (
-        <p className="meta text-xs" style={{ marginBottom: '8px' }}>
-          {catalogFailed
-            ? 'Model catalog unavailable for this provider and client. Custom model entry is enabled.'
-            : 'No catalog report for this provider and client. Custom model entry is enabled.'}
-        </p>
-      ) : null}
-
-      <p className="meta text-xs" style={{ margin: '0 0 10px' }}>
-        Model choices are advisory; they do not guarantee admission or remaining quota.
-      </p>
-
-      <div className="route-fields-grid">
-        <div className="form-field">
+function RouteAdvancedFields({ route, label, update }: { route: Route; label: string; update: (change: Partial<Route>) => void }) {
+  return <div className="route-fields-grid">
           <label>
             Provider
             <input
               aria-label={`${label} provider`}
               value={route.provider}
               onChange={event => update({ provider: event.target.value })}
-              list={`${suggestionId}-providers`}
-              placeholder="e.g. openai, google, anthropic"
             />
           </label>
-          <datalist id={`${suggestionId}-providers`}>{knownProviders.map(p => <option key={p} value={p} />)}</datalist>
-        </div>
-
-        <div className="form-field">
           <label>
             Client
             <input
               aria-label={`${label} client`}
               value={route.client}
               onChange={event => update({ client: event.target.value })}
-              list={`${suggestionId}-clients`}
-              placeholder="e.g. codex_app_server, gemini_cli"
             />
           </label>
-          <datalist id={`${suggestionId}-clients`}>{availableClients.map(c => <option key={c} value={c} />)}</datalist>
-        </div>
-
-        <div className="form-field">
           <label>
             Requested model
             <input
-              aria-label={`${label} model`}
+              aria-label={`${label} custom model`}
               value={route.model}
               onChange={event => update({ model: event.target.value })}
-              placeholder="e.g. gpt-6-astra"
             />
           </label>
-          <label className="meta text-xs" style={{ marginTop: '4px', display: 'block' }}>
-            Model choices
-            <select
-              aria-label={`${label} model choice`}
-              value={route.model}
-              onChange={event => {
-                const val = event.target.value;
-                if (!val) return;
-                const chosen = catalogModels.find(m => m.id === val);
-                if (chosen) {
-                  // If chosen model restricts efforts and current effort isn't valid, adjust effort
-                  const newEffort =
-                    chosen.efforts && chosen.efforts.length > 0 && !chosen.efforts.includes(route.effort)
-                      ? chosen.efforts[0]
-                      : route.effort;
-                  update({ model: chosen.id, effort: newEffort });
-                } else {
-                  update({ model: val });
-                }
-              }}
-            >
-              <option value="">
-                {catalogLoading
-                  ? 'Loading model choices…'
-                  : catalogModels.length > 0
-                  ? 'Choose a model…'
-                  : 'No catalog models (custom entry enabled)'}
-              </option>
-              {catalogModels.map(m => (
-                <option key={m.id} value={m.id}>
-                  {m.label || m.id}
-                  {m.efforts.length ? ` (${m.efforts.join(', ')})` : ''}
-                </option>
-              ))}
-              {route.model && !isCatalogModel && (
-                <option value={route.model}>
-                  Custom / uncataloged: {route.model}
-                </option>
-              )}
-            </select>
-          </label>
-        </div>
-
-        <div className="form-field">
-          <label>
-            Effort
-            <select
-              aria-label={`${label} effort`}
-              value={route.effort}
-              onChange={event => update({ effort: event.target.value as Route['effort'] })}
-            >
-              {efforts.map(value => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="form-field">
           <label>
             Authentication
             <select
@@ -284,9 +143,6 @@ function RouteFields({
               <option value="api_key">API key</option>
             </select>
           </label>
-        </div>
-
-        <div className="form-field">
           <label>
             Billing
             <select
@@ -298,10 +154,7 @@ function RouteFields({
               <option value="paid_opt_in">Paid opt-in</option>
             </select>
           </label>
-        </div>
-      </div>
-    </fieldset>
-  );
+  </div>;
 }
 
 export function ProfileEditor({
@@ -337,12 +190,16 @@ export function ProfileEditor({
       }
     : fetchedCatalogs;
 
+  const availableCatalogs = catalogs.value?.catalogs;
+  const presets = useMemo(() => routePresets(availableCatalogs), [availableCatalogs]);
+
   const [preferences, setPreferences] = useState<EditablePreference[]>(() =>
-    (initial?.preferences ?? [defaultPreference()]).map((value, i) => ({
+    (initial?.preferences ?? defaultRolePreferences()).map((value, i) => ({
       id: `role-${i}-${fallbackId}`,
       purpose: value.purpose as Preference['purpose'],
       preferred_route: value.preferred_route as Route,
       fallback_routes: (value.fallback_routes as Route[]) ?? [],
+      token_budget: value.token_budget as Preference['token_budget'],
     }))
   );
 
@@ -395,6 +252,7 @@ export function ProfileEditor({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (saving) return;
     setError(undefined);
     const purposesSeen = new Set(preferences.map(item => item.purpose));
     if (!preferences.length || !purposesSeen.has('primary')) {
@@ -457,33 +315,19 @@ export function ProfileEditor({
     <form
       onSubmit={submit}
       className="editor-card"
+      aria-busy={saving}
       aria-label={
         expectedVersion === undefined
           ? 'Create subscription profile'
           : `Append profile version ${expectedVersion}`
       }
     >
-      <p className="meta" style={{ margin: '0 0 16px' }}>
-        Routes are requested configuration. Effective support is verified separately by the signed-in client.
+      <fieldset disabled={saving} aria-label="Profile settings" style={{ border: 0, padding: 0, margin: 0, background: 'transparent', minWidth: 0 }}>
+      <p className="meta" style={{ margin: '0 0 8px' }}>
+        Choose a requested model; choices are advisory and do not confirm client availability or quota.
       </p>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-        {!initial && expectedVersion === undefined && (
-          <Button
-            type="button"
-            onClick={() => {
-              const defaults = defaultRolePreferences(catalogs.failed ? undefined : catalogs.value?.catalogs);
-              setPreferences(
-                defaults.map((p, i) => ({
-                  ...p,
-                  id: `role-${i}-${crypto.randomUUID()}`,
-                }))
-              );
-            }}
-          >
-            Use default role preferences
-          </Button>
-        )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
         <Button
           type="button"
           variant="secondary"
@@ -507,148 +351,87 @@ export function ProfileEditor({
       {preferences.map((preference, index) => (
         <section
           key={preference.id}
-          className="editor-role-section"
+          className={styles.row}
         >
-          <div
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '12px',
-              marginBottom: '12px',
-            }}
-          >
-            <h3 style={{ margin: 0 }}>
-              {profileLabel(preference.purpose)}{' '}
-              <span className="meta">· Role {index + 1}</span>
-            </h3>
-            {preferences.length > 1 && (
-              <Button
-                type="button"
-                variant="danger"
-                onClick={() =>
-                  setPreferences(current => current.filter((_, itemIndex) => itemIndex !== index))
-                }
-              >
-                Remove role
-              </Button>
-            )}
-          </div>
-
-          <div className="form-field" style={{ maxWidth: '320px', marginBottom: '12px' }}>
-            <label>
-              Purpose
-              <select
-                aria-label={`Purpose ${index + 1}`}
-                value={preference.purpose}
-                onChange={event =>
-                  updatePreference(index, { purpose: event.target.value as Preference['purpose'] })
-                }
-              >
-                {purposes.map(value => (
-                  <option key={value} value={value}>
-                    {profileLabel(value)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
+          <h3 className={styles.title}>{profileLabel(preference.purpose)}</h3>
           <RouteFields
-            label="Preferred route"
+            label={profileLabel(preference.purpose)}
             route={preference.preferred_route}
             update={change => updateRoute(index, undefined, change)}
-            catalogs={catalogs.value?.catalogs}
-            catalogLoading={catalogs.loading}
-            catalogFailed={catalogs.failed}
+            presets={presets}
           />
-
-          <div style={{ marginTop: '16px' }}>
-            <h4 style={{ margin: '0 0 8px' }}>Explicit fallback routes</h4>
-            {preference.fallback_routes.map((r, fallbackIndex) => (
-              <div
-                key={fallbackIndex}
-                style={{
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '6px',
-                  padding: '12px',
-                  marginBottom: '10px',
-                }}
-              >
-                <RouteFields
-                  label={`Fallback route ${fallbackIndex + 1}`}
-                  route={r}
-                  update={change => updateRoute(index, fallbackIndex, change)}
-                  catalogs={catalogs.value?.catalogs}
-                  catalogLoading={catalogs.loading}
-                  catalogFailed={catalogs.failed}
-                />
-                <Button
-                  type="button"
-                  variant="danger"
-                  onClick={() =>
-                    setPreferences(current =>
-                      current.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? {
-                              ...item,
-                              fallback_routes: item.fallback_routes.filter(
-                                (_, routeIndex) => routeIndex !== fallbackIndex
-                              ),
-                            }
-                          : item
-                      )
-                    )
-                  }
-                >
-                  Remove fallback
-                </Button>
-              </div>
-            ))}
-
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() =>
-                setPreferences(current =>
-                  current.map((item, itemIndex) =>
-                    itemIndex === index
-                      ? {
-                          ...item,
-                          fallback_routes: [...item.fallback_routes, defaultRoute()],
-                        }
-                      : item
-                  )
-                )
-              }
-            >
-              Add fallback route
-            </Button>
-          </div>
+          <details className={styles.advanced}><summary>Advanced</summary>
+            <div className="form-field" style={{ maxWidth: '320px' }}><label>Purpose
+              <select aria-label={`Purpose ${index + 1}`} value={preference.purpose} onChange={event => updatePreference(index, { purpose: event.target.value as Preference['purpose'] })}>
+                {purposes.map(value => <option key={value} value={value}>{profileLabel(value)}</option>)}
+              </select>
+            </label></div>
+            <RouteAdvancedFields label={profileLabel(preference.purpose)} route={preference.preferred_route} update={change => updateRoute(index, undefined, change)} />
+            <fieldset className="mt-3 space-y-4">
+              <legend className="font-medium">Token budget defaults</legend>
+              <p className="meta">Default token budgets for new tasks. Existing tasks keep their saved limits.</p>
+              {(['input', 'output'] as const).map(dimension => {
+                const key = dimension === 'input' ? 'max_input_tokens' : 'max_output_tokens';
+                const budget = preference.token_budget ?? {};
+                const configured = budget[key] != null;
+                const reference = tokenReference(preference.preferred_route.provider, preference.preferred_route.model, dimension);
+                const updateBudget = (value: number | null) => updatePreference(index, {
+                  token_budget: { ...budget, [key]: value },
+                });
+                return <div key={dimension} className="space-y-2">
+                  {configured ? <>
+                    <TokenBudgetSlider
+                      label={`${profileLabel(preference.purpose)} ${dimension} token budget`}
+                      dimension={dimension}
+                      value={budget[key]!}
+                      provider={preference.preferred_route.provider}
+                      model={preference.preferred_route.model}
+                      onChange={value => updateBudget(value)}
+                    />
+                    <Button type="button" variant="quiet" aria-label={`${profileLabel(preference.purpose)} ${dimension} tokens use run/task default`} onClick={() => updateBudget(null)}>Use run/task default</Button>
+                  </> : <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>{dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default</span>
+                    <Button type="button" variant="secondary" aria-label={`Set ${profileLabel(preference.purpose)} ${dimension} token budget`} onClick={() => updateBudget(Math.round((reference ?? 1_000_000) / 2))}>Set explicit budget</Button>
+                  </div>}
+                </div>;
+              })}
+            </fieldset>
+            {preferences.length > 1 && <Button type="button" variant="danger" onClick={() => setPreferences(current => current.filter((_, itemIndex) => itemIndex !== index))}>Remove role</Button>}
+            <h4>Fallback routes ({preference.fallback_routes.length})</h4>
+            {preference.fallback_routes.map((r, fallbackIndex) => <div className={styles.fallback} key={fallbackIndex}>
+              <RouteFields label={`${profileLabel(preference.purpose)} fallback route ${fallbackIndex + 1}`} route={r} update={change => updateRoute(index, fallbackIndex, change)} presets={presets} />
+              <RouteAdvancedFields label={`${profileLabel(preference.purpose)} fallback route ${fallbackIndex + 1}`} route={r} update={change => updateRoute(index, fallbackIndex, change)} />
+              <Button type="button" variant="danger" onClick={() => setPreferences(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, fallback_routes: item.fallback_routes.filter((_, routeIndex) => routeIndex !== fallbackIndex) } : item))}>Remove fallback</Button>
+            </div>)}
+            <Button type="button" variant="secondary" onClick={() => setPreferences(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, fallback_routes: [...item.fallback_routes, defaultRoute()] } : item))}>Add fallback route</Button>
+          </details>
         </section>
       ))}
 
-      <div style={{ margin: '16px 0' }}>
+      {purposes.some(purpose => !preferences.some(preference => preference.purpose === purpose)) && <div style={{ margin: '16px 0' }}>
         <Button
           type="button"
           variant="secondary"
           onClick={() =>
-            setPreferences(current => [
-              ...current,
-              {
-                ...defaultPreference('routine_implementation'),
-                id: `role-${current.length}-${crypto.randomUUID()}`,
-              },
-            ])
+            setPreferences(current => {
+              const usedPurposes = new Set(current.map(preference => preference.purpose));
+              const purpose = purposes.find(value => !usedPurposes.has(value));
+              if (!purpose) return current;
+              const defaultRole = defaultRolePreferences().find(preference => preference.purpose === purpose);
+              return [...current, {
+                id: `role-${crypto.randomUUID()}`,
+                purpose,
+                preferred_route: defaultRole?.preferred_route ?? defaultRoute(),
+                fallback_routes: defaultRole?.fallback_routes ?? [],
+              }];
+            })
           }
         >
           Add role preference
         </Button>
-      </div>
+      </div>}
 
-      <div className="form-field" style={{ maxWidth: '320px', margin: '20px 0' }}>
+      <details style={{ margin: '20px 0' }}><summary>Advanced profile details</summary><div className="form-field" style={{ maxWidth: '320px', margin: '20px 0' }}>
         <label>
           Default billing mode
           <select
@@ -768,6 +551,7 @@ export function ProfileEditor({
           description="Configure optional Jev advisory search and review defaults for projects using this profile. Explicit project Jev settings override this default."
         />
       </div>
+      </details>
 
       <div className="form-actions">
         {error && <p role="alert" className="field-error">{error}</p>}
@@ -779,6 +563,7 @@ export function ProfileEditor({
             : `Append version ${expectedVersion + 1}`}
         </Button>
       </div>
+      </fieldset>
     </form>
   );
 }

@@ -6555,6 +6555,16 @@
           },
           "purpose": {
             "$ref": "#/components/schemas/SpecialistPurpose"
+          },
+          "token_budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenBudgetDefaultsInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -11467,6 +11477,37 @@
           "untrusted_external_content"
         ],
         "title": "TaskSection",
+        "type": "object"
+      },
+      "TokenBudgetDefaultsInput": {
+        "additionalProperties": false,
+        "properties": {
+          "max_input_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Input Tokens"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          }
+        },
+        "title": "TokenBudgetDefaultsInput",
         "type": "object"
       },
       "TurnAppend": {

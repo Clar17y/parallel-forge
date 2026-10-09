@@ -1,4 +1,13 @@
 const labels: Record<string, string> = {
+  primary: 'Primary',
+  routine_implementation: 'Implementer',
+  complex_implementation: 'Complex implementer',
+  independent_review: 'Reviewer',
+  planning: 'Planner',
+  exploration: 'Explorer',
+  security: 'Security reviewer',
+  integration: 'Integrator',
+  verification: 'Verifier',
   codex_app_server: 'Codex',
   claude_code: 'Claude Code',
   gemini_cli: 'Gemini CLI',

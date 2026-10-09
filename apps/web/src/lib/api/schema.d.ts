@@ -4255,6 +4255,7 @@ export interface components {
             fallback_routes: components["schemas"]["RouteInput"][];
             preferred_route: components["schemas"]["RouteInput"];
             purpose: components["schemas"]["SpecialistPurpose"];
+            token_budget?: components["schemas"]["TokenBudgetDefaultsInput"] | null;
         };
         /** ProfileAppendRequest */
         ProfileAppendRequest: {
@@ -5986,6 +5987,13 @@ export interface components {
             title: string;
             /** Untrusted External Content */
             untrusted_external_content: boolean;
+        };
+        /** TokenBudgetDefaultsInput */
+        TokenBudgetDefaultsInput: {
+            /** Max Input Tokens */
+            max_input_tokens?: number | null;
+            /** Max Output Tokens */
+            max_output_tokens?: number | null;
         };
         /** TurnAppend */
         TurnAppend: {
