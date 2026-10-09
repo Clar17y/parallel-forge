@@ -18,8 +18,8 @@ export function BrainstormModelPicker({ projectId, choice, onChange, disabled = 
   const runtime = useApi<Runtime>('/subscription-runtime?offset=0&limit=100');
   const preferred = profile.value?.preferences?.find(item => item.purpose === 'exploration')?.preferred_route;
   const defaultRoute = toBrainstormRoute(preferred);
-  const configured = runtime.value?.workers?.filter(worker => worker.state !== 'stopped')
-    .flatMap(worker => worker.routes?.filter(route => route.configured !== false) ?? [])
+  const configured = runtime.value?.workers?.filter(worker => worker.state === 'current')
+    .flatMap(worker => worker.routes?.filter(route => route.configured !== false && route.effective_reason !== 'stale_worker') ?? [])
     .map(toBrainstormRoute).filter((route): route is BrainstormRoute => route !== null) ?? [];
   const routes = [...(defaultRoute ? [defaultRoute] : []), ...configured];
   const unique = [...new Map(routes.map(route => [routeKey(route), route])).values()];

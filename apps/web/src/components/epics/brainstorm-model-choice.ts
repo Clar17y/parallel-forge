@@ -1,8 +1,10 @@
+import type { components } from '@/lib/api/schema';
+
 export type BrainstormRoute = {
   provider: string;
   client: string;
   model: string;
-  effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+  effort: components['schemas']['ReasoningEffort'];
   auth_mode: 'subscription';
   billing_mode: 'allowance_only';
 };
@@ -15,10 +17,10 @@ export function isLocalBrainstormRoute(value: unknown): value is BrainstormRoute
   if (!value || typeof value !== 'object') return false;
   const route = value as Record<string, unknown>;
   return ((route.provider === 'openai' && route.client === 'codex_app_server') ||
-    (route.provider === 'google' && ['gemini_cli', 'antigravity_cli'].includes(String(route.client))) ||
+    (route.provider === 'google' && (route.client === 'gemini_cli' || route.client === 'antigravity_cli')) ||
     (route.provider === 'anthropic' && route.client === 'claude_code')) &&
-    typeof route.model === 'string' && route.model.length > 0 && route.model.length <= 255 &&
-    ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(String(route.effort)) &&
+    typeof route.model === 'string' && route.model.trim().length > 0 && route.model.length <= 255 &&
+    typeof route.effort === 'string' && ['none', 'low', 'medium', 'high', 'maximum'].includes(route.effort) &&
     route.auth_mode === 'subscription' && route.billing_mode === 'allowance_only';
 }
 

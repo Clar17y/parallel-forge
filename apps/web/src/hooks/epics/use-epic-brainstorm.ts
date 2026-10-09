@@ -198,7 +198,7 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
     { schema_version: 1, project_id: projectId, text }, { kind: 'conversation-start' },
   ), [epicId, execute, projectId]);
 
-  const appendTurn = useCallback((conversationId: string, expectedConvVersion: number, text: string) => execute<{ version: number }>(
+  const appendTurn = useCallback((conversationId: string, expectedConvVersion: number, text: string, idempotencyKey?: string) => execute<{ version: number }>(
     'POST', `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns`,
     {
       schema_version: 1,
@@ -206,7 +206,7 @@ export function useEpicBrainstorm(epicId: string, projectId: string) {
       expected_conversation_version: expectedConvVersion,
       text,
       pending: false,
-    }, { kind: 'conversation-turn' },
+    }, { kind: 'conversation-turn', idempotencyKey },
   ), [epicId, execute, projectId]);
 
   const submitJob = useCallback((conversationId: string, promptTurnId: string, expectedEpicVersion: number, expectedConvVersion: number, idempotencyKey?: string, requestedRoute?: BrainstormRoute) => execute<AuthoringReceipt>(

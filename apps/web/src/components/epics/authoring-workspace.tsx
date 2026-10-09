@@ -15,7 +15,8 @@ const subscribeHydration = () => () => undefined;
 const clientHydrated = () => true;
 const serverHydrated = () => false;
 type Submission = { turnId: string; expectedEpicVersion: number; idempotencyKey: string };
-type SavedSend = { conversationId: string; version: number; expectedEpicVersion: number; route?: BrainstormRoute | null; submission?: Submission; retryGeneration?: number };
+type Repost = { text: string; expectedVersion: number; idempotencyKey: string };
+type SavedSend = { conversationId: string; version: number; expectedEpicVersion: number; route?: BrainstormRoute | null; submission?: Submission; retryGeneration?: number; obsoleteText?: string; repost?: Repost };
 // A null entry is a completed tombstone when browser storage refuses removal.
 const inMemorySavedSends = new Map<string, SavedSend | null>();
 const inMemoryPendingRoutes = new Map<string, BrainstormRoute | null>();
@@ -47,11 +48,16 @@ function readSavedSend(key: string, fallbackEpicVersion: number): SavedSend | nu
       (!Number.isSafeInteger(value.expectedEpicVersion) || (value.expectedEpicVersion ?? -1) < 0)) return null;
     if (value.retryGeneration !== undefined && (!Number.isSafeInteger(value.retryGeneration) || value.retryGeneration < 0)) return null;
     const submission = value.submission;
+    const repost = value.repost;
     const route = value.route === undefined || value.route === null ? value.route : toBrainstormRoute(value.route);
     if (value.route && !route) return null;
     if (submission && (typeof submission.turnId !== 'string' || !submission.turnId ||
       typeof submission.idempotencyKey !== 'string' || !submission.idempotencyKey ||
       !Number.isSafeInteger(submission.expectedEpicVersion) || submission.expectedEpicVersion < 0)) return null;
+    if (value.obsoleteText !== undefined && (typeof value.obsoleteText !== 'string' || !value.obsoleteText)) return null;
+    if (repost && (typeof repost.text !== 'string' || !repost.text ||
+      !Number.isSafeInteger(repost.expectedVersion) || repost.expectedVersion < 2 ||
+      typeof repost.idempotencyKey !== 'string' || !repost.idempotencyKey)) return null;
     return typeof value.conversationId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value.conversationId) &&
       Number.isSafeInteger(value.version) && (value.version ?? 0) >= 2
       ? {
@@ -63,6 +69,8 @@ function readSavedSend(key: string, fallbackEpicVersion: number): SavedSend | nu
         ...(submission ? { submission } : {}),
         ...(route !== undefined ? { route } : {}),
         ...(value.retryGeneration ? { retryGeneration: value.retryGeneration } : {}),
+        ...(value.obsoleteText ? { obsoleteText: value.obsoleteText } : {}),
+        ...(repost ? { repost } : {}),
       }
       : inMemorySavedSends.get(key) ?? null;
   } catch { return inMemorySavedSends.get(key) ?? null; }
@@ -251,6 +259,14 @@ export function AuthoringWorkspace({
     if (isCurrentInstance()) setSavedMessage(recovered);
   }, [isCurrentInstance, savedSendKey]);
 
+  const markObsolete = useCallback((saved: SavedSend, text: string) => {
+    const current = readSavedSend(savedSendKey, currentEpicVersion.current);
+    if (!current || current.conversationId !== saved.conversationId || current.version !== saved.version || current.submission) return;
+    const obsolete = { ...current, obsoleteText: text };
+    saveSavedSend(savedSendKey, obsolete);
+    if (isCurrentInstance()) setSavedMessage(obsolete);
+  }, [isCurrentInstance, savedSendKey]);
+
   useEffect(() => {
     const clearSubmittedPrompt = (_receipt: unknown, request: { body: Record<string, unknown> }) => {
       const submittedText = typeof request.body.text === 'string' ? request.body.text : null;
@@ -262,7 +278,7 @@ export function AuthoringWorkspace({
     return () => { unregisterStart(); unregisterTurn(); };
   }, [registerCompletion]);
 
-  const requestAssistance = useCallback(async (saved: SavedSend, ownsLock = false) => {
+  const requestAssistance = useCallback(async (saved: SavedSend, ownsLock = false, allowRepost = false) => {
     if (!isCurrentInstance()) return;
     if (!ownsLock) {
       if (sendLock.current) return;
@@ -273,9 +289,10 @@ export function AuthoringWorkspace({
     saveSavedSend(savedSendKey, saved);
     setSendError(null);
     try {
-      const savedTurns = await api<BrainstormTurn[]>(
+      let working = saved;
+      let savedTurns = await api<BrainstormTurn[]>(
         `/epics/${epicId}/brainstorm-conversations/${saved.conversationId}/turns?project_id=${encodeURIComponent(projectId)}`,
-      );
+      ) ?? [];
       if (!isCurrentInstance()) return;
       const prompt = savedTurns?.[saved.version - 2];
       if (!prompt || prompt.role !== 'operator' || prompt.conversation_id !== saved.conversationId) {
@@ -284,20 +301,74 @@ export function AuthoringWorkspace({
       if (saved.submission && saved.submission.turnId !== prompt.turn_id) {
         throw new Error('The saved request no longer matches its confirmed message.');
       }
-      const submission = saved.submission ?? {
-        turnId: prompt.turn_id,
+      if (savedTurns.length > saved.version - 1 && !saved.submission) {
+        markObsolete(saved, prompt.text);
+        if (!allowRepost) throw new Error('The saved message is no longer the latest turn.');
+        const repost = saved.repost ?? {
+          text: prompt.text,
+          expectedVersion: savedTurns.length + 1,
+          idempotencyKey: `${assistanceIdempotencyKey(epicId, saved.conversationId, prompt.turn_id)}:repost:${saved.retryGeneration ?? 0}`,
+        };
+        working = { ...saved, obsoleteText: prompt.text, repost, submission: undefined };
+        saveSavedSend(savedSendKey, working);
+        setSavedMessage(working);
+        sendIntent.current = true;
+        let receipt: { version: number };
+        try {
+          receipt = await appendTurn(saved.conversationId, repost.expectedVersion, repost.text, repost.idempotencyKey);
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 409) {
+            const current = readSavedSend(savedSendKey, currentEpicVersion.current);
+            if (current?.repost?.idempotencyKey === repost.idempotencyKey) {
+              const recoverable = { ...current, repost: undefined, retryGeneration: (current.retryGeneration ?? 0) + 1 };
+              saveSavedSend(savedSendKey, recoverable);
+              setSavedMessage(recoverable);
+            }
+          }
+          throw error;
+        } finally {
+          sendIntent.current = false;
+        }
+        if (!isCurrentInstance()) return;
+        working = { ...working, version: receipt.version, repost: undefined, obsoleteText: undefined, submission: undefined };
+        saveSavedSend(savedSendKey, working);
+        setSavedMessage(working);
+        savedTurns = await api<BrainstormTurn[]>(
+          `/epics/${epicId}/brainstorm-conversations/${saved.conversationId}/turns?project_id=${encodeURIComponent(projectId)}`,
+        ) ?? [];
+        if (!isCurrentInstance()) return;
+      }
+      const currentPrompt = savedTurns[working.version - 2];
+      if (!currentPrompt || currentPrompt.role !== 'operator' || currentPrompt.conversation_id !== working.conversationId ||
+        (!working.submission && savedTurns.length !== working.version - 1)) {
+        if (currentPrompt && savedTurns.length > working.version - 1) markObsolete(working, currentPrompt.text);
+        throw new Error('The saved message is no longer the latest turn.');
+      }
+      const submission = working.submission ?? {
+        turnId: currentPrompt.turn_id,
         expectedEpicVersion: currentEpicVersion.current,
-        idempotencyKey: `${assistanceIdempotencyKey(epicId, saved.conversationId, prompt.turn_id)}${saved.retryGeneration ? `:${saved.retryGeneration}` : ''}`,
+        idempotencyKey: `${assistanceIdempotencyKey(epicId, working.conversationId, currentPrompt.turn_id)}${working.retryGeneration ? `:${working.retryGeneration}` : ''}`,
       };
       // Freeze identity and body before the first request can reach the server.
-      const frozen = { ...saved, submission };
+      const frozen = { ...working, submission };
       saveSavedSend(savedSendKey, frozen);
       setSavedMessage(frozen);
       try {
-        await submitJob(saved.conversationId, submission.turnId, submission.expectedEpicVersion, saved.version,
-          submission.idempotencyKey, saved.route ?? undefined);
+        await submitJob(working.conversationId, submission.turnId, submission.expectedEpicVersion, working.version,
+          submission.idempotencyKey, working.route ?? undefined);
       } catch (error) {
-        if (error instanceof ApiError && error.status === 409) rejectSavedSubmission(frozen);
+        if (error instanceof ApiError && error.status === 409) {
+          rejectSavedSubmission(frozen);
+          try {
+            const latest = await api<BrainstormTurn[]>(
+              `/epics/${epicId}/brainstorm-conversations/${working.conversationId}/turns?project_id=${encodeURIComponent(projectId)}`,
+            ) ?? [];
+            const obsoletePrompt = latest[working.version - 2];
+            if (isCurrentInstance() && obsoletePrompt?.role === 'operator' && latest.length > working.version - 1) {
+              markObsolete(working, obsoletePrompt.text);
+            }
+          } catch { /* A later explicit retry can inspect the conversation. */ }
+        }
         throw error;
       }
       if (!isCurrentInstance()) return;
@@ -310,7 +381,7 @@ export function AuthoringWorkspace({
       sendLock.current = false;
       if (isCurrentInstance()) setAssistancePending(false);
     }
-  }, [epicId, isCurrentInstance, pendingRouteKey, projectId, rejectSavedSubmission, savedSendKey, submitJob]);
+  }, [appendTurn, epicId, isCurrentInstance, markObsolete, pendingRouteKey, projectId, rejectSavedSubmission, savedSendKey, submitJob]);
 
   useEffect(() => {
     if (mutations.conflict && mutations.actionKind === 'job-submit' && !mutations.hasPendingRetry) {
@@ -320,7 +391,7 @@ export function AuthoringWorkspace({
   }, [epicVersion, mutations.actionKind, mutations.conflict, mutations.hasPendingRetry, rejectSavedSubmission, savedSendKey]);
 
   useEffect(() => {
-    const resumeSavedSend = (receipt: unknown, request: { kind?: string; path: string }) => {
+    const resumeSavedSend = (receipt: unknown, request: { kind?: string; path: string; body: Record<string, unknown>; idempotencyKey: string }) => {
       if (request.kind === 'conversation-start') {
         if (sendIntent.current) return;
         const receiptValue = receipt as { conversation_id: string; version: number };
@@ -333,8 +404,18 @@ export function AuthoringWorkspace({
         const conversationId = request.path.match(/brainstorm-conversations\/([^/]+)\/turns/)?.[1];
         if (conversationId) {
           const previous = readSavedSend(savedSendKey, epicVersion);
-          void requestAssistance(savedSendForReceipt(previous, conversationId,
-            receiptValue.version, epicVersion, pendingRouteKey));
+          if (previous?.repost && previous.conversationId === conversationId &&
+            previous.repost.idempotencyKey === request.idempotencyKey &&
+            previous.repost.text === request.body.text &&
+            previous.repost.expectedVersion === request.body.expected_conversation_version) {
+            const recovered = { ...previous, version: receiptValue.version, repost: undefined, obsoleteText: undefined, submission: undefined };
+            saveSavedSend(savedSendKey, recovered);
+            setSavedMessage(recovered);
+            void requestAssistance(recovered);
+          } else {
+            void requestAssistance(savedSendForReceipt(previous, conversationId,
+              receiptValue.version, epicVersion, pendingRouteKey));
+          }
         }
       }
     };
@@ -573,9 +654,11 @@ export function AuthoringWorkspace({
       </form>
 
       {(sendError || recoverableSavedMessage) && <div role={sendError ? 'alert' : 'status'} className="space-y-2">
-        <p>{sendError ?? 'Your message is saved. Start assistant help when you are ready.'}</p>
-        <Button variant="secondary" disabled={mutationPending || assistancePending || loading || isUnavailable || !recoverableSavedMessage} onClick={() => recoverableSavedMessage && void requestAssistance(recoverableSavedMessage)}>
-          {assistancePending ? 'Starting assistant…' : 'Retry assistant help'}
+        <p>{recoverableSavedMessage?.obsoleteText
+          ? 'A newer message followed your saved message. Reposting your text will make it the latest prompt for assistant help.'
+          : sendError ?? 'Your message is saved. Start assistant help when you are ready.'}</p>
+        <Button variant="secondary" disabled={mutationPending || assistancePending || loading || isUnavailable || !recoverableSavedMessage} onClick={() => recoverableSavedMessage && void requestAssistance(recoverableSavedMessage, false, true)}>
+          {assistancePending ? 'Starting assistant…' : recoverableSavedMessage?.obsoleteText ? 'Repost message and retry assistant' : 'Retry assistant help'}
         </Button>
       </div>}
 

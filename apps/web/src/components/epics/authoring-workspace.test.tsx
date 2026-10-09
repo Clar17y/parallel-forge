@@ -296,6 +296,157 @@ describe('AuthoringWorkspace', () => {
     expect(requests[1].key).not.toBe(requests[0].key);
   });
 
+  test.each(['default', 'alternate'] as const)('explicitly reposts an obsolete saved %s prompt after an older assistant turn wins the race', async routeKind => {
+    const original = { ...turns[0], turn_id: 'saved-original', text: 'Track repairs by depot.' };
+    const assistant = { ...turns[1], turn_id: 'older-assistant' };
+    const reposted = { ...original, turn_id: 'reposted-original' };
+    const selectedRoute = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'maximum', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    const savedKey = `epic_saved_brainstorm_send_${epicId}`;
+    sessionStorage.setItem(savedKey, JSON.stringify({ conversationId, version: 2, expectedEpicVersion: 9, route: routeKind === 'default' ? null : selectedRoute }));
+    let latest = [original];
+    const appends: RequestInit[] = [];
+    const jobs: RequestInit[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [{ ...thread, conversation_version: latest.length + 1, job_ids: [] }] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return latest as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns` && init?.method === 'POST') {
+        appends.push(init);
+        expect(JSON.parse(init.body as string)).toMatchObject({ text: original.text, expected_conversation_version: 3 });
+        latest = [original, assistant, reposted];
+        return { version: 4 } as T;
+      }
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init);
+        if (jobs.length === 1) { latest = [original, assistant]; throw new ApiError(409, 'conflict'); }
+        return { job_id: 'recovered-job' } as T;
+      }
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Retry assistant help' }));
+    await screen.findByRole('button', { name: 'Repost message and retry assistant' });
+    expect(appends).toHaveLength(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Repost message and retry assistant' }));
+    await waitFor(() => expect(jobs).toHaveLength(2));
+    expect(appends).toHaveLength(1);
+    expect(JSON.parse(jobs[1].body as string)).toEqual({
+      schema_version: 1, project_id: projectId, prompt_turn_id: reposted.turn_id,
+      expected_epic_version: 9, expected_conversation_version: 4,
+      ...(routeKind === 'alternate' ? { requested_route: selectedRoute } : {}),
+    });
+    expect(sessionStorage.getItem(savedKey)).toBeNull();
+  });
+
+  test('settles an uncertain accepted job against its frozen identity even after history advances', async () => {
+    const original = { ...turns[0], turn_id: 'accepted-before-later-turn' };
+    const selectedRoute = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    sessionStorage.setItem(`epic_saved_brainstorm_send_${epicId}`, JSON.stringify({ conversationId, version: 2, expectedEpicVersion: 9, route: selectedRoute }));
+    let latest = [original];
+    const jobs: RequestInit[] = [];
+    let appends = 0;
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return latest as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns` && init?.method === 'POST') { appends += 1; return { version: 4 } as T; }
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init);
+        if (jobs.length === 1) { latest = [original, { ...turns[1], turn_id: 'later-assistant' }]; throw new Error('response lost'); }
+        return { job_id: 'accepted-job' } as T;
+      }
+      return undefined as T;
+    });
+    const first = render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Retry assistant help' }));
+    await screen.findByRole('button', { name: 'Retry original request' });
+    first.unmount();
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={10} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Retry original request' }));
+    await waitFor(() => expect(jobs).toHaveLength(2));
+    expect(jobs[1].body).toBe(jobs[0].body);
+    expect(new Headers(jobs[1].headers).get('Idempotency-Key')).toBe(new Headers(jobs[0].headers).get('Idempotency-Key'));
+    expect(appends).toBe(0);
+  });
+
+  test('replays an uncertain accepted repost exactly after remount before submitting help', async () => {
+    const original = { ...turns[0], turn_id: 'obsolete-turn', text: 'Preserve this idea.' };
+    const assistant = { ...turns[1], turn_id: 'later-assistant' };
+    const reposted = { ...original, turn_id: 'accepted-repost' };
+    const selectedRoute = { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-astra', effort: 'maximum', auth_mode: 'subscription', billing_mode: 'allowance_only' };
+    const savedKey = `epic_saved_brainstorm_send_${epicId}`;
+    sessionStorage.setItem(savedKey, JSON.stringify({ conversationId, version: 2, expectedEpicVersion: 9, route: selectedRoute, obsoleteText: original.text }));
+    const originalSet = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+      if (key === savedKey) throw new DOMException('Storage denied');
+      return originalSet.call(this, key, value);
+    });
+    let latest = [original, assistant];
+    const appends: RequestInit[] = [];
+    const jobs: RequestInit[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return latest as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns` && init?.method === 'POST') {
+        appends.push(init);
+        latest = [original, assistant, reposted];
+        if (appends.length === 1) throw new Error('repost response lost');
+        return { version: 4 } as T;
+      }
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init); return { job_id: 'after-repost' } as T;
+      }
+      return undefined as T;
+    });
+    const first = render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Repost message and retry assistant' }));
+    await screen.findByRole('button', { name: 'Retry original request' });
+    expect(jobs).toHaveLength(0);
+    expect(JSON.parse(sessionStorage.getItem(savedKey)!).repost).toBeUndefined();
+    first.unmount();
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={10} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Retry original request' }));
+    await waitFor(() => expect(jobs).toHaveLength(1));
+    expect(appends).toHaveLength(2);
+    expect(appends[1].body).toBe(appends[0].body);
+    expect(new Headers(appends[1].headers).get('Idempotency-Key')).toBe(new Headers(appends[0].headers).get('Idempotency-Key'));
+    expect(JSON.parse(jobs[0].body as string)).toMatchObject({ prompt_turn_id: reposted.turn_id, expected_conversation_version: 4, requested_route: selectedRoute });
+  });
+
+  test('preserves the original text after a repost version race and retries only on another explicit click', async () => {
+    const original = { ...turns[0], turn_id: 'raced-original', text: 'Keep the same requirements.' };
+    const assistant = { ...turns[1], turn_id: 'earlier-assistant' };
+    const extra = { ...turns[1], turn_id: 'racing-assistant' };
+    const reposted = { ...original, turn_id: 'fresh-repost' };
+    sessionStorage.setItem(`epic_saved_brainstorm_send_${epicId}`, JSON.stringify({ conversationId, version: 2, expectedEpicVersion: 9, route: null, obsoleteText: original.text }));
+    let latest = [original, assistant];
+    const appends: RequestInit[] = [];
+    const jobs: RequestInit[] = [];
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return latest as T;
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns` && init?.method === 'POST') {
+        appends.push(init);
+        if (appends.length === 1) { latest = [original, assistant, extra]; throw new ApiError(409, 'conflict'); }
+        latest = [original, assistant, extra, reposted];
+        return { version: 5 } as T;
+      }
+      if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/jobs` && init?.method === 'POST') {
+        jobs.push(init); return { job_id: 'after-race' } as T;
+      }
+      return undefined as T;
+    });
+    render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Repost message and retry assistant' }));
+    await waitFor(() => expect(appends).toHaveLength(1));
+    await screen.findByRole('button', { name: 'Repost message and retry assistant' });
+    expect(jobs).toHaveLength(0);
+    expect(JSON.parse(sessionStorage.getItem(`epic_saved_brainstorm_send_${epicId}`)!).obsoleteText).toBe(original.text);
+    await userEvent.click(screen.getByRole('button', { name: 'Repost message and retry assistant' }));
+    await waitFor(() => expect(jobs).toHaveLength(1));
+    expect(JSON.parse(appends[1].body as string)).toMatchObject({ expected_conversation_version: 4, text: original.text });
+    expect(new Headers(appends[1].headers).get('Idempotency-Key')).not.toBe(new Headers(appends[0].headers).get('Idempotency-Key'));
+    expect(JSON.parse(jobs[0].body as string)).toMatchObject({ prompt_turn_id: reposted.turn_id, expected_conversation_version: 5 });
+  });
+
   test('replays an accepted uncertain submission after the epic changes without a second durable receipt', async () => {
     const savedTurn = { ...turns[0], turn_id: 'accepted-before-response-loss' };
     const requests: Array<{ key: string; body: string }> = [];
@@ -430,7 +581,7 @@ describe('AuthoringWorkspace', () => {
     const jobRequests: Array<[string, RequestInit | undefined]> = [];
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
-      if (path.startsWith('/subscription-runtime')) return { workers: [{ routes: [defaultRoute, selectedRoute] }] } as T;
+      if (path.startsWith('/subscription-runtime')) return { workers: [{ state: 'current', routes: [defaultRoute, selectedRoute] }] } as T;
       if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return (jobCount > 1
         ? [{ conversation_id: conversationId, conversation_version: 2, job_ids: ['uncertain-job'] }]
         : []) as T;
@@ -496,7 +647,7 @@ describe('AuthoringWorkspace', () => {
     const jobs: RequestInit[] = [];
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
-      if (path.startsWith('/subscription-runtime')) return { workers: [{ routes: [defaultRoute, oldRoute, newRoute] }] } as T;
+      if (path.startsWith('/subscription-runtime')) return { workers: [{ state: 'current', routes: [defaultRoute, oldRoute, newRoute] }] } as T;
       if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return (saveKind === 'conversation-start'
         ? [] : [{ conversation_id: conversationId, conversation_version: 3, job_ids: [] }]) as T;
       if (path === `/epics/${epicId}/brainstorm-conversations/${newConversationId}/turns?project_id=${projectId}`)
@@ -696,7 +847,7 @@ describe('AuthoringWorkspace', () => {
     const turnRead = new Promise<typeof turns>(resolve => { releaseTurns = resolve; });
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
-      if (path.startsWith('/subscription-runtime')) return { workers: [{ routes: [defaultRoute, selectedRoute] }] } as T;
+      if (path.startsWith('/subscription-runtime')) return { workers: [{ state: 'current', routes: [defaultRoute, selectedRoute] }] } as T;
       if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [firstThread, secondThread] as T;
       if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) {
         if (!init?.signal) return await turnRead as T;
@@ -750,7 +901,7 @@ describe('AuthoringWorkspace', () => {
     const savedThread = { ...thread, conversation_version: 3, job_ids: ['older-job'] };
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
-      if (path.startsWith('/subscription-runtime')) return { workers: [{ routes: [defaultRoute, selectedRoute] }] } as T;
+      if (path.startsWith('/subscription-runtime')) return { workers: [{ state: 'current', routes: [defaultRoute, selectedRoute] }] } as T;
       if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [savedThread] as T;
       if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) {
         if (!init?.signal) return await new Promise<typeof persistedTurns>(resolve => pendingReads.push(resolve)) as T;
@@ -796,7 +947,7 @@ describe('AuthoringWorkspace', () => {
     let directReads = 0;
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/projects/${projectId}/subscription-profile`) return { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T;
-      if (path.startsWith('/subscription-runtime')) return { workers: [{ routes: [defaultRoute, selectedRoute] }] } as T;
+      if (path.startsWith('/subscription-runtime')) return { workers: [{ state: 'current', routes: [defaultRoute, selectedRoute] }] } as T;
       if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [] as T;
       if (path === `/epics/${epicId}/brainstorm-conversations` && init?.method === 'POST') {
         saveRequests.push(init);
