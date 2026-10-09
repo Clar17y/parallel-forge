@@ -577,6 +577,8 @@ async def test_planning_binds_saved_reasoning_and_preserves_policy_document(
     for role in ("planner", "developer", "reviewer"):
         document[f"{role}_model"].pop("reasoning_effort", None)
     if effort is not None:
+        document["planner_model"]["provider"] = "google"
+        document["planner_model"]["model"] = "gemini-3.8-flash"
         document["planner_model"]["reasoning_effort"] = effort
         document["developer_model"]["reasoning_effort"] = "high" if effort != "high" else "low"
         document["reviewer_model"]["reasoning_effort"] = "medium"
@@ -593,6 +595,9 @@ async def test_planning_binds_saved_reasoning_and_preserves_policy_document(
     assert len(gateway.requests) == 1
     request = gateway.requests[0]
     assert request.reasoning_effort == effort
+    assert (request.provider, request.model) == (
+        ("google", "gemini-3.8-flash") if effort is not None else ("test-provider", "planner-model")
+    )
     assert request.budget.max_input_tokens == 75000
     assert request.budget.max_output_tokens == 16000
     assert canonical_json_bytes(work.projects.policy_record.document) == saved_bytes
