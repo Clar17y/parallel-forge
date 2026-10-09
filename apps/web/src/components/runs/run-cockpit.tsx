@@ -92,7 +92,7 @@ export function RunCockpit({ initial, tasks }: { initial: Projection; tasks?: Re
       </div>
     </header>
     {failed && <p className="run-notice" role="alert">Current run state could not be refreshed. Actions are disabled until a successful refresh.</p>}
-    <RunStatusBanner projection={value} stale={stale} />
+    <RunStatusBanner projection={value} stale={stale || reading} />
     {value.subscription_recovery_attention ? <section className="run-notice" role="alert" aria-label="Workflow recovery attention">
       <p>This workflow needs recovery review. The last completed tool is historical activity and does not mean it is still executing.</p>
       {tasks ? <Button variant="quiet" onClick={() => openSection('tasks')}>Review recovery</Button> : <p>Task recovery details are unavailable in this view.</p>}
