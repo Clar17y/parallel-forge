@@ -15,7 +15,10 @@ export function BrainstormModelPicker({ projectId, choice, onChange, disabled = 
   onChange: (route: BrainstormRoute | null, reason?: 'unavailable') => void;
   disabled?: boolean;
 }) {
-  const profile = useApi<Profile | null>(projectId ? `/projects/${projectId}/subscription-profile` : null);
+  const profile = useApi<Profile | null>(projectId ? `/projects/${projectId}/subscription-profile` : null, {
+    refreshIntervalMs: 15_000,
+    keepPreviousOnRefresh: true,
+  });
   const [pollMs, setPollMs] = useState(15_000);
   const runtime = useApi<Runtime>('/subscription-runtime?offset=0&limit=100', {
     refreshIntervalMs: pollMs,

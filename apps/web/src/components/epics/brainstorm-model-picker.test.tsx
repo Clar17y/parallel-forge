@@ -29,6 +29,149 @@ test('shows the project default and offers a configured local model with its eff
   expect(onChange).toHaveBeenCalledWith(alternate);
 });
 
+test('refreshes the displayed project default model and effort after profile reassignment', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-09T12:00:00Z'));
+  const changedDefault = { ...alternate, effort: 'high' as const };
+  let profileReads = 0;
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.includes('subscription-profile')) {
+      profileReads += 1;
+      return { preferences: [{ purpose: 'exploration', preferred_route: profileReads === 1 ? defaultRoute : changedDefault }] } as T;
+    }
+    return { workers: [] } as T;
+  });
+  const onChange = vi.fn();
+  const view = render(<BrainstormModelPicker projectId="project" choice={null} onChange={onChange} />);
+  try {
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole('option', { name: /Project default · gpt-6-luna/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Effort' })).toHaveValue('medium');
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(profileReads).toBe(2);
+    expect(screen.getByRole('option', { name: /Project default · gpt-6-astra/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Effort' })).toHaveValue('high');
+    expect(onChange).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+test('removes an obsolete default after a successful poll without an Exploration preference', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-09T12:00:00Z'));
+  let profileReads = 0;
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.includes('subscription-profile')) {
+      profileReads += 1;
+      return { preferences: profileReads === 1 ? [{ purpose: 'exploration', preferred_route: defaultRoute }] : [] } as T;
+    }
+    return { workers: [] } as T;
+  });
+  const view = render(<BrainstormModelPicker projectId="project" choice={null} onChange={vi.fn()} />);
+  try {
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole('option', { name: /Project default · gpt-6-luna/ })).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(profileReads).toBe(2);
+    expect(screen.queryByRole('option', { name: /Project default · gpt-6-luna/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Effort' })).toBeDisabled();
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+test('keeps the default while a profile poll is pending, clears it on failure, and recovers on the next poll', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-09T12:00:00Z'));
+  const changedDefault = { ...alternate, effort: 'high' as const };
+  let rejectPoll!: (error: Error) => void;
+  let profileReads = 0;
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.includes('subscription-profile')) {
+      profileReads += 1;
+      if (profileReads === 2) return await new Promise<T>((_resolve, reject) => { rejectPoll = reject; });
+      return { preferences: [{ purpose: 'exploration', preferred_route: profileReads === 1 ? defaultRoute : changedDefault }] } as T;
+    }
+    return { workers: [] } as T;
+  });
+  const view = render(<BrainstormModelPicker projectId="project" choice={null} onChange={vi.fn()} />);
+  try {
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(profileReads).toBe(2);
+    expect(screen.getByRole('option', { name: /Project default · gpt-6-luna/ })).toBeInTheDocument();
+    await act(async () => { rejectPoll(new Error('offline')); });
+    expect(screen.queryByRole('option', { name: /Project default · gpt-6-luna/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeDisabled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(profileReads).toBe(3);
+    expect(screen.getByRole('option', { name: /Project default · gpt-6-astra/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Effort' })).toHaveValue('high');
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+test('profile reassignment leaves a configured explicit selection unchanged', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-09T12:00:00Z'));
+  const changedDefault = { ...defaultRoute, effort: 'high' as const };
+  let profileReads = 0;
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.includes('subscription-profile')) {
+      profileReads += 1;
+      return { preferences: [{ purpose: 'exploration', preferred_route: profileReads === 1 ? defaultRoute : changedDefault }] } as T;
+    }
+    const observed = new Date().toISOString();
+    return { observed_at: observed, fresh_for_seconds: 45, workers: [
+      { state: 'current', last_seen_at: observed, routes: [{ ...alternate, configured: true, admitted: true }] },
+    ] } as T;
+  });
+  const onChange = vi.fn();
+  const view = render(<BrainstormModelPicker projectId="project" choice={null} onChange={onChange} />);
+  try {
+    await act(async () => { await Promise.resolve(); });
+    view.rerender(<BrainstormModelPicker projectId="project" choice={alternate} onChange={onChange} />);
+    expect(screen.getByRole('combobox', { name: 'Effort' })).toHaveValue('low');
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(profileReads).toBe(2);
+    expect(screen.getByRole('option', { name: /Project default · gpt-6-luna/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Effort' })).toHaveValue('low');
+    expect(onChange).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+test('project switch ignores a late profile response from the previous project', async () => {
+  let completeOld!: (value: unknown) => void;
+  const changedDefault = { ...alternate, effort: 'high' as const };
+  vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    if (path.includes('/projects/old/subscription-profile')) {
+      return await new Promise<T>(resolve => { completeOld = value => resolve(value as T); });
+    }
+    if (path.includes('/projects/new/subscription-profile')) {
+      return { preferences: [{ purpose: 'exploration', preferred_route: changedDefault }] } as T;
+    }
+    return { workers: [] } as T;
+  });
+  const onChange = vi.fn();
+  const view = render(<BrainstormModelPicker projectId="old" choice={null} onChange={onChange} />);
+  view.rerender(<BrainstormModelPicker projectId="new" choice={null} onChange={onChange} />);
+  await waitFor(() => expect(screen.getByRole('option', { name: /Project default · gpt-6-astra/ })).toBeInTheDocument());
+  await act(async () => { completeOld({ preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] }); });
+  expect(screen.queryByRole('option', { name: /Project default · gpt-6-luna/ })).not.toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: 'Effort' })).toHaveValue('high');
+  expect(onChange).not.toHaveBeenCalled();
+  view.unmount();
+});
+
 test('stale or absent runtime metadata leaves the project default usable', async () => {
   vi.mocked(api).mockImplementation(async <T,>(path: string) => path.includes('subscription-profile')
     ? { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T
