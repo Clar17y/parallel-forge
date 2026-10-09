@@ -11,25 +11,9 @@ export interface ActivityStatusProps {
   isWaiting?: boolean;
   actionRequired?: string | null;
   actions?: ReactNode;
-  variant?: 'banner' | 'inline' | 'compact';
   role?: 'status' | 'alert';
   className?: string;
   children?: ReactNode;
-}
-
-export function ActivitySpinner({
-  className = 'w-4 h-4',
-  label = 'Loading…',
-}: {
-  className?: string;
-  label?: string;
-}) {
-  return (
-    <span className="inline-flex items-center gap-2" role="status">
-      <Loader2 className={clsx(className, 'animate-spin motion-reduce:animate-none flex-none')} aria-hidden="true" />
-      <span className="visually-hidden">{label}</span>
-    </span>
-  );
 }
 
 function StatusIcon({
@@ -74,28 +58,11 @@ export function ActivityStatus({
   isWaiting = false,
   actionRequired,
   actions,
-  variant = 'banner',
   role,
   className,
   children,
 }: ActivityStatusProps) {
   const effectiveRole = role ?? (tone === 'danger' ? 'alert' : 'region');
-
-  if (variant === 'inline' || variant === 'compact') {
-    return (
-      <span
-        role={effectiveRole}
-        aria-label={title}
-        aria-live={effectiveRole === 'alert' ? 'assertive' : 'polite'}
-        className={clsx('inline-flex items-center gap-2 text-sm', className)}
-        data-tone={tone}
-      >
-        <StatusIcon tone={tone} isExecuting={isExecuting} isWaiting={isWaiting} />
-        <span className="font-medium">{title}</span>
-        {description ? <span className="text-[var(--muted)]">— {description}</span> : null}
-      </span>
-    );
-  }
 
   const borderClass =
     tone === 'danger'

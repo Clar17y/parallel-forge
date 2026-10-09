@@ -41,6 +41,68 @@ test('run action progress changes from evidence check to the actual command requ
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });
 
+test.each(['command', 'approval'] as const)('accepted %s shows refresh activity until current status arrives', async operation => {
+  const value = operation === 'command'
+    ? projection({ available_commands: [{ name: 'pause', expected_run_version: 7, requires_feedback: false }] })
+    : projection();
+  let finishRefresh!: (result: typeof value) => void;
+  const onRefresh = vi.fn().mockResolvedValueOnce(value)
+    .mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+  if (operation === 'approval') {
+    vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+      .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
+      .mockResolvedValueOnce({ token: 'plan-challenge', expires_at: '2099-01-01T00:00:00Z' })
+      .mockResolvedValueOnce({ approval_id: 'approval-1' });
+  } else vi.mocked(mutate).mockResolvedValueOnce({ id: 'command-1' });
+  const label = operation === 'approval' ? 'Approve plan' : 'Pause';
+  render(<RunControls projection={value} onRefresh={onRefresh} />);
+  await userEvent.click(screen.getByRole('button', { name: label }));
+  await userEvent.click(await screen.findByRole('button', { name: `Confirm ${label.toLowerCase()}` }));
+  expect(screen.getByRole('status')).toHaveTextContent('Refreshing run status…');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: label })).toBeDisabled();
+  await act(async () => finishRefresh(value));
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: label })).toBeEnabled();
+});
+
+test.each(['command', 'approval'] as const)('accepted %s remains confirmed when the status refresh fails', async operation => {
+  const value = operation === 'command'
+    ? projection({ available_commands: [{ name: 'pause', expected_run_version: 7, requires_feedback: false }] })
+    : projection();
+  const onRefresh = vi.fn().mockResolvedValueOnce(value).mockRejectedValueOnce(new Error('offline'));
+  if (operation === 'approval') {
+    vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify(evidence) })
+      .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
+      .mockResolvedValueOnce({ token: 'plan-challenge', expires_at: '2099-01-01T00:00:00Z' })
+      .mockResolvedValueOnce({ approval_id: 'approval-1' });
+  } else vi.mocked(mutate).mockResolvedValueOnce({ id: 'command-1' });
+  const label = operation === 'approval' ? 'Approve plan' : 'Pause';
+  render(<RunControls projection={value} onRefresh={onRefresh} />);
+  await userEvent.click(screen.getByRole('button', { name: label }));
+  await userEvent.click(await screen.findByRole('button', { name: `Confirm ${label.toLowerCase()}` }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('The request was accepted, but the run status could not be refreshed.');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(onRefresh).toHaveBeenCalledTimes(2);
+});
+
+test('a stale command response shows refresh activity while reconciling current evidence', async () => {
+  const value = projection({ available_commands: [{ name: 'pause', expected_run_version: 7, requires_feedback: false }] });
+  let finishRefresh!: (result: typeof value) => void;
+  const onRefresh = vi.fn().mockResolvedValueOnce(value)
+    .mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+  vi.mocked(mutate).mockRejectedValueOnce(new ApiError(409, 'stale-projection'));
+  render(<RunControls projection={value} onRefresh={onRefresh} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Pause' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Confirm pause' }));
+  expect(screen.getByRole('status')).toHaveTextContent('Refreshing run status…');
+  expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
+  expect(mutate).toHaveBeenCalledTimes(1);
+  await act(async () => finishRefresh(value));
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+});
+
 test.each((['pr', 'merge'] as const).flatMap(gate =>
   ['success', 'acceptance mismatch', 'contents mismatch'].map(scenario => ({ gate, scenario })),
 ))('subscription $gate approval handles $scenario with actual acceptance evidence', async ({ gate, scenario }) => {

@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, test } from 'vitest';
-import { ActivityStatus, ActivitySpinner } from './activity-status';
+import { ActivityStatus } from './activity-status';
 
 describe('ActivityStatus', () => {
   afterEach(cleanup);
@@ -55,26 +55,4 @@ describe('ActivityStatus', () => {
     expect(alert.querySelector('svg.animate-spin')).not.toBeInTheDocument();
   });
 
-  test('inline variant renders compact layout', () => {
-    render(
-      <ActivityStatus
-        variant="inline"
-        title="Running"
-        description="In progress"
-        tone="info"
-        isExecuting={true}
-      />
-    );
-    expect(screen.getByRole('region', { name: 'Running' })).toHaveClass('inline-flex');
-    expect(screen.getByText('Running')).toBeInTheDocument();
-  });
-
-  test('ActivitySpinner renders accessible reduced-motion-safe indicator', () => {
-    render(<ActivitySpinner label="Loading items…" />);
-    const spinner = screen.getByRole('status');
-    expect(spinner).toHaveTextContent('Loading items…');
-    const svg = spinner.querySelector('svg');
-    expect(svg).toHaveClass('animate-spin');
-    expect(svg).toHaveClass('motion-reduce:animate-none');
-  });
 });

@@ -33,7 +33,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
 }) {
   const [binding, setBinding] = useState<Binding | null>(null);
   const [pending, setPending] = useState(false);
-  const [pendingPhase, setPendingPhase] = useState<'checking' | 'submitting'>('checking');
+  const [pendingPhase, setPendingPhase] = useState<'checking' | 'submitting' | 'refreshing'>('checking');
   const [feedback, setFeedback] = useState('');
   const [message, setMessage] = useState('');
   const busy = useRef(false);
@@ -45,6 +45,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
   async function report(error: unknown, signal: AbortSignal) {
     if (signal.aborted) return;
     if (error instanceof ApiError && error.status === 409) {
+      setPendingPhase('refreshing');
       setBinding(null);
       if (error.code === 'stale-project-policy') {
         setMessage('This run uses older project configuration. Start a new run with the current plan.');
@@ -166,7 +167,14 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
           { idempotencyKey: binding.key, expectedVersion: binding.command.expected_run_version, signal });
         if (!result?.id) throw new Error('Command response unavailable');
       }
-      if (!signal.aborted) { setBinding(null); await onRefresh(); }
+      if (!signal.aborted) {
+        setPendingPhase('refreshing');
+        setBinding(null);
+        try { await onRefresh(); }
+        catch {
+          if (!signal.aborted) setMessage('The request was accepted, but the run status could not be refreshed. Refresh to see the latest state.');
+        }
+      }
     } catch (error) { await report(error, signal); }
     finally { busy.current = false; if (!signal.aborted) setPending(false); }
   }
@@ -175,7 +183,7 @@ export function RunControls({ projection, onRefresh, disabled = false }: {
     {projection.available_commands.filter(command => labels[command.name]).map(command => <button key={command.name} className="button" data-command={command.name}
       data-variant={command.name.startsWith('approve_') ? 'primary' : ['cancel', 'teardown_run_resources'].includes(command.name) ? 'danger' : 'secondary'}
       disabled={disabled || pending} onClick={event => void prepare(command.name, event.currentTarget)}>{labels[command.name]}</button>)}
-    {pending && <LoadingStatus>{pendingPhase === 'checking' ? 'Checking current run evidence…' : binding?.challenge ? 'Recording approval…' : 'Submitting run command…'}</LoadingStatus>}
+    {pending && <LoadingStatus>{pendingPhase === 'checking' ? 'Checking current run evidence…' : pendingPhase === 'refreshing' ? 'Refreshing run status…' : binding?.challenge ? 'Recording approval…' : 'Submitting run command…'}</LoadingStatus>}
     {message && <p role="alert">{message}</p>}
     {stale && <p role="alert">The run changed. Open the action again to review current evidence.</p>}
     {binding && !stale && <ConfirmationDialog returnFocus={binding.returnFocus} title={labels[binding.command.name]} onClose={() => setBinding(null)}>

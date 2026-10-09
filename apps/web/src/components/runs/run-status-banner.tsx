@@ -1,17 +1,6 @@
 import { AlertTriangle, Check, Info, Loader2 } from 'lucide-react';
 import type { components } from '@/lib/api/schema';
-import { describeRunState } from './run-presentation';
-
-const executingStates: components['schemas']['RunState'][] = [
-  'PLANNING',
-  'PREPARING_WORKTREE',
-  'IMPLEMENTING',
-  'VALIDATING',
-  'REVIEWING',
-  'REMEDIATING',
-  'PUBLISHING_PR',
-  'MERGING',
-];
+import { describeRunState, isActiveRunPhase } from './run-presentation';
 
 export function RunStatusBanner({
   projection,
@@ -24,8 +13,7 @@ export function RunStatusBanner({
   const isExecuting =
     !stale &&
     !projection.recovery_hold &&
-    projection.run.state !== 'PAUSED' &&
-    executingStates.includes(projection.run.state);
+    isActiveRunPhase(projection.run.state);
 
   const Icon =
     status.tone === 'danger' || status.tone === 'warning'

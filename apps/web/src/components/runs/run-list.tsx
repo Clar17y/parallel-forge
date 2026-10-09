@@ -2,24 +2,14 @@ import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
 import type { components } from '@/lib/api/schema';
 import { formatDate } from '@/lib/format';
-
-const executingStates = new Set<string>([
-  'PLANNING',
-  'PREPARING_WORKTREE',
-  'IMPLEMENTING',
-  'VALIDATING',
-  'REVIEWING',
-  'REMEDIATING',
-  'PUBLISHING_PR',
-  'MERGING',
-]);
+import { isActiveRunPhase } from './run-presentation';
 
 export function RunList({ items }: { items: components['schemas']['RunListItem'][] }) {
   if (!items.length) return <p>No runs match these filters on this page.</p>;
   return <div className="table-scroll"><table><thead><tr>
     {['Task', 'Project', 'Phase', 'Next gate', 'Remediation', 'Elapsed', 'Estimated cost', 'Updated', 'PR'].map(label => <th key={label} scope="col">{label}</th>)}
   </tr></thead><tbody>{items.map(item => {
-    const isExecuting = executingStates.has(item.state);
+    const isExecuting = isActiveRunPhase(item.state);
     return <tr key={item.run_id}>
       <td><Link href={`/runs/${item.run_id}`}>{item.task_title}</Link>{item.attention_required && <p>Attention required</p>}</td>
       <td><Link href={`/projects/${item.project_id}`}>{item.project_name}</Link></td>

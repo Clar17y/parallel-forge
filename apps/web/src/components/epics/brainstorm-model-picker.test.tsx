@@ -177,8 +177,8 @@ test('stale or absent runtime metadata leaves the project default usable', async
     ? { preferences: [{ purpose: 'exploration', preferred_route: defaultRoute }] } as T
     : { workers: [] } as T);
   render(<BrainstormModelPicker projectId="project" choice={null} onChange={vi.fn()} />);
-  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('default'));
-  expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled();
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled());
+  expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('default');
 });
 
 test('stale runtime metadata does not advertise alternatives or disable the default', async () => {
