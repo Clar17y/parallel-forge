@@ -13,11 +13,14 @@ from uuid import UUID
 from pydantic import StrictBool, StrictFloat, StrictInt
 
 SCHEMA_VERSION = 1
+MAX_SIGNED_BIGINT = 2**63 - 1
 
 
 def _positive(value: int, name: str, *, allow_zero: bool = False) -> None:
-    if type(value) is not int or value < (0 if allow_zero else 1):
-        raise ValueError(f"{name} must be a {'nonnegative' if allow_zero else 'positive'} integer")
+    if type(value) is not int or not (0 if allow_zero else 1) <= value <= MAX_SIGNED_BIGINT:
+        raise ValueError(
+            f"{name} must be a {'nonnegative' if allow_zero else 'positive'} signed-64-bit integer"
+        )
 
 
 def _digest(value: str, name: str) -> None:

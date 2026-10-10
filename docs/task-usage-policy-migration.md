@@ -133,9 +133,10 @@ Optional explicit caps use planned conceptual fields (`TaskAllowanceInput` / `Mo
 ### 2.2 Semantics of Optional Hard Caps
 
 Hard token caps are deliberate, advanced settings:
-- **Positive Integers Only**: Any explicit hard cap (`hard_token_cap`, `hard_context_cap`) must be a strictly positive integer (`ge=1`).
+
+- **Positive Integers Only**: Any explicit hard cap (`hard_token_cap`, `hard_context_cap`) must be an integer from `1` through `9223372036854775807`, matching PostgreSQL `BIGINT` storage.
 - **Absent / `null`**: No explicit hard cap for that dimension. Usage is observed and compared against advisory baselines; checkpointing depends on the selected monitoring mode.
-- **Strict Rejection**: Values of `0`, negative integers, and booleans are strictly rejected by domain and schema validation (`TaskAllowanceInput`, `MonitoringPolicy`).
+- **Strict Rejection**: Values of `0`, negative integers, booleans, and integers above the storage range are rejected by domain and schema validation (`TaskAllowanceInput`, `MonitoringPolicy`).
 - **Zero Semantics**: Measured usage may be zero. New explicit hard caps reject zero; existing subscription records that legally contain a zero input or output ceiling retain that value during legacy decoding.
 - **Soft Defaults and Owner Edits**: An optional hard cap is an owner-configured setting, not an immovable barrier immune to owner edits. An authenticated owner can adjust, raise, or remove the cap on the policy or run at any time.
 

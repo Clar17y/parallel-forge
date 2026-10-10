@@ -1,7 +1,8 @@
 import asyncio
+import inspect
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from forge.api.schemas.task_usage import (
@@ -16,7 +17,7 @@ from forge.api.schemas.task_usage import (
     decode_legacy_allowance,
 )
 from forge.application.ports.agents import ObservableAgentGateway
-from forge.application.ports.task_usage import TaskUsageObserver
+from forge.application.ports.task_usage import TaskUsageObserver, TaskUsageRepository
 from forge.domain.task_usage_contract import (
     BaselineReference,
     CheckpointRecord,
@@ -158,6 +159,67 @@ def test_policy_baseline_and_caps_are_distinct():
     assert decode_legacy_allowance({"max_tokens": 300}).hard_token_cap == 300
     with pytest.raises(ValidationError):
         TaskAllowanceInput.model_validate({"hard_token_cap": 0})
+
+
+def test_policy_write_requires_explicit_actor_and_revision():
+    signature = inspect.signature(TaskUsageRepository.append_policy_revision)
+    policy = MonitoringPolicy(project_id=uuid4())
+    actor = uuid4()
+    with pytest.raises(TypeError):
+        signature.bind(object(), policy, expected_revision=0)
+    bound = signature.bind(object(), policy, expected_revision=0, actor_id=actor)
+    assert bound.arguments["actor_id"] == actor
+    assert bound.arguments["expected_revision"] == 0
+
+    class FakeRepository:
+        async def append_policy_revision(
+            self, policy: MonitoringPolicy, *, expected_revision: int, actor_id: UUID
+        ) -> None:
+            self.written = (policy, expected_revision, actor_id)
+
+    fake = FakeRepository()
+    asyncio.run(fake.append_policy_revision(policy, expected_revision=0, actor_id=actor))
+    assert fake.written == (policy, 0, actor)
+
+
+def test_new_integer_boundaries_match_signed_bigint():
+    maximum = 2**63 - 1
+    project = uuid4()
+    for cap in (2**31, maximum):
+        assert MonitoringPolicy(project_id=project, hard_token_cap=cap).hard_token_cap == cap
+        assert TaskAllowanceInput.model_validate({"hard_context_cap": cap}).hard_context_cap == cap
+        assert (
+            PolicyWire.validate_python(
+                PolicyWire.dump_python(
+                    MonitoringPolicy(project_id=project, hard_token_cap=cap), mode="json"
+                )
+            ).hard_token_cap
+            == cap
+        )
+    for bad in (maximum + 1, 0, -1, True, 1.5):
+        with pytest.raises((ValueError, TypeError)):
+            MonitoringPolicy(project_id=project, hard_token_cap=bad)
+        with pytest.raises(ValidationError):
+            TaskAllowanceInput.model_validate({"hard_token_cap": bad})
+    with pytest.raises(ValidationError):
+        PolicyWire.validate_python({"project_id": str(project), "hard_token_cap": maximum + 1})
+    assert TokenCounts(input_tokens=0, cached_input_tokens=0).input_tokens == 0
+    with pytest.raises(ValueError):
+        TokenCounts(input_tokens=maximum + 1)
+    fixture = examples()
+    for value, field in (
+        (fixture["policy"], "revision"),
+        (fixture["policy"], "history_limit"),
+        (fixture["live"], "sequence"),
+        (fixture["baseline"], "window_limit"),
+        (fixture["checkpoint_states"][0], "version"),
+        (fixture["command"], "expected_version"),
+        (fixture["receipt"], "result_version"),
+    ):
+        with pytest.raises(ValueError):
+            replace(value, **{field: maximum + 1})
+    with pytest.raises(ValueError):
+        ContextWindow(compaction_count=maximum + 1)
 
 
 def test_checkpoint_and_owner_versions():

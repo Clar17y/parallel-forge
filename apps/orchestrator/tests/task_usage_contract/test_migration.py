@@ -8,8 +8,16 @@ import pytest
 from alembic import command
 from forge.persistence.database import create_engine
 from forge.persistence.models import Base
-from sqlalchemy import text
+from forge.persistence.models.task_usage import (
+    TaskUsageBaseline,
+    TaskUsageCheckpoint,
+    TaskUsageObservation,
+    TaskUsageOwnerCommand,
+    TaskUsagePolicyRevision,
+)
+from sqlalchemy import BigInteger, Integer, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 ROUTE_MEMBERS = '[{"role":"developer","provider":"test","model":"test","ordinal":0}]'
 
@@ -760,6 +768,141 @@ def test_empty_usage_downgrade_reupgrade_preserves_legacy_history(
     asyncio.run(check("20261007_0037"))
     command.upgrade(config, "head")
     asyncio.run(check("20261010_0038"))
+
+
+@pytest.mark.integration
+def test_bigint_monitoring_columns_and_mapped_round_trip(test_database_url, alembic_config_factory):
+    command.upgrade(alembic_config_factory(test_database_url), "head")
+    asyncio.run(_seed_retention_shape(test_database_url, "task_usage_observations"))
+
+    async def check() -> None:
+        engine = create_engine(test_database_url)
+        maximum = 2**63 - 1
+        try:
+            async with engine.begin() as db:
+                for name in _USAGE_TABLES:
+                    actual = dict(
+                        (
+                            await db.execute(
+                                text(
+                                    "SELECT column_name, data_type FROM information_schema.columns WHERE table_name=:name"
+                                ),
+                                {"name": name},
+                            )
+                        ).all()
+                    )
+                    for column in Base.metadata.tables[name].columns:
+                        if isinstance(column.type, Integer):
+                            expected = "integer" if column.name == "schema_version" else "bigint"
+                            assert actual[column.name] == expected, (name, column.name)
+                            assert type(column.type) is (
+                                Integer if column.name == "schema_version" else BigInteger
+                            )
+                project, unit, subject, cohort = (
+                    await db.execute(
+                        text(
+                            "SELECT project_id, id, subject_id, configured_route_digest FROM task_usage_work_units"
+                        )
+                    )
+                ).one()
+                await db.execute(
+                    text(
+                        "INSERT INTO task_usage_policy_revisions (project_id, revision, mode, warning_multiplier, checkpoint_multiplier, history_limit, minimum_comparables, hard_token_cap, hard_context_cap, actor_id) VALUES (:project, :large, 'report_only', 1.5, 2, :large, 20, :large, :large, :actor)"
+                    ),
+                    {"project": project, "large": maximum, "actor": uuid4()},
+                )
+                event = uuid4()
+                await db.execute(
+                    text(
+                        "INSERT INTO task_usage_observations (id, project_id, work_unit_id, event_id, sequence, counter_kind, scope, input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, context_occupied_tokens, context_capacity_tokens, compaction_count, final, observed_at, schema_version) VALUES (:id, :project, :unit, 'large', :large, 'cumulative', 'source', :large, :large, :large, :large, :large, :large, :large, false, now(), 1)"
+                    ),
+                    {"id": event, "project": project, "unit": unit, "large": maximum},
+                )
+                await db.execute(
+                    text(
+                        "INSERT INTO task_usage_baselines (work_unit_id, project_id, subject_kind, subject_id, policy_revision, history_digest, snapshot_digest, estimator_version, window_limit, minimum_comparables, cohort_digest, window_started_at, window_ended_at, frozen_at, schema_version, sample_count, status, reference_tokens, median_tokens, p90_tokens, mean_tokens, warning_threshold_tokens, checkpoint_threshold_tokens, frozen_payload) VALUES (:unit, :project, 'run', :subject, :large, :history, :snapshot, 'median_p90_v1', :large, 20, :cohort, now() - interval '1 day', now(), now(), 1, :large, 'ready', 21.5, 10.5, 21.5, 12.25, 32.25, 43.0, '{}'::jsonb)"
+                    ),
+                    {
+                        "unit": unit,
+                        "project": project,
+                        "subject": subject,
+                        "large": maximum,
+                        "history": "d" * 64,
+                        "snapshot": "e" * 64,
+                        "cohort": cohort,
+                    },
+                )
+                checkpoint, receipt = uuid4(), uuid4()
+                await db.execute(
+                    text(
+                        "INSERT INTO task_usage_checkpoints (id, project_id, work_unit_id, baseline_work_unit_id, subject_kind, subject_id, policy_revision, reference_digest, trigger_event_id, state, version, process_settled) VALUES (:id, :project, :unit, :unit, 'run', :subject, :large, :snapshot, 'large', 'checkpoint_requested', :large, false)"
+                    ),
+                    {
+                        "id": checkpoint,
+                        "project": project,
+                        "unit": unit,
+                        "subject": subject,
+                        "large": maximum,
+                        "snapshot": "e" * 64,
+                    },
+                )
+                await db.execute(
+                    text(
+                        "INSERT INTO task_usage_owner_commands (id, project_id, checkpoint_id, idempotency_key, action, expected_version, result_version, actor_id, state, command_payload, warnings, affected_snapshot_digest) VALUES (:id, :project, :checkpoint, 'bigint', 'continue', :large, :large, :actor, 'resumed', '{}'::jsonb, '[]'::jsonb, :snapshot)"
+                    ),
+                    {
+                        "id": receipt,
+                        "project": project,
+                        "checkpoint": checkpoint,
+                        "large": maximum,
+                        "actor": uuid4(),
+                        "snapshot": "e" * 64,
+                    },
+                )
+            async with AsyncSession(engine) as session:
+                policy = await session.get(TaskUsagePolicyRevision, (project, maximum))
+                assert policy is not None
+                assert (
+                    policy.revision,
+                    policy.history_limit,
+                    policy.hard_token_cap,
+                    policy.hard_context_cap,
+                ) == (maximum,) * 4
+                observation = (
+                    await session.execute(
+                        select(TaskUsageObservation).where(TaskUsageObservation.id == event)
+                    )
+                ).scalar_one()
+                assert (
+                    observation.sequence,
+                    observation.input_tokens,
+                    observation.output_tokens,
+                    observation.cached_input_tokens,
+                    observation.reasoning_output_tokens,
+                    observation.context_occupied_tokens,
+                    observation.context_capacity_tokens,
+                    observation.compaction_count,
+                ) == (maximum,) * 8
+                baseline = await session.get(TaskUsageBaseline, unit)
+                checkpoint_row = await session.get(TaskUsageCheckpoint, checkpoint)
+                receipt_row = await session.get(TaskUsageOwnerCommand, receipt)
+                assert (
+                    baseline is not None
+                    and (baseline.policy_revision, baseline.window_limit, baseline.sample_count)
+                    == (maximum,) * 3
+                )
+                assert (
+                    checkpoint_row is not None
+                    and (checkpoint_row.policy_revision, checkpoint_row.version) == (maximum,) * 2
+                )
+                assert (
+                    receipt_row is not None
+                    and (receipt_row.expected_version, receipt_row.result_version) == (maximum,) * 2
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
 
 
 async def _seed_retention_shape(url: str, target: str):
