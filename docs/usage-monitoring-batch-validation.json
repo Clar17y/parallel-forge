@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "repository": "Clar17y/parallel-forge",
+  "epic": 94,
+  "children": [96, 97, 100],
+  "status": "locally implemented and checked; ready for authorized PR publication",
+  "feature_complete": false,
+  "candidate": {
+    "source_commit": "49e36fec38d1272120742196ea084b037e577a49",
+    "source_tree": "1e738af108d98dbec88de71548edcb25f1e786fe",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "branch": "codex/usage-monitoring-accounting-policy",
+    "migration_head": "20261010_0039",
+    "integrated_diff_sha256": "ccbfcbb4c6c2c7ecb197a4ae1dc8e7ed2af93e7e76088519ad2658c9cc3bcbde",
+    "binding": "The final source tree exactly matches the checked managed repair worktree. Source was transferred with an index-checked patch and tree equality, then committed in the primary managed worktree. This evidence-only file is excluded from the source identity. Earlier receipts retain their actual candidate; they are reused only for unchanged relevant inputs."
+  },
+  "environment": {
+    "platform": "Windows",
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "postgresql": "local port 5435; isolated disposable fixture databases",
+    "python_execution": "uv run --frozen --extra dev; PYTHONPATH explicitly resolves to the active managed worktree apps/orchestrator/src",
+    "source_import": "forge.__file__ verified in both primary and repair worktrees; TaskUsageTotalsQuery source path verified again after final transfer",
+    "primary_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-batch/parallel-forge",
+    "repair_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-repairs/parallel-forge",
+    "main_checkout": "C:/dev/parallel-forge; unrelated apps/web/next-env.d.ts modification preserved"
+  },
+  "delivered": {
+    "96": "Typed immutable source bindings, independent durable observation transactions, idempotent replay/conflict handling, explicit counter epochs, consistent totals and source facts, final settlement replacing provisional usage, honest unknown/lower-bound reporting and normalized cached-input subsets.",
+    "97": "Measured mean/median/p90, eligibility and coverage, separate authoring/run histories, comparable rolling cohorts, access-filtered cross-project reports and breakdowns, immutable baseline snapshots and manual-estimate provenance. Missing durable policy returns no reference rather than enabling monitoring.",
+    "100": "Optional input/output/aggregate token caps across backend policy and API execution paths, authenticated append-only CAS/idempotent monitoring revisions, API/CLI authoring and templates, frozen execution policy metadata and preserved legacy spending/limits.",
+    "shared_integration": "One owner serialized contracts, additive migration0039, models/UoW/bootstrap, typed reporting schemas, generated API files and shared regression tests. Foundation0038 was not rewritten."
+  },
+  "checks": [
+    {
+      "name": "broad local Python suite",
+      "command": "rtk proxy uv run --frozen --extra dev python -m pytest -q -m 'not integration and not docker and not live_provider and not live_github'",
+      "candidate": "f193a9dcc851aedfd2984dbe209b561ca8d97718; tree feec2d778c245a2401f17435ef0ce65174c2ac06",
+      "result": "6200 passed, 4 failed, 89 skipped, 2407 deselected; 2942.74 seconds",
+      "receipt": ".llm-output/integrated-local-unit.log",
+      "reuse": "Passing unchanged paths retain their evidence. All four failures were repaired and checked in affected suites below. Later accounting/reporting repairs have separate matching evidence. The complete suite was not rerun, and no final whole-suite all-pass claim is made."
+    },
+    {
+      "name": "shared storage and subscription regressions",
+      "candidate": "f193a9dcc851aedfd2984dbe209b561ca8d97718; tree feec2d778c245a2401f17435ef0ce65174c2ac06",
+      "execution": "Local pytest -q storage/contract/migration/schema/run/subscription and API projection target set; exact selectors were not retained in stdout",
+      "result": "192 passed",
+      "receipt": ".llm-output/integrated-storage-regression.log",
+      "reuse": "Relevant migration, storage, run, policy and subscription inputs are unchanged. Changed ModelUsage normalization and baseline-selection paths were checked separately."
+    },
+    {
+      "name": "PostgreSQL observation, settlement and execution admission",
+      "candidate": "f193a9dcc851aedfd2984dbe209b561ca8d97718",
+      "targets": ["persistence/test_task_usage_observations.py", "persistence/test_subscription_usage.py::test_observed_subscription_tokens_are_replaced_by_measured_settlement", "persistence/test_task_usage_execution_policy.py"],
+      "result": "9 passed; 39.12 seconds",
+      "receipt": ".llm-output/accounting-admission-acceptance.log",
+      "reuse": "Admission and subscription-settlement branches retain matching evidence; changed authoritative ModelUsage reading also has the later PostgreSQL and gateway checks."
+    },
+    {
+      "name": "coupled policy/reporting/shared acceptance",
+      "candidate": "bb3a4524206e9ff528d5a659b7cbf7f2b3808335; superseded reviewed checkpoint",
+      "targets": ["four baseline suites", "application/test_task_usage_policy.py::test_idempotency_distinguishes_omitted_preserve_from_explicit_clear", "task_usage_contract/test_batch_contract.py", "task_usage_contract/test_batch_integration.py"],
+      "result": "32 passed; 48.59 seconds",
+      "receipt": ".llm-output/integration-repairs/final-coupled-acceptance.log",
+      "reuse": "The four omission/null policy cases, shared contracts and normal authenticated PostgreSQL API path are unchanged. Repaired baseline paths have subsequent receipts."
+    },
+    {
+      "name": "consolidated accounting/reporting repairs",
+      "execution": "uv run --frozen --extra dev python -m pytest <affected targets> -q",
+      "targets": ["domain/test_task_usage_baselines.py", "application/test_task_usage_baselines.py", "persistence/test_task_usage_baselines.py", "api/test_task_usage_reporting.py", "application/test_task_usage_observations.py", "persistence/test_task_usage_observations.py", "task_usage_contract/test_batch_integration.py"],
+      "result": "40 affected tests passed; 18 PostgreSQL tests passed; final domain/application and repair focus passed 12 plus 3 tests",
+      "receipts": [".llm-output/integration-repairs/lane-integrated-repair/affected.txt", ".llm-output/integration-repairs/lane-integrated-repair/pg-final.txt", ".llm-output/integration-repairs/lane-integrated-repair/final-focus.txt", ".llm-output/integration-repairs/lane-integrated-repair/final-repair.txt"],
+      "binding": "The 40/18 checks precede a source-role simplification. Its affected cases were rerun in the 3-test focus and final 13-test persistence file. The 12-test focus covers final member/cohort source changes. Other relevant source inputs remain unchanged."
+    },
+    {
+      "name": "real gateway record through storage to totals and baseline",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q",
+      "result": "New gateway test passed; final affected persistence file: 13 passed",
+      "receipts": [".llm-output/integration-repairs/lane-integrated-repair/gateway-store-bound.txt", ".llm-output/integration-repairs/lane-integrated-repair/gateway-affected-file.txt"],
+      "evidence": "Local ADK stub emits prompt100/cache80 and prompt100/cache10. UsageRepository retains uncached20/cache80 and uncached90/cache10. Bound totals are input200/output10/cache90; baseline and phase totals sum to210. No provider call."
+    },
+    {
+      "name": "broad-suite failure repairs",
+      "commands": ["uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_contracts.py apps/orchestrator/tests/agents/test_failed_agent_usage.py -q", "rtk proxy uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/tools/test_worktree_runner.py -q"],
+      "result": "63 agent tests passed; 15 runner tests passed",
+      "receipts": [".llm-output/integration-repairs/unit-fixture-repair-green.log", ".llm-output/integration-repairs/runner-affected-suite.log", ".llm-output/integration-repairs/runner-timing-recheck.log", ".llm-output/integration-repairs/runner-timing-repair-green.log"],
+      "scope": "Agent tests now expect omitted token caps to be None and supply the admitted project's identity. An unchanged runner reproduced its one-second Git-validation startup timeout; its bounded test wait is ten seconds, with all cancellation/process/capability assertions retained. Production runner/Git code is unchanged against the foundation."
+    },
+    {
+      "name": "final static and generated contract checks",
+      "commands": ["rtk proxy uv run --frozen --extra dev mypy apps/orchestrator/src/forge", "rtk proxy uv run --frozen --extra dev ruff check apps/orchestrator/src apps/orchestrator/tests tests scripts apps/orchestrator/migrations", "uv run --frozen --extra dev python scripts/export-openapi.py", "npm run api:check", "git diff --cached --check"],
+      "result": "mypy: 554 source files passed; Ruff, OpenAPI consistency, generated API types and whitespace checks passed",
+      "receipts": [".llm-output/integration-repairs/post-repair-full-mypy.log", ".llm-output/integration-repairs/post-repair-full-ruff-corrected.log", ".llm-output/integration-repairs/post-repair-openapi-check.log", ".llm-output/integration-repairs/post-repair-api-check.log"],
+      "binding": "mypy covers final source; subsequent changes were test-only. Ruff and generated contract checks cover final inputs. An earlier Ruff command mistakenly targeted a nonexistent root migrations directory; that diagnostic is retained separately."
+    },
+    {
+      "name": "web regression and build",
+      "candidate": "f193a9dcc851aedfd2984dbe209b561ca8d97718",
+      "result": "798 tests passed across 76 files; web typecheck, lint and build passed",
+      "receipts": [".llm-output/integrated-web-tests.log", ".llm-output/integrated-web-types.log", ".llm-output/integrated-web-lint.log", ".llm-output/integrated-web-build.log"],
+      "reuse": "Web runtime, tests, dependencies and generated type shapes are unchanged. Later Field descriptions changed OpenAPI descriptions/generated comments only; final API consistency passed."
+    }
+  ],
+  "coverage": [
+    {"invariant": "Admitted source identity and once-only cumulative contribution", "proved": "PostgreSQL binding replay/project/phase authority, conflicting and concurrent duplicate observations, reordered cumulative/delta counters, explicit epochs, concurrent sources and consistent snapshots", "evidence": ".llm-output/lane-96/coverage.json and retained accounting/repair receipts", "unproved": "Production adapter delivery, crash recovery across assembled API/worker/provider paths"},
+    {"invariant": "Final replaces live; unknown differs from zero and reservation", "proved": "Subscription settlement replaces provisional usage; provider-final observation alone does not train a finalized baseline; unknown/lower-bound fields and subset/overflow handling", "evidence": "Accounting admission and lane-integrated-repair PostgreSQL tests", "unproved": "Live-provider final-only and cancelled-process late delivery across the assembled lifecycle"},
+    {"invariant": "Measured samples, access and comparable immutable reference", "proved": "Accepted/completed classification, failed/incomplete/legacy inventory coverage, separate subject kinds, access/filter boundary, one-member filters, rolling fallback statistics/evidence, frozen replay and manual zero-measurement provenance", "evidence": "Baseline domain/application/API/PostgreSQL receipts and final 13-test persistence file", "unproved": "Frozen-cohort persistence test stubs history retrieval; finer project ACL does not exist; duplicate acceptance is not a separately added fixture"},
+    {"invariant": "Optional caps and direct authenticated append-only revisions", "proved": "Omission/null/finite legacy/signed64 values, authenticated CAS/replay/conflicting keys, preserve-versus-clear semantics, concurrent revisions and immutable old execution metadata", "evidence": "Shared contract/migration tests, policy four-case repair, normal PostgreSQL API and execution admission receipts", "unproved": "Whole-run checkpoint enforcement and assembled active-owner continuation"},
+    {"invariant": "Missing policy is inert and actual references remain immutable", "proved": "Concurrent/replayed no-policy freeze returns None; real actor/expected_revision initialization; sparse configured reference; frozen replay after policy change; revision/freeze race", "evidence": "test_unconfigured_project_freeze_is_inert_and_replay_is_none in final persistence receipt", "unproved": "Later monitor assemblers must handle the optional no-reference result explicitly"}
+  ],
+  "review": {
+    "jev": {"status": "attempted; partial", "final_receipt": ".llm-output/integration-repairs/jev-review-final.json", "diff_sha256": "ccbfcbb4c6c2c7ecb197a4ae1dc8e7ed2af93e7e76088519ad2658c9cc3bcbde", "limits": ["hunk_limit", "operation_budget_reached", "oversized_hunk_omitted"], "meaning": "Advisory compatibility signals, inspected against code and matching checks; incomplete coverage is not an all-clear."},
+    "independent": "One integrated fresh Astra-low review of bb3a452 after the locally checked Claude Opus 5.5 route failed expired OAuth authentication. All five substantiated findings were consolidated into one accounting-owner repair; no automatic extra gate or whole-change re-review.",
+    "resolved_findings": ["UM-001: cached input normalized only at ModelUsage read boundaries, gateway/storage/totals path checked", "UM-002: conjunctive member matching shared across selection and buckets", "UM-003: one rolling cohort drives summary and frozen evidence", "UM-004: no fabricated policy revision for an unconfigured project", "UM-005: subscription attempt source IDs inherit task purpose"],
+    "provider_routing": "Initial routine Gemini attempt was blocked by adapter instruction-path setup before launch, not quota exhaustion; native Luna-medium fallback completed #97. Stateful #96/#100 and consolidated repairs used native Sol-medium complex workers. Claude auth failure was disclosed; no quota state was falsified.",
+    "receipts": ".llm-output/integration-repairs/integrated-review-findings.json; review-1/; agent-framework/; lane-integrated-repair/coverage.json; initial lane contracts and failed receipts retained"
+  },
+  "remaining_limits": [
+    "Adapter streaming/final-only observation delivery and authoring telemetry remain #98/#99.",
+    "Durable run/authoring checkpoint settlement, restart/cancellation races and direct owner continuation remain #101/#102.",
+    "Policy/reporting/continuation UI and complete production assembly/acceptance remain #103/#104/#106.",
+    "The monitoring aggregate hard cap currently applies per newly admitted API agent execution; a whole-run checkpoint guard is not claimed.",
+    "Context occupancy is separate from cumulative input. Context diagnostics remain advisory; usable live capacity and context-cap enforcement are not established by this batch.",
+    "Unclassified or incompletely attributed legacy histories do not train whole-subject expectations. Accessible reporting follows the existing operator/project boundary; finer ACL behavior is unproved.",
+    "No final complete-suite rerun, hosted CI, automatic PR smoke or live-provider acceptance was performed for this batch."
+  ],
+  "publication": {"pushed": false, "pr_created": false, "hosted_ci_dispatched": false, "runtime_live_provider_called": false, "merged": false, "authorization_required": ["push", "CI-triggering PR operation", "full hosted CI run", "runtime live-provider work", "immediate merge"]},
+  "issue_state": "#96/#97/#100 remain open pending publication/merge; #95/#105 remain closed; foundation PR107 is merged"
+}
