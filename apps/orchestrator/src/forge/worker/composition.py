@@ -316,6 +316,9 @@ class BoundPlanningGateway:
             if policy.id != run.project_id or policy.version != run.policy_version:
                 raise AgentGatewayError("policy mismatch")
 
+            if request.reasoning_effort != policy.planner_model.reasoning_effort:
+                raise AgentGatewayError("policy planner reasoning mismatch")
+
             envelope = None
             if self._underlying_gateway_factory is None:
                 subscription = getattr(uow, "subscription", None)

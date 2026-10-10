@@ -50,6 +50,20 @@ test('shows compact role rows with one model chooser and one collapsed advanced 
   expect(screen.getByLabelText('Primary reasoning')).toBeInTheDocument();
 });
 
+test('renders visible reasoning labels in RouteFields without changing aria-label names or effort persistence', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProfileEditor onSave={save} />);
+  const reasoningSelect = screen.getByLabelText('Primary reasoning');
+  expect(reasoningSelect).toBeInTheDocument();
+  const reasoningLabels = screen.getAllByText('Reasoning');
+  expect(reasoningLabels.length).toBeGreaterThan(0);
+  expect(reasoningLabels[0]).not.toHaveClass('sr-only');
+  await userEvent.selectOptions(reasoningSelect, '__custom__');
+  await userEvent.selectOptions(reasoningSelect, 'high');
+  await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
+  expect(save.mock.calls[0][0].preferences[0].preferred_route.effort).toBe('high');
+});
+
 test('edits reasoning independently from the model and saves Astra 6 Low', async () => {
   const save = vi.fn().mockResolvedValue(undefined);
   render(<ProfileEditor onSave={save} />);

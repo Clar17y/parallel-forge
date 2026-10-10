@@ -107,6 +107,7 @@ class BoundDeliveryGateway:
             or request.parent_execution_id is not None
             or request.provider != model.provider
             or request.model != model.model
+            or request.reasoning_effort != model.reasoning_effort
             or request.budget != AgentBudget.from_model_policy(model)
             or request.allowed_tools != expected_tools
             or admission is None

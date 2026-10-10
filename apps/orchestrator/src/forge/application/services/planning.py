@@ -255,6 +255,7 @@ class PlanningService:
                 instruction_digest=loaded_prompt.digest,
                 allowed_tools=_PLANNER_TOOLS,
                 budget=budget,
+                reasoning_effort=binding.policy.planner_model.reasoning_effort,
             )
             input_bytes = _canonical_json_bytes(planner_input.model_dump(mode="json"))
             input_descriptor = await self._store_json(input_bytes)

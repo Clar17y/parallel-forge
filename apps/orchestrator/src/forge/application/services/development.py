@@ -165,6 +165,7 @@ class DevelopmentService:
             instruction_digest=prompt.digest,
             allowed_tools=_TOOLS,
             budget=AgentBudget.from_model_policy(approved.policy.developer_model),
+            reasoning_effort=approved.policy.developer_model.reasoning_effort,
         )
         input_descriptor = await self._put(
             self._json(

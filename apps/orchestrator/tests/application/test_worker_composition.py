@@ -7,7 +7,9 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Self
+from types import SimpleNamespace
+from typing import Literal, Self
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -659,9 +661,25 @@ class _FakeUoW:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("binding_change", ["none", "task", "state", "base", "policy", "budget"])
+@pytest.mark.parametrize(
+    ("binding_change", "policy_effort", "request_effort", "frozen_route"),
+    [
+        (change, None, None, False)
+        for change in ("none", "task", "state", "base", "policy", "budget")
+    ] + [
+        ("none", effort, effort, False) for effort in ("low", "medium", "high")
+    ] + [
+        ("reasoning", approved, supplied, frozen)
+        for approved, supplied in ((None, "high"), ("low", None), ("low", "high"),
+                                    ("medium", "low"), ("high", "low"))
+        for frozen in (False, True)
+    ],
+)
 async def test_bound_planning_gateway_derives_and_validates_request_and_exact_tools(
-    tmp_path: Path, binding_change: str
+    tmp_path: Path, binding_change: str,
+    policy_effort: Literal["low", "medium", "high"] | None,
+    request_effort: Literal["low", "medium", "high"] | None,
+    frozen_route: bool,
 ) -> None:
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
@@ -681,7 +699,8 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
         default_branch="main",
         secret_paths=(".env",),
         planner_model=AgentModelPolicy(
-            provider="google", model="gemini-2.5-pro", max_tool_calls=100
+            provider="google", model="gemini-2.5-pro", max_tool_calls=100,
+            reasoning_effort=policy_effort,
         ),
     )
     policy_record = ProjectPolicyRecord(
@@ -801,7 +820,14 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         ),
         budget=AgentBudget.from_model_policy(policy.planner_model),
+        reasoning_effort=request_effort,
     )
+
+    if frozen_route:
+        uow.subscription = SimpleNamespace(envelope_for_run=AsyncMock(
+            side_effect=AssertionError("invalid reasoning must fail before route lookup")
+        ))
+        bound_gateway._underlying_gateway_factory = None
 
     if binding_change == "task":
         request = request.model_copy(update={"task_id": uuid4()})
@@ -821,9 +847,11 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
             update={"budget": request.budget.model_copy(update={"max_cost_minor": 999999})}
         )
     if binding_change != "none":
-        with pytest.raises(AgentGatewayError):
+        with pytest.raises(AgentGatewayError, match="^agent gateway execution failed$"):
             await bound_gateway.execute(request)
         assert not captured_bound_tools
+        if frozen_route:
+            uow.subscription.envelope_for_run.assert_not_awaited()
         return
     result = await bound_gateway.execute(request)
     assert result.finish_status == AgentFinishStatus.SUCCEEDED
