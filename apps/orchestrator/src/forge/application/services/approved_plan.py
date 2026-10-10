@@ -12,6 +12,7 @@ from forge.application.ports.executions import ExecutionStatus
 from forge.application.ports.tasks import TaskRecord
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.plan_evidence import validate_subscription_plan_fields
+from forge.domain.agent import combined_token_cap
 from forge.domain.approval import (
     PlanApprovalEvidence,
     SubscriptionPlanApprovalEvidence,
@@ -179,8 +180,10 @@ class ApprovedPlanLoader:
                 required_checks={name: "planned" for name in sorted(plan.required_checks)},
                 runner_mode=policy.runner_mode,
                 local_remediation_limit=policy.local_remediation_limit,
-                token_budget=policy.planner_model.max_input_tokens
-                + policy.planner_model.max_output_tokens,
+                token_budget=combined_token_cap(
+                    policy.planner_model.max_input_tokens,
+                    policy.planner_model.max_output_tokens,
+                ),
                 cost_budget_minor=policy.planner_model.max_cost_minor,
                 duration_budget_seconds=policy.planner_model.max_duration_seconds,
             )

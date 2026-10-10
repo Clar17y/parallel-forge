@@ -121,8 +121,20 @@ class AgentModelPolicy(BaseModel):
 
     provider: str = Field(default="google", min_length=1)
     model: str = Field(default="gemini-3.5-flash", min_length=1)
-    max_input_tokens: int = Field(default=100_000, ge=1)
-    max_output_tokens: int = Field(default=16_000, ge=1)
+    max_input_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**63 - 1,
+        strict=True,
+        description="Optional input hard cap; omitted or null means no token ceiling, not expected usage.",
+    )
+    max_output_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**63 - 1,
+        strict=True,
+        description="Optional output hard cap; omitted or null means no token ceiling, not expected usage.",
+    )
     max_tool_calls: int = Field(default=100, ge=0)
     max_duration_seconds: int = Field(default=1800, ge=1)
     max_cost_minor: int = Field(default=1000, ge=0)

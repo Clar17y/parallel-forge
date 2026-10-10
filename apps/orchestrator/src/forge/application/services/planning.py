@@ -61,15 +61,16 @@ from forge.application.services.resume_source import (
     resume_origin,
 )
 from forge.application.services.suspended_delivery import record_suspended_delivery
+from forge.application.services.task_usage_policy import resolve_agent_budget_for_admission
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
-    AgentBudget,
     AgentFinishStatus,
     AgentRequest,
     PlannerInput,
     PolicySummary,
     UntrustedContent,
     UntrustedSourceKind,
+    combined_token_cap,
 )
 from forge.domain.approval import ApprovalGate, PlanApprovalEvidence, canonical_digest
 from forge.domain.artifact import ArtifactDescriptor
@@ -240,7 +241,9 @@ class PlanningService:
             feedback = await self._revision_feedback(command, work, binding.run.id)
             planner_input = await self._read_context(binding, feedback=feedback)
             loaded_prompt = self._load_prompt()
-            budget = AgentBudget.from_model_policy(binding.policy.planner_model)
+            budget = await resolve_agent_budget_for_admission(
+                work, binding.run.project_id, binding.policy.planner_model
+            )
             request = AgentRequest(
                 execution_id=execution_id,
                 run_id=binding.run.id,
@@ -463,7 +466,9 @@ class PlanningService:
                 required_checks={name: "planned" for name in sorted(plan.required_checks)},
                 runner_mode=binding.policy.runner_mode,
                 local_remediation_limit=binding.policy.local_remediation_limit,
-                token_budget=request.budget.max_input_tokens + request.budget.max_output_tokens,
+                token_budget=combined_token_cap(
+                    request.budget.max_input_tokens, request.budget.max_output_tokens
+                ),
                 cost_budget_minor=request.budget.max_cost_minor,
                 duration_budget_seconds=request.budget.max_duration_seconds,
             )
@@ -706,6 +711,8 @@ class PlanningService:
             request.provider,
             request.model,
             instruction_digest=request.instruction_digest,
+            monitoring_policy_revision=request.budget.monitoring_policy_revision,
+            hard_token_cap=request.budget.max_total_tokens,
             input_artifact_id=input_id,
             transition_from=(
                 RunState.CREATED.value if latest.run.state is RunState.CREATED else None

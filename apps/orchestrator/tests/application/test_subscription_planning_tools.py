@@ -17,7 +17,8 @@ from forge.domain.tool import (
     ToolRequest,
     repository_resource_identity,
 )
-from test_planner_tools import PROJECT_ID, RUN_ID, TASK_ID, _service
+
+from .test_planner_tools import PROJECT_ID, RUN_ID, TASK_ID, _service
 
 
 def context(purpose=SpecialistPurpose.PRIMARY):

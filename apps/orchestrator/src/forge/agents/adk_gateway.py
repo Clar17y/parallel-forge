@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final, Protocol, cast, runtime_checkable
+from typing import Final, Protocol, cast, overload, runtime_checkable
 
 from forge.agents.adk_runtime import (
     ADK_MAX_PAYLOAD_BYTES,
@@ -98,8 +98,9 @@ _ROLE_BINDINGS: Final[dict[AgentRole, _RoleBinding]] = {
 
 @dataclass(frozen=True, slots=True)
 class _BudgetLimits:
-    input_tokens: int
-    output_tokens: int
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
     tool_calls: int
     duration_ms: int
     cost_minor: int
@@ -157,23 +158,24 @@ def _strict_metadata(value: object, *, maximum: int, uppercase: bool = False) ->
 
 def _limits(request: AgentRequest) -> _BudgetLimits:
     budget = request.budget
-    values = (
-        budget.max_input_tokens,
-        budget.max_output_tokens,
-        budget.max_tool_calls,
-        budget.max_duration_seconds,
-        budget.max_cost_minor,
-    )
+    token_caps = (budget.max_input_tokens, budget.max_output_tokens, budget.max_total_tokens)
+    values = (budget.max_tool_calls, budget.max_duration_seconds, budget.max_cost_minor)
+    if any(
+        value is not None and (type(value) is not int or value < 0 or value > 2**63 - 1)
+        for value in token_caps
+    ):
+        raise AgentBudgetExceeded()
     if any(type(value) is not int or value < 0 for value in values):
         raise AgentBudgetExceeded()
     duration_ms = budget.max_duration_seconds * 1_000
     if duration_ms > _PG_INT32_MAX:
         raise AgentBudgetExceeded()
-    if any(value > _PG_INT32_MAX for value in values[:3] + (budget.max_cost_minor,)):
+    if budget.max_tool_calls > _PG_INT32_MAX or budget.max_cost_minor > _PG_INT32_MAX:
         raise AgentBudgetExceeded()
     return _BudgetLimits(
         input_tokens=budget.max_input_tokens,
         output_tokens=budget.max_output_tokens,
+        total_tokens=budget.max_total_tokens,
         tool_calls=budget.max_tool_calls,
         duration_ms=duration_ms,
         cost_minor=budget.max_cost_minor,
@@ -415,8 +417,12 @@ def _attempt_over_budget(
 ) -> bool:
     usage = result.usage
     return (
-        usage.input_tokens > limits.input_tokens
-        or usage.output_tokens > limits.output_tokens
+        (limits.input_tokens is not None and usage.input_tokens > limits.input_tokens)
+        or (
+            limits.total_tokens is not None
+            and usage.input_tokens + usage.output_tokens > limits.total_tokens
+        )
+        or (limits.output_tokens is not None and usage.output_tokens > limits.output_tokens)
         or usage.tool_call_count > limits.tool_calls
         or result.duration_ms > limits.duration_ms
         or effective_cost_minor > limits.cost_minor
@@ -437,8 +443,20 @@ def _status_for_finish(reason: AdkFinishReason) -> AgentFinishStatus:
             return AgentFinishStatus.FAILED
 
 
-def _remaining(limit: int, used: int) -> int:
-    if type(limit) is not int or type(used) is not int:
+@overload
+def _remaining(limit: int, used: int) -> int: ...
+
+
+@overload
+def _remaining(limit: None, used: int) -> None: ...
+
+
+def _remaining(limit: int | None, used: int) -> int | None:
+    if type(used) is not int:
+        raise AgentBudgetExceeded()
+    if limit is None:
+        return None
+    if type(limit) is not int:
         raise AgentBudgetExceeded()
     if used > limit:
         return 0
@@ -545,6 +563,9 @@ class GoogleAdkGateway:
         remaining = _BudgetLimits(
             input_tokens=_remaining(limits.input_tokens, aggregate.input_tokens),
             output_tokens=_remaining(limits.output_tokens, aggregate.output_tokens),
+            total_tokens=_remaining(
+                limits.total_tokens, aggregate.input_tokens + aggregate.output_tokens
+            ),
             tool_calls=_remaining(limits.tool_calls, aggregate.tool_call_count),
             duration_ms=_remaining(limits.duration_ms, aggregate.duration_ms),
             cost_minor=_remaining(limits.cost_minor, first_effective_cost),
@@ -669,6 +690,7 @@ class GoogleAdkGateway:
                 user_payload_json=payload,
                 max_input_tokens=limits.input_tokens,
                 max_output_tokens=limits.output_tokens,
+                max_total_tokens=limits.total_tokens,
                 max_tool_calls=limits.tool_calls,
                 max_duration_ms=limits.duration_ms,
                 max_cost_minor=limits.cost_minor,

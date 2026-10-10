@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from forge.domain.agent import AgentBudget, combined_token_cap
 from forge.domain.policy import (
     AgentModelPolicy,
     CommandSpec,
@@ -51,6 +52,31 @@ def test_policy_defaults_to_three_cycles_and_docker() -> None:
     assert policy.runner_mode is RunnerMode.DOCKER
     assert policy.local_remediation_limit == 3
     assert policy.remote_remediation_limit == 3
+
+
+def test_new_model_policy_has_no_implicit_token_cap_but_preserves_explicit_caps() -> None:
+    defaults = AgentModelPolicy()
+    assert defaults.max_input_tokens is None
+    assert defaults.max_output_tokens is None
+    assert (
+        AgentModelPolicy(max_input_tokens=100_000, max_output_tokens=16_000).max_input_tokens
+        == 100_000
+    )
+    with pytest.raises(ValidationError):
+        AgentModelPolicy(max_input_tokens=0)
+
+    legacy = make_policy(planner_model=AgentModelPolicy(max_input_tokens=75, max_output_tokens=25))
+    decoded = ProjectPolicy.model_validate(legacy.model_dump(mode="json"))
+    assert (decoded.planner_model.max_input_tokens, decoded.planner_model.max_output_tokens) == (
+        75,
+        25,
+    )
+    assert AgentBudget.from_model_policy(decoded.planner_model).max_output_tokens == 25
+    assert AgentBudget().max_input_tokens is None
+    assert combined_token_cap(None, None) is None
+    assert combined_token_cap(75, None) is None
+    assert combined_token_cap(75, 25) == 100
+    assert combined_token_cap(2**63 - 1, 1) is None
 
 
 def test_commands_are_the_single_registry_for_every_step_kind() -> None:

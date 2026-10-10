@@ -12,6 +12,7 @@ from forge.domain.task_usage_contract import (
     MonitoringPolicy,
     Observation,
     OwnerCommand,
+    SubjectKey,
     WorkUnitBinding,
 )
 from pydantic import StrictBool, StrictInt
@@ -21,6 +22,75 @@ class TaskUsageObserver(Protocol):
     """Companion capability; existing provider gateways need not implement it."""
 
     async def observe_usage(self, observation: Observation) -> None: ...
+
+
+class TaskUsageObservationStore(Protocol):
+    """Short independent observation transactions, separate from settlement."""
+
+    async def bind(self, binding: WorkUnitBinding) -> None: ...
+    async def append_observation(self, observation: Observation) -> bool: ...
+    async def binding_for_source(
+        self, project_id: UUID, source_kind: str, source_id: UUID
+    ) -> WorkUnitBinding | None: ...
+
+
+class MonitoringPolicyRepository(Protocol):
+    """Append-only project settings, with explicit actor and optimistic revision."""
+
+    async def get(
+        self, project_id: UUID, revision: int | None = None
+    ) -> MonitoringPolicy | None: ...
+
+    async def append_policy_revision(
+        self, policy: MonitoringPolicy, *, expected_revision: int, actor_id: UUID
+    ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizedSourceFact:
+    binding: WorkUnitBinding
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_input_tokens: int | None
+    reasoning_output_tokens: int | None
+    context_occupied_tokens: int | None
+    context_capacity_tokens: int | None
+    compaction_count: int | None
+    completeness: str
+    final_status: str | None
+    evidence_kind: str
+    disagreements: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class UsageTotals:
+    subject: SubjectKey
+    snapshot_digest: str
+    source_count: int
+    final_source_count: int
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_input_tokens: int | None
+    reasoning_output_tokens: int | None
+    completeness: str
+    source_facts: tuple[FinalizedSourceFact, ...]
+
+    @property
+    def known_total_tokens(self) -> int | None:
+        from forge.domain.task_usage_contract import MAX_SIGNED_BIGINT
+
+        known = [v for v in (self.input_tokens, self.output_tokens) if v is not None]
+        if not known:
+            return None
+        total = sum(known)
+        if total > MAX_SIGNED_BIGINT:
+            raise ValueError("work-unit usage exceeds signed-64-bit range")
+        return total
+
+
+class TaskUsageTotalsReader(Protocol):
+    async def totals(self, subject: SubjectKey) -> UsageTotals: ...
+    async def finalized_sources(self, subject: SubjectKey) -> tuple[FinalizedSourceFact, ...]: ...
 
 
 class TaskUsageRepository(Protocol):

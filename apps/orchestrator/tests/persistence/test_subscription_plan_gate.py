@@ -36,7 +36,15 @@ from test_subscription_usage import _known, _reservation
 
 
 async def proposal_case(
-    session_factory, tmp_path, *, primary_budget=None, plan_scope=None, plan_checks=("unit",), review_route=None, pause_before_settle=False, pause_callback=None
+    session_factory,
+    tmp_path,
+    *,
+    primary_budget=None,
+    plan_scope=None,
+    plan_checks=("unit",),
+    review_route=None,
+    pause_before_settle=False,
+    pause_callback=None,
 ):
     factory = lambda: PostgresUnitOfWork(session_factory)
     project_id, task_id = uuid4(), uuid4()
@@ -100,7 +108,11 @@ async def proposal_case(
         run = await work.session.get(Run, persisted_run.id)
         run.state, run.base_ref, run.base_sha = RunState.PLANNING.value, "refs/heads/main", "a" * 40
         primary = await _admit_run(
-            work, persisted_run, (_route("p"), _route("p")), budget=primary_budget, review_route=review_route
+            work,
+            persisted_run,
+            (_route("p"), _route("p")),
+            budget=primary_budget,
+            review_route=review_route,
         )
         if plan_scope is not None:
             primary_row = await work.session.get(SubscriptionTask, primary)
@@ -190,7 +202,12 @@ async def proposal_case(
         required_checks={name: "planned" for name in plan.required_checks},
         runner_mode=policy.runner_mode,
         local_remediation_limit=policy.local_remediation_limit,
-        token_budget=policy.planner_model.max_input_tokens + policy.planner_model.max_output_tokens,
+        token_budget=(
+            None
+            if policy.planner_model.max_input_tokens is None
+            or policy.planner_model.max_output_tokens is None
+            else policy.planner_model.max_input_tokens + policy.planner_model.max_output_tokens
+        ),
         cost_budget_minor=policy.planner_model.max_cost_minor,
         duration_budget_seconds=policy.planner_model.max_duration_seconds,
         producer=producer,

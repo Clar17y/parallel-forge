@@ -71,9 +71,9 @@ from forge.application.services.resume_source import (
     resume_origin,
 )
 from forge.application.services.suspended_delivery import record_suspended_delivery
+from forge.application.services.task_usage_policy import resolve_agent_budget_for_admission
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
-    AgentBudget,
     AgentFinishStatus,
     AgentRequest,
     ReviewerInput,
@@ -194,14 +194,21 @@ class ReviewService:
         if focus is not None or focus_status is not None:
             baseline = context.model_dump()
             try:
-                context = ReviewerInput.model_validate({
-                    **baseline, "review_focus": focus, "review_focus_status": focus_status,
-                })
+                context = ReviewerInput.model_validate(
+                    {
+                        **baseline,
+                        "review_focus": focus,
+                        "review_focus_status": focus_status,
+                    }
+                )
             except ValidationError:
                 # Optional advice must fit alongside the required review evidence.
-                context = ReviewerInput.model_validate({
-                    **baseline, "review_focus_status": "context_limit",
-                })
+                context = ReviewerInput.model_validate(
+                    {
+                        **baseline,
+                        "review_focus_status": "context_limit",
+                    }
+                )
         prompt = self._prompt()
         request = AgentRequest(
             execution_id=execution_id,
@@ -216,7 +223,9 @@ class ReviewService:
             system_instruction=prompt.instruction,
             instruction_digest=prompt.digest,
             allowed_tools=_TOOLS,
-            budget=AgentBudget.from_model_policy(approved.policy.reviewer_model),
+            budget=await resolve_agent_budget_for_admission(
+                work, approved.run.project_id, approved.policy.reviewer_model
+            ),
             reasoning_effort=approved.policy.reviewer_model.reasoning_effort,
         )
         input_descriptor = await self._put(
@@ -433,8 +442,13 @@ class ReviewService:
         )
 
     async def _review_focus(
-        self, approved: ApprovedPlan, tree: ManagedWorktree, candidate: GitCandidateDiff,
-        git: ControlledGitPort, *, jev: JevPolicy | None,
+        self,
+        approved: ApprovedPlan,
+        tree: ManagedWorktree,
+        candidate: GitCandidateDiff,
+        git: ControlledGitPort,
+        *,
+        jev: JevPolicy | None,
     ) -> tuple[UntrustedContent | None, str | None]:
         if jev is None or jev.mode == "off" or not jev.review_focus:
             return None, None
@@ -443,7 +457,9 @@ class ReviewService:
         try:
             reader = self._reader_factory(approved.policy, tree)
             hunks, complete = safe_diff_hunks(
-                reader, candidate.diff.text, changed_paths=candidate.changed_paths,
+                reader,
+                candidate.diff.text,
+                changed_paths=candidate.changed_paths,
                 max_hunks=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates),
             )
             if not hunks:
@@ -454,22 +470,32 @@ class ReviewService:
                 policy_version=approved.policy.version,
                 operation_key=f"review:{approved.run.id.hex}:{diff_digest[:24]}",
                 kind="review_focus",
-                worktree_digest=canonical_digest({"path": str(tree.path), "head": candidate.head_sha}),
+                worktree_digest=canonical_digest(
+                    {"path": str(tree.path), "head": candidate.head_sha}
+                ),
                 candidate_digest=diff_digest,
                 scope_digest=canonical_digest({"hunks": hunks, "complete": complete}),
-                state={"head_sha": candidate.head_sha, "diff_digest": diff_digest,
-                       "hunks": hunks, "coverage_complete": complete},
+                state={
+                    "head_sha": candidate.head_sha,
+                    "diff_digest": diff_digest,
+                    "hunks": hunks,
+                    "coverage_complete": complete,
+                },
                 questions=REVIEW_QUESTIONS,
             )
             result = await self._jev_service.evaluate(request, policy=jev)
             if result.status not in USABLE_JEV_STATUSES:
                 return None, result.status if jev.mode == "on" else None
             current = git.candidate_diff(tree)
-            if (current.head_sha != candidate.head_sha or
-                    hashlib.sha256(current.diff.text.encode("utf-8")).hexdigest() != diff_digest):
+            if (
+                current.head_sha != candidate.head_sha
+                or hashlib.sha256(current.diff.text.encode("utf-8")).hexdigest() != diff_digest
+            ):
                 return None, "stale_candidate" if jev.mode == "on" else None
             current_hunks, _ = safe_diff_hunks(
-                reader, current.diff.text, changed_paths=current.changed_paths,
+                reader,
+                current.diff.text,
+                changed_paths=current.changed_paths,
                 max_hunks=min(MAX_REVIEW_FOCUS_SOURCES, jev.max_candidates),
             )
             if current_hunks != hunks:
@@ -478,13 +504,17 @@ class ReviewService:
                 return None, None
             content = json.dumps(
                 review_focus_payload(
-                    result.status, result.answers, coverage_complete=complete,
+                    result.status,
+                    result.answers,
+                    coverage_complete=complete,
                     identity={"head_sha": candidate.head_sha, "diff_digest": diff_digest},
                 ),
-                sort_keys=True, separators=(",", ":"),
+                sort_keys=True,
+                separators=(",", ":"),
             )
             return UntrustedContent.from_text(
-                content, source_kind=UntrustedSourceKind.REVIEW,
+                content,
+                source_kind=UntrustedSourceKind.REVIEW,
                 source_reference="jev_review_focus",
             ), result.status
         except asyncio.CancelledError:
@@ -534,6 +564,8 @@ class ReviewService:
             request.provider,
             request.model,
             instruction_digest=request.instruction_digest,
+            monitoring_policy_revision=request.budget.monitoring_policy_revision,
+            hard_token_cap=request.budget.max_total_tokens,
             input_artifact_id=persisted.artifact_id,
             reviewer_input=ReviewerEvidenceBinding(
                 validation_evidence_set_id=validation_id,

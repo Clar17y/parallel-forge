@@ -14,12 +14,14 @@ from forge.api.dependencies import (
 )
 from forge.api.errors import translate_error
 from forge.api.schemas.projects import (
+    MonitoringPolicyResponse,
     ProjectCreateRequest,
     ProjectPolicyResponse,
     ProjectPolicyUpdateRequest,
     ProjectResponse,
 )
 from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.task_usage_policy import MonitoringPolicyRevisionRequest
 
 
 def router_for() -> APIRouter:
@@ -121,6 +123,62 @@ def router_for() -> APIRouter:
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
             raise translate_error(error) from None
         return ProjectPolicyResponse.from_record(policy)
+
+    @router.get(
+        "/projects/{project_id}/monitoring-policy",
+        response_model=MonitoringPolicyResponse | None,
+    )
+    async def get_monitoring_policy(
+        project_id: UUID,
+        request: Request,
+        _actor: AuthenticatedActor = Depends(require_operator),  # noqa: B008
+    ) -> MonitoringPolicyResponse | None:
+        try:
+            policy = await _service(request, "task_usage_policy_service").get(project_id)
+        except Exception as error:  # noqa: BLE001
+            raise translate_error(error) from None
+        return None if policy is None else MonitoringPolicyResponse.from_policy(policy)
+
+    @router.get(
+        "/projects/{project_id}/monitoring-policy/{revision}",
+        response_model=MonitoringPolicyResponse,
+    )
+    async def get_monitoring_policy_revision(
+        project_id: UUID,
+        request: Request,
+        revision: int = Path(ge=1),
+        _actor: AuthenticatedActor = Depends(require_operator),  # noqa: B008
+    ) -> MonitoringPolicyResponse:
+        try:
+            policy = await _service(request, "task_usage_policy_service").get(project_id, revision)
+        except Exception as error:  # noqa: BLE001
+            raise translate_error(error) from None
+        if policy is None:
+            raise HTTPException(status_code=404, detail="resource not found")
+        return MonitoringPolicyResponse.from_policy(policy)
+
+    @router.post(
+        "/projects/{project_id}/monitoring-policy",
+        response_model=MonitoringPolicyResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def revise_monitoring_policy(
+        project_id: UUID,
+        body: MonitoringPolicyRevisionRequest,
+        request: Request,
+        idempotency_key: str = Depends(require_idempotency_key),
+        actor: AuthenticatedActor = Depends(require_operator_mutation),  # noqa: B008
+    ) -> MonitoringPolicyResponse:
+        try:
+            result = await _service(request, "task_usage_policy_service").revise(
+                actor=actor,
+                project_id=project_id,
+                idempotency_key=idempotency_key,
+                request=body,
+            )
+        except Exception as error:  # noqa: BLE001
+            raise translate_error(error) from None
+        return MonitoringPolicyResponse.from_revision(result)
 
     return router
 

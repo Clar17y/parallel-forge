@@ -61,9 +61,8 @@ _GEMINI_3_LEVELS: Final[dict[str, types.ThinkingLevel]] = {
     "high": types.ThinkingLevel.HIGH,
 }
 
-def build_adk_thinking_config(
-    model: str, effort: str | None
-) -> types.ThinkingConfig | None:
+
+def build_adk_thinking_config(model: str, effort: str | None) -> types.ThinkingConfig | None:
     """Build typed Google GenAI ThinkingConfig for supported Gemini models."""
     if parse_gemini_cli_composite_id(model) is not None:
         raise AdkRuntimeError(f"CLI composite model {model!r} is not an API model")
@@ -80,7 +79,6 @@ def build_adk_thinking_config(
     if family[0] == "gemini_3_levels":
         return types.ThinkingConfig(thinking_level=_GEMINI_3_LEVELS[effort])
     raise AdkRuntimeError("Reasoning effort is not supported")
-
 
 
 class AdkRuntimeError(RuntimeError):
@@ -405,11 +403,12 @@ class AdkInvocation:
     user_id: str
     session_id: str
     user_payload_json: str
-    max_input_tokens: int
-    max_output_tokens: int
+    max_input_tokens: int | None
+    max_output_tokens: int | None
     max_tool_calls: int
     max_duration_ms: int
     max_cost_minor: int
+    max_total_tokens: int | None = None
     cost_estimator: AdkCostEstimator | None = field(default=None, repr=False, compare=False)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
 
@@ -436,8 +435,9 @@ class AdkInvocation:
         _opaque_id(self.user_id)
         _opaque_id(self.session_id)
         _canonical_json(self.user_payload_json)
-        _strict_nonnegative_int32(self.max_input_tokens)
-        _strict_nonnegative_int32(self.max_output_tokens)
+        for cap in (self.max_input_tokens, self.max_output_tokens, self.max_total_tokens):
+            if cap is not None and (type(cap) is not int or not 0 <= cap <= 2**63 - 1):
+                raise AdkInvocationInvalid()
         _strict_nonnegative_int32(self.max_tool_calls)
         _strict_nonnegative_int32(self.max_duration_ms)
         _strict_nonnegative_int32(self.max_cost_minor)
@@ -610,8 +610,15 @@ def _effective_cost_minor(usage: AdkUsageSummary, request: AdkInvocation) -> int
 def _over_budget(usage: AdkUsageSummary, request: AdkInvocation) -> bool:
     effective_cost = _effective_cost_minor(usage, request)
     return (
-        usage.input_tokens > request.max_input_tokens
-        or usage.output_tokens > request.max_output_tokens
+        (request.max_input_tokens is not None and usage.input_tokens > request.max_input_tokens)
+        or (
+            request.max_total_tokens is not None
+            and usage.input_tokens + usage.output_tokens > request.max_total_tokens
+        )
+        or (
+            request.max_output_tokens is not None
+            and usage.output_tokens > request.max_output_tokens
+        )
         or usage.tool_call_count > request.max_tool_calls
         or effective_cost is None
         or effective_cost > request.max_cost_minor
@@ -763,9 +770,7 @@ class AdkRuntime:
                 model=request.model,
                 client_kwargs={"api_key": credential, "vertexai": False},
             )
-            thinking_config = build_adk_thinking_config(
-                request.model, request.reasoning_effort
-            )
+            thinking_config = build_adk_thinking_config(request.model, request.reasoning_effort)
             generate_content_config = (
                 types.GenerateContentConfig(thinking_config=thinking_config)
                 if thinking_config is not None

@@ -233,6 +233,7 @@ class Observation:
     sequence: StrictInt
     counter_kind: CounterKind
     tokens: TokenCounts
+    counter_epoch: str = "source"
     observed_at: datetime | None = None
     context: ContextWindow | None = None
     scope: str = "source"  # never silently aggregate different sources
@@ -251,6 +252,12 @@ class Observation:
         ):
             raise ValueError("observation identity is invalid")
         _positive(self.sequence, "sequence")
+        if (
+            type(self.counter_epoch) is not str
+            or not self.counter_epoch.strip()
+            or len(self.counter_epoch) > 96
+        ):
+            raise ValueError("counter epoch must be a bounded nonblank identity")
         if not isinstance(self.counter_kind, CounterKind) or not isinstance(
             self.tokens, TokenCounts
         ):
@@ -299,8 +306,11 @@ class MonitoringPolicy:
     checkpoint_multiplier: StrictFloat | StrictInt = 2.0
     history_limit: StrictInt = 50
     minimum_comparables: StrictInt = 20
+    window_days: StrictInt | None = None
     hard_token_cap: StrictInt | None = None
     hard_context_cap: StrictInt | None = None
+    manual_estimate_tokens: StrictInt | None = None
+    allow_cross_project_fallback: StrictBool = True
 
     def __post_init__(self) -> None:
         import math
@@ -317,10 +327,12 @@ class MonitoringPolicy:
                 raise ValueError(f"{name} must be finite and at least one")
         if self.checkpoint_multiplier < self.warning_multiplier:
             raise ValueError("checkpoint multiplier precedes warning")
-        for name in ("hard_token_cap", "hard_context_cap"):
+        for name in ("hard_token_cap", "hard_context_cap", "manual_estimate_tokens", "window_days"):
             value = getattr(self, name)
             if value is not None:
                 _positive(value, name)
+        if type(self.allow_cross_project_fallback) is not bool:
+            raise TypeError("cross-project fallback must be a boolean")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -328,7 +340,7 @@ class BaselineReference:
     binding: WorkUnitBinding
     policy_revision: StrictInt
     sample_count: StrictInt
-    status: str  # ready or insufficient_history
+    status: str  # ready, insufficient_history or a labelled manual estimate
     history_digest: str
     snapshot_digest: str
     estimator_version: str
@@ -369,7 +381,7 @@ class BaselineReference:
             raise ValueError("baseline sample/window counts exceed window limit")
         if type(self.schema_version) is not int or self.schema_version != SCHEMA_VERSION:
             raise ValueError("unsupported baseline schema")
-        if self.status not in {"ready", "insufficient_history"}:
+        if self.status not in {"ready", "insufficient_history", "manual"}:
             raise ValueError("unknown baseline status")
         for name in ("reference_tokens", "median_tokens", "p90_tokens"):
             _nonnegative_number(getattr(self, name), name)
@@ -384,8 +396,8 @@ class BaselineReference:
             raise ValueError("checkpoint threshold precedes warning")
         for name in ("coverage_count", "outcome_count", "source_count"):
             _positive(getattr(self, name), name, allow_zero=True)
-        if self.coverage_count > self.sample_count or self.outcome_count > self.sample_count:
-            raise ValueError("baseline counts exceed samples")
+        if self.coverage_count > self.sample_count or self.coverage_count > self.outcome_count:
+            raise ValueError("baseline measured coverage exceeds samples or outcomes")
         if (
             self.completeness not in {"complete", "lower_bound", "unknown"}
             or self.comparison_scope != "subject"
@@ -433,6 +445,21 @@ class BaselineReference:
             )
         ):
             raise ValueError("ready baseline requires comparable window and resolved thresholds")
+        if self.status == "manual" and (
+            self.sample_count != 0
+            or self.coverage_count != 0
+            or self.outcome_count != 0
+            or self.window_started_at is not None
+            or any(
+                value is not None
+                for value in (self.mean_tokens, self.median_tokens, self.p90_tokens)
+            )
+            or self.reference_tokens is None
+            or self.reference_tokens <= 0
+            or self.warning_threshold_tokens is None
+            or self.checkpoint_threshold_tokens is None
+        ):
+            raise ValueError("manual baseline requires an estimate without measured history")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

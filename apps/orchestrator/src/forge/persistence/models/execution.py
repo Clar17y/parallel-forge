@@ -183,6 +183,11 @@ class AgentExecution(Base, TimestampMixin):
         ),
         CheckConstraint("role IN ('planner','developer','reviewer')", name="role"),
         CheckConstraint(
+            "monitoring_policy_revision IS NULL OR monitoring_policy_revision > 0",
+            name="monitoring_policy_revision",
+        ),
+        CheckConstraint("hard_token_cap IS NULL OR hard_token_cap > 0", name="hard_token_cap"),
+        CheckConstraint(
             "status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED')", name="status"
         ),
     )
@@ -194,6 +199,8 @@ class AgentExecution(Base, TimestampMixin):
     step_id: Mapped[UUID | None] = mapped_column(Uuid, ForeignKey("steps.id", ondelete="SET NULL"))
     role: Mapped[str] = mapped_column(String(24), nullable=False)
     instruction_digest: Mapped[str | None] = mapped_column(String(64))
+    monitoring_policy_revision: Mapped[int | None] = mapped_column(BigInteger)
+    hard_token_cap: Mapped[int | None] = mapped_column(BigInteger)
     instruction_version: Mapped[str] = mapped_column(String(96), nullable=False)
     provider: Mapped[str] = mapped_column(String(96), nullable=False)
     model: Mapped[str] = mapped_column(String(255), nullable=False)

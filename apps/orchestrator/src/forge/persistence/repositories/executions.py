@@ -38,6 +38,7 @@ from forge.persistence.models import (
     ModelUsage,
     Run,
     Step,
+    TaskUsagePolicyRevision,
 )
 from forge.persistence.repositories.artifacts import ArtifactRepository
 from forge.persistence.repositories.events import PostgresEventRepository
@@ -135,10 +136,15 @@ class PostgresExecutionRepository:
         admitted_at: datetime | None = None,
         reviewer_input: ReviewerEvidenceBinding | None = None,
         instruction_digest: str | None = None,
+        monitoring_policy_revision: int | None = None,
+        hard_token_cap: int | None = None,
     ) -> ExecutionAdmission:
         """Admit one running step and execution in the caller's transaction."""
 
         validate_instruction_digest(instruction_digest)
+        for value in (monitoring_policy_revision, hard_token_cap):
+            if value is not None and (type(value) is not int or not 1 <= value <= 2**63 - 1):
+                raise ValueError("monitoring admission cap/revision is invalid")
         requested_admitted_at = admitted_at
         timestamp = _validate_admission_arguments(
             run_id,
@@ -161,6 +167,17 @@ class PostgresExecutionRepository:
             raise ExecutionConflict()
         try:
             run = await self._locked_run(run_id)
+            if monitoring_policy_revision is not None:
+                policy = (
+                    await self._session.execute(
+                        select(TaskUsagePolicyRevision).where(
+                            TaskUsagePolicyRevision.project_id == run.project_id,
+                            TaskUsagePolicyRevision.revision == monitoring_policy_revision,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if policy is None or policy.hard_token_cap != hard_token_cap:
+                    raise ExecutionConflict()
             if reviewer_input is not None:
                 await self._validate_reviewer_input(run, reviewer_input)
             step = await self._locked_step_for_key(run_id, kind, attempt)
@@ -191,6 +208,8 @@ class PostgresExecutionRepository:
                     role=role.value,
                     instruction_version=instruction_version,
                     instruction_digest=instruction_digest,
+                    monitoring_policy_revision=monitoring_policy_revision,
+                    hard_token_cap=hard_token_cap,
                     provider=provider,
                     model=model,
                     status="PENDING" if pending_reviewer else ExecutionStatus.RUNNING.value,
@@ -221,6 +240,11 @@ class PostgresExecutionRepository:
                 raise ExecutionConflict()
             execution = linked[0]
             if execution.id != agent_execution_id:
+                raise ExecutionConflict()
+            if (
+                execution.monitoring_policy_revision != monitoring_policy_revision
+                or execution.hard_token_cap != hard_token_cap
+            ):
                 raise ExecutionConflict()
             _validate_admission_identity(
                 step,
@@ -1064,6 +1088,8 @@ def _admission_from_rows(
         transition_to=step.transition_to,
         admitted_at=step.started_at,
         instruction_digest=execution.instruction_digest,
+        monitoring_policy_revision=execution.monitoring_policy_revision,
+        hard_token_cap=execution.hard_token_cap,
         is_new=is_new,
         status=status,
         finish_status=finish_status,

@@ -27,6 +27,7 @@ from forge.application.services.tasks import (
     TaskService,
 )
 from forge.domain.policy import DatabaseProvisioningPolicy
+from forge.domain.task_usage_contract import MonitoringPolicy
 from pydantic import ValidationError
 
 ACTOR = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
@@ -253,6 +254,9 @@ class FakeUow:
     tasks: FakeTasks
     mutations: FakeMutations
     audit: FakeAudit
+    task_usage_policy: FakeMonitoringPolicies = field(
+        default_factory=lambda: FakeMonitoringPolicies()
+    )
     committed: bool = False
 
     async def __aenter__(self) -> Self:
@@ -266,6 +270,29 @@ class FakeUow:
 
     async def rollback(self) -> None:
         self.committed = False
+
+
+@dataclass
+class FakeMonitoringPolicies:
+    policies: dict[UUID, MonitoringPolicy] = field(default_factory=dict)
+    revisions: dict[tuple[UUID, int], MonitoringPolicy] = field(default_factory=dict)
+
+    async def get(self, project_id: UUID, revision: int | None = None) -> MonitoringPolicy | None:
+        if revision is not None:
+            return self.revisions.get((project_id, revision))
+        return self.policies.get(project_id)
+
+    async def append_policy_revision(
+        self, policy: MonitoringPolicy, *, expected_revision: int, actor_id: UUID
+    ) -> None:
+        from forge.persistence.repositories.task_usage_policy import MonitoringPolicyConflict
+
+        assert isinstance(actor_id, UUID)
+        current = self.policies.get(policy.project_id)
+        if (0 if current is None else current.revision) != expected_revision:
+            raise MonitoringPolicyConflict("expected monitoring revision is stale")
+        self.policies[policy.project_id] = policy
+        self.revisions[(policy.project_id, policy.revision)] = policy
 
 
 class FakeInspector:
@@ -324,6 +351,10 @@ async def test_project_registration_is_atomic_hashed_and_does_not_resolve_databa
     )
 
     assert project.current_policy_version == 1
+    assert uow.task_usage_policy.policies[project.id].mode.value == "checkpoint"
+    for role in ("planner_model", "developer_model", "reviewer_model"):
+        assert "max_input_tokens" not in project.policy.document[role]
+        assert "max_output_tokens" not in project.policy.document[role]
     assert project.canonical_path == str(path.resolve())
     assert len(uow.audit.records) == 1
     assert uow.audit.records[0].payload["request_digest"]

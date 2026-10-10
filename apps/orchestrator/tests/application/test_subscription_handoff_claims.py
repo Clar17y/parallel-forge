@@ -5,7 +5,8 @@ from uuid import uuid4
 
 import pytest
 from forge.domain.subscription import AcceptanceCriterion, CheckResultEvidence
-from test_subscription_handoff import case
+
+from .test_subscription_handoff import case
 
 
 def test_completed_handoff_retains_check_history_ending_in_success():

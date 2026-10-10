@@ -1,9 +1,19 @@
 """Strict wire authoring for optional task monitoring allowances."""
 
 from dataclasses import fields, is_dataclass
-from typing import Literal, get_args, get_origin, get_type_hints
+from datetime import datetime
+from typing import Annotated, Literal, get_args, get_origin, get_type_hints
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from forge.application.ports.task_usage import OwnerCommandReceipt, UsageReport
 from forge.domain.task_usage_contract import (
@@ -76,15 +86,74 @@ OwnerCommandReceiptWire = StrictWire(OwnerCommandReceipt)
 UsageReportWire = StrictWire(UsageReport)
 
 
+class UsageHistoryFiltersResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_ids: list[UUID]
+    subject_kind: Literal["run", "authoring_job"] | None = None
+    task_kind: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    window_days: StrictInt | None = Field(default=None, ge=1, le=2**63 - 1)
+    history_limit: StrictInt = Field(ge=1, le=2**63 - 1)
+    minimum_comparables: StrictInt = Field(ge=1, le=2**63 - 1)
+
+
+class UsagePhaseRoleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    phase: str
+    role: str
+    tokens: StrictInt | None = Field(ge=0, le=2**63 - 1)
+
+
+class UsageHistorySummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    status: Literal["ready", "insufficient_history", "manual"]
+    mean_tokens: float | None = Field(default=None, ge=0)
+    median_tokens: float | None = Field(default=None, ge=0)
+    p90_tokens: float | None = Field(default=None, ge=0)
+    reference_tokens: float | None = Field(default=None, ge=0)
+    sample_count: StrictInt = Field(ge=0, le=2**63 - 1)
+    eligible_count: StrictInt = Field(ge=0, le=2**63 - 1)
+    excluded_count: StrictInt = Field(ge=0, le=2**63 - 1)
+    coverage_count: StrictInt = Field(ge=0, le=2**63 - 1)
+    measured_coverage: float | None = Field(default=None, ge=0, le=1)
+    window_started_at: datetime | None = None
+    window_ended_at: datetime | None = None
+    cohort_source: str
+    project_ids: list[UUID]
+    labels: list[str]
+    phase_role_breakdown: list[UsagePhaseRoleResponse]
+    warning_threshold_tokens: float | None = Field(default=None, ge=0)
+    checkpoint_threshold_tokens: float | None = Field(default=None, ge=0)
+
+
+class TaskUsageHistoryResponse(BaseModel):
+    """Measured history, sample coverage and comparable references for generated clients."""
+
+    model_config = ConfigDict(extra="forbid")
+    as_of: datetime
+    filters: UsageHistoryFiltersResponse
+    overview: UsageHistorySummaryResponse
+    by_task_type: dict[str, UsageHistorySummaryResponse]
+    by_project: dict[str, UsageHistorySummaryResponse]
+    by_provider: dict[str, UsageHistorySummaryResponse]
+    by_model: dict[str, UsageHistorySummaryResponse]
+    by_effort: dict[str, UsageHistorySummaryResponse]
+    comparable_references: dict[str, UsageHistorySummaryResponse]
+    excluded_outcomes: dict[str, Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]]
+    failed_attempt_count: StrictInt = Field(default=0, ge=0, le=2**63 - 1)
+
+
 class TaskAllowanceInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: Literal[1] = 1
-    manual_estimate_tokens: int | None = Field(default=None, ge=1)
-    manual_estimate_context_tokens: int | None = Field(default=None, ge=1)
-    hard_token_cap: int | None = Field(default=None, ge=1)
-    hard_context_cap: int | None = Field(default=None, ge=1)
-    legacy_max_input_tokens: int | None = Field(default=None, ge=0)
-    legacy_max_output_tokens: int | None = Field(default=None, ge=0)
+    manual_estimate_tokens: int | None = Field(default=None, ge=1, le=2**63 - 1)
+    manual_estimate_context_tokens: int | None = Field(default=None, ge=1, le=2**63 - 1)
+    hard_token_cap: int | None = Field(default=None, ge=1, le=2**63 - 1)
+    hard_context_cap: int | None = Field(default=None, ge=1, le=2**63 - 1)
+    legacy_max_input_tokens: int | None = Field(default=None, ge=0, le=2**63 - 1)
+    legacy_max_output_tokens: int | None = Field(default=None, ge=0, le=2**63 - 1)
 
     @model_validator(mode="after")
     def validate_domain(self) -> TaskAllowanceInput:

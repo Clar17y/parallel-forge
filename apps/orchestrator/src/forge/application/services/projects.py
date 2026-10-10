@@ -21,6 +21,7 @@ from forge.application.ports.projects import (
     RepositoryInspection,
     RepositoryInspector,
 )
+from forge.application.ports.task_usage import MonitoringPolicyRepository
 from forge.application.services.auth import AuthenticatedActor
 from forge.domain.policy import (
     AgentModelPolicy,
@@ -31,6 +32,7 @@ from forge.domain.policy import (
     RunnerMode,
 )
 from forge.domain.review import FindingSeverity
+from forge.domain.task_usage_contract import MonitoringMode, MonitoringPolicy
 from forge.persistence.repositories.projects import PolicyVersionConflict
 from forge.settings import Settings
 
@@ -41,6 +43,7 @@ class ProjectServiceError(RuntimeError):
 
 class ProjectUnitOfWork(Protocol):
     projects: ProjectRepository
+    task_usage_policy: MonitoringPolicyRepository
     mutations: MutationRepository
     audit: AuditRepository
 
@@ -205,6 +208,11 @@ class ProjectService:
                 instructions_path=request.instructions_path,
                 policy_digest=policy_digest,
                 policy_document=policy_document,
+            )
+            await work.task_usage_policy.append_policy_revision(
+                MonitoringPolicy(project_id=project_id, mode=MonitoringMode.CHECKPOINT),
+                expected_revision=0,
+                actor_id=actor.actor_id,
             )
             await work.audit.append(
                 actor_id=actor.actor_id,
@@ -394,11 +402,16 @@ def _digest(value: object) -> str:
 
 
 def _policy_document(policy: ProjectPolicy) -> dict[str, Any]:
-    """Keep the legacy absence bit when Jev has never been enabled."""
+    """Keep absent optional settings absent in new policy documents."""
 
     document = policy.model_dump(mode="json")
     if policy.jev is None:
         document.pop("jev", None)
+    for role in ("planner_model", "developer_model", "reviewer_model"):
+        model = document[role]
+        for name in ("max_input_tokens", "max_output_tokens"):
+            if model[name] is None:
+                model.pop(name)
     return document
 
 

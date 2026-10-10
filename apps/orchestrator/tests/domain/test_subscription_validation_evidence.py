@@ -8,7 +8,8 @@ from forge.domain.evidence import (
     decode_evidence_manifest,
     encode_evidence_manifest,
 )
-from test_evidence import make_member, make_validation_manifest
+
+from .test_evidence import make_member, make_validation_manifest
 
 
 def test_validation_v2_binds_candidate_contents_and_preserves_v1_wire():

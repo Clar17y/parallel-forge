@@ -131,9 +131,15 @@ class ExecutionAdmission:
     status: ExecutionStatus = ExecutionStatus.RUNNING
     finish_status: AgentFinishStatus | None = None
     instruction_digest: str | None = None
+    monitoring_policy_revision: int | None = None
+    hard_token_cap: int | None = None
 
     def __post_init__(self) -> None:
         validate_instruction_digest(self.instruction_digest)
+        for name in ("monitoring_policy_revision", "hard_token_cap"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or not 1 <= value <= 2**63 - 1):
+                raise ValueError(f"{name} must be a positive signed-64-bit integer")
         _non_nil_uuid(self.run_id, "run identifier")
         _non_nil_uuid(self.step_id, "step identifier")
         _non_nil_uuid(self.agent_execution_id, "agent execution identifier")
@@ -295,6 +301,8 @@ class ExecutionRepository(Protocol):
         admitted_at: datetime | None = None,
         reviewer_input: ReviewerEvidenceBinding | None = None,
         instruction_digest: str | None = None,
+        monitoring_policy_revision: int | None = None,
+        hard_token_cap: int | None = None,
     ) -> ExecutionAdmission: ...
 
     async def finalize(

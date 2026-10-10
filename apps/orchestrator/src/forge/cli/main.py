@@ -24,6 +24,7 @@ from forge.cli.subscription_profiles import profile_app
 from forge.cli.subscription_quota import quota_app
 from forge.cli.subscription_runtime import runtime_app
 from forge.cli.subscription_tasks import task_app
+from forge.cli.task_usage_policy import monitoring_app
 from forge.cli.worktrees import worktree_app
 from forge.persistence.database import create_engine, create_session_factory
 from forge.persistence.unit_of_work import PostgresUnitOfWork
@@ -35,6 +36,7 @@ app.add_typer(operator_app, name="operator")
 app.add_typer(worktree_app, name="worktree")
 app.add_typer(eval_app, name="eval")
 app.add_typer(profile_app, name="profile")
+app.add_typer(monitoring_app, name="monitoring-policy")
 app.add_typer(run_app, name="run")
 app.add_typer(quota_app, name="subscription-quota")
 app.add_typer(runtime_app, name="subscription-runtime")
@@ -104,7 +106,7 @@ def wait_for_dashboard(settings: Settings, timeout: float = 30.0) -> None:
                     and health.get("role") == "api"
                 ):
                     return
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pass
         sleep_time = min(0.25, max(0.0, deadline - time.monotonic()))
         if sleep_time <= 0:

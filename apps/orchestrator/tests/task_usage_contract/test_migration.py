@@ -305,11 +305,20 @@ async def _seed_and_check(url: str):
             final = text(
                 "INSERT INTO task_usage_observations (id, project_id, work_unit_id, event_id, sequence, counter_kind, scope, input_tokens, final, final_status, reconciles_event_id, observed_at, schema_version) VALUES (:id, :project, :unit, 'final-2', 2, 'cumulative', 'source', 10, true, 'succeeded', :prior, now(), 1)"
             )
-            with pytest.raises(IntegrityError):
-                async with db.begin_nested():
-                    await db.execute(
-                        final, {"id": uuid4(), "project": a, "unit": unit, "prior": "unknown"}
-                    )
+            # A final event may arrive before the live event it reconciles.
+            await db.execute(
+                text(str(final).replace("'final-2', 2", "'final-before-live', 3")),
+                {"id": uuid4(), "project": a, "unit": unit, "prior": "unknown"},
+            )
+            assert (
+                await db.scalar(
+                    text(
+                        "SELECT reconciles_event_id FROM task_usage_observations WHERE event_id='final-before-live' AND work_unit_id=:id"
+                    ),
+                    {"id": unit},
+                )
+                == "unknown"
+            )
             await db.execute(final, {"id": uuid4(), "project": a, "unit": unit, "prior": "event-1"})
             assert (
                 await db.scalar(
@@ -689,7 +698,10 @@ def test_additive_migration_and_lineage(test_database_url, alembic_config_factor
     legacy_usage = asyncio.run(_legacy_usage(test_database_url))
     command.upgrade(config, "head")
     run_id = asyncio.run(_seed_and_check(test_database_url))
-    with pytest.raises(RuntimeError, match="durable task usage evidence must not be discarded"):
+    with pytest.raises(
+        RuntimeError,
+        match="durable task usage evidence must not be discarded|without losing retained evidence or owner settings",
+    ):
         command.downgrade(config, "20261007_0037")
 
     async def retained() -> None:
@@ -698,7 +710,7 @@ def test_additive_migration_and_lineage(test_database_url, alembic_config_factor
             async with engine.connect() as db:
                 assert (
                     await db.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "20261010_0038"
+                    == "20261010_0039"
                 )
                 for table in (
                     "task_usage_work_units",
@@ -767,7 +779,7 @@ def test_empty_usage_downgrade_reupgrade_preserves_legacy_history(
 
     asyncio.run(check("20261007_0037"))
     command.upgrade(config, "head")
-    asyncio.run(check("20261010_0038"))
+    asyncio.run(check("20261010_0039"))
 
 
 @pytest.mark.integration
@@ -1041,7 +1053,10 @@ def test_downgrade_refuses_each_retained_usage_shape(
     config = alembic_config_factory(test_database_url)
     command.upgrade(config, "head")
     asyncio.run(_seed_retention_shape(test_database_url, table))
-    with pytest.raises(RuntimeError, match="durable task usage evidence must not be discarded"):
+    with pytest.raises(
+        RuntimeError,
+        match="durable task usage evidence must not be discarded|without losing retained evidence or owner settings",
+    ):
         command.downgrade(config, "20261007_0037")
 
     async def check() -> None:
@@ -1050,7 +1065,7 @@ def test_downgrade_refuses_each_retained_usage_shape(
             async with engine.connect() as db:
                 assert (
                     await db.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "20261010_0038"
+                    == "20261010_0039"
                 )
                 assert await db.scalar(text(f"SELECT count(*) FROM {table}")) == 1
                 assert (
@@ -1115,7 +1130,8 @@ async def test_downgrade_waits_for_writer_then_refuses_committed_evidence(
                         await asyncio.sleep(0.02)
                 await transaction.commit()
                 with pytest.raises(
-                    RuntimeError, match="durable task usage evidence must not be discarded"
+                    RuntimeError,
+                    match="durable task usage evidence must not be discarded|without losing retained evidence or owner settings",
                 ):
                     await downgrade
             finally:
@@ -1125,7 +1141,7 @@ async def test_downgrade_waits_for_writer_then_refuses_committed_evidence(
                     await asyncio.gather(downgrade, return_exceptions=True)
         async with engine.connect() as db:
             assert (
-                await db.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0038"
+                await db.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0039"
             )
             assert (
                 await db.scalar(

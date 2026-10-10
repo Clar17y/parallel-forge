@@ -6,6 +6,8 @@ from copy import deepcopy
 
 import pytest
 from forge.api.schemas.projects import ProjectCreateRequest
+from forge.application.services.task_usage_policy import MonitoringPolicyRevisionResult
+from forge.domain.task_usage_contract import MonitoringPolicy
 from pydantic import ValidationError
 
 
@@ -38,13 +40,63 @@ async def test_projects_list_and_registration_use_injected_service(
 
 
 @pytest.mark.asyncio
+async def test_monitoring_route_uses_authenticated_versioned_owner_action(
+    task10_client, task10_route_context, route_headers
+) -> None:
+    project_id = task10_route_context.project.id
+
+    class FakeMonitoringService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object, object]] = []
+
+        async def get(self, project_id, revision=None):
+            return MonitoringPolicy(project_id=project_id, revision=revision or 1)
+
+        async def revise(self, *, actor, project_id, idempotency_key, request):
+            self.calls.append((actor, idempotency_key, request))
+            return MonitoringPolicyRevisionResult(
+                policy=MonitoringPolicy(
+                    project_id=project_id,
+                    revision=request.expected_revision + 1,
+                    window_days=request.window_days,
+                ),
+                actor_id=actor.actor_id,
+                affected_snapshot="a" * 64,
+            )
+
+    service = FakeMonitoringService()
+    task10_route_context.app.state.task_usage_policy_service = service
+    read = await task10_client.get(f"/api/projects/{project_id}/monitoring-policy")
+    assert read.status_code == 200
+    assert read.json()["hard_token_cap"] is None
+    assert read.json()["window_days"] is None
+    created = await task10_client.post(
+        f"/api/projects/{project_id}/monitoring-policy",
+        headers={**route_headers, "Idempotency-Key": "monitoring-1"},
+        json={"expected_revision": 1, "hard_token_cap": None, "window_days": 30},
+    )
+    assert created.status_code == 201
+    assert created.json()["revision"] == 2
+    assert created.json()["window_days"] == 30
+    assert created.json()["owner_action"]["actor_id"] == str(service.calls[0][0].actor_id)
+    assert created.json()["owner_action"]["affected_snapshot"] == "a" * 64
+    assert service.calls[0][1] == "monitoring-1"
+    assert service.calls[0][2].model_fields_set == {
+        "expected_revision",
+        "hard_token_cap",
+        "window_days",
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["planner_model", "developer_model", "reviewer_model"])
 async def test_registration_rejects_unsupported_reasoning_before_service_call(
     task10_client, task10_route_context, route_headers, role
 ) -> None:
-    payload = {**_project_request(), role: {
-        "provider": "google", "model": "gemini-3-pro", "reasoning_effort": "medium"
-    }}
+    payload = {
+        **_project_request(),
+        role: {"provider": "google", "model": "gemini-3-pro", "reasoning_effort": "medium"},
+    }
     with pytest.raises(ValidationError) as error:
         ProjectCreateRequest.model_validate(payload)
     assert (role, "reasoning_effort") in [tuple(item["loc"]) for item in error.value.errors()]
@@ -64,9 +116,14 @@ async def test_registration_rejects_unsupported_reasoning_before_service_call(
 async def test_registration_rejects_cli_composite_model_before_service_call(
     task10_client, task10_route_context, route_headers, role, effort
 ) -> None:
-    payload = {**_project_request(), role: {
-        "provider": "google", "model": "gemini-3.8-flash-medium", "reasoning_effort": effort
-    }}
+    payload = {
+        **_project_request(),
+        role: {
+            "provider": "google",
+            "model": "gemini-3.8-flash-medium",
+            "reasoning_effort": effort,
+        },
+    }
     with pytest.raises(ValidationError) as error:
         ProjectCreateRequest.model_validate(payload)
     assert (role, "model") in [tuple(item["loc"]) for item in error.value.errors()]

@@ -214,7 +214,9 @@ class _FailureCapturingPlanningService(PlanningService):
 
     async def _snapshot(self, _work: object, command: CommandEnvelope) -> object:
         return SimpleNamespace(
-            run=SimpleNamespace(id=command.run_id, state=RunState.CREATED, version=0),
+            run=SimpleNamespace(
+                id=command.run_id, project_id=uuid4(), state=RunState.CREATED, version=0
+            ),
             task=SimpleNamespace(id=uuid4()),
             policy=SimpleNamespace(
                 planner_model=AgentModelPolicy(

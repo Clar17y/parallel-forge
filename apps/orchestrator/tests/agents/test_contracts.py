@@ -840,8 +840,9 @@ class TestAgentBudgetContract:
 
     def test_default_budget_values_match_specification(self) -> None:
         budget = AgentBudget()
-        assert budget.max_input_tokens == 100_000
-        assert budget.max_output_tokens == 16_000
+        assert budget.max_input_tokens is None
+        assert budget.max_output_tokens is None
+        assert budget.max_total_tokens is None
         assert budget.max_tool_calls == 100
         assert budget.max_duration_seconds == 1800
         assert budget.max_cost_minor == 1000

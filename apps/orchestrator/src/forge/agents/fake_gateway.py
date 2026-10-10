@@ -393,8 +393,19 @@ class FakeAgentGateway:
 
         budget = request.budget
         budget_exceeded = (
-            step.input_tokens + step.cached_input_tokens > budget.max_input_tokens
-            or step.output_tokens > budget.max_output_tokens
+            (
+                budget.max_total_tokens is not None
+                and step.input_tokens + step.cached_input_tokens + step.output_tokens
+                > budget.max_total_tokens
+            )
+            or (
+                budget.max_input_tokens is not None
+                and step.input_tokens + step.cached_input_tokens > budget.max_input_tokens
+            )
+            or (
+                budget.max_output_tokens is not None
+                and step.output_tokens > budget.max_output_tokens
+            )
             or step.tool_calls > budget.max_tool_calls
             or step.duration_ms > budget.max_duration_seconds * 1000
             or step.cost_minor > budget.max_cost_minor
