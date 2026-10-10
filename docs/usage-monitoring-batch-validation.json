@@ -3,16 +3,18 @@
   "repository": "Clar17y/parallel-forge",
   "epic": 94,
   "children": [96, 97, 100],
-  "status": "locally implemented and checked; ready for authorized PR publication",
+  "status": "locally implemented, simplified and checked; publication authorized",
   "feature_complete": false,
   "candidate": {
-    "source_commit": "49e36fec38d1272120742196ea084b037e577a49",
-    "source_tree": "1e738af108d98dbec88de71548edcb25f1e786fe",
+    "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
+    "source_tree": "889e3548dc71ea6ec58702e6667cdd3801b7fa3f",
+    "initial_source_commit": "49e36fec38d1272120742196ea084b037e577a49",
+    "initial_source_tree": "1e738af108d98dbec88de71548edcb25f1e786fe",
     "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
     "branch": "codex/usage-monitoring-accounting-policy",
     "migration_head": "20261010_0039",
-    "integrated_diff_sha256": "ccbfcbb4c6c2c7ecb197a4ae1dc8e7ed2af93e7e76088519ad2658c9cc3bcbde",
-    "binding": "The final source tree exactly matches the checked managed repair worktree. Source was transferred with an index-checked patch and tree equality, then committed in the primary managed worktree. This evidence-only file is excluded from the source identity. Earlier receipts retain their actual candidate; they are reused only for unchanged relevant inputs."
+    "integrated_diff_sha256": "cb4e4a6954111743ff4795040986b94bad36136b5ed69578cabfa4f554ad9e22",
+    "binding": "Initial source49e36fe matched the checked managed repair tree before transfer. Simplified source9592471 adds the five owned source/test paths covered below. The integrated code diff excludes this non-code validation record; this revised evidence-only file is excluded from the source identity. Earlier receipts retain their actual candidate and are reused only for unchanged relevant inputs."
   },
   "environment": {
     "platform": "Windows",
@@ -109,11 +111,33 @@
     {"invariant": "Missing policy is inert and actual references remain immutable", "proved": "Concurrent/replayed no-policy freeze returns None; real actor/expected_revision initialization; sparse configured reference; frozen replay after policy change; revision/freeze race", "evidence": "test_unconfigured_project_freeze_is_inert_and_replay_is_none in final persistence receipt", "unproved": "Later monitor assemblers must handle the optional no-reference result explicitly"}
   ],
   "review": {
-    "jev": {"status": "attempted; partial", "final_receipt": ".llm-output/integration-repairs/jev-review-final.json", "diff_sha256": "ccbfcbb4c6c2c7ecb197a4ae1dc8e7ed2af93e7e76088519ad2658c9cc3bcbde", "limits": ["hunk_limit", "operation_budget_reached", "oversized_hunk_omitted"], "meaning": "Advisory compatibility signals, inspected against code and matching checks; incomplete coverage is not an all-clear."},
+    "jev": {"status": "attempted; partial", "initial_receipt": ".llm-output/integration-repairs/jev-review-final.json", "final_receipt": ".llm-output/simplify/jev-publish-code.json", "diff_sha256": "cb4e4a6954111743ff4795040986b94bad36136b5ed69578cabfa4f554ad9e22", "limits": ["hunk_limit", "operation_budget_reached", "oversized_hunk_omitted"], "meaning": "Prepared on every code change against the foundation before first push; this non-code validation file is explicitly excluded. Advisory signals and incomplete coverage are not an all-clear."},
     "independent": "One integrated fresh Astra-low review of bb3a452 after the locally checked Claude Opus 5.5 route failed expired OAuth authentication. All five substantiated findings were consolidated into one accounting-owner repair; no automatic extra gate or whole-change re-review.",
     "resolved_findings": ["UM-001: cached input normalized only at ModelUsage read boundaries, gateway/storage/totals path checked", "UM-002: conjunctive member matching shared across selection and buckets", "UM-003: one rolling cohort drives summary and frozen evidence", "UM-004: no fabricated policy revision for an unconfigured project", "UM-005: subscription attempt source IDs inherit task purpose"],
     "provider_routing": "Initial routine Gemini attempt was blocked by adapter instruction-path setup before launch, not quota exhaustion; native Luna-medium fallback completed #97. Stateful #96/#100 and consolidated repairs used native Sol-medium complex workers. Claude auth failure was disclosed; no quota state was falsified.",
     "receipts": ".llm-output/integration-repairs/integrated-review-findings.json; review-1/; agent-framework/; lane-integrated-repair/coverage.json; initial lane contracts and failed receipts retained"
+  },
+  "simplify": {
+    "starting_head": "fd6dee14f60411ae5d04f94c81d0f3949cd76cb1",
+    "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
+    "scoped_diff_sha256": "9f738ac2d9f0df79e3eac7801682b62f34e374172b0c52d79351f384eb1afb65",
+    "review": "One integrated fresh Astra-low reuse/quality/efficiency audit after the locally checked Claude Opus 5.5 medium route failed expired OAuth authentication. All three substantiated simplifications were assigned to one Sol-medium accounting owner, followed by primary delta/evidence inspection; no extra review gate.",
+    "changes": [
+      "SIM-001: SQL time-window predicates and exact candidate work-unit keys avoid loading discarded history; older admitted units remain available for eligible subjects.",
+      "SIM-002: observations and authoritative usage are loaded in bounded same-session groups while preserving per-source ordering, totals and exact snapshot fingerprints.",
+      "SIM-003: owner policy reads and baseline freezing share one pure persisted-row decoder.",
+      "A historical-exclusion cutoff correction prevents later-admitted sources from falsely making earlier complete usage incomplete; a discriminating PostgreSQL red/green test proves historical and current behavior."
+    ],
+    "checks": [
+      {"command": "uv run --frozen --extra dev python -m pytest <seven affected accounting/baseline/application/API/shared suites> -q", "result": "45 passed", "receipt": ".llm-output/simplify/worker/affected.txt"},
+      {"command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q", "result": "17 passed; final test-only PostgreSQL-clock refinement followed by its focused passing check", "receipt": ".llm-output/simplify/worker/cutoff-baseline-file.txt"},
+      {"command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q -k historical_exclusions", "result": "1 passed, 16 deselected; both cutoff assertions use PostgreSQL's clock", "receipt": ".llm-output/simplify/cutoff-final.log"},
+      {"command": "rtk proxy uv run --frozen --extra dev mypy apps/orchestrator/src/forge", "result": "554 source files passed", "receipt": ".llm-output/simplify/worker/mypy-final.txt"},
+      {"command": "rtk proxy uv run --frozen --extra dev ruff check <five owned source/test files>; final changed test file checked again; git diff --cached --check", "result": "passed", "receipts": [".llm-output/simplify/worker/ruff-final.txt", ".llm-output/simplify/cutoff-final-ruff.log"]}
+    ],
+    "coverage": "Source inspection, exact ordered digest, bounded query-count/split-group equality, SQL window/empty candidates, mixed project/subject identity, older evidence retention, signed64 window overflow with UTC/+14:00, nullable/max policy decoding, historical cutoff and existing reconciliation/concurrency/frozen-reference checks.",
+    "limitations": ["Split-group behavior was exercised with reduced test group sizes, without a 1,000-source fixture or large-history latency benchmark.", "New query-count coverage uses agent sources; subscription and authoring retain affected-suite evidence and the unchanged projection contract."],
+    "receipts": ".llm-output/simplify/worker/coverage.json; accepted-simplify.diff; repair-task.json; failed red receipts retained"
   },
   "remaining_limits": [
     "Adapter streaming/final-only observation delivery and authoring telemetry remain #98/#99.",
@@ -122,8 +146,8 @@
     "The monitoring aggregate hard cap currently applies per newly admitted API agent execution; a whole-run checkpoint guard is not claimed.",
     "Context occupancy is separate from cumulative input. Context diagnostics remain advisory; usable live capacity and context-cap enforcement are not established by this batch.",
     "Unclassified or incompletely attributed legacy histories do not train whole-subject expectations. Accessible reporting follows the existing operator/project boundary; finer ACL behavior is unproved.",
-    "No final complete-suite rerun, hosted CI, automatic PR smoke or live-provider acceptance was performed for this batch."
+    "At this pre-publication snapshot, no final complete-suite rerun, hosted CI, automatic PR smoke or live-provider acceptance was performed for this batch. Local pre-simplification PR smoke passed 8 tests; hosted publication results are recorded in the PR and issues."
   ],
-  "publication": {"pushed": false, "pr_created": false, "hosted_ci_dispatched": false, "runtime_live_provider_called": false, "merged": false, "authorization_required": ["push", "CI-triggering PR operation", "full hosted CI run", "runtime live-provider work", "immediate merge"]},
+  "publication": {"snapshot": "before first push; user explicitly authorized simplify, push, PR creation, monitoring and repairs with thread replies/resolution", "pushed": false, "pr_created": false, "hosted_ci_dispatched": false, "runtime_live_provider_called": false, "merged": false, "authorization_required": ["additional full hosted CI run", "runtime live-provider work", "immediate merge"]},
   "issue_state": "#96/#97/#100 remain open pending publication/merge; #95/#105 remain closed; foundation PR107 is merged"
 }
