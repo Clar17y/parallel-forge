@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,8 +26,6 @@ from forge.domain.task_usage_baselines import (
 )
 from forge.domain.task_usage_contract import (
     BaselineReference,
-    MonitoringMode,
-    MonitoringPolicy,
     RouteCohort,
     RouteMember,
     SubjectKey,
@@ -44,6 +43,17 @@ from forge.persistence.models.task_usage import (
 )
 from forge.persistence.queries.task_usage_totals import FinalizedSourceFact, TaskUsageTotalsQuery
 from forge.persistence.repositories.task_usage_observations import decode_binding
+from forge.persistence.repositories.task_usage_policy import policy_from_row
+
+_BATCH_SIZE = 1000
+
+
+def _candidate_batches(
+    keys: set[tuple[UUID, str, UUID]],
+) -> Iterator[list[tuple[UUID, str, UUID]]]:
+    ordered = sorted(keys, key=lambda key: (str(key[0]), key[1], str(key[2])))
+    for start in range(0, len(ordered), _BATCH_SIZE):
+        yield ordered[start : start + _BATCH_SIZE]
 
 
 class TaskUsageBaselineQuery:
@@ -113,20 +123,7 @@ class TaskUsageBaselineQuery:
             )
             if policy_row is None:
                 return None
-            policy = MonitoringPolicy(
-                project_id=binding.subject.project_id,
-                revision=policy_row.revision,
-                mode=MonitoringMode(policy_row.mode),
-                warning_multiplier=policy_row.warning_multiplier,
-                checkpoint_multiplier=policy_row.checkpoint_multiplier,
-                history_limit=policy_row.history_limit,
-                minimum_comparables=policy_row.minimum_comparables,
-                hard_token_cap=policy_row.hard_token_cap,
-                hard_context_cap=policy_row.hard_context_cap,
-                manual_estimate_tokens=policy_row.manual_estimate_tokens,
-                allow_cross_project_fallback=policy_row.allow_cross_project_fallback,
-                window_days=policy_row.window_days,
-            )
+            policy = policy_from_row(policy_row)
             all_projects = await session.scalars(select(Project.id))
             accessible_projects = set(all_projects.all())
             history = await self._samples(
@@ -293,6 +290,21 @@ class TaskUsageBaselineQuery:
         as_of: datetime,
         window_days: int | None,
     ) -> tuple[BaselineSample, ...]:
+        lower = None
+        if window_days is not None:
+            try:
+                lower = as_of - timedelta(days=window_days)
+            except OverflowError:
+                # Every representable sample is in range; omit the SQL lower bound.
+                lower = None
+        run_filters = [Run.project_id.in_(project_ids), Run.updated_at <= as_of]
+        job_filters = [
+            BrainstormJobRow.project_id.in_(project_ids),
+            BrainstormJobRow.updated_at <= as_of,
+        ]
+        if lower is not None:
+            run_filters.append(Run.updated_at >= lower)
+            job_filters.append(BrainstormJobRow.updated_at >= lower)
         runs = (
             await session.execute(
                 select(
@@ -301,9 +313,7 @@ class TaskUsageBaselineQuery:
                     Run.state,
                     Run.updated_at,
                     _has_current_acceptance(),
-                ).where(
-                    Run.project_id.in_(project_ids), Run.updated_at <= as_of
-                )
+                ).where(*run_filters)
             )
         ).all()
         jobs = (
@@ -314,10 +324,7 @@ class TaskUsageBaselineQuery:
                     BrainstormJobRow.state,
                     BrainstormJobRow.proposal_digest,
                     BrainstormJobRow.updated_at,
-                ).where(
-                    BrainstormJobRow.project_id.in_(project_ids),
-                    BrainstormJobRow.updated_at <= as_of,
-                )
+                ).where(*job_filters)
             )
         ).all()
         candidates = [
@@ -345,32 +352,29 @@ class TaskUsageBaselineQuery:
             )
             for identity, project, state, proposal_digest, at in jobs
         ]
-        if window_days is not None:
-            try:
-                lower = as_of - timedelta(days=window_days)
-            except OverflowError:
-                lower = datetime.min.replace(tzinfo=as_of.tzinfo)
-            candidates = [candidate for candidate in candidates if candidate[-1] >= lower]
-        subjects = {
-            SubjectKey(project_id=project, kind=kind, subject_id=identity)
-            for project, kind, identity, *_ in candidates
-        }
-        unit_rows = (
-            await session.scalars(
+        if not candidates:
+            return ()
+        candidate_keys = {(project, kind, identity) for project, kind, identity, *_ in candidates}
+        unit_rows: list[TaskUsageWorkUnit] = []
+        for batch in _candidate_batches(candidate_keys):
+            rows = await session.scalars(
                 select(TaskUsageWorkUnit)
                 .where(
-                    TaskUsageWorkUnit.project_id.in_(project_ids),
+                    tuple_(
+                        TaskUsageWorkUnit.project_id,
+                        TaskUsageWorkUnit.subject_kind,
+                        TaskUsageWorkUnit.subject_id,
+                    ).in_(batch),
                     TaskUsageWorkUnit.created_at <= as_of,
                 )
                 .order_by(TaskUsageWorkUnit.created_at, TaskUsageWorkUnit.id)
             )
-        ).all()
+            unit_rows.extend(rows.all())
+        unit_rows.sort(key=lambda unit: (unit.created_at, str(unit.id)))
         units_by_subject: dict[tuple[UUID, str, UUID], list[TaskUsageWorkUnit]] = {}
         for unit in unit_rows:
             key = (unit.project_id, unit.subject_kind, unit.subject_id)
-            if SubjectKey(project_id=key[0], kind=key[1], subject_id=key[2]) in subjects:
-                units_by_subject.setdefault(key, []).append(unit)
-        candidate_keys = {(project, kind, identity) for project, kind, identity, *_ in candidates}
+            units_by_subject.setdefault(key, []).append(unit)
         inventory = await _source_inventory(session, candidate_keys, as_of=as_of)
         # The owning query's final projection is authoritative. Returned facts
         # are per subject and already replace live/provisional values per source.
@@ -492,7 +496,7 @@ class TaskUsageBaselineQuery:
             try:
                 lower = as_of - timedelta(days=window_days)
             except OverflowError:
-                lower = datetime.min.replace(tzinfo=as_of.tzinfo)
+                lower = None
         async with self._factory() as session:
             run_filters = [Run.project_id.in_(projects), Run.updated_at <= as_of]
             job_filters = [
@@ -553,20 +557,6 @@ class TaskUsageBaselineQuery:
                     count["cancelled"] += 1
                 elif job.state != "proposed":
                     count["in_progress"] += 1
-            known = set(
-                (
-                    await session.execute(
-                        select(
-                            TaskUsageWorkUnit.project_id,
-                            TaskUsageWorkUnit.subject_kind,
-                            TaskUsageWorkUnit.subject_id,
-                        ).where(
-                            TaskUsageWorkUnit.project_id.in_(projects),
-                            TaskUsageWorkUnit.created_at <= as_of,
-                        )
-                    )
-                ).all()
-            )
             candidate_keys = {
                 (run.project_id, "run", run.id)
                 for run in runs
@@ -577,6 +567,23 @@ class TaskUsageBaselineQuery:
                 if job.state == "proposed" and job.proposal_digest is not None
             }
             candidate_keys &= subjects
+            known: set[tuple[UUID, str, UUID]] = set()
+            for batch in _candidate_batches(candidate_keys):
+                rows = await session.execute(
+                    select(
+                        TaskUsageWorkUnit.project_id,
+                        TaskUsageWorkUnit.subject_kind,
+                        TaskUsageWorkUnit.subject_id,
+                    ).where(
+                        tuple_(
+                            TaskUsageWorkUnit.project_id,
+                            TaskUsageWorkUnit.subject_kind,
+                            TaskUsageWorkUnit.subject_id,
+                        ).in_(batch),
+                        TaskUsageWorkUnit.created_at <= as_of,
+                    )
+                )
+                known.update((project, kind, subject) for project, kind, subject in rows.all())
             run_by_id = {run.id: run for run in runs}
             inventory = await _source_inventory(session, candidate_keys, as_of=as_of)
             for project, kind, subject in candidate_keys:
@@ -611,6 +618,7 @@ class TaskUsageBaselineQuery:
                             TaskUsageWorkUnit.project_id == project,
                             TaskUsageWorkUnit.subject_kind == kind,
                             TaskUsageWorkUnit.subject_id == subject,
+                            TaskUsageWorkUnit.created_at <= as_of,
                         )
                     )
                 ).all()

@@ -16,6 +16,24 @@ class MonitoringPolicyConflict(PolicyVersionConflict):
     """The owner supplied a stale monitoring revision."""
 
 
+def policy_from_row(row: TaskUsagePolicyRevision) -> MonitoringPolicy:
+    """Decode one persisted revision without changing its policy semantics."""
+    return MonitoringPolicy(
+        project_id=row.project_id,
+        revision=row.revision,
+        mode=MonitoringMode(row.mode),
+        warning_multiplier=row.warning_multiplier,
+        checkpoint_multiplier=row.checkpoint_multiplier,
+        history_limit=row.history_limit,
+        window_days=row.window_days,
+        minimum_comparables=row.minimum_comparables,
+        hard_token_cap=row.hard_token_cap,
+        hard_context_cap=row.hard_context_cap,
+        manual_estimate_tokens=row.manual_estimate_tokens,
+        allow_cross_project_fallback=row.allow_cross_project_fallback,
+    )
+
+
 class PostgresTaskUsagePolicyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -33,20 +51,7 @@ class PostgresTaskUsagePolicyRepository:
         row = (await self._session.execute(query)).scalar_one_or_none()
         if row is None:
             return None
-        return MonitoringPolicy(
-            project_id=row.project_id,
-            revision=row.revision,
-            mode=MonitoringMode(row.mode),
-            warning_multiplier=row.warning_multiplier,
-            checkpoint_multiplier=row.checkpoint_multiplier,
-            history_limit=row.history_limit,
-            window_days=row.window_days,
-            minimum_comparables=row.minimum_comparables,
-            hard_token_cap=row.hard_token_cap,
-            hard_context_cap=row.hard_context_cap,
-            manual_estimate_tokens=row.manual_estimate_tokens,
-            allow_cross_project_fallback=row.allow_cross_project_fallback,
-        )
+        return policy_from_row(row)
 
     async def append_policy_revision(
         self, policy: MonitoringPolicy, *, expected_revision: int, actor_id: UUID

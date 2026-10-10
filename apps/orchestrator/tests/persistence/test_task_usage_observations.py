@@ -1,6 +1,8 @@
 """Real PostgreSQL binding, replay, final replacement and snapshot tests."""
 
 import asyncio
+import hashlib
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -17,11 +19,13 @@ from forge.domain.task_usage_contract import (
     WorkUnitBinding,
 )
 from forge.persistence.models import AgentExecution, ModelUsage
+from forge.persistence.queries import task_usage_totals as totals_module
 from forge.persistence.queries.task_usage_totals import TaskUsageTotalsQuery
 from forge.persistence.repositories.task_usage_observations import (
     PostgresTaskUsageObservations,
     UsageBindingConflict,
 )
+from sqlalchemy import event
 
 
 async def _binding(session_factory, run, *, source_id=None) -> WorkUnitBinding:
@@ -263,6 +267,80 @@ async def test_parallel_sources_and_duplicate_writers_aggregate_once(
     assert totals.source_count == 2
     assert totals.completeness == "lower_bound"
     assert totals.final_source_count == 0
+
+
+@pytest.mark.asyncio
+async def test_totals_batch_source_reads_with_stable_order_and_digest(
+    session_factory, persisted_run, monkeypatch
+) -> None:
+    bindings = [await _binding(session_factory, persisted_run) for _ in range(3)]
+    writer = PostgresTaskUsageObservations(session_factory)
+    model_ids: dict[object, list[object]] = {}
+    for binding in bindings:
+        await writer.bind(binding)
+    for index, binding in enumerate(bindings):
+        await writer.append_observation(Observation(
+            binding=binding, event_id=f"live-{index}", sequence=1,
+            counter_kind=CounterKind.CUMULATIVE,
+            tokens=TokenCounts(input_tokens=100 + index, output_tokens=2),
+        ))
+        async with session_factory() as session, session.begin():
+            record_id = uuid4()
+            session.add(ModelUsage(
+                id=record_id, run_id=persisted_run.id,
+                agent_execution_id=binding.source.source_id,
+                provider="test", model="test", prompt_version="v1",
+                input_tokens=10 + index, output_tokens=3,
+                cached_input_tokens=20 - index, duration_ms=1,
+                tool_call_count=0, pricing_version="v1", currency="USD",
+                estimated_cost_minor=0,
+            ))
+            model_ids.setdefault(binding.source.source_id, []).append(record_id)
+            if index == 0:
+                extra_id = uuid4()
+                session.add(ModelUsage(
+                    id=extra_id, run_id=persisted_run.id,
+                    agent_execution_id=binding.source.source_id,
+                    provider="test", model="test", prompt_version="v1",
+                    input_tokens=5, output_tokens=2, cached_input_tokens=0,
+                    duration_ms=1, tool_call_count=0, pricing_version="v1",
+                    currency="USD", estimated_cost_minor=0,
+                ))
+                model_ids[binding.source.source_id].append(extra_id)
+    engine = session_factory.kw["bind"].sync_engine
+    statements: list[str] = []
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        lowered = statement.lower()
+        if "task_usage_observations" in lowered or "model_usage" in lowered:
+            statements.append(lowered)
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        totals = await TaskUsageTotalsQuery(session_factory).totals(bindings[0].subject)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert len([sql for sql in statements if "task_usage_observations" in sql]) == 1
+    assert len([sql for sql in statements if "model_usage" in sql]) == 1
+    assert (totals.source_count, totals.final_source_count) == (3, 3)
+    assert (totals.input_tokens, totals.output_tokens, totals.cached_input_tokens) == (95, 11, 57)
+    fingerprint = []
+    for binding in sorted(bindings, key=lambda item: str(item.work_unit_id)):
+        index = bindings.index(binding)
+        fingerprint.append((str(binding.work_unit_id), [(f"live-{index}", 1)]))
+        fingerprint.append(("model_usage", sorted(str(value) for value in model_ids[binding.source.source_id])))
+    expected = hashlib.sha256(
+        json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert totals.snapshot_digest == expected
+    monkeypatch.setattr(totals_module, "_BATCH_SIZE", 2)
+    statements.clear()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        split = await TaskUsageTotalsQuery(session_factory).totals(bindings[0].subject)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert split == totals
+    assert len([sql for sql in statements if "task_usage_observations" in sql]) == 2
+    assert len([sql for sql in statements if "model_usage" in sql]) == 2
 
 
 @pytest.mark.asyncio

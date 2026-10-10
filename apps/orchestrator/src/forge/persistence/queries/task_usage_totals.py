@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from forge.application.ports.task_usage import FinalizedSourceFact, UsageTotals
 from forge.application.services.task_usage_observations import SourceUsage, project_source
@@ -26,6 +29,12 @@ from forge.persistence.repositories.task_usage_observations import (
 )
 
 __all__ = ["FinalizedSourceFact", "TaskUsageTotalsQuery", "UsageTotals"]
+_BATCH_SIZE = 1000
+
+
+def _batches(identities: list[UUID]) -> Iterator[list[UUID]]:
+    for start in range(0, len(identities), _BATCH_SIZE):
+        yield identities[start : start + _BATCH_SIZE]
 
 
 def _sum_known(values: list[int | None]) -> int | None:
@@ -128,27 +137,65 @@ class TaskUsageTotalsQuery:
                 .order_by(TaskUsageWorkUnit.id)
             )
         ).all()
+        unit_ids = [unit.id for unit in units]
+        observation_rows: dict[UUID, list[TaskUsageObservation]] = {}
+        for batch in _batches(unit_ids):
+            observation_filters: list[ColumnElement[bool]] = [
+                TaskUsageObservation.work_unit_id.in_(batch)
+            ]
+            if as_of is not None:
+                observation_filters.append(TaskUsageObservation.observed_at <= as_of)
+            for row in (
+                await session.scalars(
+                    select(TaskUsageObservation)
+                    .where(*observation_filters)
+                    .order_by(TaskUsageObservation.work_unit_id, TaskUsageObservation.sequence)
+                )
+            ).all():
+                observation_rows.setdefault(row.work_unit_id, []).append(row)
+        agent_ids = [unit.source_id for unit in units if unit.source_kind == "agent_execution"]
+        model_rows: dict[UUID, list[ModelUsage]] = {}
+        for batch in _batches(agent_ids):
+            model_filters: list[ColumnElement[bool]] = [
+                ModelUsage.run_id == subject.subject_id,
+                ModelUsage.agent_execution_id.in_(batch),
+            ]
+            if as_of is not None:
+                model_filters.append(ModelUsage.created_at <= as_of)
+            for record in (
+                await session.scalars(
+                    select(ModelUsage)
+                    .where(*model_filters)
+                    .order_by(ModelUsage.agent_execution_id, ModelUsage.id)
+                )
+            ).all():
+                model_rows.setdefault(record.agent_execution_id, []).append(record)
+        attempt_ids = [
+            unit.source_id for unit in units if unit.source_kind == "subscription_attempt"
+        ]
+        consumptions: dict[UUID, SubscriptionAttemptConsumption] = {}
+        for batch in _batches(attempt_ids):
+            consumption_filters: list[ColumnElement[bool]] = [
+                SubscriptionAttemptConsumption.attempt_id.in_(batch)
+            ]
+            if as_of is not None:
+                consumption_filters.append(SubscriptionAttemptConsumption.created_at <= as_of)
+            consumption_rows = await session.scalars(
+                select(SubscriptionAttemptConsumption).where(*consumption_filters)
+            )
+            consumptions.update({row.attempt_id: row for row in consumption_rows.all()})
         facts: list[FinalizedSourceFact] = []
         usages: list[SourceUsage] = []
         fingerprint: list[object] = []
         for unit in units:
             binding = decode_binding(unit)
-            observation_filters = [TaskUsageObservation.work_unit_id == unit.id]
-            if as_of is not None:
-                observation_filters.append(TaskUsageObservation.observed_at <= as_of)
-            rows = (
-                await session.scalars(
-                    select(TaskUsageObservation)
-                    .where(*observation_filters)
-                    .order_by(TaskUsageObservation.sequence)
-                )
-            ).all()
+            rows = observation_rows.get(unit.id, [])
             usage = project_source(tuple(decode_observation(row, binding) for row in rows))
             evidence_kind = "observation_final" if usage.final else "live"
             fingerprint.append((str(unit.id), [(row.event_id, row.sequence) for row in rows]))
             if unit.source_kind == "subscription_attempt":
-                consumption = await session.get(SubscriptionAttemptConsumption, unit.source_id)
-                if consumption is not None and (as_of is None or consumption.created_at <= as_of):
+                consumption = consumptions.get(unit.source_id)
+                if consumption is not None:
                     measured = consumption.observed
                     usage = _from_authoritative(
                         usage,
@@ -159,19 +206,7 @@ class TaskUsageTotalsQuery:
                     evidence_kind = "subscription_consumption"
                     fingerprint.append(("subscription", str(unit.source_id), measured))
             elif unit.source_kind == "agent_execution":
-                model_filters = [
-                    ModelUsage.run_id == subject.subject_id,
-                    ModelUsage.agent_execution_id == unit.source_id,
-                ]
-                if as_of is not None:
-                    model_filters.append(ModelUsage.created_at <= as_of)
-                records = (
-                    await session.scalars(
-                        select(ModelUsage)
-                        .where(*model_filters)
-                        .order_by(ModelUsage.id)
-                    )
-                ).all()
+                records = model_rows.get(unit.source_id, [])
                 if records:
                     usage = _from_authoritative(
                         usage,

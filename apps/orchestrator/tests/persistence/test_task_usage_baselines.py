@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -25,15 +25,21 @@ from forge.persistence.models.execution import AgentExecution, ModelUsage
 from forge.persistence.models.project import Project
 from forge.persistence.models.run import Run
 from forge.persistence.models.subscription import SubscriptionTask
-from forge.persistence.models.task_usage import TaskUsagePolicyRevision
+from forge.persistence.models.task_usage import TaskUsagePolicyRevision, TaskUsageWorkUnit
 from forge.persistence.queries import task_usage_baselines as baseline_module
 from forge.persistence.queries.task_usage_baselines import TaskUsageBaselineQuery
 from forge.persistence.queries.task_usage_totals import TaskUsageTotalsQuery
-from forge.persistence.repositories.task_usage_observations import PostgresTaskUsageObservations
-from forge.persistence.repositories.task_usage_policy import PostgresTaskUsagePolicyRepository
+from forge.persistence.repositories.task_usage_observations import (
+    PostgresTaskUsageObservations,
+    _members,
+)
+from forge.persistence.repositories.task_usage_policy import (
+    PostgresTaskUsagePolicyRepository,
+    policy_from_row,
+)
 from forge.persistence.repositories.usage import UsageRepository
 from forge.persistence.unit_of_work import PostgresUnitOfWork
-from sqlalchemy import select, update
+from sqlalchemy import event, func, select, update
 
 _AGENTS_TEST_DIR = str(Path(__file__).resolve().parents[1] / "agents")
 if _AGENTS_TEST_DIR not in sys.path:
@@ -143,6 +149,122 @@ async def test_finalized_run_sample_uses_measured_provider_rows_and_role_phase(
         ("implementation", "developer", 170),
         ("implementation", "developer", 320),
     ]
+
+
+@pytest.mark.integration
+async def test_history_sql_bounds_candidates_before_loading_work_units(
+    session_factory, persisted_run, monkeypatch
+):
+    other = RunSnapshot(id=uuid4(), project_id=persisted_run.project_id,
+                        task_id=persisted_run.task_id,
+                        policy_version=persisted_run.policy_version)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(other)
+        await work.commit()
+    engine = session_factory.kw["bind"].sync_engine
+    statements: list[str] = []
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.lower())
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        now = datetime.now(UTC) + timedelta(seconds=1)
+        full = await TaskUsageBaselineQuery(session_factory).samples(
+            project_ids={persisted_run.project_id}, as_of=now, window_days=1,
+        )
+        with_candidates = tuple(statements)
+        monkeypatch.setattr(baseline_module, "_BATCH_SIZE", 1)
+        statements.clear()
+        split = await TaskUsageBaselineQuery(session_factory).samples(
+            project_ids={persisted_run.project_id}, as_of=now, window_days=1,
+        )
+        assert split == full
+        assert len([sql for sql in statements if " from task_usage_work_units "
+                    in sql.replace("\n", " ")]) == 2
+        statements.clear()
+        await TaskUsageBaselineQuery(session_factory).samples(
+            project_ids={persisted_run.project_id},
+            as_of=datetime(2000, 1, 1, tzinfo=UTC), window_days=1,
+        )
+        empty_candidates = tuple(statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    run_select = next(sql for sql in with_candidates if " from runs " in sql.replace("\n", " "))
+    assert run_select.count("runs.updated_at") >= 3  # selected, upper and lower bounds
+    unit_select = next(sql for sql in with_candidates if " from task_usage_work_units " in sql.replace("\n", " "))
+    assert "task_usage_work_units.subject_kind" in unit_select
+    assert "task_usage_work_units.subject_id" in unit_select
+    assert not any(" from task_usage_work_units " in sql.replace("\n", " ") for sql in empty_candidates)
+
+
+@pytest.mark.integration
+async def test_exact_window_boundary_retains_older_admitted_unit_and_huge_window(
+    session_factory, persisted_run
+):
+    execution_id = uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=execution_id, run_id=persisted_run.id,
+                                   role="developer", instruction_version="v1",
+                                   provider="provider-a", model="model-a", status="SUCCEEDED"))
+        session.add(ModelUsage(id=uuid4(), run_id=persisted_run.id,
+                               agent_execution_id=execution_id, provider="provider-a",
+                               model="model-a", prompt_version="v1", input_tokens=12,
+                               output_tokens=3, cached_input_tokens=5, duration_ms=1,
+                               tool_call_count=0, pricing_version="v1", currency="USD",
+                               estimated_cost_minor=0))
+    binding = _binding(persisted_run, execution_id)
+    at = datetime.now(UTC) + timedelta(seconds=1)
+    lower = at - timedelta(days=1)
+    async with session_factory() as session, session.begin():
+        session.add(TaskUsageWorkUnit(
+            id=binding.work_unit_id, project_id=persisted_run.project_id,
+            subject_kind="run", subject_id=persisted_run.id, run_id=persisted_run.id,
+            admitted_phase_id=binding.admitted_phase_id,
+            configured_route_digest=binding.configured_route.fingerprint,
+            configured_route_members=_members(binding.configured_route),
+            effective_route_digest=binding.effective_route.fingerprint,
+            effective_route_members=_members(binding.effective_route),
+            source_kind="agent_execution", source_id=execution_id,
+            agent_execution_id=execution_id, schema_version=1,
+            created_at=lower - timedelta(days=1),
+        ))
+        await session.execute(update(Run).where(Run.id == persisted_run.id)
+                              .values(state="COMPLETED", updated_at=lower))
+    query = TaskUsageBaselineQuery(session_factory)
+    rows = await query.samples(project_ids={persisted_run.project_id}, as_of=at, window_days=1)
+    assert len(rows) == 1 and rows[0].total_tokens == 20
+    rows = await query.samples(project_ids={persisted_run.project_id},
+                               as_of=at, window_days=2**63 - 1)
+    assert len(rows) == 1 and rows[0].total_tokens == 20
+    offset_at = at.astimezone(timezone(timedelta(hours=14)))
+    rows = await query.samples(project_ids={persisted_run.project_id},
+                               as_of=offset_at, window_days=2**63 - 1)
+    assert len(rows) == 1 and rows[0].total_tokens == 20
+    exclusions = await query.exclusions(
+        project_ids={persisted_run.project_id}, as_of=offset_at,
+        window_days=2**63 - 1,
+        subjects={(persisted_run.project_id, "run", persisted_run.id)},
+    )
+    assert exclusions == {}
+
+
+def test_persisted_policy_decoder_preserves_optional_limits_and_modes():
+    project = uuid4()
+    common = {"project_id": project, "revision": 7, "mode": "checkpoint",
+              "warning_multiplier": 1.25, "checkpoint_multiplier": 2.5,
+              "history_limit": 50, "minimum_comparables": 2,
+              "allow_cross_project_fallback": False, "actor_id": uuid4()}
+    empty = policy_from_row(TaskUsagePolicyRevision(**common, window_days=None,
+        hard_token_cap=None, hard_context_cap=None, manual_estimate_tokens=None))
+    assert empty.project_id == project and empty.revision == 7
+    assert empty.mode.value == "checkpoint" and empty.window_days is None
+    assert empty.hard_token_cap is None and empty.hard_context_cap is None
+    assert empty.manual_estimate_tokens is None and not empty.allow_cross_project_fallback
+    maximum = policy_from_row(TaskUsagePolicyRevision(**common, window_days=2**63 - 1,
+        hard_token_cap=2**63 - 1, hard_context_cap=2**63 - 1,
+        manual_estimate_tokens=2**63 - 1))
+    assert (maximum.window_days, maximum.hard_token_cap,
+            maximum.hard_context_cap, maximum.manual_estimate_tokens) == (2**63 - 1,) * 4
+    assert (maximum.warning_multiplier, maximum.checkpoint_multiplier) == (1.25, 2.5)
 
 
 @pytest.mark.integration
@@ -277,6 +399,55 @@ async def test_partial_source_bindings_never_train_whole_subject_baseline(
         subjects={(persisted_run.project_id, "run", persisted_run.id)},
     )
     assert exclusions["incomplete_usage"] == 1
+
+
+@pytest.mark.integration
+async def test_historical_exclusions_ignore_later_admitted_incomplete_source(
+    session_factory, persisted_run
+):
+    early_id, late_id = uuid4(), uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=early_id, run_id=persisted_run.id,
+                                   role="developer", instruction_version="v1",
+                                   provider="provider-a", model="model-a", status="SUCCEEDED"))
+        session.add(ModelUsage(id=uuid4(), run_id=persisted_run.id,
+                               agent_execution_id=early_id, provider="provider-a",
+                               model="model-a", prompt_version="v1", input_tokens=20,
+                               output_tokens=5, cached_input_tokens=10, duration_ms=1,
+                               tool_call_count=0, pricing_version="v1", currency="USD",
+                               estimated_cost_minor=0))
+        await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
+    writer = PostgresTaskUsageObservations(session_factory)
+    await writer.bind(_binding(persisted_run, early_id))
+    async with session_factory() as session:
+        as_of = await session.scalar(select(func.clock_timestamp()))
+    assert as_of is not None
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=late_id, run_id=persisted_run.id,
+                                   role="developer", instruction_version="v1",
+                                   provider="provider-a", model="model-a", status="RUNNING"))
+    await writer.bind(_binding(persisted_run, late_id))
+    query = TaskUsageBaselineQuery(session_factory)
+    subjects = {(persisted_run.project_id, "run", persisted_run.id)}
+    history = await query.samples(project_ids={persisted_run.project_id},
+                                  as_of=as_of, window_days=365)
+    assert len(history) == 1 and history[0].total_tokens == 35
+    assert history[0].finalized and history[0].source_count == 1
+    historical_exclusions = await query.exclusions(
+        project_ids={persisted_run.project_id}, as_of=as_of,
+        window_days=365, subjects=subjects,
+    )
+    assert "incomplete_usage" not in historical_exclusions
+    async with session_factory() as session:
+        now = await session.scalar(select(func.clock_timestamp()))
+    assert now is not None
+    current = await query.samples(project_ids={persisted_run.project_id},
+                                  as_of=now, window_days=365)
+    assert len(current) == 1 and current[0].total_tokens is None
+    assert not current[0].finalized and current[0].source_count == 2
+    assert (await query.exclusions(project_ids={persisted_run.project_id},
+                                   as_of=now, window_days=365,
+                                   subjects=subjects))["incomplete_usage"] == 1
 
 
 @pytest.mark.integration
@@ -539,8 +710,18 @@ async def test_frozen_evidence_uses_same_rolling_fallback_cohort_as_statistics(
 @pytest.mark.integration
 async def test_authoring_and_run_subjects_are_separate_history_rows(session_factory, persisted_run):
     epic_id, conversation_id, job_id = uuid4(), uuid4(), uuid4()
+    foreign_project, foreign_epic, foreign_conversation, foreign_job = (
+        uuid4(), uuid4(), uuid4(), uuid4()
+    )
     async with session_factory() as session, session.begin():
+        session.add(Project(id=foreign_project, name="Other history project",
+                            canonical_path="/other-history-project",
+                            canonical_path_key="/other-history-project",
+                            github_repository="owner/other-history-project",
+                            default_branch="main"))
+        await session.flush()
         session.add(Epic(id=epic_id, project_id=persisted_run.project_id, title="test", draft={}))
+        session.add(Epic(id=foreign_epic, project_id=foreign_project, title="foreign", draft={}))
         session.add(
             BrainstormConversation(
                 id=conversation_id,
@@ -549,6 +730,8 @@ async def test_authoring_and_run_subjects_are_separate_history_rows(session_fact
                 version=1,
             )
         )
+        session.add(BrainstormConversation(id=foreign_conversation, epic_id=foreign_epic,
+                                          project_id=foreign_project, version=1))
         session.add(
             BrainstormJobRow(
                 id=job_id,
@@ -567,19 +750,32 @@ async def test_authoring_and_run_subjects_are_separate_history_rows(session_fact
                 override_unknown_usage=False,
             )
         )
+        session.add(BrainstormJobRow(id=foreign_job, epic_id=foreign_epic,
+                                    project_id=foreign_project,
+                                    conversation_id=foreign_conversation, version=1,
+                                    state="proposed", snapshot={}, proposal={"title": "foreign"},
+                                    proposal_digest="d" * 64, current_attempt_id=None,
+                                    adopted_revision_id=None, wait_pool_revision=None,
+                                    retry_authorized_until=None, override_unknown_usage=False))
         await session.execute(
             update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED")
         )
     rows = await TaskUsageBaselineQuery(session_factory).samples(
-        project_ids={persisted_run.project_id},
+        project_ids={persisted_run.project_id, foreign_project},
         as_of=datetime.now(UTC) + timedelta(seconds=1),
         window_days=365,
     )
+    assert len(rows) == 3
     assert {(row.subject_kind, row.task_kind) for row in rows} == {
         ("run", "implementation"),
         ("authoring_job", "authoring"),
     }
     assert {row.outcome for row in rows} == {"completed"}
+    assert {(row.project_id, row.subject_kind, row.subject_id) for row in rows} == {
+        (persisted_run.project_id, "run", persisted_run.id),
+        (persisted_run.project_id, "authoring_job", job_id),
+        (foreign_project, "authoring_job", foreign_job),
+    }
     assert all(row.total_tokens is None and not row.measured for row in rows)
 
 
