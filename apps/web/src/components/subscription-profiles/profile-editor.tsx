@@ -93,7 +93,7 @@ function RouteFields({
         </select>
       </label>
       <label className={styles.reasoning}>
-        <span className="sr-only">{label} reasoning</span>
+        <span className="reasoning-label"><span className="sr-only">{label} </span>Reasoning</span>
         <select aria-label={`${label} reasoning`} value={route.effort}
           onChange={event => {
             if (event.target.value === '__custom__') setCustomReasoning(true);

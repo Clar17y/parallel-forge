@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from forge.domain.policy import (
+    AgentModelPolicy,
     CommandSpec,
     DatabaseProvisioningPolicy,
     ProjectPolicy,
@@ -272,3 +273,43 @@ def test_review_finding_validates_line_numbers_and_is_immutable() -> None:
             summary="problem",
             evidence="proof",
         )
+
+
+@pytest.mark.parametrize(
+    "cli_model",
+    [
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-max",
+        "gemini-3.8-flash-xhigh",
+        "gemini-3.8-flash-none",
+        "gemini-2.5-flash-medium",
+    ],
+)
+@pytest.mark.parametrize("effort", [None, "medium"])
+def test_agent_model_policy_rejects_cli_composite_ids(cli_model: str, effort: str | None) -> None:
+    with pytest.raises(ValidationError) as error:
+        AgentModelPolicy(model=cli_model, reasoning_effort=effort)  # type: ignore[arg-type]
+    assert ("model",) in [tuple(item["loc"]) for item in error.value.errors()]
+    model_errors = [item for item in error.value.errors() if tuple(item["loc"]) == ("model",)]
+    assert "CLI composite identity" in model_errors[0]["msg"]
+    assert "separately selected reasoning" in model_errors[0]["msg"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("custom-provider", "gemini-3.8-flash-medium"),
+        ("google", " gemini-3.8-flash-medium"),
+        ("google", "gemini-3.8-flash-medium "),
+        ("google", "gemini-3.8-flash-medium\n"),
+    ],
+)
+def test_automatic_model_identity_preserves_custom_provider_and_raw_text(
+    provider: str, model: str
+) -> None:
+    policy = AgentModelPolicy(provider=provider, model=model)
+    assert policy.provider == provider
+    assert policy.model == model
+    assert policy.reasoning_effort is None

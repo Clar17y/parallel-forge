@@ -673,6 +673,7 @@ class GoogleAdkGateway:
                 max_duration_ms=limits.duration_ms,
                 max_cost_minor=limits.cost_minor,
                 cost_estimator=estimate_cost,
+                reasoning_effort=request.reasoning_effort,
             )
         except TypeError, ValueError:
             raise AgentBudgetExceeded() from None

@@ -1689,6 +1689,8 @@ export interface components {
              * @default google
              */
             provider: string;
+            /** Reasoning Effort */
+            reasoning_effort?: ("low" | "medium" | "high") | null;
         };
         /**
          * AgentRole

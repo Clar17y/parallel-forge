@@ -14,14 +14,15 @@ const roles = [
 export default function AgentsPage() {
   const prompts = useApi<components['schemas']['PromptMetadata'][]>('/agent-prompts');
   return <><h1>Agents &amp; models</h1>
-    <p>Provider and budget values belong to the selected immutable project policy.</p>
+    <p>API model, reasoning strength and budget settings belong to the selected project policy. Subscription profiles configure CLI models and reasoning.</p>
     <PolicyBrowser>{(policy, project) => <>
-      <p><Link href={`/projects/${project.id}`}>Edit models and budgets through a new policy version</Link></p>
+      <p><Link href={`/projects/${project.id}`}>Edit models, reasoning and budgets through a new policy version</Link></p>
       {roles.map(([role, label, summary]) => {
         const model = policy.document[`${role}_model`] as components['schemas']['AgentModelPolicy'] | undefined;
         return <section key={role}><h2>{label}{role === 'reviewer' ? ' · Independent' : ''}</h2><p>{summary}</p>
           {model ? <dl>
             <dt>Provider / model</dt><dd>{model.provider} / {model.model}</dd>
+            <dt>Reasoning strength</dt><dd>{model.reasoning_effort ?? 'Automatic (provider default)'}</dd>
             <dt>Input / output token limits</dt><dd>{model.max_input_tokens} / {model.max_output_tokens}</dd>
             <dt>Tool-call limit</dt><dd>{model.max_tool_calls}</dd>
             <dt>Duration limit</dt><dd>{model.max_duration_seconds} seconds</dd>

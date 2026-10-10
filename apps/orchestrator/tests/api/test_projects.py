@@ -5,6 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
+from forge.api.schemas.projects import ProjectCreateRequest
+from pydantic import ValidationError
 
 
 def _project_request() -> dict[str, object]:
@@ -33,6 +35,49 @@ async def test_projects_list_and_registration_use_injected_service(
     assert task10_route_context.projects.register_calls[0][1] == "project-registration-1"
     request = task10_route_context.projects.register_calls[0][2]
     assert request.name == "Parallel"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["planner_model", "developer_model", "reviewer_model"])
+async def test_registration_rejects_unsupported_reasoning_before_service_call(
+    task10_client, task10_route_context, route_headers, role
+) -> None:
+    payload = {**_project_request(), role: {
+        "provider": "google", "model": "gemini-3-pro", "reasoning_effort": "medium"
+    }}
+    with pytest.raises(ValidationError) as error:
+        ProjectCreateRequest.model_validate(payload)
+    assert (role, "reasoning_effort") in [tuple(item["loc"]) for item in error.value.errors()]
+    response = await task10_client.post(
+        "/api/projects",
+        headers={**route_headers, "Idempotency-Key": f"project-invalid-{role}"},
+        json=payload,
+    )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid request"}
+    assert task10_route_context.projects.register_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["planner_model", "developer_model", "reviewer_model"])
+@pytest.mark.parametrize("effort", [None, "medium"])
+async def test_registration_rejects_cli_composite_model_before_service_call(
+    task10_client, task10_route_context, route_headers, role, effort
+) -> None:
+    payload = {**_project_request(), role: {
+        "provider": "google", "model": "gemini-3.8-flash-medium", "reasoning_effort": effort
+    }}
+    with pytest.raises(ValidationError) as error:
+        ProjectCreateRequest.model_validate(payload)
+    assert (role, "model") in [tuple(item["loc"]) for item in error.value.errors()]
+    response = await task10_client.post(
+        "/api/projects",
+        headers={**route_headers, "Idempotency-Key": f"project-invalid-cli-{role}-{effort}"},
+        json=payload,
+    )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid request"}
+    assert task10_route_context.projects.register_calls == []
 
 
 @pytest.mark.asyncio

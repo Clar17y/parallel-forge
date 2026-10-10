@@ -58,3 +58,53 @@ test('displays saved Jev default in selection options and current selection deta
   expect(screen.getByText(/Jev default:/)).toBeInTheDocument();
   expect(screen.getByText('Shadow (jev-fast)')).toBeInTheDocument();
 });
+
+test('surfaces primary and preferred role models with reasoning and link to edit profiles', () => {
+  const profileWithRoles = {
+    profile_id: 'profile-roles',
+    version: 3,
+    default_billing_mode: 'allowance_only' as const,
+    approved_mappings: [],
+    preferences: [
+      {
+        purpose: 'primary' as const,
+        preferred_route: {
+          provider: 'google',
+          client: 'gemini_cli',
+          model: 'gemini-3.8-flash',
+          effort: 'medium' as const,
+          auth_mode: 'subscription' as const,
+          billing_mode: 'allowance_only' as const,
+        },
+        fallback_routes: [],
+      },
+      {
+        purpose: 'independent_review' as const,
+        preferred_route: {
+          provider: 'anthropic',
+          client: 'claude_code',
+          model: 'claude-opus-5-5',
+          effort: 'high' as const,
+          auth_mode: 'subscription' as const,
+          billing_mode: 'allowance_only' as const,
+        },
+        fallback_routes: [],
+      },
+    ],
+  };
+
+  render(
+    <ProfileSelector
+      projectId="project-1"
+      profiles={[profileWithRoles]}
+      current={profileWithRoles}
+      refresh={vi.fn()}
+    />
+  );
+
+  expect(screen.getByText(/gemini-3.8-flash/)).toBeInTheDocument();
+  expect(screen.getByText(/medium/i)).toBeInTheDocument();
+  expect(screen.getByText(/claude-opus-5-5/)).toBeInTheDocument();
+  const editLink = screen.getByRole('link', { name: /Edit subscription profiles/i });
+  expect(editLink).toHaveAttribute('href', '/subscription-profiles');
+});

@@ -217,6 +217,7 @@ class ReviewService:
             instruction_digest=prompt.digest,
             allowed_tools=_TOOLS,
             budget=AgentBudget.from_model_policy(approved.policy.reviewer_model),
+            reasoning_effort=approved.policy.reviewer_model.reasoning_effort,
         )
         input_descriptor = await self._put(
             self._json(

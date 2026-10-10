@@ -1,10 +1,12 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import Link from 'next/link';
 import type { components } from '@/lib/api/schema';
 import { ApiError, api } from '@/lib/api/client';
 import { Button } from '@/components/ui/button';
 import { profileLabel } from './labels';
+import type { Preference, Route } from './models';
 
 type Profile = components['schemas']['ProfileResponse'];
 
@@ -115,13 +117,45 @@ export function ProfileSelector({
             <p style={{ margin: 0 }}>
               Current selection: <strong>version {current.version}</strong> · <code>{current.profile_id}</code>
             </p>
+            {current.preferences && current.preferences.length > 0 && (
+              <div style={{ marginTop: '4px' }}>
+                <p style={{ margin: 0 }}>
+                  <strong>Role models &amp; reasoning:</strong>
+                </p>
+                <ul style={{ margin: '4px 0 0', paddingLeft: '20px' }}>
+                  {(current.preferences as unknown as Preference[]).map((pref, idx) => {
+                    const purpose = String(pref.purpose ?? `Role ${idx + 1}`);
+                    const route = pref.preferred_route as Route | undefined;
+                    return (
+                      <li key={purpose}>
+                        <strong>{profileLabel(purpose)}</strong>:{' '}
+                        <code>{route?.model || 'Unset'}</code>
+                        {route?.effort ? ` (Reasoning: ${route.effort})` : ''}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
             <p style={{ margin: '4px 0 0' }}>
               Jev default:{' '}
               <strong>
                 {current.jev ? `${profileLabel(current.jev.mode)} (${current.jev.model})` : 'None'}
               </strong>
             </p>
+            <p style={{ margin: '8px 0 0' }}>
+              <Link href="/subscription-profiles" className="underline">
+                Edit subscription profiles
+              </Link>
+            </p>
           </div>
+        )}
+        {!current && (
+          <p className="meta" style={{ marginTop: '8px' }}>
+            <Link href="/subscription-profiles" className="underline">
+              Edit subscription profiles
+            </Link>
+          </p>
         )}
 
         {error && <p role="alert" className="field-error">{error}</p>}
