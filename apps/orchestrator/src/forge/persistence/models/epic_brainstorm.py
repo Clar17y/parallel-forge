@@ -47,6 +47,7 @@ class BrainstormTurnRow(Base, TimestampMixin):
 class BrainstormJobRow(Base, TimestampMixin):
     __tablename__ = "epic_brainstorm_jobs"
     __table_args__ = (
+        UniqueConstraint("id", "project_id", name="uq_epic_brainstorm_jobs_id_project"),
         Index("ix_epic_brainstorm_jobs_queued", "state", "created_at"),
         ForeignKeyConstraint(
             ("conversation_id", "epic_id", "project_id"),
@@ -78,7 +79,10 @@ class BrainstormJobRow(Base, TimestampMixin):
 
 class BrainstormAttemptRow(Base, TimestampMixin):
     __tablename__ = "epic_brainstorm_attempts"
-    __table_args__ = (UniqueConstraint("job_id", "number"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", "number"),
+        UniqueConstraint("id", "job_id", name="uq_epic_brainstorm_attempts_id_job"),
+    )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     job_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("epic_brainstorm_jobs.id", ondelete="RESTRICT"), nullable=False

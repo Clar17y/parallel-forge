@@ -10,6 +10,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.plan import PlanOutput
 from forge.domain.provider_quota import QuotaExhaustion
 from forge.domain.run import RunState
@@ -32,6 +33,7 @@ from forge.domain.subscription import (
 )
 from forge.domain.subscription_budget import budget_ceiling
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
+from forge.domain.task_usage_contract import WorkUnitBinding
 
 type SubscriptionDecision = (
     TaskHandoff
@@ -287,6 +289,18 @@ class SubscriptionGateway(Protocol):
     ) -> SubscriptionInvocationResult: ...
 
 
+class ObservableSubscriptionGateway(SubscriptionGateway, Protocol):
+    """Opt-in execution with a caller-owned observation sink."""
+
+    async def execute_observed(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> SubscriptionInvocationResult: ...
+
+
 class SubscriptionInterrupted(asyncio.CancelledError):
     """Cancellation carrying measured, attempt-bound settlement evidence."""
 
@@ -296,6 +310,7 @@ class SubscriptionInterrupted(asyncio.CancelledError):
 
 
 __all__ = [
+    "ObservableSubscriptionGateway",
     "RoleDecisionRejection",
     "SubscriptionDecision",
     "SubscriptionFailure",

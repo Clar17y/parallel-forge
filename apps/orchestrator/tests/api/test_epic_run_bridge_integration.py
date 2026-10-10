@@ -229,7 +229,7 @@ async def test_normal_app_launches_epic_item_and_exposes_owner_override(
         async with session_factory() as session:
             assert (
                 await session.scalar(text("SELECT version_num FROM alembic_version"))
-                == "20261007_0037"
+                == "20261010_0038"
             )
         assert await post(f"{path}/work-item-runs", "launch", launch) == first
         assert await retained_bytes() == retained

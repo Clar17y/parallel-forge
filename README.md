@@ -23,7 +23,8 @@ building Parallel, but is designed to manage other repositories independently.
 - subscription-backed local CLI orchestration, bounded specialist delegation,
   shared-worktree ownership and independent-worktree concurrency
 - frozen routing profiles, durable quota/fallback state, per-task controls,
-  operator feedback and measured/unknown usage reporting
+  operator feedback and measured/unknown usage reporting (with planned
+  [task usage policy migration](docs/task-usage-policy-migration.md) toward advisory averages and optional hard caps)
 - saved brainstorming, revisioned requirements briefs and dependency-aware epic
   work items with frozen child-run context
 - verified prerequisite integration, shared epic budgets, owner controls and
@@ -93,6 +94,9 @@ work, current setup and stopped-upgrade guidance. The
 [v0.2 progress ledger](docs/v0.2-progress.md) distinguishes current outcomes from
 historical checkpoints. The [remaining issue queue](docs/v0.2-issue-backlog.md)
 tracks final publication and merge; one-run profile overrides are post-v0.2.
+Planned task usage monitoring and policy migration
+([task usage policy migration](docs/task-usage-policy-migration.md)) outlines the
+transition toward advisory observed averages and optional hard caps.
 
 ## Prerequisites and verification
 
@@ -122,6 +126,7 @@ Manual process startup, configuration, approvals and recovery are described in t
 - [Historical v0.1 acceptance](docs/acceptance-v0.1.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)
+- [Task usage policy migration](docs/task-usage-policy-migration.md)
 - [Full v0.1 design](docs/superpowers/specs/2026-08-21-forge-v0-1-design.md)
 - [Implementation roadmap](docs/superpowers/plans/2026-08-21-forge-v0-1.md)
 
