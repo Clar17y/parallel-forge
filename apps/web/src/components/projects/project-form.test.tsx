@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ProjectForm } from './project-form';
@@ -13,6 +13,28 @@ async function identity() {
   await user.type(screen.getByLabelText('GitHub repository'), 'owner/repo');
   return user;
 }
+
+test.each([
+  [false, 'Register project'],
+  [true, 'Create policy version'],
+] as const)('shows saving feedback until the redesigned form finishes: %s', async (policyOnly, submitLabel) => {
+  let finishSave!: () => void;
+  const save = vi.fn(() => new Promise<void>(resolve => { finishSave = resolve; }));
+  render(<ProjectForm policyOnly={policyOnly} onSave={save} />);
+  if (!policyOnly) await identity();
+  await userEvent.click(screen.getByRole('button', { name: submitLabel }));
+  const button = screen.getByRole('button', { name: 'Saving…' });
+  expect(button).toHaveAttribute('aria-busy', 'true');
+  expect(button.querySelector('svg.animate-spin')).toBeInTheDocument();
+  expect(button).toBeDisabled();
+  expect(screen.getByLabelText('Runner')).toBeDisabled();
+  expect(save).toHaveBeenCalledTimes(1);
+  await act(async () => finishSave());
+  const ready = screen.getByRole('button', { name: submitLabel });
+  expect(ready).toBeEnabled();
+  expect(ready).not.toHaveAttribute('aria-busy');
+  expect(ready.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+});
 
 test('submits named argv and defaults database off with separate path lists', async () => {
   const save = vi.fn().mockResolvedValue(undefined);

@@ -46,6 +46,7 @@ export function useEpicDecomposition(epicId: string, projectId: string) {
   const refreshThreads = threadsApi.refresh;
   const [activeConversationState, setActiveConversationState] = useState<string | null>(null);
   const [selectedJobState, setSelectedJobState] = useState<{ id: string; conversationId: string | null } | null>(null);
+  const [acceptedJobId, setAcceptedJobId] = useState<string | null>(null);
   const [adoptedGraphRevisionId, setAdoptedGraphRevisionId] = useState<string | null>(null);
 
   const hydrated = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);
@@ -93,6 +94,7 @@ export function useEpicDecomposition(epicId: string, projectId: string) {
     if (mutationLoading || hasPendingRetry) return;
     setActiveConversationState(conversationId);
     setSelectedJobState(null);
+    setAcceptedJobId(null);
     setAdoptedGraphRevisionId(null);
     writeSelection(conversationId, null);
   }, [mutationLoading, hasPendingRetry]);
@@ -108,11 +110,13 @@ export function useEpicDecomposition(epicId: string, projectId: string) {
     if (mutationLoading || hasPendingRetry) return;
     if (!jobIdValue) {
       setSelectedJobState(null);
+      setAcceptedJobId(null);
       writeSelection(selectedConversationId, null);
       return;
     }
     if (!selectedConversationId) return;
     setSelectedJobState({ id: jobIdValue, conversationId: selectedConversationId });
+    setAcceptedJobId(null);
     setAdoptedGraphRevisionId(null);
     writeSelection(selectedConversationId, jobIdValue);
   }, [hasPendingRetry, mutationLoading, selectedConversationId]);
@@ -123,7 +127,7 @@ export function useEpicDecomposition(epicId: string, projectId: string) {
 
   const isUnavailable = threadsApi.failed
     || (selectedConversationId !== null && turnsApi.failed)
-    || (!!jobId && outcomeApi.failed);
+    || (!!jobId && (outcomeApi.failed || outcomeApi.valueStale));
 
   const refresh = useCallback(() => {
     refreshThreads();
@@ -139,6 +143,7 @@ export function useEpicDecomposition(epicId: string, projectId: string) {
 
   useEffect(() => {
     const onJobSettled = (value: unknown, request: { path: string }) => {
+      setAcceptedJobId(null);
       const receipt = value as AuthoringReceipt;
       const requestJobId = jobIdFromPath(request.path) ?? receipt.job_id;
       const conversationId = resolveJobConversation(requestJobId);
@@ -152,6 +157,7 @@ export function useEpicDecomposition(epicId: string, projectId: string) {
         const conversationId = (value as { conversation_id: string }).conversation_id;
         setActiveConversationState(conversationId);
         setSelectedJobState(null);
+        setAcceptedJobId(null);
         writeSelection(conversationId, null);
         refreshThreads();
       }),
@@ -168,11 +174,13 @@ export function useEpicDecomposition(epicId: string, projectId: string) {
         const conversationId = conversationIdFromPath(request.path);
         const receipt = value as AuthoringReceipt;
         selectCompletedJob(receipt.job_id, conversationId);
+        setAcceptedJobId(receipt.job_id);
         refreshThreads();
       }),
       registerCompletion('decomp-job-cancel', onJobSettled),
       registerCompletion('decomp-job-retry', onJobSettled),
       registerCompletion('decomp-proposal-adopt', (value, request) => {
+        setAcceptedJobId(null);
         const requestJobId = jobIdFromPath(request.path);
         const conversationId = requestJobId ? resolveJobConversation(requestJobId) : null;
         if (requestJobId) selectCompletedJob(requestJobId, conversationId);
@@ -249,7 +257,10 @@ export function useEpicDecomposition(epicId: string, projectId: string) {
     activeConversationId: selectedConversationId,
     setActiveConversationId: selectConversation,
     turns: turnsApi.value ?? [],
-    outcome: !outcomeApi.failed && outcomeApi.value?.job_id === jobId ? outcomeApi.value : null,
+    outcome: outcomeApi.value?.job_id === jobId ? outcomeApi.value : null,
+    outcomeStale: outcomeApi.valueStale && outcomeApi.value?.job_id === jobId,
+    outcomeChecking: !!jobId && outcomeApi.value?.job_id !== jobId && !outcomeApi.failed,
+    jobReceiptAccepted: !!jobId && acceptedJobId === jobId,
     selectedJobId: jobId,
     setSelectedJobId,
     jobs: [...new Set([...(activeThread?.job_ids ?? []), ...(selectedJobId ? [selectedJobId] : [])])],

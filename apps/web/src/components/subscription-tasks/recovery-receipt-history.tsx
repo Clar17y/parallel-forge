@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import type { components } from '@/lib/api/schema';
 import { useApi } from '@/hooks/use-api';
@@ -22,7 +23,7 @@ export function RecoveryReceiptHistory({ runId, taskId, attemptId }: { runId: st
       <h4 className="font-semibold">Recorded recovery receipts</h4>
       <button type="button" onClick={result.refresh}>Refresh receipts</button>
     </div>
-    {!page && !failed ? <p role="status">Loading recovery receipts…</p> : null}
+    {!page && !failed ? <LoadingStatus>Loading recovery receipts…</LoadingStatus> : null}
     {failed ? <p role="alert">Recovery receipts are unavailable. Refresh to try again; this does not establish the outcome of a request.</p> : null}
     {page && page.receipts.length === 0 ? <p>No recovery receipt is recorded on this page. This does not rule out a request still in progress.</p> : null}
     {page?.receipts.map(row => <div key={row.receipt_id} className="rounded border border-slate-300 p-2">

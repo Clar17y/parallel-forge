@@ -7,6 +7,7 @@ import { CommandEditor } from './command-editor';
 import { Field, lines } from './form-fields';
 import { JevSettings } from './jev-settings';
 import { defaultModel, ModelPolicy } from './model-policy';
+import { Button } from '@/components/ui/button';
 import styles from './project-policy.module.css';
 
 export type ProjectInput = components['schemas']['ProjectCreateRequest'];
@@ -578,9 +579,9 @@ export function ProjectForm({ onSave, initial, policyOnly = false }: {
           ))}
         </ul>
       )}
-      <button disabled={pending} type="submit">
+      <Button disabled={pending} busy={pending} type="submit">
         {pending ? 'Saving…' : policyOnly ? 'Create policy version' : 'Register project'}
-      </button>
+      </Button>
     </form>
   );
 }

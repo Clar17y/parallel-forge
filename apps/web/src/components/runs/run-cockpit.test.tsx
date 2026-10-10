@@ -1,11 +1,17 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { RunCockpit } from './run-cockpit';
 import { projection } from '@/test/projection';
 import { api } from '@/lib/api/client';
 
-vi.mock('@/hooks/use-run-events', () => ({ useRunEvents: () => 'connected' }));
+const eventStream = vi.hoisted(() => ({ refresh: () => {} }));
+vi.mock('@/hooks/use-run-events', () => ({
+  useRunEvents: (_runId: string, _after: string, refresh: () => void) => {
+    eventStream.refresh = refresh;
+    return 'connected';
+  },
+}));
 vi.mock('@/lib/api/client', async original => ({ ...await original<typeof import('@/lib/api/client')>(), api: vi.fn() }));
 afterEach(() => { cleanup(); vi.mocked(api).mockReset(); });
 test('a mismatched refreshed projection disables actions and reports unavailable state', async () => {
@@ -93,4 +99,63 @@ test('background projection refresh keeps approval actions keyboard reachable', 
   await userEvent.click(screen.getByRole('button', { name: 'Refresh run' }));
   expect(screen.getByRole('button', { name: 'Refresh run' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Approve plan' })).toBeEnabled();
+});
+
+test('a connected event reconciliation stays static until its projection read succeeds', async () => {
+  const initial = projection(); initial.run.state = 'IMPLEMENTING';
+  let finishRead!: (value: typeof initial) => void;
+  vi.mocked(api).mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+  render(<RunCockpit initial={initial} />);
+  const banner = screen.getByLabelText('Current run status');
+  expect(banner.querySelector('svg.animate-spin')).toBeInTheDocument();
+  act(() => eventStream.refresh());
+  expect(banner.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+  expect(banner).toHaveTextContent('Last known state:');
+  const fresh = projection(); fresh.run.state = 'IMPLEMENTING'; fresh.run.version = 8;
+  await act(async () => finishRead(fresh));
+  expect(banner.querySelector('svg.animate-spin')).toBeInTheDocument();
+  expect(banner).not.toHaveTextContent('Last known state:');
+});
+
+test('failed reconciliation and its pending retry stay static until a fresh terminal result arrives', async () => {
+  const initial = projection(); initial.run.state = 'IMPLEMENTING';
+  let failRead!: (error: Error) => void;
+  let finishRetry!: (value: typeof initial) => void;
+  vi.mocked(api).mockImplementationOnce(() => new Promise((_resolve, reject) => { failRead = reject; }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishRetry = resolve; }));
+  render(<RunCockpit initial={initial} />);
+  const banner = screen.getByLabelText('Current run status');
+  act(() => eventStream.refresh());
+  expect(banner.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+  await act(async () => failRead(new Error('offline')));
+  expect(screen.getByRole('alert')).toHaveTextContent('could not be refreshed');
+  expect(banner.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh run' }));
+  expect(banner.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Approve plan' })).toBeDisabled();
+  const fresh = projection(); fresh.run.state = 'COMPLETED'; fresh.run.version = 8; fresh.available_commands = [];
+  await act(async () => finishRetry(fresh));
+  expect(banner).toHaveTextContent('Run completed');
+  expect(banner).not.toHaveTextContent('Last known state:');
+  expect(banner.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+test('queued event reconciliation keeps the banner static through the follow-up read', async () => {
+  const initial = projection(); initial.run.state = 'IMPLEMENTING';
+  let finishFirst!: (value: typeof initial) => void;
+  let finishFollowUp!: (value: typeof initial) => void;
+  vi.mocked(api).mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishFollowUp = resolve; }));
+  render(<RunCockpit initial={initial} />);
+  const banner = screen.getByLabelText('Current run status');
+  act(() => { eventStream.refresh(); eventStream.refresh(); });
+  expect(api).toHaveBeenCalledTimes(1);
+  const fresh = projection(); fresh.run.state = 'IMPLEMENTING'; fresh.run.version = 8;
+  await act(async () => finishFirst(fresh));
+  expect(api).toHaveBeenCalledTimes(2);
+  expect(banner.querySelector('svg.animate-spin')).not.toBeInTheDocument();
+  const latest = projection(); latest.run.state = 'IMPLEMENTING'; latest.run.version = 9;
+  await act(async () => finishFollowUp(latest));
+  expect(banner.querySelector('svg.animate-spin')).toBeInTheDocument();
 });

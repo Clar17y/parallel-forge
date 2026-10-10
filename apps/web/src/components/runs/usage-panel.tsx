@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
 import { SubscriptionUsageSummary } from '@/components/subscription-usage/usage-summary';
@@ -11,7 +12,7 @@ export function UsagePanel({ runId }: { runId: string }) {
   return <><SubscriptionUsageSummary runId={runId} /><JevPanel runId={runId} /><section aria-label="Run usage"><h2>API usage</h2>
     <p>Recorded token counts and estimated costs for this run, newest first. Calls without a recorded estimate remain unknown.</p>
     <button disabled={usage.loading} onClick={usage.refresh}>Refresh usage</button>
-    {usage.loading && <p role="status">Loading usage…</p>}
+    {usage.loading && <LoadingStatus>Loading usage…</LoadingStatus>}
     {usage.failed && <p role="alert">Usage unavailable. <button onClick={usage.refresh}>Retry</button></p>}
     {usage.value && <>{!usage.value.items.length && <p>No usage recorded on this page.</p>}
       {usage.value.items.map(item => <article key={item.id}>

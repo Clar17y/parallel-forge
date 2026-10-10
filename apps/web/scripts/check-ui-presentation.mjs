@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { describeRunState, localCheckDisplay, remoteCheckDisplay, workflowSteps, nextGateMessage, remediationOrigin } from '../src/components/runs/run-presentation.ts';
+import { describeAuthoringOutcome } from '../src/components/epics/authoring-presentation.ts';
 
 const head = 'a'.repeat(40);
 const otherHead = 'b'.repeat(40);
@@ -340,4 +341,97 @@ test('a window containing only tool_call.completed events at current run version
   assert.equal(buildStep.key, 'build');
   assert.equal(buildStep.label, 'Repair & revalidate');
   assert.equal(buildStep.detail, 'Repair in progress');
+});
+
+test('authoring state transitions: queued -> running -> proposed truthfully reflects execution', () => {
+  const queued = { schema_version: 1, job_id: 'j-1', job_version: 1, state: 'queued' };
+  const running = { schema_version: 1, job_id: 'j-1', job_version: 2, state: 'running' };
+  const proposed = { schema_version: 1, job_id: 'j-1', job_version: 3, state: 'proposed', proposal_digest: 'd'.repeat(64) };
+
+  const qDesc = describeAuthoringOutcome(queued);
+  assert.equal(qDesc.isExecuting, false);
+  assert.match(qDesc.title, /queued/i);
+
+  const rDesc = describeAuthoringOutcome(running);
+  assert.equal(rDesc.isExecuting, true);
+  assert.match(rDesc.title, /drafting|running/i);
+
+  const pDesc = describeAuthoringOutcome(proposed);
+  assert.equal(pDesc.isExecuting, false);
+  assert.equal(pDesc.isTerminal, true);
+  assert.match(pDesc.title, /proposal/i);
+});
+
+test('quota_wait and capacity_wait do not claim active execution', () => {
+  const quota = { schema_version: 1, job_id: 'j-1', job_version: 1, state: 'quota_wait' };
+  const capacity = { schema_version: 1, job_id: 'j-1', job_version: 1, state: 'capacity_wait' };
+
+  const qDesc = describeAuthoringOutcome(quota);
+  assert.equal(qDesc.isExecuting, false);
+  assert.equal(qDesc.isWaiting, true);
+  assert.match(qDesc.title, /quota/i);
+  assert.doesNotMatch(qDesc.title, /drafting|running|executing/i);
+
+  const cDesc = describeAuthoringOutcome(capacity);
+  assert.equal(cDesc.isExecuting, false);
+  assert.equal(cDesc.isWaiting, true);
+  assert.match(cDesc.title, /capacity/i);
+  assert.doesNotMatch(cDesc.title, /drafting|running|executing/i);
+});
+
+test('cancel_requested and reconciling do not claim finished', () => {
+  const cancelling = { schema_version: 1, job_id: 'j-1', job_version: 1, state: 'cancel_requested' };
+  const reconciling = { schema_version: 1, job_id: 'j-1', job_version: 1, state: 'reconciling' };
+
+  const cDesc = describeAuthoringOutcome(cancelling);
+  assert.equal(cDesc.isTerminal, false);
+  assert.equal(cDesc.isExecuting, false);
+  assert.match(cDesc.title, /cancellation/i);
+
+  const rDesc = describeAuthoringOutcome(reconciling);
+  assert.equal(rDesc.isTerminal, false);
+  assert.equal(rDesc.isExecuting, false);
+  assert.match(rDesc.title, /reconcil/i);
+});
+
+test('failed settled job clearly states required next action', () => {
+  const failedSettled = { schema_version: 1, job_id: 'j-1', job_version: 1, state: 'failed', failure: 'rate_limited', process_settled: true };
+  const fDesc = describeAuthoringOutcome(failedSettled);
+  assert.equal(fDesc.isTerminal, true);
+  assert.equal(fDesc.isExecuting, false);
+  assert.equal(fDesc.tone, 'danger');
+  assert.match(fDesc.actionRequired, /retry/i);
+
+  const failedUnavailable = { schema_version: 1, job_id: 'j-1', job_version: 1, state: 'failed', failure: 'unavailable', process_settled: true };
+  const uDesc = describeAuthoringOutcome(failedUnavailable);
+  assert.match(uDesc.actionRequired, /settings|setup/i);
+});
+
+test('failed refresh while last running outcome retained does not assert live execution', () => {
+  const running = { schema_version: 1, job_id: 'j-1', job_version: 2, state: 'running' };
+  const staleDesc = describeAuthoringOutcome(running, { stale: true });
+  assert.equal(staleDesc.isExecuting, false);
+  assert.match(staleDesc.title, /last known/i);
+  assert.match(staleDesc.description, /connection unavailable/i);
+});
+
+test('initial submit with older outcome prioritizes submission state over old proposal', () => {
+  const oldProposed = { schema_version: 1, job_id: 'j-0', job_version: 5, state: 'proposed', proposal_digest: 'd'.repeat(64) };
+  const submitDesc = describeAuthoringOutcome(oldProposed, { isNewSubmission: true });
+  assert.equal(submitDesc.isExecuting, true);
+  assert.match(submitDesc.title, /preparing assistant request/i);
+  assert.doesNotMatch(submitDesc.title, /proposal ready/i);
+});
+
+test('request activity identifies the actual operation and failure copy reflects process settlement', () => {
+  assert.equal(describeAuthoringOutcome(null, { requestKind: 'decomp-conversation-turn' }).title, 'Saving decomposition message');
+  assert.equal(describeAuthoringOutcome(null, { requestKind: 'job-cancel' }).title, 'Requesting cancellation');
+  assert.equal(describeAuthoringOutcome(null, { requestKind: 'proposal-adopt' }).title, 'Adopting proposal');
+  const unsettled = describeAuthoringOutcome({ state: 'failed', failure: 'timeout', process_settled: false });
+  assert.match(unsettled.description, /still stopping|awaiting settlement/i);
+  assert.doesNotMatch(unsettled.description, /process stopped/i);
+  const settled = describeAuthoringOutcome({ state: 'failed', failure: 'timeout', process_settled: true });
+  assert.match(settled.description, /process stopped/i);
+  assert.match(settled.actionRequired, /retry/i);
+  assert.match(describeAuthoringOutcome({ state: 'failed', failure: 'input_conflict' }).description, /latest context/i);
 });

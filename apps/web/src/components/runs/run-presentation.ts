@@ -9,6 +9,15 @@ export type { Tone } from '../ui/tone';
 export type CheckDisplay = { label: string; tone: Tone };
 export type RunDescription = { title: string; description: string; tone: Tone };
 
+const activeRunPhases = new Set<string>([
+  'PLANNING', 'PREPARING_WORKTREE', 'IMPLEMENTING', 'VALIDATING',
+  'REVIEWING', 'REMEDIATING', 'PUBLISHING_PR', 'MERGING',
+] satisfies State[]);
+
+export function isActiveRunPhase(state: string): boolean {
+  return activeRunPhases.has(state);
+}
+
 export function readableLabel(value: string): string {
   const words = value.replaceAll('_', ' ').replaceAll('.', ' ').trim().toLowerCase();
   return words ? words[0].toUpperCase() + words.slice(1) : 'Unknown';

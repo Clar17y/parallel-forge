@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import Link from 'next/link';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
@@ -44,7 +45,7 @@ function UsageGroups({ runId }: { runId?: string }) {
     </div>
     <p>Measured subtotals grouped by run, role, route used and currency. Each subtotal shows how many attempts reported that measurement.</p>
     <p>API estimates do not measure subscription allowance or account spend. Provider result counts do not indicate task acceptance.</p>
-    {usage.loading ? <p role="status">Loading subscription usage…</p> : null}
+    {usage.loading ? <LoadingStatus>Loading subscription usage…</LoadingStatus> : null}
     {usage.refreshing && !usage.loading ? <p role="status">Refreshing subscription usage…</p> : null}
     {usage.failed ? <p role="alert">Subscription usage unavailable. <button type="button" onClick={usage.refresh}>Retry subscription usage</button></p> : null}
     {usage.value ? <>

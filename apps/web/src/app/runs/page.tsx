@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import Link from 'next/link';
 import { useApi } from '@/hooks/use-api';
@@ -32,7 +33,7 @@ export default function RunsPage() {
     </form>
     {projects.failed && <p role="alert">Project filters unavailable. <button onClick={projects.refresh}>Retry projects</button></p>}
     <button disabled={runs.loading} onClick={runs.refresh}>Refresh runs</button>
-    {runs.loading && <p role="status">Loading runs…</p>}
+    {runs.loading && <LoadingStatus>Loading runs…</LoadingStatus>}
     {runs.failed && <p role="alert">Runs unavailable. <button onClick={runs.refresh}>Retry</button></p>}
     {runs.value && <RunList items={runs.value.items} />}
     <nav aria-label="Run pages"><button disabled={!offset || runs.loading} onClick={() => setOffset(Math.max(0, offset - 25))}>Previous</button>

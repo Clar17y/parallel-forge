@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
@@ -132,7 +133,7 @@ export function SubscriptionRuntimeStatus() {
     <h2>Subscription readiness</h2>
     <p>This read-only view uses retained worker, capability-evidence, and quota metadata. It never launches a provider client or reserves quota. Forge never collects or copies provider credentials, API keys, credits, or overage settings.</p>
     <Button type="button" disabled={reports.refreshing} onClick={reports.refresh}>Refresh subscription readiness</Button>
-    {reports.loading ? <p role="status">Loading worker registration…</p> : reports.failed ?
+    {reports.loading ? <LoadingStatus>Loading worker registration…</LoadingStatus> : reports.failed ?
       <p role="alert">Worker registration unavailable. Refresh to retry; current registration is unknown.</p> : reports.value ? <>
         <p>Observed: <time dateTime={reports.value.observed_at}>{reports.value.observed_at}</time>. Reports become stale after {reports.value.fresh_for_seconds} seconds without renewal.</p>
         <div role="status" aria-live="polite" className="runtime-refresh-status" style={{ minHeight: '1.5rem', margin: '4px 0' }}>

@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
@@ -67,7 +68,7 @@ function EpicsPageContent() {
         </Button>
       </div>
 
-      {projectsApi.loading && <p role="status">Loading projects…</p>}
+      {projectsApi.loading && <LoadingStatus>Loading projects…</LoadingStatus>}
       {projectsApi.value && projects.length === 0 && <div className="space-y-2">
         <p>No projects are registered yet.</p>
         <Link href="/projects/new" className="text-[var(--focus)] hover:underline">Register a project</Link>
@@ -80,7 +81,7 @@ function EpicsPageContent() {
         </p>
       )}
 
-      {epicsApi.loading && !epicsApi.value && <p role="status">Loading project epics…</p>}
+      {epicsApi.loading && !epicsApi.value && <LoadingStatus>Loading project epics…</LoadingStatus>}
 
       {epicsApi.failed && (
         <div role="alert" className="p-4 bg-[var(--danger-soft)] text-[var(--danger)] rounded border border-[var(--border)] space-y-2">
@@ -96,7 +97,7 @@ function EpicsPageContent() {
 
 export default function EpicsPage() {
   return (
-    <Suspense fallback={<p role="status">Loading epics workspace…</p>}>
+    <Suspense fallback={<LoadingStatus>Loading epics workspace…</LoadingStatus>}>
       <EpicsPageContent />
     </Suspense>
   );

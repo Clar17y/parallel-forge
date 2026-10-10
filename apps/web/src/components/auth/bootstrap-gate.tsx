@@ -1,5 +1,6 @@
 "use client";
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '@/lib/api/client';
 import { csrf } from '@/lib/api/csrf';
@@ -56,7 +57,7 @@ export function BootstrapGate({ children, exchange = exchangeBootstrap, session 
   }, [exchange, session]);
   if (state === 'ready') return <SessionIdentity.Provider value={actorId}>{children}</SessionIdentity.Provider>;
   if (state === 'failed') return <main><div role="alert"><h1>Sign-in required</h1><p>Use a fresh bootstrap link to start a session.</p></div></main>;
-  return <p role="status">Starting secure session…</p>;
+  return <LoadingStatus>Starting secure session…</LoadingStatus>;
 }
 
 async function exchangeBootstrap(token: string, signal: AbortSignal): Promise<Session> {

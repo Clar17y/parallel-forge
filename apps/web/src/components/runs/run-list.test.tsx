@@ -16,4 +16,8 @@ test('run list preserves currencies and marks unpriced calls instead of inventin
   expect(screen.getByText('GBP 7 minor units')).toBeInTheDocument();
   expect(screen.getByText('1 unpriced calls')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: '#3' })).toHaveAttribute('href', 'https://github.com/owner/repo/pull/3');
+  const phaseCell = screen.getByText('IMPLEMENTING').closest('td');
+  expect(phaseCell).toBeInTheDocument();
+  // List results are snapshots without polling, so they cannot assert live execution.
+  expect(phaseCell?.querySelector('svg.animate-spin')).not.toBeInTheDocument();
 });

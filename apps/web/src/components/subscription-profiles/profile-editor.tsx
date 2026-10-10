@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useId, useMemo, useState } from 'react';
 import type { components } from '@/lib/api/schema';
 import { useApi } from '@/hooks/use-api';
@@ -338,7 +339,7 @@ export function ProfileEditor({
         </Button>
       </div>
 
-      {catalogs.loading && <p role="status">Loading model choices…</p>}
+      {catalogs.loading && <LoadingStatus>Loading model choices…</LoadingStatus>}
       {catalogs.failed && (
         <p role="alert" className="field-error">
           Model choices unavailable.{' '}
@@ -555,7 +556,7 @@ export function ProfileEditor({
 
       <div className="form-actions">
         {error && <p role="alert" className="field-error">{error}</p>}
-        <Button type="submit" variant="primary" disabled={saving || saveUnavailable}>
+        <Button type="submit" variant="primary" busy={saving} disabled={saving || saveUnavailable}>
           {saving
             ? 'Saving…'
             : expectedVersion === undefined

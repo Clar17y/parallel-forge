@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import Link from 'next/link';
 import { useState } from 'react';
 import { useApi } from '@/hooks/use-api';
@@ -10,7 +11,7 @@ export default function UsagePage() {
   const usage = useApi<components['schemas']['ListPage_UsageItem_']>(`/usage?offset=${offset}&limit=25`);
   return <><h1>Usage</h1><SubscriptionUsageSummary /><h2>API usage</h2><p>Recorded tokens and duration, grouped by project, run, provider, model and currency. Costs are estimates; unpriced calls are excluded from known cost.</p>
     <button onClick={usage.refresh} disabled={usage.loading}>Refresh usage</button>
-    {usage.loading && <p role="status">Loading usage…</p>}
+    {usage.loading && <LoadingStatus>Loading usage…</LoadingStatus>}
     {usage.failed && <p role="alert">Usage unavailable. <button onClick={usage.refresh}>Retry</button></p>}
     {usage.value && <>{!usage.value.items.length && <p>No usage on this page.</p>}
       {usage.value.items.map(item => <article key={`${item.project_id}:${item.run_id}:${item.provider}:${item.model}:${item.currency}`}>

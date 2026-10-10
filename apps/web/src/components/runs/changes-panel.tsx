@@ -1,4 +1,5 @@
 'use client';
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import { UnifiedDiff } from './unified-diff';
@@ -15,7 +16,7 @@ export function ChangesPanel({ projection }: { projection: components['schemas']
   return <section aria-label="Run changes"><h2>Changes</h2>
     <p>Persisted diff supplied to the latest reviewer. Uncommitted work and later edits are not included.</p>
     {!digest && <p>No reviewer diff evidence recorded yet.</p>}
-    {artifact.loading && <p role="status">Loading changes…</p>}
+    {artifact.loading && <LoadingStatus>Loading changes…</LoadingStatus>}
     {(artifact.failed || (value && !changes)) && <p role="alert">Changes evidence unavailable. <button onClick={artifact.refresh}>Retry</button></p>}
     {changes && <><p>Recorded head: <code>{changes.head_sha}</code> · Diff digest: <code>{changes.diff_digest}</code></p>
       {projection.candidate.commit && projection.candidate.commit !== changes.head_sha && <p role="alert">This recorded diff belongs to an earlier candidate. Current candidate: <code>{projection.candidate.commit}</code></p>}

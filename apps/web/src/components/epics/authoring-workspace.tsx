@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { api, ApiError } from '@/lib/api/client';
 import { Button } from '@/components/ui/button';
@@ -9,6 +10,8 @@ import { EvidenceDetails } from './evidence-details';
 import { AuthoringJobOutcome } from './authoring-job-outcome';
 import { BrainstormModelPicker } from './brainstorm-model-picker';
 import { toBrainstormRoute, type BrainstormRoute } from './brainstorm-model-choice';
+import { describeAuthoringOutcome } from './authoring-presentation';
+import { ActivityStatus } from '@/components/ui/activity-status';
 import type { BrainstormProposal, BrainstormTurn, DecompositionProposal } from '@/hooks/epics/types';
 
 const subscribeHydration = () => () => undefined;
@@ -205,6 +208,7 @@ export function AuthoringWorkspace({
   const setSendError = useCallback((value: string | null) => setSendErrorState({ subject, value }), [subject]);
   const sendError = sendErrorState?.subject === subject ? sendErrorState.value : null;
   const [assistancePending, setAssistancePending] = useState(false);
+  const [sendInProgress, setSendInProgress] = useState(false);
   const sendLock = useRef(false);
   const sendIntent = useRef(false);
   const lifecycle = useRef({ active: false, subject: '' });
@@ -221,6 +225,9 @@ export function AuthoringWorkspace({
     setActiveConversationId,
     turns,
     outcome,
+    outcomeStale,
+    outcomeChecking,
+    jobReceiptAccepted,
     loading,
     isUnavailable,
     refresh,
@@ -236,6 +243,16 @@ export function AuthoringWorkspace({
     adoptedRevisionId,
     mutations,
   } = brainstorm;
+  const activeRequestKind = mutations.loading ? mutations.pendingMutation?.kind : null;
+  const isSubmitting = assistancePending || !!(activeRequestKind && ['conversation-start', 'conversation-turn', 'job-submit'].includes(activeRequestKind));
+  const activityDesc = describeAuthoringOutcome(
+    isSubmitting ? null : outcome,
+    {
+      requestKind: activeRequestKind && ['conversation-start', 'conversation-turn', 'job-submit', 'job-cancel', 'job-retry', 'proposal-adopt'].includes(activeRequestKind) ? activeRequestKind : null,
+      isNewSubmission: assistancePending,
+      stale: outcomeStale,
+    }
+  );
   const activeThread = threads.find(thread => thread.conversation_id === activeConversationId);
   const mutationPending = mutations.loading || mutations.hasPendingRetry;
   const registerCompletion = mutations.registerCompletion;
@@ -389,7 +406,7 @@ export function AuthoringWorkspace({
       if (isCurrentInstance()) setSendError('Your message is saved. We could not start the assistant yet; retry assistance when the conversation is available.');
     } finally {
       sendLock.current = false;
-      if (isCurrentInstance()) setAssistancePending(false);
+      if (isCurrentInstance()) { setAssistancePending(false); setSendInProgress(false); }
     }
   }, [appendTurn, epicId, isCurrentInstance, markObsolete, pendingRouteKey, projectId, rejectSavedSubmission, savedSendKey, setSavedMessage, setSendError, submitJob]);
 
@@ -448,6 +465,7 @@ export function AuthoringWorkspace({
     if (!submittedText || mutationPending || assistancePending || sendLock.current || isUnavailable) return;
     sendLock.current = true;
     sendIntent.current = true;
+    setSendInProgress(true);
     const frozenRoute = routeChoice;
     savePendingRoute(pendingRouteKey, frozenRoute);
     setAssistancePending(true);
@@ -475,6 +493,7 @@ export function AuthoringWorkspace({
       if (!continuationStarted) {
         sendLock.current = false;
         setAssistancePending(false);
+        setSendInProgress(false);
       }
     }
   };
@@ -550,7 +569,7 @@ export function AuthoringWorkspace({
         </div>
       )}
 
-      {loading && <p role="status">Loading authoring…</p>}
+      {loading && <LoadingStatus>Loading authoring…</LoadingStatus>}
       {adoptedRevisionId && <p role="status" className="p-3 bg-[var(--success-soft)] text-[var(--success)] rounded text-sm">Proposed brief adopted as a new revision.</p>}
 
       <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -586,13 +605,27 @@ export function AuthoringWorkspace({
         )}
       </div>
 
+      {outcomeChecking && !isSubmitting && activityDesc.state === 'idle' ? (
+        <ActivityStatus title={jobReceiptAccepted ? 'Job submitted · checking assistant status' : 'Checking assistant status'}
+          description="Waiting for the selected job’s current status." tone="info" isExecuting />
+      ) : activityDesc && (activityDesc.state !== 'idle' || outcome) ? (
+        <ActivityStatus
+          title={activityDesc.title}
+          description={activityDesc.description}
+          tone={activityDesc.tone}
+          isExecuting={activityDesc.isExecuting}
+          isWaiting={activityDesc.isWaiting}
+          actionRequired={activityDesc.actionRequired}
+        />
+      ) : null}
+
       <div className="space-y-4">
         {turns.length === 0 ? (
           <p className="p-6 bg-[var(--surface-muted)] rounded border border-[var(--border)] text-center text-sm text-[var(--muted)]">No messages yet. Send a prompt to begin.</p>
         ) : turns.map(turn => {
           const operator = turn.role === 'operator';
           const matchingOutcome = outcome?.proposal?.turn_id === turn.proposal?.turn_id ? outcome : null;
-          const canAdopt = matchingOutcome?.state === 'proposed' && !!matchingOutcome.proposal_digest && !matchingOutcome.adopted_revision_id;
+          const canAdopt = !isSubmitting && !outcomeStale && matchingOutcome?.state === 'proposed' && !!matchingOutcome.proposal_digest && !matchingOutcome.adopted_revision_id;
           return (
             <article key={turn.turn_id} className={`p-4 rounded border ${operator ? 'bg-[var(--surface)] border-[var(--border)] mr-8' : 'bg-[var(--info-soft)] border-[var(--info)] ml-8'} space-y-3`}>
               <div className="flex items-center justify-between">
@@ -616,11 +649,11 @@ export function AuthoringWorkspace({
 
       {outcome && (
         <>
-          <AuthoringJobOutcome outcome={outcome} />
-          {outcome.state === 'failed' && outcome.failure === 'unavailable' && (
+          <AuthoringJobOutcome outcome={outcome} stale={outcomeStale} />
+          {outcome.state === 'failed' && !outcomeStale && outcome.failure === 'unavailable' && (
             <p role="status">The selected AI model could not start. Check the local client setup and this project&apos;s AI settings, then retry the assistant job.</p>
           )}
-          {outcome.state === 'cancel_requested' && <p role="status">Cancellation requested. Waiting for the process to settle.</p>}
+          {outcome.state === 'cancel_requested' && !outcomeStale && <p role="status">Cancellation requested. Waiting for the process to settle.</p>}
           <div className="flex flex-wrap gap-2">
             {['queued', 'running', 'quota_wait', 'capacity_wait', 'reconciling'].includes(outcome.state) && (
               <Button variant="secondary" disabled={mutationPending || isUnavailable} onClick={() => { void handleJobControl('cancel'); }}>Cancel assistant job</Button>
@@ -676,8 +709,8 @@ export function AuthoringWorkspace({
           required
           disabled={mutationPending || assistancePending || isUnavailable}
         />
-        <Button type="submit" variant="primary" disabled={mutationPending || assistancePending || isUnavailable || !inputText.trim()}>
-          {mutations.loading || assistancePending ? 'Sending…' : activeConversationId ? 'Send message' : 'Start conversation'}
+        <Button type="submit" variant="primary" busy={sendInProgress} disabled={mutationPending || assistancePending || isUnavailable || !inputText.trim()}>
+          {sendInProgress ? 'Sending…' : activeConversationId ? 'Send message' : 'Start conversation'}
         </Button>
       </form>
 
@@ -698,7 +731,21 @@ export function AuthoringWorkspace({
         </Button>}
       </div>}
 
-      {outcome && ['queued', 'running', 'quota_wait', 'capacity_wait', 'reconciling'].includes(outcome.state) && <p role="status">The assistant is working on your idea. You can add context while you wait.</p>}
+      {!isSubmitting && outcome && !outcomeStale && outcome.state === 'running' && (
+        <p role="status">The assistant is working on your idea. You can add context while you wait.</p>
+      )}
+      {!isSubmitting && outcome && !outcomeStale && outcome.state === 'quota_wait' && (
+        <p role="status">The assistant is waiting for model quota. You can add context while you wait.</p>
+      )}
+      {!isSubmitting && outcome && !outcomeStale && outcome.state === 'capacity_wait' && (
+        <p role="status">The assistant is waiting for execution capacity. You can add context while you wait.</p>
+      )}
+      {!isSubmitting && outcome && !outcomeStale && outcome.state === 'reconciling' && (
+        <p role="status">The assistant process is reconciling. You can add context while you wait.</p>
+      )}
+      {!isSubmitting && outcome && !outcomeStale && outcome.state === 'queued' && (
+        <p role="status">The assistant is queued. You can add context while you wait.</p>
+      )}
 
     </div>
   );

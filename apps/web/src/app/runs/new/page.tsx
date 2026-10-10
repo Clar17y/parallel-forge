@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { NewRunForm } from '@/components/runs/new-run-form';
@@ -22,7 +23,7 @@ export default function NewRunPage() {
           <Button onClick={projects.refresh}>Retry</Button>
         </p>
       )}
-      {projects.loading && <p role="status">Loading projects…</p>}
+      {projects.loading && <LoadingStatus>Loading projects…</LoadingStatus>}
       {projects.value && (
         <NewRunForm
           projects={projects.value}

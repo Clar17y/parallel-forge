@@ -16,9 +16,11 @@ function UsageValue({ label, value }: { label: string; value: number | null | un
 export function AuthoringJobOutcome({
   outcome,
   title = 'Assistant job',
+  stale = false,
 }: {
   outcome: AuthoringOutcome;
   title?: string;
+  stale?: boolean;
 }) {
   const usage = outcome.usage;
   const unknown = outcome.unknown_usage_fields ?? [];
@@ -29,11 +31,19 @@ export function AuthoringJobOutcome({
       ? 'No process settlement reported'
       : 'Process settlement pending';
   const settlementTone = outcome.process_settled || outcome.state === 'cancelled' ? 'neutral' : 'warning';
+  const stateDescription = stale
+    ? `Last known state: ${formatState(outcome.state)} (Connection unavailable)`
+    : `Job state: ${formatState(outcome.state)}`;
+
   return (
-    <Panel title={title} description={`Job state: ${formatState(outcome.state)}`}>
+    <Panel title={title} description={stateDescription}>
       <div className="space-y-3 text-sm">
         <div className="flex flex-wrap items-center gap-2">
-          <StatusBadge label={formatState(outcome.state)} tone={outcome.state === 'failed' ? 'danger' : outcome.state === 'proposed' ? 'success' : 'info'} />
+          <StatusBadge
+            label={stale ? `Last known: ${formatState(outcome.state)}` : formatState(outcome.state)}
+            tone={stale ? 'warning' : outcome.state === 'failed' ? 'danger' : outcome.state === 'proposed' ? 'success' : 'info'}
+          />
+          {stale ? <StatusBadge label="Connection unavailable" tone="warning" /> : null}
           <StatusBadge label={settlementLabel} tone={settlementTone} />
         </div>
         {outcome.route && <p>Model: {outcome.route.model} · Effort: {outcome.route.effort}</p>}

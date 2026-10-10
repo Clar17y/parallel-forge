@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import { readableLabel } from './run-presentation';
@@ -9,7 +10,7 @@ export function JevPanel({ runId }: { runId: string }) {
   return <section aria-label="Jev advisory usage"><h2>Jev advisory usage</h2>
     <p>Read-only worker report. Source excerpts leave the project only when its immutable policy allows remote processing.</p>
     <button disabled={report.loading} onClick={report.refresh}>Refresh Jev report</button>
-    {report.loading && <p role="status">Loading Jev report…</p>}
+    {report.loading && <LoadingStatus>Loading Jev report…</LoadingStatus>}
     {report.failed && <p role="alert">Jev report unavailable. <button onClick={report.refresh}>Retry</button></p>}
     {report.value && <>
       {report.value.calls === 0 && !Object.keys(report.value.by_kind).length && !Object.keys(report.value.by_status).length && <p>No Jev activity has been recorded for this run.</p>}

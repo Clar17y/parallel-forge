@@ -1,5 +1,6 @@
 'use client';
 
+import { LoadingStatus } from '@/components/ui/loading-status';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import { ProfileList } from '@/components/subscription-profiles/profile-list';
@@ -24,7 +25,7 @@ export default function SubscriptionProfilesPage() {
 
       <Button type="button" disabled={profiles.refreshing} onClick={profiles.refresh}>Refresh profile history</Button>
 
-      {profiles.loading && <p role="status">Loading profile history…</p>}
+      {profiles.loading && <LoadingStatus>Loading profile history…</LoadingStatus>}
       {profiles.failed && (
         <p role="alert">
           Profile history unavailable. {profiles.value ? 'Showing the last loaded history; saving is paused until it is verified. ' : ''}
