@@ -8,6 +8,7 @@ from typing import Protocol
 from uuid import UUID
 
 from forge.agents.client_process import ClientProcessReceipt, ClientProcessResult
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.epic_brainstorm import (
     AuthoringJobSnapshot,
     AuthoringOutcome,
@@ -18,6 +19,7 @@ from forge.domain.epic_brainstorm import (
 )
 from forge.domain.epic_decomposition import DecompositionProposal
 from forge.domain.subscription import AttemptTelemetry
+from forge.domain.task_usage_contract import WorkUnitBinding
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 
 
@@ -90,6 +92,22 @@ class BrainstormGateway(Protocol):
     ) -> AuthoringGatewayResult: ...
 
 
+class ObservableBrainstormGateway(BrainstormGateway, Protocol):
+    """Optional authoring execution with a caller-owned observation sink."""
+
+    async def execute_observed(
+        self,
+        job: AuthoringJobSnapshot,
+        turns: tuple[BrainstormTurn, ...],
+        reader: BrainstormReadOnlyTools,
+        *,
+        cancelled: Callable[[], Awaitable[bool]],
+        lifecycle: BrainstormProcessLifecycle,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> AuthoringGatewayResult: ...
+
+
 class BrainstormProcessLifecycle(Protocol):
     async def launch_intent(self, launch_id: str) -> None: ...
     async def started(self, receipt: ClientProcessReceipt) -> None: ...
@@ -105,4 +123,5 @@ __all__ = [
     "BrainstormGatewayResult",
     "BriefInput",
     "EpicAuthoringPort",
+    "ObservableBrainstormGateway",
 ]

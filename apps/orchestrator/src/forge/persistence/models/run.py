@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -50,6 +51,7 @@ class Run(Base, TimestampMixin):
 
     __tablename__ = "runs"
     __table_args__ = (
+        UniqueConstraint("id", "project_id", name="uq_runs_id_project"),
         ForeignKeyConstraint(
             ("task_id", "project_id"),
             ("tasks.id", "tasks.project_id"),

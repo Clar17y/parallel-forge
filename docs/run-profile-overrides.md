@@ -20,3 +20,16 @@ The run API and cockpit expose the frozen profile ID, version, and selection
 source (`project_default` or `run_override`). Older runs that have a frozen
 profile but predate provenance report an unknown source. A run without an
 envelope has no frozen profile.
+
+## Planned usage monitoring and token caps
+
+Profile overrides freeze the selected profile's routes, preferences, and safety
+policy for the run. Under the planned task usage monitoring contract (see
+[task usage policy migration](task-usage-policy-migration.md)), mandatory per-task
+token allowances will be superseded by advisory cross-project averages and optional
+deliberate hard caps, with new configurations omitting allowance fields by default.
+Current `AgentModelPolicy` role settings still insert finite token defaults.
+Subscription profiles already support optional role caps and retain configured limits.
+When migration lanes deliver, if an overridden profile contains existing
+finite legacy token caps, Forge continues to respect them until the profile is updated
+by an authenticated owner.

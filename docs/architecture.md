@@ -254,3 +254,11 @@ The API and worker use separate entry points and communicate through
 PostgreSQL. No GCP, Cloud Run, Terraform, Kubernetes, or distributed queue is
 included. The command boundary and OpenTelemetry instrumentation preserve a
 clean later deployment seam.
+
+## Planned evolution: task usage monitoring
+
+Under planned usage monitoring work packages (#95, #100, #103, #106; see [task usage policy migration](task-usage-policy-migration.md)), Forge is evolving from mandatory numeric token allowances toward advisory cross-project averages and optional explicit hard caps:
+
+- Per-task token limits become optional explicit hard caps rather than mandatory allowances, separate from single-invocation context window occupancy.
+- Orchestrator worker monitoring will preserve usage checkpoints on threshold crossing, supporting direct authenticated owner continuation without additional approval gates or compulsory notes.
+- Ordinary agent policy still inserts finite token defaults; subscription profiles already support optional role caps. Current runtime enforces configured limits until migration lanes deliver.

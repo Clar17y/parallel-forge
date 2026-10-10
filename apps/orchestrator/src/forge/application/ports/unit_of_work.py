@@ -28,6 +28,7 @@ from forge.application.ports.subscription_feedback import SubscriptionFeedbackRe
 from forge.application.ports.subscription_plan_gate import SubscriptionPlanGateRepository
 from forge.application.ports.subscription_quota import SubscriptionQuotaRepository
 from forge.application.ports.subscription_recovery import SubscriptionRecoveryRepository
+from forge.application.ports.task_usage import TaskUsageRepository
 from forge.application.ports.tasks import TaskRepository
 from forge.application.ports.tools import ToolCallRepository
 from forge.application.services.auth import AuthRepository
@@ -83,4 +84,10 @@ class UnitOfWork(Protocol):
     async def rollback(self) -> None: ...
 
 
-__all__ = ["EventRepository", "UnitOfWork"]
+class TaskUsageUnitOfWork(UnitOfWork, Protocol):
+    """Optional repository surface for monitoring-aware transactions."""
+
+    task_usage: TaskUsageRepository
+
+
+__all__ = ["EventRepository", "TaskUsageUnitOfWork", "UnitOfWork"]

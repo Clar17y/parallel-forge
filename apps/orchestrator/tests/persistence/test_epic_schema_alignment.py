@@ -128,7 +128,7 @@ async def test_dispatch_and_control_checks_reject_partial_authority(
             alembic_config_factory(migrated_database_url), "20261007_0036",
         )
     async with session_factory() as session:
-        assert await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007_0037"
+        assert await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0038"
 
 
 @pytest.mark.integration
@@ -193,4 +193,4 @@ async def test_handoff_hash_checks_immutability_and_nonempty_downgrade_refusal(
         )
     async with session_factory() as session:
         assert await session.scalar(text("SELECT count(*) FROM epic_completion_handoffs")) == 1
-        assert await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007_0037"
+        assert await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0038"

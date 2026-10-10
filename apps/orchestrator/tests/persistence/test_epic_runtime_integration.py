@@ -92,6 +92,7 @@ async def test_brainstorm_downgrade_retains_concurrently_committed_conversation(
             )
         )
         await writer.flush()
+        writer_pid = await writer.scalar(text("SELECT pg_backend_pid()"))
         downgrade = asyncio.create_task(
             asyncio.to_thread(command.downgrade, config, "20261003_0032")
         )
@@ -101,12 +102,20 @@ async def test_brainstorm_downgrade_retains_concurrently_committed_conversation(
                     async with session_factory() as observer:
                         waiting = await observer.scalar(
                             text(
-                                "SELECT EXISTS (SELECT 1 FROM pg_locks l "
-                                "JOIN pg_class c ON c.oid = l.relation "
-                                "WHERE NOT l.granted AND c.relname = 'epic_brainstorm_conversations')"
-                            )
+                                "SELECT c.relname FROM pg_locks l "
+                                "LEFT JOIN pg_class c ON c.oid = l.relation "
+                                "WHERE NOT l.granted AND :writer_pid = ANY(pg_blocking_pids(l.pid)) LIMIT 1"
+                            ),
+                            {"writer_pid": writer_pid},
                         )
                     if waiting:
+                        assert waiting in {
+                            "epic_brainstorm_conversations",
+                            "epic_brainstorm_jobs",
+                            "epic_brainstorm_attempts",
+                            "epics",
+                            "projects",
+                        }, waiting
                         break
                     await asyncio.sleep(0.02)
             await writer.commit()
@@ -122,5 +131,5 @@ async def test_brainstorm_downgrade_retains_concurrently_committed_conversation(
         assert await session.get(BrainstormConversation, conversation_id) is not None
         # PostgreSQL rolls the complete failed downgrade command back to head.
         assert (
-            await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007_0037"
+            await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0038"
         )

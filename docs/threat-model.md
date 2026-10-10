@@ -492,3 +492,12 @@ On a suspected security violation, Forge:
 6. requires an explicit operator decision before resuming or teardown.
 
 Forge does not silently clean up evidence after a security event.
+
+## 9. Planned controls: task usage monitoring evolution
+
+Under the planned task usage monitoring architecture (see [task usage policy migration](task-usage-policy-migration.md)):
+
+- Mandatory per-task token allowances are superseded by advisory observed averages and optional explicit hard caps.
+- Budget controls will introduce usage checkpoint preservation and direct authenticated owner continuation without extra permission requests or compulsory notes, while independent stopping constraints (operator stop commands, provider quota exhaustion, worker lease expiries, and unsettled processes) remain authoritative.
+- Cumulative task tokens and single-turn context window occupancy are tracked as distinct dimensions; advisory averages guide expectations without guaranteeing provider subscription quota.
+- Current runtime enforcement continues to apply existing finite budget boundaries until migration lanes deliver.

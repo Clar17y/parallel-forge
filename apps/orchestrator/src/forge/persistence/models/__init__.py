@@ -111,6 +111,14 @@ from forge.persistence.models.subscription_usage import (
     SubscriptionAttemptConsumption,
     SubscriptionAttemptReservation,
 )
+from forge.persistence.models.task_usage import (
+    TaskUsageBaseline,
+    TaskUsageCheckpoint,
+    TaskUsageObservation,
+    TaskUsageOwnerCommand,
+    TaskUsagePolicyRevision,
+    TaskUsageWorkUnit,
+)
 
 # Register the cross-lane selection binding at the shared integration boundary.
 # The brief module remains independent of the graph implementation.
@@ -204,6 +212,12 @@ __all__ = [
     "SubscriptionTaskStop",
     "SubscriptionWorkerStatus",
     "Task",
+    "TaskUsageBaseline",
+    "TaskUsageCheckpoint",
+    "TaskUsageObservation",
+    "TaskUsageOwnerCommand",
+    "TaskUsagePolicyRevision",
+    "TaskUsageWorkUnit",
     "ToolCall",
     "ValidationResult",
 ]
