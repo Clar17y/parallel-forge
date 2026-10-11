@@ -162,6 +162,14 @@ usage = {
 }
 if scenario == "bad_usage":
     usage["input_tokens"] = True
+if scenario == "large_usage":
+    usage["input_tokens"] = 10_000_017
+    usage["total_tokens"] = 10_000_022
+if scenario == "sparse_zero_usage":
+    usage["input_tokens"] = 0
+    usage.pop("output_tokens")
+    usage["cache_read_tokens"] = 0
+    usage.pop("total_tokens")
 result = {
     "conversation_id": "conversation",
     "status": "SUCCESS",

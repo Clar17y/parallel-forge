@@ -237,12 +237,31 @@ export function PolicySummary({ policy }: { policy: PolicyResponse }) {
                 </summary>
                 <dl>
                   {([
-                    ['provider', 'Provider'], ['max_input_tokens', 'Input token limit'],
-                    ['max_output_tokens', 'Output token limit'], ['max_tool_calls', 'Tool call limit'],
-                    ['max_duration_seconds', 'Duration limit (seconds)'], ['max_cost_minor', 'Cost limit (minor currency units)'],
-                  ] as const).map(([key, label]) => <div key={key}>
-                    <dt>{label}</dt><dd>{String(model[key] ?? 'Unspecified')}</dd>
-                  </div>)}
+                    ['provider', 'Provider'],
+                    ['max_input_tokens', 'Input token limit'],
+                    ['max_output_tokens', 'Output token limit'],
+                    ['max_tool_calls', 'Tool call limit'],
+                    ['max_duration_seconds', 'Duration limit (seconds)'],
+                    ['max_cost_minor', 'Cost limit (minor currency units)'],
+                  ] as const).map(([key, label]) => {
+                    let displayVal: string;
+                    const val = model[key];
+                    if (key === 'max_input_tokens' || key === 'max_output_tokens') {
+                      if (val === null || val === undefined) {
+                        displayVal = 'Unbounded (no hard cap)';
+                      } else {
+                        displayVal = `${String(val)} tokens (hard cap)`;
+                      }
+                    } else {
+                      displayVal = val !== undefined && val !== null ? String(val) : 'Unspecified';
+                    }
+                    return (
+                      <div key={key}>
+                        <dt>{label}</dt>
+                        <dd>{displayVal}</dd>
+                      </div>
+                    );
+                  })}
                 </dl>
               </details>;
             })}

@@ -10,6 +10,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
+from forge.agents.antigravity_runtime import (
+    _ObservationPublisher,
+    _validate_subscription_usage_binding,
+)
 from forge.agents.capability_verification import (
     capability_report,
     capability_scope,
@@ -31,12 +35,14 @@ from forge.agents.gemini_session import GeminiResponseFailure, GeminiSession
 from forge.agents.subscription_protocol import ProtocolError, RoleDecisionError
 from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
+    ObservableSubscriptionGateway,
     RoleDecisionRejection,
     SubscriptionFailure,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
 )
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.capability_evidence import (
     CapabilityEvidenceScope,
     ResolvedCapabilityEvidence,
@@ -44,6 +50,7 @@ from forge.domain.capability_evidence import (
 )
 from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription import AuthMode, BillingMode
+from forge.domain.task_usage_contract import TokenCounts, WorkUnitBinding
 
 _VERSION = "0.59.0"
 _SYSTEM_SUFFIX = """
@@ -353,10 +360,49 @@ class GeminiGateway:
                 return failed(SubscriptionFailure.POLICY_DENIED)
         return result
 
+    async def execute_observed(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> SubscriptionInvocationResult:
+        _validate_subscription_usage_binding(usage_binding, request, self._installation.model)
+        if not hasattr(usage_sink, "observe_usage"):
+            raise TypeError("usage sink must implement observe_usage")
+        publisher = _ObservationPublisher(usage_binding, usage_sink)
+        interrupted_exc: SubscriptionInterrupted | None = None
+        try:
+            result = await self.execute(request)
+        except SubscriptionInterrupted as exc:
+            interrupted_exc = exc
+            result = exc.result
+
+        status = result.failure.value if result.failure else (
+            "interrupted" if interrupted_exc is not None else "succeeded"
+        )
+        tokens = TokenCounts(
+            input_tokens=result.telemetry.input_tokens,
+            output_tokens=result.telemetry.output_tokens,
+            cached_input_tokens=result.telemetry.cached_input_tokens,
+        )
+        await publisher.emit_final(tokens=tokens, status=status)
+        if publisher.delivery_incomplete:
+            telemetry = replace(
+                result.telemetry,
+                unknown_telemetry_reasons=result.telemetry.unknown_telemetry_reasons
+                + ("usage observation delivery incomplete",),
+            )
+            result = replace(result, telemetry=telemetry)
+        if interrupted_exc is not None:
+            raise SubscriptionInterrupted(result)
+        return result
+
 
 __all__ = [
     "GeminiCapabilityReport",
     "GeminiCapabilityVerifier",
     "GeminiGateway",
     "GeminiInstallation",
+    "ObservableSubscriptionGateway",
 ]

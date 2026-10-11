@@ -222,19 +222,19 @@ test('role token budgets inherit by default, survive model edits, and can return
   render(<ProfileEditor onSave={save} />);
   await userEvent.click(screen.getAllByText('Advanced')[0]);
   expect(screen.getAllByText('Input tokens: Use run/task default').length).toBeGreaterThan(0);
-  await userEvent.click(screen.getByRole('button', { name: 'Set Primary input token budget' }));
-  expect(screen.getByRole('slider', { name: 'Primary input token budget' })).toHaveValue('525000');
+  await userEvent.type(screen.getByRole('textbox', { name: 'Primary input token budget' }), '525000');
+  expect(screen.getByRole('textbox', { name: 'Primary input token budget' })).toHaveValue('525000');
   await userEvent.selectOptions(screen.getByLabelText('Primary model'), presetValue('Primary model', 'Google Gemini 3.8 Flash'));
-  expect(screen.getByRole('slider', { name: 'Primary input token budget' })).toHaveValue('525000');
+  expect(screen.getByRole('textbox', { name: 'Primary input token budget' })).toHaveValue('525000');
   await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
   expect(save.mock.calls[0][0].preferences[0].token_budget).toEqual({ max_input_tokens: 525000 });
 
-  await userEvent.click(screen.getByRole('button', { name: 'Primary input tokens use run/task default' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Primary input token budget' }));
   await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
   expect(save.mock.calls[1][0].preferences[0].token_budget).toEqual({ max_input_tokens: null });
 });
 
-test('appending a saved above-reference budget and zero retains exact values across a smaller model choice', async () => {
+test('appending a saved above-reference budget requires clearing invalid zero', async () => {
   const save = vi.fn().mockResolvedValue(undefined);
   const initial = {
     profile_id: 'saved-budget', version: 2, default_billing_mode: 'allowance_only', approved_mappings: [],
@@ -242,11 +242,28 @@ test('appending a saved above-reference budget and zero retains exact values acr
   };
   render(<ProfileEditor initial={initial} expectedVersion={2} onSave={save} />);
   await userEvent.click(screen.getByText('Advanced'));
-  expect(screen.getByRole('slider', { name: 'Primary input token budget' })).toHaveValue('2000000');
-  expect(screen.getByRole('slider', { name: 'Primary output token budget' })).toHaveValue('0');
+  expect(screen.getByRole('textbox', { name: 'Primary input token budget' })).toHaveValue('2000000');
+  expect(screen.getByRole('textbox', { name: 'Primary output token budget' })).toHaveValue('0');
   await userEvent.selectOptions(screen.getByLabelText('Primary model'), presetValue('Primary model', 'Google Gemini 3.8 Flash'));
   await userEvent.click(screen.getByRole('button', { name: 'Append version 3' }));
-  expect(save.mock.calls[0][0].preferences[0].token_budget).toEqual({ max_input_tokens: 2_000_000, max_output_tokens: 0 });
+  expect(save).not.toHaveBeenCalled();
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Primary output token budget' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Append version 3' }));
+  expect(save.mock.calls[0][0].preferences[0].token_budget).toEqual({ max_input_tokens: 2_000_000, max_output_tokens: null });
+});
+
+test('rejects unsafe and fractional role caps before saving', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProfileEditor onSave={save} />);
+  await userEvent.click(screen.getAllByText('Advanced')[0]);
+  const cap = screen.getByRole('textbox', { name: 'Primary input token budget' });
+  await userEvent.type(cap, '9007199254740993');
+  await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
+  expect(save).not.toHaveBeenCalled();
+  await userEvent.clear(cap);
+  await userEvent.type(cap, '1.5');
+  await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
+  expect(save).not.toHaveBeenCalled();
 });
 
 test('choosing a model leaves explicit authentication and billing choices intact', async () => {

@@ -18,6 +18,16 @@ test('uses published reference presets while preserving custom values above the 
   expect(change).toHaveBeenLastCalledWith(2_000_001);
 });
 
+test('exact entry refuses integers beyond JavaScript precision and fractional input', async () => {
+  const change = vi.fn();
+  render(<TokenBudgetSlider label="Input tokens" dimension="input" value={100} onChange={change} />);
+  await userEvent.click(screen.getByLabelText('Exact value'));
+  const input = screen.getByRole('spinbutton', { name: 'Input tokens exact value' });
+  fireEvent.change(input, { target: { value: '9007199254740993' } });
+  fireEvent.change(input, { target: { value: '1.5' } });
+  expect(change).not.toHaveBeenCalled();
+});
+
 test('unknown model has an adjustable honest range and native keyboard slider', async () => {
   const change = vi.fn();
   function Harness() {

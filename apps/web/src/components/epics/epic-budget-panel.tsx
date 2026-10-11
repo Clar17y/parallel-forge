@@ -8,7 +8,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { useEpicBudget } from '@/hooks/epics/use-epic-budget';
 import { EvidenceDetails } from './evidence-details';
 import type { TaskBudget } from '@/hooks/epics/types';
-import { TokenBudgetSlider } from '@/components/model-selection/token-budget-slider';
+import { validateSafeInteger } from '@/lib/api/monitoring-policy';
 
 interface DimensionConfig {
   key: string;
@@ -121,6 +121,8 @@ export function EpicBudgetPanel({
   const [sourceVersion, setSourceVersion] = useState<number | null>(null);
   const [sourceCeiling, setSourceCeiling] = useState<TaskBudget | null>(null);
   const [editCeilings, setEditCeilings] = useState<Record<string, number | null>>({});
+  const [ceilingDrafts, setCeilingDrafts] = useState<Record<string, string>>({});
+  const [ceilingError, setCeilingError] = useState<string | null>(null);
   const [disabledDims, setDisabledDims] = useState<string[]>([]);
   const [touchedCeilings, setTouchedCeilings] = useState<Set<string>>(new Set());
   const [touchedDisabledDims, setTouchedDisabledDims] = useState<Set<string>>(new Set());
@@ -143,6 +145,8 @@ export function EpicBudgetPanel({
     setSourceVersion(budget.version);
     setSourceCeiling({ ...budget.ceiling });
     setEditCeilings(initialCeilings);
+    setCeilingDrafts(Object.fromEntries(Object.entries(initialCeilings).map(([key, val]) => [key, val == null ? '' : String(val)])));
+    setCeilingError(null);
     setDisabledDims([...budget.disabled_dimensions]);
     setTouchedCeilings(new Set());
     setTouchedDisabledDims(new Set());
@@ -160,6 +164,7 @@ export function EpicBudgetPanel({
 
   const handleCeilingChange = (dimKey: string, value: number | null) => {
     setEditCeilings(prev => ({ ...prev, [dimKey]: value }));
+    setCeilingDrafts(prev => ({ ...prev, [dimKey]: value == null ? '' : String(value) }));
     setTouchedCeilings(prev => new Set(prev).add(dimKey));
   };
 
@@ -180,6 +185,14 @@ export function EpicBudgetPanel({
         }
         return next;
       });
+      setCeilingDrafts(prev => {
+        const next = { ...prev };
+        for (const dim of DIMENSIONS) if (!touchedCeilings.has(dim.key)) {
+          const value = dim.getCeilingVal(latest.ceiling);
+          next[dim.key] = value == null ? '' : String(value);
+        }
+        return next;
+      });
       setDisabledDims(prev => {
         const preservedTouched = prev.filter(k => touchedDisabledDims.has(k));
         const latestUntouched = latest.disabled_dimensions.filter(k => !touchedDisabledDims.has(k));
@@ -197,6 +210,18 @@ export function EpicBudgetPanel({
   const handleSaveCeilings = async (e: FormEvent) => {
     e.preventDefault();
     if (mutationPending || !budget || !sourceCeiling || sourceVersion === null) return;
+
+    for (const dim of DIMENSIONS) {
+      if (disabledDims.includes(dim.key)) continue;
+      const raw = ceilingDrafts[dim.key] ?? '';
+      const tokenCap = dim.key === 'input_tokens' || dim.key === 'output_tokens';
+      const result = validateSafeInteger(raw, { fieldName: dim.inputLabel, allowNull: !dim.mandatory, allowZero: !tokenCap, min: tokenCap ? 1 : 0 });
+      if (!result.valid) {
+        setCeilingError(result.error!);
+        return;
+      }
+    }
+    setCeilingError(null);
 
     const hasBlankMandatory = DIMENSIONS.some(dim => {
       if (!dim.mandatory) return false;
@@ -411,45 +436,36 @@ export function EpicBudgetPanel({
         {isEditing && (
           <form onSubmit={handleSaveCeilings} className="p-4 border border-[var(--border)] rounded bg-[var(--surface)] space-y-4 text-sm mt-3">
             <h3 className="font-semibold text-base">Edit Shared Ceilings</h3>
+            {ceilingError && <p role="alert" className="text-xs text-[var(--danger)]">{ceilingError}</p>}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {DIMENSIONS.map(dim => {
                 const unlimited = disabledDims.includes(dim.key);
                 const isBlank = editCeilings[dim.key] == null || Number.isNaN(editCeilings[dim.key]);
                 const showBlankError = Boolean(dim.mandatory && !unlimited && isBlank);
-                const isTokenDimension = dim.key === 'input_tokens' || dim.key === 'output_tokens';
 
                 return (
                   <div key={dim.key} className="space-y-1">
-                    {isTokenDimension && isBlank ? <span className="block font-medium text-xs">{dim.inputLabel}</span> :
-                      <label htmlFor={`ceiling-input-${dim.key}${isTokenDimension ? '-range' : ''}`} className="block font-medium text-xs">{dim.inputLabel}</label>}
-                    {isTokenDimension ? (
-                      <div id={`ceiling-input-${dim.key}`} className={unlimited || mutationPending ? 'opacity-50 pointer-events-none' : ''}>
-                        {editCeilings[dim.key] != null ? <TokenBudgetSlider
-                          label={dim.inputLabel}
-                          dimension={dim.key === 'input_tokens' ? 'input' : 'output'}
-                          idPrefix={`ceiling-input-${dim.key}`}
-                          hideLabel
-                          value={editCeilings[dim.key]!}
-                          rangeMax={1_000_000}
-                          min={0}
-                          disabled={unlimited || mutationPending}
-                          onChange={value => handleCeilingChange(dim.key, value)}
-                        /> : <div className="flex items-center justify-between gap-2 py-2 text-sm text-[var(--muted)]">
-                          <span>Unlimited</span>
-                          <Button type="button" variant="quiet" disabled={unlimited || mutationPending} onClick={() => handleCeilingChange(dim.key, 0)}>Set ceiling</Button>
-                        </div>}
-                        {editCeilings[dim.key] != null && <Button type="button" variant="quiet" aria-label={`${dim.inputLabel} use unlimited`} disabled={unlimited || mutationPending} onClick={() => handleCeilingChange(dim.key, null)}>Use unlimited</Button>}
-                      </div>
-                    ) : <input
+                    <label htmlFor={`ceiling-input-${dim.key}`} className="block font-medium text-xs">{dim.inputLabel}</label>
+                    <input
                       id={`ceiling-input-${dim.key}`}
-                      type="number"
-                      min={0}
+                      type="text"
+                      inputMode="numeric"
                       className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)] disabled:opacity-50"
-                      value={editCeilings[dim.key] ?? ''}
+                      value={ceilingDrafts[dim.key] ?? ''}
                       placeholder={unlimited ? 'Unlimited' : dim.mandatory ? 'Required numeric cap' : 'Unlimited (null)'}
                       disabled={unlimited || mutationPending}
-                      onChange={e => handleCeilingChange(dim.key, e.target.value === '' ? null : Number(e.target.value))}
-                    />}
+                      onChange={e => {
+                        const raw = e.target.value;
+                        setCeilingDrafts(prev => ({ ...prev, [dim.key]: raw }));
+                        setTouchedCeilings(prev => new Set(prev).add(dim.key));
+                        const tokenCap = dim.key === 'input_tokens' || dim.key === 'output_tokens';
+                        const result = validateSafeInteger(raw, { fieldName: dim.inputLabel, allowNull: true, allowZero: !tokenCap, min: tokenCap ? 1 : 0 });
+                        if (result.valid) {
+                          setEditCeilings(prev => ({ ...prev, [dim.key]: result.value ?? null }));
+                          setCeilingError(null);
+                        }
+                      }}
+                    />
                     {showBlankError ? (
                       <p role="alert" className="text-xs text-[var(--danger)]">
                         Numeric ceiling is required when enabled.

@@ -15,7 +15,7 @@ import {
 import { JevSettings, type JevPolicy } from '@/components/projects/jev-settings';
 import { effortLabel, reasoningOptions, routePresetIdentity, routePresets, withCurrentRoute, type RoutePreset } from '@/components/model-selection/model-presets';
 import styles from '@/components/model-selection/role-selector.module.css';
-import { TokenBudgetSlider, tokenReference } from '@/components/model-selection/token-budget-slider';
+import { validateSafeInteger } from '@/lib/api/monitoring-policy';
 
 type ProfileCreate = components['schemas']['ProfileCreateRequest'];
 type ProfileAppend = components['schemas']['ProfileAppendRequest'];
@@ -24,6 +24,24 @@ type Mapping = components['schemas']['MappingInput'];
 
 interface EditablePreference extends Preference {
   id: string;
+}
+
+function ProfileCapInput({ label, value, onChange }: { label: string; value: number | null | undefined; onChange: (value: number | null) => void }) {
+  const [draft, setDraft] = useState(value == null ? '' : String(value));
+  const [error, setError] = useState('');
+  return <label className="block text-xs">{label} (optional hard cap; blank inherits)
+    <input type="text" inputMode="numeric" aria-label={label} value={draft} aria-invalid={Boolean(error)}
+      onChange={event => {
+        const raw = event.target.value;
+        setDraft(raw);
+        const parsed = validateSafeInteger(raw, { fieldName: label, min: 1 });
+        const nextError = parsed.valid ? '' : parsed.error!;
+        event.target.setCustomValidity(nextError);
+        setError(nextError);
+        if (parsed.valid) onChange(parsed.value ?? null);
+      }} />
+    {error && <span role="alert">{error}</span>}
+  </label>;
 }
 
 const purposes: components['schemas']['SpecialistPurpose'][] = [
@@ -284,6 +302,15 @@ export function ProfileEditor({
       setError('Every approved mapping needs a requested model, effective model, and reason.');
       return;
     }
+    for (const preference of preferences) {
+      for (const key of ['max_input_tokens', 'max_output_tokens'] as const) {
+        const value = preference.token_budget?.[key];
+        if (value != null && !validateSafeInteger(value, { fieldName: key, min: 1 }).valid) {
+          setError(`${profileLabel(preference.purpose)} ${key} must be a positive safe integer or blank to inherit.`);
+          return;
+        }
+      }
+    }
 
     setSaving(true);
     try {
@@ -374,26 +401,13 @@ export function ProfileEditor({
               {(['input', 'output'] as const).map(dimension => {
                 const key = dimension === 'input' ? 'max_input_tokens' : 'max_output_tokens';
                 const budget = preference.token_budget ?? {};
-                const configured = budget[key] != null;
-                const reference = tokenReference(preference.preferred_route.provider, preference.preferred_route.model, dimension);
                 const updateBudget = (value: number | null) => updatePreference(index, {
                   token_budget: { ...budget, [key]: value },
                 });
                 return <div key={dimension} className="space-y-2">
-                  {configured ? <>
-                    <TokenBudgetSlider
-                      label={`${profileLabel(preference.purpose)} ${dimension} token budget`}
-                      dimension={dimension}
-                      value={budget[key]!}
-                      provider={preference.preferred_route.provider}
-                      model={preference.preferred_route.model}
-                      onChange={value => updateBudget(value)}
-                    />
-                    <Button type="button" variant="quiet" aria-label={`${profileLabel(preference.purpose)} ${dimension} tokens use run/task default`} onClick={() => updateBudget(null)}>Use run/task default</Button>
-                  </> : <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span>{dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default</span>
-                    <Button type="button" variant="secondary" aria-label={`Set ${profileLabel(preference.purpose)} ${dimension} token budget`} onClick={() => updateBudget(Math.round((reference ?? 1_000_000) / 2))}>Set explicit budget</Button>
-                  </div>}
+                  <ProfileCapInput label={`${profileLabel(preference.purpose)} ${dimension} token budget`}
+                    value={budget[key]} onChange={updateBudget} />
+                  <span>{budget[key] == null ? `${dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default` : `Saved ${dimension} hard cap: ${budget[key]!.toLocaleString()} tokens`}</span>
                 </div>;
               })}
             </fieldset>

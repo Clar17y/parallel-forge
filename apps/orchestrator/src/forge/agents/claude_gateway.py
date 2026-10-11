@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from forge.agents.capability_verification import (
@@ -49,13 +49,14 @@ from forge.agents.subscription_protocol import (
 )
 from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
+    ObservableSubscriptionGateway,
     RoleDecisionRejection,
     SubscriptionFailure,
-    SubscriptionGateway,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
 )
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.capability_evidence import (
     CapabilityEvidenceScope,
     ResolvedCapabilityEvidence,
@@ -69,6 +70,13 @@ from forge.domain.provider_quota import (
     utc_now,
 )
 from forge.domain.subscription import AttemptTelemetry, AuthMode, BillingMode, TaskBudget
+from forge.domain.task_usage_contract import (
+    ContextWindow,
+    CounterKind,
+    Observation,
+    TokenCounts,
+    WorkUnitBinding,
+)
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
 
@@ -707,9 +715,11 @@ class _Usage:
     def __init__(self) -> None:
         self.input: int | None = None
         self.output: int | None = None
+        self.cached: int | None = None
+        self.reasoning: int | None = None
         self.calls = 0
         self.checks = 0
-        self._messages: dict[str, tuple[int, int]] = {}
+        self._messages: dict[str, tuple[int | None, int | None, int | None, int | None]] = {}
 
     def validate_budget(self, budget: TaskBudget) -> None:
         if (
@@ -730,44 +740,102 @@ class _Usage:
         target = value.get("output_tokens", value.get("outputTokens"))
         if source is None and target is None:
             return
-        if (
-            type(source) is not int
-            or type(target) is not int
-            or source < 0
-            or target < 0
-            or (self.input is not None and source < self.input)
-            or (self.output is not None and target < self.output)
-        ):
+        if any(type(item) is not int or item < 0 for item in (source, target) if item is not None):
             raise ProtocolError("invalid Claude usage")
-        self.input, self.output = source, target
+        cached = self._cached_input(value)
+        if cached is None:
+            cached = self.cached
+        normalized_input = source + (cached or 0) if type(source) is int else None
+        if (self.input is not None and normalized_input is not None and normalized_input < self.input) or (
+            self.output is not None and type(target) is int and target < self.output
+        ):
+            raise ProtocolError("regressing Claude usage")
+        if normalized_input is not None:
+            self.input = normalized_input
+        if type(target) is int:
+            self.output = target
+        self.cached = cached
+        reasoning = value.get("thinking_tokens", value.get("reasoning_output_tokens"))
+        if isinstance(reasoning, int) and reasoning >= 0:
+            self.reasoning = reasoning
 
-    def observe_assistant(self, frame: Mapping[str, object], session_id: str) -> None:
+    def observe_assistant(
+        self, frame: Mapping[str, object], session_id: str
+    ) -> tuple[str, TokenCounts] | None:
         if frame.get("type") != "assistant":
-            return
+            return None
         message = frame.get("message")
         if not isinstance(message, Mapping) or message.get("usage") is None:
-            return
+            return None
         if frame.get("session_id") != session_id:
             raise ProtocolError("foreign Claude usage session")
         ident, value = message.get("id"), message["usage"]
         if type(ident) is not str or not ident or not isinstance(value, Mapping):
             raise ProtocolError("unidentified Claude usage")
         source, target = value.get("input_tokens"), value.get("output_tokens")
-        if type(source) is not int or type(target) is not int or source < 0 or target < 0:
+        if any(type(item) is not int or item < 0 for item in (source, target) if item is not None):
             raise ProtocolError("invalid Claude assistant usage")
+        cached_int = self._cached_input(value)
+        reasoning = value.get("thinking_tokens", value.get("reasoning_output_tokens"))
+        reasoning_int = reasoning if isinstance(reasoning, int) and reasoning >= 0 else None
         prior = self._messages.get(ident)
-        if prior is not None and (source < prior[0] or target < prior[1]):
+        if prior is not None:
+            if cached_int is None:
+                cached_int = prior[2]
+            if reasoning_int is None:
+                reasoning_int = prior[3]
+            if target is None:
+                target = prior[1]
+        normalized_input = source + (cached_int or 0) if type(source) is int else (
+            prior[0] if prior is not None else None
+        )
+        if normalized_input is None and target is None and cached_int is None and reasoning_int is None:
+            return None
+        current = (normalized_input, target, cached_int, reasoning_int)
+        if prior == current:
+            return None
+        if prior is not None and (
+            normalized_input is not None and prior[0] is not None and normalized_input < prior[0]
+            or target is not None and prior[1] is not None and target < prior[1]
+        ):
             raise ProtocolError("regressing Claude assistant usage")
         if prior is None and len(self._messages) >= 1024:
             raise ProtocolError("too many Claude usage messages")
-        self._messages[ident] = (source, target)
-        self.input = sum(item[0] for item in self._messages.values())
-        self.output = sum(item[1] for item in self._messages.values())
+        self._messages[ident] = current
+        self.input = self._sum_messages(0)
+        self.output = self._sum_messages(1)
+        self.cached = self._sum_messages(2)
+        self.reasoning = self._sum_messages(3)
+        return ident, TokenCounts(
+            input_tokens=normalized_input,
+            output_tokens=target,
+            cached_input_tokens=cached_int,
+            reasoning_output_tokens=reasoning_int,
+        )
+
+    def _sum_messages(self, index: int) -> int | None:
+        values = [message[index] for message in self._messages.values()]
+        return sum(value for value in values if value is not None) if all(
+            value is not None for value in values
+        ) else None
+
+    @staticmethod
+    def _cached_input(value: Mapping[str, object]) -> int | None:
+        read = value.get("cache_read_input_tokens", value.get("cached_input_tokens"))
+        created = value.get("cache_creation_input_tokens")
+        if any(type(item) is not int or item < 0 for item in (read, created) if item is not None):
+            raise ProtocolError("invalid Claude cached usage")
+        if read is None and created is None:
+            return None
+        return (read if type(read) is int else 0) + (
+            created if type(created) is int else 0
+        )
 
     def telemetry(self, started: float) -> AttemptTelemetry:
         return AttemptTelemetry(
             input_tokens=self.input,
             output_tokens=self.output,
+            cached_input_tokens=self.cached,
             duration_ms=int((monotonic() - started) * 1000),
             tool_call_count=self.calls,
             named_check_count=self.checks,
@@ -776,7 +844,227 @@ class _Usage:
         )
 
 
-class ClaudeGateway(SubscriptionGateway):
+def _validate_usage_binding(
+    binding: WorkUnitBinding, request: SubscriptionInvocationRequest
+) -> None:
+    if not isinstance(binding, WorkUnitBinding):
+        raise TypeError("usage_binding must be a WorkUnitBinding")
+    if binding.subject.kind != "run" or binding.subject.subject_id != request.attempt.run_id:
+        raise ValueError("usage binding subject does not match request run")
+    if binding.source.kind != "subscription_attempt":
+        raise ValueError("usage binding source kind must be subscription_attempt")
+    if binding.source.source_id != request.attempt.attempt_id:
+        raise ValueError("usage binding source does not match attempt identity")
+    if binding.source.parent_id != request.attempt.task_id:
+        raise ValueError("usage binding source parent does not match task identity")
+    effective = request.task.route.effective
+    role_str = (
+        request.task.purpose.value
+        if hasattr(request.task.purpose, "value")
+        else str(request.task.purpose)
+    )
+    effort_str = effective.effort.value if effective.effort is not None else None
+    if not any(
+        m.role == role_str
+        and m.provider == effective.provider
+        and m.model == effective.model
+        and m.reasoning_effort == effort_str
+        for m in binding.effective_route.members
+    ):
+        raise ValueError("usage binding effective route does not match request effective route")
+
+
+def _extract_context_window(payload: Mapping[str, Any]) -> ContextWindow | None:
+    target: Mapping[str, Any] = payload
+    for key in ("context", "context_window", "contextWindow"):
+        nested = payload.get(key)
+        if isinstance(nested, Mapping):
+            target = nested
+            break
+    occupied = target.get(
+        "occupied_tokens",
+        target.get(
+            "occupiedTokens",
+            target.get("occupied", target.get("current_tokens", target.get("currentTokens"))),
+        ),
+    )
+    capacity = target.get(
+        "capacity_tokens",
+        target.get(
+            "capacityTokens",
+            target.get("capacity", target.get("max_tokens", target.get("maxTokens"))),
+        ),
+    )
+    compaction = target.get(
+        "compaction_count", target.get("compactionCount", target.get("compactions"))
+    )
+    occ_int = occupied if isinstance(occupied, int) and occupied >= 0 else None
+    cap_int = capacity if isinstance(capacity, int) and capacity >= 0 else None
+    comp_int = compaction if isinstance(compaction, int) and compaction >= 0 else None
+    if occ_int is None and cap_int is None and comp_int is None:
+        return None
+    return ContextWindow(
+        occupied_tokens=occ_int, capacity_tokens=cap_int, compaction_count=comp_int
+    )
+
+
+def _extract_unknown_dimensions(
+    tokens: TokenCounts, context: ContextWindow | None
+) -> tuple[str, ...]:
+    unknowns: list[str] = []
+    if tokens.input_tokens is None:
+        unknowns.append("input_tokens")
+    if tokens.output_tokens is None:
+        unknowns.append("output_tokens")
+    if tokens.cached_input_tokens is None:
+        unknowns.append("cached_input_tokens")
+    if tokens.reasoning_output_tokens is None:
+        unknowns.append("reasoning_output_tokens")
+    if context is None:
+        unknowns.extend(["context_occupied_tokens", "context_capacity_tokens", "compaction_count"])
+    else:
+        if context.occupied_tokens is None:
+            unknowns.append("context_occupied_tokens")
+        if context.capacity_tokens is None:
+            unknowns.append("context_capacity_tokens")
+        if context.compaction_count is None:
+            unknowns.append("compaction_count")
+    return tuple(unknowns)
+
+
+class _UsagePublisher:
+    def __init__(
+        self,
+        binding: WorkUnitBinding,
+        sink: TaskUsageObserver,
+        *,
+        counter_epoch: str = "source",
+        timeout_seconds: float = 0.5,
+    ) -> None:
+        self.binding = binding
+        self.sink = sink
+        self.counter_epoch = counter_epoch
+        self.timeout_seconds = timeout_seconds
+        self.sequence = 0
+        self.last_event_id: str | None = None
+        self.last_context: ContextWindow | None = None
+        self.queue: asyncio.Queue[Observation] = asyncio.Queue(maxsize=64)
+        self.dropped_or_failed = False
+        self._worker_task: asyncio.Task[None] | None = None
+        self._closed = False
+
+    def start(self) -> None:
+        self._worker_task = asyncio.create_task(self._run_worker())
+
+    async def _run_worker(self) -> None:
+        while True:
+            try:
+                obs = await self.queue.get()
+            except asyncio.CancelledError:
+                break
+            try:
+                async with asyncio.timeout(self.timeout_seconds):
+                    await self.sink.observe_usage(obs)
+            except asyncio.CancelledError:
+                self.dropped_or_failed = True
+                break
+            except Exception:  # noqa: BLE001 - sink errors are isolated and must not fail worker
+                self.dropped_or_failed = True
+            finally:
+                self.queue.task_done()
+
+    def publish_live(
+        self,
+        *,
+        event_id: str,
+        tokens: TokenCounts,
+        context: ContextWindow | None = None,
+        counter_kind: CounterKind = CounterKind.CUMULATIVE,
+        counter_epoch: str | None = None,
+        observed_at: datetime | None = None,
+    ) -> None:
+        if self._closed:
+            return
+        self.sequence += 1
+        self.last_event_id = event_id
+        if context is not None:
+            self.last_context = context
+        unknowns = _extract_unknown_dimensions(tokens, context)
+        obs = Observation(
+            binding=self.binding,
+            event_id=event_id,
+            sequence=self.sequence,
+            counter_kind=counter_kind,
+            tokens=tokens,
+            counter_epoch=counter_epoch or self.counter_epoch,
+            observed_at=observed_at,
+            context=context,
+            unknown_dimensions=unknowns,
+            final=False,
+        )
+        try:
+            self.queue.put_nowait(obs)
+        except asyncio.QueueFull:
+            self.dropped_or_failed = True
+
+    async def publish_final(
+        self,
+        *,
+        event_id: str,
+        status: str,
+        tokens: TokenCounts,
+        context: ContextWindow | None = None,
+        counter_kind: CounterKind = CounterKind.CUMULATIVE,
+        counter_epoch: str | None = None,
+        observed_at: datetime | None = None,
+    ) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.sequence += 1
+        context = context or self.last_context
+        unknowns = _extract_unknown_dimensions(tokens, context)
+        final_obs = Observation(
+            binding=self.binding,
+            event_id=event_id,
+            sequence=self.sequence,
+            counter_kind=counter_kind,
+            tokens=tokens,
+            counter_epoch=counter_epoch or self.counter_epoch,
+            observed_at=observed_at,
+            context=context,
+            unknown_dimensions=unknowns,
+            final=True,
+            final_status=status,
+            reconciles_event_id=self.last_event_id,
+        )
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                await self.queue.join()
+        except asyncio.CancelledError:
+            self.dropped_or_failed = True
+        except Exception:  # noqa: BLE001 - timeout/join failures are isolated
+            self.dropped_or_failed = True
+
+        await self.close()
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                await self.sink.observe_usage(final_obs)
+        except asyncio.CancelledError:
+            self.dropped_or_failed = True
+        except Exception:  # noqa: BLE001 - sink errors on final are isolated
+            self.dropped_or_failed = True
+
+    async def close(self) -> None:
+        if self._worker_task is not None and not self._worker_task.done():
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+
+
+class ClaudeGateway(ObservableSubscriptionGateway):
     def __init__(
         self,
         installation: ClaudeInstallation,
@@ -797,6 +1085,33 @@ class ClaudeGateway(SubscriptionGateway):
         self._now = now or utc_now
 
     async def execute(self, request: SubscriptionInvocationRequest) -> SubscriptionInvocationResult:
+        return await self._execute(request, publisher=None)
+
+    async def execute_observed(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> SubscriptionInvocationResult:
+        if type(request) is not SubscriptionInvocationRequest:
+            raise TypeError("subscription request is required")
+        _validate_usage_binding(usage_binding, request)
+        if usage_sink is None or not callable(getattr(usage_sink, "observe_usage", None)):
+            raise TypeError("usage_sink must be a TaskUsageObserver")
+        publisher = _UsagePublisher(usage_binding, usage_sink)
+        publisher.start()
+        try:
+            return await self._execute(request, publisher=publisher)
+        finally:
+            await publisher.close()
+
+    async def _execute(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        publisher: _UsagePublisher | None = None,
+    ) -> SubscriptionInvocationResult:
         if type(request) is not SubscriptionInvocationRequest:
             raise TypeError("subscription request is required")
         scope = capability_scope(request)
@@ -888,7 +1203,9 @@ class ClaudeGateway(SubscriptionGateway):
                     session = await self._supervisor.start(
                         spec, lifecycle=self._lifecycle, before_stop=revoke
                     )
-                    result = await self._exchange(session, request, usage, quota)
+                    result = await self._exchange(
+                        session, request, usage, quota, publisher=publisher
+                    )
         except asyncio.CancelledError:
             interrupted = True
             result = failed(SubscriptionFailure.INTERRUPTED)
@@ -926,18 +1243,45 @@ class ClaudeGateway(SubscriptionGateway):
                     await revoke()
             except Exception:  # noqa: BLE001 - failed revocation makes settlement uncertain
                 result = failed(SubscriptionFailure.UNCERTAIN)
-        result = replace(
-            result or failed(SubscriptionFailure.PROTOCOL), telemetry=usage.telemetry(started)
-        )
-        if interrupted:
-            raise SubscriptionInterrupted(result)
-        if result.failure is None:
+        if result is None:
+            result = failed(SubscriptionFailure.PROTOCOL)
+        base_telemetry = usage.telemetry(started)
+        result = replace(result, telemetry=base_telemetry)
+        if not interrupted and result.failure is None:
             try:
                 request.budget.unknown_telemetry_policy.validate_telemetry(
                     result.telemetry, route.billing_mode
                 )
             except ValueError:
-                return failed(SubscriptionFailure.POLICY_DENIED)
+                result = replace(
+                    failed(SubscriptionFailure.POLICY_DENIED),
+                    launch_proof=result.launch_proof,
+                )
+        if publisher is not None:
+            final_status = (
+                "succeeded"
+                if result.failure is None and not interrupted
+                else (result.failure.value if result.failure is not None else "failed")
+            )
+            await publisher.publish_final(
+                event_id=f"claude-final-{request.attempt.attempt_id}",
+                status=final_status,
+                tokens=TokenCounts(
+                    input_tokens=usage.input,
+                    output_tokens=usage.output,
+                    cached_input_tokens=usage.cached,
+                    reasoning_output_tokens=usage.reasoning,
+                ),
+                observed_at=self._now(),
+            )
+        if publisher is not None and publisher.dropped_or_failed:
+            unknown_reasons = base_telemetry.unknown_telemetry_reasons + (
+                "usage observation delivery incomplete",
+            )
+            base_telemetry = replace(base_telemetry, unknown_telemetry_reasons=unknown_reasons)
+        result = replace(result, telemetry=base_telemetry)
+        if interrupted:
+            raise SubscriptionInterrupted(result)
         return result
 
     def _command(self, request: SubscriptionInvocationRequest) -> tuple[str, ...]:
@@ -984,6 +1328,8 @@ class ClaudeGateway(SubscriptionGateway):
         request: SubscriptionInvocationRequest,
         usage: _Usage,
         quota: _QuotaState,
+        *,
+        publisher: _UsagePublisher | None = None,
     ) -> SubscriptionInvocationResult:
         thread, turn = str(request.attempt.attempt_id), str(uuid4())
         allowed = frozenset(tool.value for tool in request.authorization.permitted_tools)
@@ -1148,7 +1494,21 @@ class ClaudeGateway(SubscriptionGateway):
                 # Capture confirmed evidence before optional usage validation or
                 # supervisor settlement can fail.
                 failure = quota.terminal(codec.terminal, self._now())
-            usage.observe_assistant(frame, thread)
+            observed_msg = usage.observe_assistant(frame, thread)
+            if publisher is not None and observed_msg is not None:
+                msg_id, _ = observed_msg
+                publisher.publish_live(
+                    event_id=str(frame.get("uuid", f"claude-msg-{msg_id}-{publisher.sequence + 1}")),
+                    tokens=TokenCounts(
+                        input_tokens=usage.input,
+                        output_tokens=usage.output,
+                        cached_input_tokens=usage.cached,
+                        reasoning_output_tokens=usage.reasoning,
+                    ),
+                    context=_extract_context_window(frame),
+                    counter_epoch="source",
+                    observed_at=self._now(),
+                )
             usage.validate_budget(request.budget)
             if reply is not None:
                 await session.send(reply)
@@ -1157,6 +1517,19 @@ class ClaudeGateway(SubscriptionGateway):
                     raise ProtocolError("Claude completed before initialization metadata")
                 terminal = codec.terminal
                 usage.observe(terminal.get("usage"))
+                if publisher is not None and terminal.get("usage") is not None:
+                    publisher.publish_live(
+                        event_id=str(terminal.get("uuid", f"claude-terminal-{publisher.sequence + 1}")),
+                        tokens=TokenCounts(
+                            input_tokens=usage.input,
+                            output_tokens=usage.output,
+                            cached_input_tokens=usage.cached,
+                            reasoning_output_tokens=usage.reasoning,
+                        ),
+                        context=_extract_context_window(terminal),
+                        counter_epoch="source",
+                        observed_at=self._now(),
+                    )
                 usage.validate_budget(request.budget)
                 if failure is not None:
                     return SubscriptionInvocationResult(

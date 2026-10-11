@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { ProjectForm } from './project-form';
 import { ApiError } from '@/lib/api/client';
 import { defaultJev } from './jev-settings';
+import { defaultModel } from './model-policy';
 
 afterEach(cleanup);
 async function identity() {
@@ -442,4 +443,24 @@ test('reveals every enclosing disclosure for server validation of a hidden model
   expect(input).toHaveAttribute('aria-invalid', 'true');
   await waitFor(() => expect(input.closest('details')).toHaveAttribute('open'));
   expect(screen.getByTestId('section-disclosure-api-models')).toHaveAttribute('open');
+});
+
+test('submits project defaults with unbounded (null) token caps for all models', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProjectForm onSave={save} />);
+  await identity();
+  await userEvent.click(screen.getByRole('button', { name: 'Register project' }));
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    planner_model: expect.objectContaining({ max_input_tokens: null, max_output_tokens: null }),
+    developer_model: expect.objectContaining({ max_input_tokens: null, max_output_tokens: null }),
+    reviewer_model: expect.objectContaining({ max_input_tokens: null, max_output_tokens: null }),
+  }));
+});
+
+test('blocks saving a legacy unsafe project cap before JSON can round it', async () => {
+  const save = vi.fn();
+  render(<ProjectForm policyOnly initial={{ planner_model: { ...defaultModel, max_input_tokens: Number.MAX_SAFE_INTEGER + 1 } }} onSave={save} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Create policy version' }));
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.getByText(/planner_model max_input_tokens must be a positive safe integer/i)).toBeInTheDocument();
 });

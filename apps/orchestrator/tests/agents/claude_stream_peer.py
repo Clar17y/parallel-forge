@@ -310,7 +310,7 @@ if scenario == "usage_repeat":
                 },
             }
         )
-if scenario == "usage_sum":
+if scenario in {"usage_sum", "usage_reordered"}:
     send(
         {
             "type": "assistant",
@@ -335,6 +335,19 @@ if scenario == "usage_sum":
             },
         }
     )
+    if scenario == "usage_reordered":
+        send(
+            {
+                "type": "assistant",
+                "session_id": user["session_id"],
+                "message": {
+                    "id": "msg-one",
+                    "role": "assistant",
+                    "content": [],
+                    "usage": {"input_tokens": 6, "output_tokens": 2},
+                },
+            }
+        )
 send(
     {
         "type": "control_request",
