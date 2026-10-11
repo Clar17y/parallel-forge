@@ -329,6 +329,118 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
       expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expected_revision: 8, note: 'Keep this note across conflict' }));
     });
 
+    test('rebases untouched concurrent policy fields while retaining a note-only owner edit', async () => {
+      const save = vi.fn().mockRejectedValueOnce(new ApiError(409, 'stale-project-policy'))
+        .mockResolvedValue({ ...samplePolicy, revision: 9 });
+      const latest = { ...samplePolicy, revision: 8, mode: 'warn', history_limit: 60,
+        minimum_comparables: 25, hard_token_cap: 900000, hard_context_cap: 200000,
+        warning_multiplier: 1.7, checkpoint_multiplier: 2.2 } as const;
+      const refresh = vi.fn().mockResolvedValue(latest);
+      render(<MonitoringPolicyEditor projectId={projectId} initial={samplePolicy} onSave={save} onRefresh={refresh} />);
+      await userEvent.type(screen.getByLabelText(/Optional owner note/i), 'Only my note');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      await userEvent.click(screen.getByText(/Advanced hard caps and manual estimates/i));
+      expect(screen.getByLabelText(/Optional hard token cap/i)).toHaveValue('900000');
+      expect(screen.getByLabelText(/Optional hard context cap/i)).toHaveValue('200000');
+      expect(screen.getByLabelText(/Monitoring mode/i)).toHaveValue('warn');
+      expect(screen.getByLabelText(/History limit/i)).toHaveValue(60);
+      expect(screen.getByLabelText(/Optional owner note/i)).toHaveValue('Only my note');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+        expected_revision: 8, hard_token_cap: 900000, hard_context_cap: 200000,
+        mode: 'warn', history_limit: 60, minimum_comparables: 25,
+        warning_multiplier: 1.7, checkpoint_multiplier: 2.2, note: 'Only my note',
+      }));
+    });
+
+    test('keeps owner-cleared cap and raw invalid edit while rebasing untouched fields', async () => {
+      const save = vi.fn().mockRejectedValueOnce(new ApiError(409, 'stale-project-policy'))
+        .mockResolvedValue({ ...samplePolicy, revision: 9 });
+      const refresh = vi.fn().mockResolvedValue({ ...samplePolicy, revision: 8,
+        hard_token_cap: 700000, hard_context_cap: 250000, history_limit: 70 });
+      render(<MonitoringPolicyEditor projectId={projectId} initial={{ ...samplePolicy, hard_token_cap: 500000 }} onSave={save} onRefresh={refresh} />);
+      await userEvent.click(screen.getByText(/Advanced hard caps and manual estimates/i));
+      await userEvent.clear(screen.getByLabelText(/Optional hard token cap/i));
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+      await userEvent.type(screen.getByLabelText(/Manual estimate tokens/i), '1.5');
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      expect(screen.getByLabelText(/Optional hard token cap/i)).toHaveValue('');
+      expect(screen.getByLabelText(/Optional hard context cap/i)).toHaveValue('250000');
+      expect(screen.getByLabelText(/Manual estimate tokens/i)).toHaveValue('1.5');
+      expect(screen.getByLabelText(/History limit/i)).toHaveValue(70);
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenCalledTimes(1);
+      await userEvent.clear(screen.getByLabelText(/Manual estimate tokens/i));
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expected_revision: 8,
+        hard_token_cap: null, hard_context_cap: 250000, history_limit: 70 }));
+    });
+
+    test('updates the authoritative baseline after success before a later conflict', async () => {
+      const save = vi.fn().mockResolvedValueOnce({ ...samplePolicy, revision: 3, hard_token_cap: 600000 })
+        .mockRejectedValueOnce(new ApiError(409, 'stale-project-policy'))
+        .mockResolvedValue({ ...samplePolicy, revision: 5 });
+      const refresh = vi.fn().mockResolvedValue({ ...samplePolicy, revision: 4, hard_token_cap: 800000 });
+      render(<MonitoringPolicyEditor projectId={projectId} initial={samplePolicy} onSave={save} onRefresh={refresh} />);
+      await userEvent.type(screen.getByLabelText(/Optional owner note/i), 'Keep note');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      await userEvent.click(screen.getByText(/Advanced hard caps and manual estimates/i));
+      expect(screen.getByLabelText(/Optional hard token cap/i)).toHaveValue('800000');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expected_revision: 4,
+        hard_token_cap: 800000, note: 'Keep note' }));
+    });
+
+    test('rebases repeatedly from a null initial policy without dropping an owner note', async () => {
+      const save = vi.fn().mockRejectedValueOnce(new ApiError(409, 'stale-project-policy'))
+        .mockRejectedValueOnce(new ApiError(409, 'stale-project-policy'))
+        .mockResolvedValue({ ...samplePolicy, revision: 4 });
+      const refresh = vi.fn().mockResolvedValueOnce({ ...samplePolicy, revision: 1, hard_token_cap: 300000 })
+        .mockResolvedValueOnce({ ...samplePolicy, revision: 3, hard_token_cap: 700000, window_days: 14 });
+      render(<MonitoringPolicyEditor projectId={projectId} initial={null} onSave={save} onRefresh={refresh} />);
+      await userEvent.type(screen.getByLabelText(/Optional owner note/i), 'New policy note');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save.mock.calls.map(([request]) => request.expected_revision)).toEqual([0, 1, 3]);
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ hard_token_cap: 700000,
+        window_days: 14, note: 'New policy note' }));
+    });
+
+    test('keeps draft and old revision while current-policy read fails, then rebases on retry', async () => {
+      const save = vi.fn().mockRejectedValueOnce(new ApiError(409, 'stale-project-policy'))
+        .mockResolvedValue({ ...samplePolicy, revision: 5 });
+      let completeRead!: (value: MonitoringPolicyResponse) => void;
+      const refresh = vi.fn().mockRejectedValueOnce(new Error('Policy read unavailable'))
+        .mockImplementationOnce(() => new Promise<MonitoringPolicyResponse>(resolve => { completeRead = resolve; }));
+      render(<MonitoringPolicyEditor projectId={projectId} initial={samplePolicy} onSave={save} onRefresh={refresh} />);
+      await userEvent.type(screen.getByLabelText(/Optional owner note/i), 'Pending note');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      expect(await screen.findByText('Policy read unavailable')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /Revision 2/i })).toBeInTheDocument();
+      expect(screen.getByLabelText(/Optional owner note/i)).toHaveValue('Pending note');
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      expect(screen.getByRole('button', { name: /Loading current revision/i })).toBeDisabled();
+      expect(screen.getByLabelText(/Optional owner note/i)).toHaveValue('Pending note');
+      completeRead({ ...samplePolicy, revision: 4, hard_token_cap: 750000 });
+      await screen.findByRole('heading', { name: /Revision 4/i });
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expected_revision: 4,
+        hard_token_cap: 750000, note: 'Pending note' }));
+    });
+
     test('prevents duplicate submissions while save is in flight', async () => {
       let completeSave!: (value: MonitoringPolicyResponse) => void;
       const save = vi.fn().mockReturnValue(new Promise<MonitoringPolicyResponse>(resolve => { completeSave = resolve; }));

@@ -7,7 +7,10 @@ from dataclasses import replace
 from uuid import UUID, uuid4
 
 import pytest
-from forge.agents.codex_gateway import _UsagePublisher
+from forge.agents.subscription_usage_observations import (
+    _extract_context_window,
+    _UsagePublisher,
+)
 from forge.application.ports.subscription_gateway import (
     ObservableSubscriptionGateway,
     SubscriptionFailure,
@@ -25,7 +28,7 @@ from forge.domain.task_usage_contract import (
     WorkUnitBinding,
 )
 from forge.domain.tool import ToolName
-from test_codex_gateway import _Broker, _gateway
+from test_codex_gateway import _Broker, _gateway, _script
 from test_subscription_protocol import _request
 
 
@@ -41,6 +44,135 @@ class RecordingUsageObserver(TaskUsageObserver):
         if self.fail:
             raise RuntimeError("sink delivery failure")
         self.events.append(observation)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ({"occupiedTokens": 0, "capacityTokens": 0, "compactionCount": 0}, (0, 0, 0)),
+        ({"occupiedTokens": 2**63 - 1, "capacityTokens": 2**63 - 1},
+         (2**63 - 1, 2**63 - 1, None)),
+        ({"occupiedTokens": True, "capacityTokens": 7, "compactionCount": 2},
+         (None, 7, 2)),
+        ({"occupiedTokens": -1, "capacityTokens": 7, "compactionCount": 2**63},
+         (None, 7, None)),
+        ({"occupiedTokens": 2**63, "capacityTokens": 7}, (None, 7, None)),
+        ({"occupiedTokens": 8, "capacityTokens": 7, "compactionCount": 0},
+         (None, 7, 0)),
+        ({"capacityTokens": 7}, (None, 7, None)),
+        ({"occupiedTokens": 7}, (7, None, None)),
+        ({"occupiedTokens": False, "capacityTokens": -1}, None),
+    ],
+)
+def test_optional_context_dimensions_are_independently_sanitized(
+    raw: dict[str, object], expected: tuple[int | None, int | None, int | None] | None,
+) -> None:
+    context = _extract_context_window({"contextWindow": raw})
+    actual = None if context is None else (
+        context.occupied_tokens, context.capacity_tokens, context.compaction_count
+    )
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "raw_id", [None, "", " ", True, [], "i" * 256, "i" * 257, "forge:missing-event:1"]
+)
+@pytest.mark.asyncio
+async def test_codex_public_observation_id_edges_preserve_settlement(raw_id: object) -> None:
+    script = _script("tool").replace(
+        "def send(value): print(json.dumps(value),flush=True)",
+        "def send(value):\n"
+        " if value.get('method') == 'thread/tokenUsage/updated':\n"
+        + (
+            "  value['params'].pop('eventId', None)\n"
+            if raw_id is None else f"  value['params']['eventId'] = {raw_id!r}\n"
+        )
+        + " print(json.dumps(value),flush=True)",
+    )
+    gateway = _gateway("tool", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=("-c", script))
+    request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert result.telemetry.input_tokens == 13
+    live = [event for event in sink.events if not event.final]
+    assert len(live) == 1
+    assert 0 < len(live[0].event_id) <= 256
+    if isinstance(raw_id, str) and raw_id.strip() and len(raw_id) <= 256 and not raw_id.startswith("forge:"):
+        assert live[0].event_id == raw_id
+    else:
+        assert live[0].event_id.startswith(("forge:missing-event:", "forge:sha256:"))
+    assert sink.events[-1].reconciles_event_id == live[0].event_id
+
+
+@pytest.mark.asyncio
+async def test_codex_public_long_epoch_and_live_final_id_collision_settle() -> None:
+    request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    final_id = f"codex-final-{request.attempt.attempt_id}"
+    script = _script("tool").replace("thread-actual", "thread-" + "x" * 120)
+    script = script.replace(
+        "def send(value): print(json.dumps(value),flush=True)",
+        "def send(value):\n"
+        " if value.get('method') == 'thread/tokenUsage/updated':\n"
+        f"  value['params']['eventId'] = {final_id!r}\n"
+        " print(json.dumps(value),flush=True)",
+    )
+    gateway = _gateway("tool", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=("-c", script))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    live = [event for event in sink.events if not event.final]
+    assert len(live) == 1
+    assert live[0].event_id == final_id
+    assert live[0].counter_epoch.startswith("forge:sha256:")
+    assert len(live[0].counter_epoch) <= 96
+    assert sink.events[-1].reconciles_event_id == live[0].event_id
+    assert sink.events[-1].event_id != live[0].event_id
+
+
+@pytest.mark.asyncio
+async def test_codex_observed_untrusted_context_and_colliding_long_ids_settle() -> None:
+    long_prefix = "provider-" + "x" * 260
+    original = _script("tool")
+    script = original.replace(
+        "def send(value): print(json.dumps(value),flush=True)",
+        "def send(value):\n"
+        " if value.get('method') == 'thread/tokenUsage/updated':\n"
+        "  value['params']['contextWindow'] = {'occupiedTokens': 9, 'capacityTokens': 3, 'compactionCount': True}\n"
+        f"  value['params']['eventId'] = {long_prefix + 'a'!r}\n"
+        "  print(json.dumps(value),flush=True)\n"
+        f"  value['params']['eventId'] = {long_prefix + 'b'!r}\n"
+        " print(json.dumps(value),flush=True)",
+    )
+    assert script != original
+    gateway = _gateway("tool", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=("-c", script))
+    request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    sink = RecordingUsageObserver()
+
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+
+    assert result.failure is None, result.failure_detail
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert result.telemetry.input_tokens == 13
+    live = [event for event in sink.events if not event.final]
+    assert len(live) == 2
+    assert live[0].event_id != live[1].event_id
+    assert all(0 < len(event.event_id) <= 256 for event in live)
+    assert all(event.context is not None and event.context.occupied_tokens is None
+               and event.context.capacity_tokens == 3
+               and event.context.compaction_count is None for event in live)
+    assert sink.events[-1].reconciles_event_id == live[-1].event_id
 
 
 @pytest.mark.asyncio

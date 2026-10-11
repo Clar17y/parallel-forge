@@ -17,7 +17,7 @@ function response(value: unknown, status = 200) {
   return Response.json(value, { status });
 }
 
-function installHttp({ initial = policy, firstPostConflict = false, deferProjectRefresh = false }: { initial?: typeof policy | null; firstPostConflict?: boolean; deferProjectRefresh?: boolean } = {}) {
+function installHttp({ initial = policy, latestPolicy = policy, firstPostConflict = false, deferProjectRefresh = false }: { initial?: typeof policy | null; latestPolicy?: typeof policy; firstPostConflict?: boolean; deferProjectRefresh?: boolean } = {}) {
   let refreshCount = 0;
   let postCount = 0;
   let projectReadCount = 0;
@@ -37,13 +37,13 @@ function installHttp({ initial = policy, firstPostConflict = false, deferProject
       if (init.method === 'POST') {
         postCount++;
         if (firstPostConflict && postCount === 1) return response({ detail: 'stale-project-policy' }, 409);
-        return response({ ...policy, revision: firstPostConflict ? 9 : initial ? 3 : 1 });
+        return response({ ...latestPolicy, revision: firstPostConflict ? 9 : initial ? 3 : 1 });
       }
       if (init.cache === 'no-store') {
         refreshCount++;
-        return refreshCount === 1 ? response(initial) : refreshCount === 2 ? pendingRefresh : response({ ...policy, revision: firstPostConflict ? 8 : 3 });
+        return refreshCount === 1 ? response(initial) : refreshCount === 2 ? pendingRefresh : response({ ...latestPolicy, revision: firstPostConflict ? 8 : 3 });
       }
-      return response({ ...policy, revision: 8 });
+      return response({ ...latestPolicy, revision: 8 });
     }
     if (url === `/api/projects/${projectId}`) {
       projectReadCount++;
@@ -96,6 +96,24 @@ test('keeps edited caps and note through 409, actual-revision fetch, failed refr
   const posts = http.requests.filter(r => r.url === `/api/projects/${projectId}/monitoring-policy` && r.init.method === 'POST');
   expect(posts).toHaveLength(2);
   expect(JSON.parse(posts[1].init.body as string)).toEqual(expect.objectContaining({ expected_revision: 8, hard_token_cap: 750000, hard_context_cap: 900000, warning_multiplier: 1.8, note: 'Keep draft' }));
+});
+
+test('note-only recovery submits the concurrent cap from the authoritative refetch', async () => {
+  const http = installHttp({ firstPostConflict: true,
+    latestPolicy: { ...policy, hard_token_cap: 900000, history_limit: 60 } });
+  render(<ProjectPage />);
+  await screen.findByRole('form', { name: 'Revise task usage monitoring policy' });
+  await userEvent.type(screen.getByRole('textbox', { name: 'Optional owner note' }), 'Only note changed');
+  await userEvent.click(screen.getByRole('button', { name: 'Save monitoring policy' }));
+  await screen.findByText(/Monitoring policy revision conflict/i);
+  await userEvent.click(screen.getByRole('button', { name: 'Load current revision and keep edits' }));
+  await screen.findByRole('heading', { name: /Revision 8/i });
+  await userEvent.click(screen.getByRole('button', { name: 'Save monitoring policy' }));
+  const posts = http.requests.filter(r => r.url === `/api/projects/${projectId}/monitoring-policy` && r.init.method === 'POST');
+  expect(posts).toHaveLength(2);
+  expect(JSON.parse(posts[1].init.body as string)).toEqual(expect.objectContaining({
+    expected_revision: 8, hard_token_cap: 900000, history_limit: 60, note: 'Only note changed',
+  }));
 });
 
 test('keeps draft and returned revision across ordinary post-save refresh', async () => {

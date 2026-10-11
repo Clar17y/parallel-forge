@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from forge.agents.claude_gateway import _Usage, _UsagePublisher
+from forge.agents.claude_gateway import _Usage
+from forge.agents.subscription_usage_observations import _UsagePublisher
 from forge.application.ports.subscription_gateway import (
     ObservableSubscriptionGateway,
     SubscriptionFailure,
@@ -47,6 +49,116 @@ class RecordingUsageObserver(TaskUsageObserver):
         if self.fail:
             raise RuntimeError("sink delivery failure")
         self.events.append(observation)
+
+
+@pytest.mark.parametrize(
+    "raw_id", [None, "", " ", True, [], "i" * 256, "i" * 257, "forge:missing-event:1"]
+)
+@pytest.mark.asyncio
+async def test_claude_public_observation_id_edges_preserve_settlement(
+    tmp_path: Path, raw_id: object,
+) -> None:
+    peer = Path(__file__).with_name("claude_stream_peer.py").read_text()
+    original = 'def send(value):\n    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    replacement = (
+        "def send(value):\n"
+        "    if value.get('type') == 'assistant' and value.get('message', {}).get('usage'):\n"
+        + (
+            "        value.pop('uuid', None)\n"
+            if raw_id is None else f"        value['uuid'] = {raw_id!r}\n"
+        )
+        + "    print(json.dumps(value, separators=(\",\", \":\")), flush=True)"
+    )
+    assert original in peer
+    script = tmp_path / "claude_metadata_peer.py"
+    script.write_text(peer.replace(original, replacement))
+    gateway = _gateway("usage_sum", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=(str(script), "usage_sum"))
+    request = _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert result.telemetry.input_tokens == 13
+    live = [event for event in sink.events if not event.final]
+    assert len(live) >= 2
+    assert 0 < len(live[0].event_id) <= 256
+    if isinstance(raw_id, str) and raw_id.strip() and len(raw_id) <= 256 and not raw_id.startswith("forge:"):
+        assert live[0].event_id == raw_id
+    else:
+        assert live[0].event_id.startswith(("forge:missing-event:", "forge:sha256:"))
+    assert sink.events[-1].reconciles_event_id == live[-1].event_id
+
+
+@pytest.mark.asyncio
+async def test_claude_public_live_final_id_collision_settles(tmp_path: Path) -> None:
+    request = _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    final_id = f"claude-final-{request.attempt.attempt_id}"
+    peer = Path(__file__).with_name("claude_stream_peer.py").read_text()
+    original = 'def send(value):\n    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    replacement = (
+        "def send(value):\n"
+        "    if value.get('type') == 'result':\n"
+        f"        value['uuid'] = {final_id!r}\n"
+        "    print(json.dumps(value, separators=(\",\", \":\")), flush=True)"
+    )
+    assert original in peer
+    script = tmp_path / "claude_collision_peer.py"
+    script.write_text(peer.replace(original, replacement))
+    gateway = _gateway("success", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=(str(script), "success"))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    live = [event for event in sink.events if not event.final]
+    assert live[-1].event_id == final_id
+    assert sink.events[-1].reconciles_event_id == live[-1].event_id
+    assert sink.events[-1].event_id != live[-1].event_id
+
+
+@pytest.mark.asyncio
+async def test_claude_observed_untrusted_context_and_colliding_long_ids_settle(tmp_path: Path) -> None:
+    long_prefix = "provider-" + "x" * 260
+    peer = Path(__file__).with_name("claude_stream_peer.py").read_text()
+    original = 'def send(value):\n    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    replacement = (
+        "assistant_events = 0\n"
+        "def send(value):\n"
+        "    global assistant_events\n"
+        "    if value.get('type') == 'assistant' and value.get('message', {}).get('usage'):\n"
+        "        assistant_events += 1\n"
+        "        value['contextWindow'] = {'occupiedTokens': 9, 'capacityTokens': 3, 'compactionCount': True}\n"
+        f"        value['uuid'] = {long_prefix!r} + str(assistant_events)\n"
+        "    print(json.dumps(value, separators=(\",\", \":\")), flush=True)"
+    )
+    assert original in peer
+    script = tmp_path / "claude_metadata_peer.py"
+    script.write_text(peer.replace(original, replacement))
+    gateway = _gateway("usage_sum", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=(str(script), "usage_sum"))
+    request = _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    sink = RecordingUsageObserver()
+
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+
+    assert result.failure is None, result.failure_detail
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert result.telemetry.input_tokens == 13
+    live = [event for event in sink.events if not event.final]
+    assert len(live) >= 2
+    assert live[0].event_id != live[1].event_id
+    assert all(0 < len(event.event_id) <= 256 for event in live)
+    assert all(event.context is not None and event.context.occupied_tokens is None
+               and event.context.capacity_tokens == 3
+               and event.context.compaction_count is None for event in live[:2])
+    assert sink.events[-1].reconciles_event_id == live[-1].event_id
 
 
 @pytest.mark.asyncio

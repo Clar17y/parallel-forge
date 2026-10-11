@@ -1278,9 +1278,8 @@ class ClaudeGateway(ObservableSubscriptionGateway):
                 failure = quota.terminal(codec.terminal, self._now())
             observed_msg = usage.observe_assistant(frame, thread)
             if publisher is not None and observed_msg is not None:
-                msg_id, _ = observed_msg
                 publisher.publish_live(
-                    event_id=str(frame.get("uuid", f"claude-msg-{msg_id}-{publisher.sequence + 1}")),
+                    event_id=frame.get("uuid"),
                     tokens=TokenCounts(
                         input_tokens=usage.input,
                         output_tokens=usage.output,
@@ -1301,7 +1300,7 @@ class ClaudeGateway(ObservableSubscriptionGateway):
                 usage.observe(terminal.get("usage"))
                 if publisher is not None and terminal.get("usage") is not None:
                     publisher.publish_live(
-                        event_id=str(terminal.get("uuid", f"claude-terminal-{publisher.sequence + 1}")),
+                        event_id=terminal.get("uuid"),
                         tokens=TokenCounts(
                             input_tokens=usage.input,
                             output_tokens=usage.output,

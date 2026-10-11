@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
 from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.task_usage_contract import (
+    MAX_SIGNED_BIGINT,
     ContextWindow,
     CounterKind,
     Observation,
@@ -79,14 +81,30 @@ def _extract_context_window(payload: Mapping[str, Any]) -> ContextWindow | None:
     compaction = target.get(
         "compaction_count", target.get("compactionCount", target.get("compactions"))
     )
-    occ_int = occupied if isinstance(occupied, int) and occupied >= 0 else None
-    cap_int = capacity if isinstance(capacity, int) and capacity >= 0 else None
-    comp_int = compaction if isinstance(compaction, int) and compaction >= 0 else None
+    def measured(value: object) -> int | None:
+        return value if type(value) is int and 0 <= value <= MAX_SIGNED_BIGINT else None
+
+    occ_int = measured(occupied)
+    cap_int = measured(capacity)
+    comp_int = measured(compaction)
+    if occ_int is not None and cap_int is not None and occ_int > cap_int:
+        occ_int = None
     if occ_int is None and cap_int is None and comp_int is None:
         return None
     return ContextWindow(
         occupied_tokens=occ_int, capacity_tokens=cap_int, compaction_count=comp_int
     )
+
+
+def _bounded_identity(value: object, *, fallback: str, limit: int) -> str:
+    """Keep safe provider identities, hash oversized ones, and replace absent ones."""
+    if type(value) is not str or not value.strip():
+        return fallback
+    if len(value) <= limit and value.isprintable() and not value.startswith("forge:"):
+        return value
+    return "forge:sha256:" + hashlib.sha256(
+        value.encode("utf-8", "surrogatepass")
+    ).hexdigest()
 
 
 def _extract_unknown_dimensions(
@@ -157,7 +175,7 @@ class _UsagePublisher:
     def publish_live(
         self,
         *,
-        event_id: str,
+        event_id: object,
         tokens: TokenCounts,
         context: ContextWindow | None = None,
         counter_kind: CounterKind = CounterKind.CUMULATIVE,
@@ -167,7 +185,9 @@ class _UsagePublisher:
         if self._closed:
             return
         self.sequence += 1
-        self.last_event_id = event_id
+        event_id = _bounded_identity(
+            event_id, fallback=f"forge:missing-event:{self.sequence}", limit=256
+        )
         if context is not None:
             self.last_context = context
         unknowns = _extract_unknown_dimensions(tokens, context)
@@ -177,7 +197,9 @@ class _UsagePublisher:
             sequence=self.sequence,
             counter_kind=counter_kind,
             tokens=tokens,
-            counter_epoch=counter_epoch or self.counter_epoch,
+            counter_epoch=_bounded_identity(
+                counter_epoch or self.counter_epoch, fallback="source", limit=96
+            ),
             observed_at=observed_at,
             context=context,
             unknown_dimensions=unknowns,
@@ -185,13 +207,14 @@ class _UsagePublisher:
         )
         try:
             self.queue.put_nowait(obs)
+            self.last_event_id = event_id
         except asyncio.QueueFull:
             self.dropped_or_failed = True
 
     async def publish_final(
         self,
         *,
-        event_id: str,
+        event_id: object,
         status: str,
         tokens: TokenCounts,
         context: ContextWindow | None = None,
@@ -203,6 +226,11 @@ class _UsagePublisher:
             return
         self._closed = True
         self.sequence += 1
+        event_id = _bounded_identity(
+            event_id, fallback=f"forge:missing-final:{self.sequence}", limit=256
+        )
+        if event_id == self.last_event_id:
+            event_id = f"forge:final:{self.sequence}"
         context = context or self.last_context
         unknowns = _extract_unknown_dimensions(tokens, context)
         final_obs = Observation(
@@ -211,7 +239,9 @@ class _UsagePublisher:
             sequence=self.sequence,
             counter_kind=counter_kind,
             tokens=tokens,
-            counter_epoch=counter_epoch or self.counter_epoch,
+            counter_epoch=_bounded_identity(
+                counter_epoch or self.counter_epoch, fallback="source", limit=96
+            ),
             observed_at=observed_at,
             context=context,
             unknown_dimensions=unknowns,

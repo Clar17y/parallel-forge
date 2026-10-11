@@ -1066,7 +1066,7 @@ class CodexGateway(ObservableSubscriptionGateway):
                 usage.observe(params)
                 if publisher is not None:
                     publisher.publish_live(
-                        event_id=str(params.get("eventId", f"codex-event-{publisher.sequence + 1}")),
+                        event_id=params.get("eventId"),
                         tokens=TokenCounts(
                             input_tokens=usage.input,
                             output_tokens=usage.output,

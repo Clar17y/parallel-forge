@@ -19,6 +19,34 @@ export interface MonitoringPolicyEditorProps {
   onCancel?: () => void;
 }
 
+interface PolicyDraft {
+  mode: MonitoringMode;
+  warningMultiplier: string;
+  checkpointMultiplier: string;
+  historyLimit: string;
+  minimumComparables: string;
+  windowDays: string;
+  allowCrossProjectFallback: boolean;
+  hardTokenCap: string;
+  hardContextCap: string;
+  manualEstimateTokens: string;
+}
+
+function draftFromPolicy(policy?: MonitoringPolicyResponse | null): PolicyDraft {
+  return {
+    mode: (policy?.mode as MonitoringMode) ?? 'checkpoint',
+    warningMultiplier: String(policy?.warning_multiplier ?? 1.5),
+    checkpointMultiplier: String(policy?.checkpoint_multiplier ?? 2),
+    historyLimit: String(policy?.history_limit ?? 50),
+    minimumComparables: String(policy?.minimum_comparables ?? 20),
+    windowDays: policy?.window_days == null ? '' : String(policy.window_days),
+    allowCrossProjectFallback: policy?.allow_cross_project_fallback ?? true,
+    hardTokenCap: policy?.hard_token_cap == null ? '' : String(policy.hard_token_cap),
+    hardContextCap: policy?.hard_context_cap == null ? '' : String(policy.hard_context_cap),
+    manualEstimateTokens: policy?.manual_estimate_tokens == null ? '' : String(policy.manual_estimate_tokens),
+  };
+}
+
 export function MonitoringPolicyEditor({
   projectId: _projectId,
   initial,
@@ -67,25 +95,44 @@ export function MonitoringPolicyEditor({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const savingNow = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
+  const refreshingNow = useRef(false);
+  const baseline = useRef<PolicyDraft>(draftFromPolicy(initial));
+
+  function rebaseDraft(previous: PolicyDraft, latest: PolicyDraft) {
+    setMode(current => current === previous.mode ? latest.mode : current);
+    setWarningMultiplier(current => current === previous.warningMultiplier ? latest.warningMultiplier : current);
+    setCheckpointMultiplier(current => current === previous.checkpointMultiplier ? latest.checkpointMultiplier : current);
+    setHistoryLimit(current => current === previous.historyLimit ? latest.historyLimit : current);
+    setMinimumComparables(current => current === previous.minimumComparables ? latest.minimumComparables : current);
+    setWindowDays(current => current === previous.windowDays ? latest.windowDays : current);
+    setAllowCrossProjectFallback(current => current === previous.allowCrossProjectFallback ? latest.allowCrossProjectFallback : current);
+    setHardTokenCap(current => current === previous.hardTokenCap ? latest.hardTokenCap : current);
+    setHardContextCap(current => current === previous.hardContextCap ? latest.hardContextCap : current);
+    setManualEstimateTokens(current => current === previous.manualEstimateTokens ? latest.manualEstimateTokens : current);
+    baseline.current = latest;
+  }
 
   async function refreshAfterConflict() {
-    if (!onRefresh || refreshing) return;
+    if (!onRefresh || refreshingNow.current) return;
+    refreshingNow.current = true;
     setRefreshing(true);
     try {
       const latest = await onRefresh();
+      rebaseDraft(baseline.current, draftFromPolicy(latest));
       setExpectedRevision(latest?.revision ?? 0);
       setConflict(false);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load the current policy. Your edits are preserved.');
     } finally {
+      refreshingNow.current = false;
       setRefreshing(false);
     }
   }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (savingNow.current || conflict || refreshing) return;
+    if (savingNow.current || conflict || refreshingNow.current) return;
 
     setError(null);
     setFieldErrors({});
@@ -185,11 +232,16 @@ export function MonitoringPolicyEditor({
       allow_cross_project_fallback: allowCrossProjectFallback,
       note: note.trim() || null,
     };
+    const submittedDraft: PolicyDraft = {
+      mode, warningMultiplier, checkpointMultiplier, historyLimit, minimumComparables,
+      windowDays, allowCrossProjectFallback, hardTokenCap, hardContextCap, manualEstimateTokens,
+    };
 
     savingNow.current = true;
     setSaving(true);
     try {
       const saved = await onSave(payload);
+      rebaseDraft(submittedDraft, draftFromPolicy(saved));
       setExpectedRevision(saved.revision);
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) {
