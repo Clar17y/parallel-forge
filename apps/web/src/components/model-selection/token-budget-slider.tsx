@@ -1,6 +1,7 @@
 'use client';
 
 import { useId, useState } from 'react';
+import { validateSafeInteger } from '@/lib/api/monitoring-policy';
 
 const REFERENCE_LIMITS: Record<string, { input: number; output: number; source: string }> = {
   'google:gemini-3.5-flash': { input: 1_048_576, output: 65_536, source: 'https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash' },
@@ -40,6 +41,7 @@ export function TokenBudgetSlider({
   const publishedReference = rangeMax == null ? tokenReference(provider, model, dimension) : undefined;
   const referenceMax = rangeMax ?? publishedReference ?? 1_000_000;
   const [exact, setExact] = useState(false);
+  const [exactError, setExactError] = useState('');
   const rangeKey = JSON.stringify([provider, model, dimension, rangeMax, min]);
   const [range, setRange] = useState(() => ({ key: rangeKey, max: Math.max(referenceMax, value, min + 1) }));
   const sliderMax = Math.max(range.key === rangeKey ? range.max : referenceMax, value, min + 1);
@@ -48,11 +50,17 @@ export function TokenBudgetSlider({
     setRange({ key: rangeKey, max: sliderMax });
   }
   const presetScale = publishedReference ?? sliderMax;
-  const setPercent = (percent: number) => onChange(Math.max(min, Math.round(presetScale * percent / 100)));
+  const setPercent = (percent: number) => {
+    const next = Math.max(min, Math.round(presetScale * percent / 100));
+    if (Number.isSafeInteger(next)) onChange(next);
+  };
   return <div className="space-y-2">
     {!hideLabel && <label htmlFor={`${id}-range`} className="block font-medium">{label}</label>}
     <p className="text-sm" aria-live="polite">{value.toLocaleString()} tokens</p>
-    <input id={`${id}-range`} aria-label={label} type="range" min={min} max={sliderMax} step={rangeStep ?? 1} value={Math.min(value, sliderMax)} disabled={disabled} onChange={event => onChange(Math.max(min, Math.round(Number(event.target.value))))} aria-invalid={Boolean(error)} aria-describedby={error ? `${id}-error` : undefined} className="w-full" />
+    <input id={`${id}-range`} aria-label={label} type="range" min={min} max={sliderMax} step={rangeStep ?? 1} value={Math.min(value, sliderMax)} disabled={disabled} onChange={event => {
+      const parsed = validateSafeInteger(event.target.value, { allowNull: false, allowZero: min === 0, min });
+      if (parsed.valid) onChange(parsed.value!);
+    }} aria-invalid={Boolean(error)} aria-describedby={error ? `${id}-error` : undefined} className="w-full" />
     <div className="flex flex-wrap gap-2" aria-label={`${label} presets`}>
       {[25, 50, 75, 100].map(percent => <button key={percent} type="button" className="rounded border px-2 py-1 text-xs" disabled={disabled} onClick={() => setPercent(percent)}>{percent}%</button>)}
     </div>
@@ -63,9 +71,17 @@ export function TokenBudgetSlider({
     </details>
     <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={exact} disabled={disabled} onChange={event => setExact(event.target.checked)} />Exact value</label>
     {exact && <>
-      <input aria-label={`${label} exact value`} type="number" min={min} step={1} value={value} disabled={disabled} onChange={event => { if (event.target.value !== '') onChange(Math.max(min, Math.round(Number(event.target.value)))); }} className="w-full rounded border px-2 py-1" />
+      <input aria-label={`${label} exact value`} type="number" min={min} step={1} value={value} disabled={disabled} aria-invalid={Boolean(exactError)} onChange={event => {
+        const parsed = validateSafeInteger(event.target.value, { allowNull: false, allowZero: min === 0, min });
+        setExactError(parsed.valid ? '' : parsed.error!);
+        if (parsed.valid) onChange(parsed.value!);
+      }} className="w-full rounded border px-2 py-1" />
+      {exactError && <p role="alert" className="text-xs text-[var(--danger)]">{exactError}</p>}
       {!tokenReference(provider, model, dimension) || rangeMax != null ? <label className="block text-xs">Slider range maximum
-        <input aria-label={`${label} range maximum`} type="number" min={min + 1} step={1} value={sliderMax} disabled={disabled} onChange={event => { if (event.target.value !== '') setRange({ key: rangeKey, max: Math.max(value, min + 1, Math.round(Number(event.target.value))) }); }} className="mt-1 w-full rounded border px-2 py-1" />
+        <input aria-label={`${label} range maximum`} type="number" min={min + 1} step={1} value={sliderMax} disabled={disabled} onChange={event => {
+          const parsed = validateSafeInteger(event.target.value, { allowNull: false, min: min + 1 });
+          if (parsed.valid) setRange({ key: rangeKey, max: Math.max(value, min + 1, parsed.value!) });
+        }} className="mt-1 w-full rounded border px-2 py-1" />
       </label> : null}
     </>}
     {error && <p id={`${id}-error`} role="alert" className="text-xs text-[var(--danger)]">{error}</p>}

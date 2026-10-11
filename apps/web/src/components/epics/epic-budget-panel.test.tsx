@@ -1,5 +1,5 @@
 import { resetEpicMutationStoreForTesting } from '@/hooks/epics/use-epic-mutations';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { EpicBudgetPanel } from './epic-budget-panel';
@@ -83,6 +83,22 @@ describe('EpicBudgetPanel', () => {
     cleanup();
     vi.mocked(api).mockReset();
     sessionStorage.clear();
+  });
+
+  test('rejects unsafe and zero token ceilings without a budget mutation', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) return mockBudget as T;
+      return undefined as T;
+    });
+    render(<EpicBudgetPanel epicId={epicId} />);
+    await screen.findByText('Shared Epic Budget & Ceilings');
+    await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
+    const cap = screen.getByLabelText('Input tokens ceiling');
+    for (const raw of ['0', '9007199254740993', '1.5']) {
+      fireEvent.change(cap, { target: { value: raw } });
+      await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
+      expect(vi.mocked(api).mock.calls.filter(([path, init]) => path === `/epics/${epicId}/budget` && init?.method === 'PUT')).toHaveLength(0);
+    }
   });
 
   test('truthfully displays 6 shared dimensions, distinguishing zero, unknown, and unlimited', async () => {
@@ -249,11 +265,11 @@ describe('EpicBudgetPanel', () => {
 
     expect(await screen.findByText(/Budget version conflict/i)).toBeInTheDocument();
     // User edit is preserved in the input
-    expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue(999);
+    expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue('999');
     await userEvent.click(screen.getByRole('button', { name: /Rebase changes onto latest version/i }));
     expect(screen.getByRole('button', { name: /Save Ceilings/i })).toBeDisabled();
     expect(screen.getByText(/Budget version conflict/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue(999);
+    expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue('999');
     expect(screen.getByLabelText(/Optional owner note/i)).toHaveValue('Preserve this owner edit');
 
     await act(async () => { completeRead(latestBudget); });
@@ -261,7 +277,7 @@ describe('EpicBudgetPanel', () => {
       expect(screen.queryByText(/Budget version conflict/i)).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Save Ceilings/i })).toBeEnabled();
     });
-    expect(screen.getByLabelText(/Tool calls ceiling/i)).toHaveValue(70);
+    expect(screen.getByLabelText(/Tool calls ceiling/i)).toHaveValue('70');
     expect(screen.getByLabelText(/Unlimited tool calls/i)).toBeChecked();
     expect(screen.getByLabelText(/Unlimited duration/i)).not.toBeChecked();
     expect(screen.getByLabelText(/Unlimited output tokens/i)).toBeChecked();
@@ -307,7 +323,7 @@ describe('EpicBudgetPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: /Rebase changes onto latest version/i }));
     expect(await screen.findByText(/Could not load the latest budget/i)).toBeInTheDocument();
     expect(screen.getByText(/Budget version conflict/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue(999);
+    expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue('999');
     expect(screen.getByLabelText(/Optional owner note/i)).toHaveValue('Keep my note');
 
     await userEvent.click(screen.getByRole('button', { name: /Rebase changes onto latest version/i }));
@@ -379,7 +395,7 @@ describe('EpicBudgetPanel', () => {
 
     // Tool calls initial ceiling is 50
     const toolCallInput = screen.getByLabelText(/Tool calls ceiling/i);
-    expect(toolCallInput).toHaveValue(50);
+    expect(toolCallInput).toHaveValue('50');
 
     // Toggle unlimited (disabled)
     const unlimitedToggle = screen.getByLabelText(/Unlimited tool calls/i);
@@ -390,7 +406,7 @@ describe('EpicBudgetPanel', () => {
     await userEvent.click(unlimitedToggle);
     expect(toolCallInput).not.toBeDisabled();
     // Numeric value 50 must still be preserved!
-    expect(toolCallInput).toHaveValue(50);
+    expect(toolCallInput).toHaveValue('50');
   });
 
   test('allows an explicit null token ceiling and preserves the other token cap', async () => {
@@ -402,7 +418,7 @@ describe('EpicBudgetPanel', () => {
     render(<EpicBudgetPanel epicId={epicId} />);
     await screen.findByText('Shared Epic Budget & Ceilings');
     await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
-    await userEvent.click(screen.getByRole('button', { name: 'Input tokens ceiling use unlimited' }));
+    await userEvent.clear(screen.getByLabelText('Input tokens ceiling'));
     expect(screen.queryByRole('slider', { name: 'Input tokens ceiling' })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
     const put = vi.mocked(api).mock.calls.find(([path, init]) => path === `/epics/${epicId}/budget` && init?.method === 'PUT');
@@ -470,7 +486,7 @@ describe('EpicBudgetPanel', () => {
     const body = JSON.parse(putCalls[0][1]?.body as string);
     expect(body.expected_version).toBe(3);
     expect(await screen.findByText(/Budget version conflict/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue(800);
+    expect(screen.getByLabelText(/Cost ceiling \(minor units\)/i)).toHaveValue('800');
   });
 
   test('requires numeric cap for enabled mandatory dimensions with inline error and blocks submit on blank, while explicit zero retains zero', async () => {
@@ -582,10 +598,10 @@ describe('EpicBudgetPanel', () => {
     expect(durationInput).toHaveAttribute('placeholder', 'Required numeric cap');
 
     expect(screen.getAllByText('Unlimited (null)').length).toBeGreaterThan(0);
-    const setInputCeiling = screen.getByRole('button', { name: 'Set ceiling' });
-    expect(setInputCeiling).toBeEnabled();
-    await userEvent.click(setInputCeiling);
-    expect(screen.getByRole('slider', { name: 'Input tokens ceiling' })).toHaveValue('0');
+    const inputCap = screen.getByLabelText('Input tokens ceiling');
+    expect(inputCap).toHaveValue('');
+    await userEvent.type(inputCap, '500000');
+    expect(inputCap).toHaveValue('500000');
 
     // When disabled via Unlimited checkbox
     await userEvent.click(screen.getByLabelText(/Unlimited duration/i));

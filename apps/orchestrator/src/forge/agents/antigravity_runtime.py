@@ -45,6 +45,8 @@ from forge.application.ports.subscription_gateway import (
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
 )
+from forge.application.ports.task_usage import TaskUsageObserver
+from forge.domain.epic_brainstorm import AuthoringJobSnapshot
 from forge.domain.subscription import (
     AttemptTelemetry,
     AuthMode,
@@ -53,7 +55,313 @@ from forge.domain.subscription import (
     RouteSpec,
     SpecialistPurpose,
 )
+from forge.domain.task_usage_contract import (
+    MAX_SIGNED_BIGINT,
+    ContextWindow,
+    CounterKind,
+    Observation,
+    TokenCounts,
+    WorkUnitBinding,
+)
 from pydantic import TypeAdapter
+
+
+class _ObservationPublisher:
+    """Bounded, duplicate-filtering observation delivery for opt-in gateways."""
+
+    def __init__(self, binding: WorkUnitBinding, sink: TaskUsageObserver) -> None:
+        self.binding = binding
+        self.sink = sink
+        self.sequence = 0
+        self.last_live_event_id: str | None = None
+        self.last_tokens: tuple[int | None, int | None, int | None, int | None] | None = None
+        self.last_context: tuple[int | None, int | None, int | None] | None = None
+        self.latest_context: ContextWindow | None = None
+        self.terminal_tokens: TokenCounts | None = None
+        self.terminal_context: ContextWindow | None = None
+        self.delivered_final = False
+        self.delivery_incomplete = False
+        self._queue: asyncio.Queue[Observation] = asyncio.Queue(maxsize=64)
+        self._worker: asyncio.Task[None] | None = None
+
+    async def _deliver(self) -> None:
+        while True:
+            observation = await self._queue.get()
+            try:
+                async with asyncio.timeout(0.5):
+                    await self.sink.observe_usage(observation)
+            except asyncio.CancelledError:
+                self.delivery_incomplete = True
+                raise
+            except Exception:  # noqa: BLE001 - observation cannot change provider outcome
+                self.delivery_incomplete = True
+            finally:
+                self._queue.task_done()
+
+    async def close(self) -> None:
+        if self._worker is not None:
+            if not self._worker.done():
+                self._worker.cancel()
+            try:
+                await self._worker
+            except asyncio.CancelledError:
+                pass
+            self._worker = None
+
+    @staticmethod
+    def _unknown(tokens: TokenCounts, context: ContextWindow | None) -> tuple[str, ...]:
+        values = {
+            "input_tokens": tokens.input_tokens,
+            "output_tokens": tokens.output_tokens,
+            "cached_input_tokens": tokens.cached_input_tokens,
+            "reasoning_output_tokens": tokens.reasoning_output_tokens,
+            "context_occupied_tokens": None if context is None else context.occupied_tokens,
+            "context_capacity_tokens": None if context is None else context.capacity_tokens,
+            "compaction_count": None if context is None else context.compaction_count,
+        }
+        return tuple(name for name, value in values.items() if value is None)
+
+    def capture_terminal(
+        self, *, tokens: TokenCounts, context: ContextWindow | None = None
+    ) -> None:
+        """Retain provider counters without claiming a settled outcome or waiting on the sink."""
+        self.terminal_tokens = tokens
+        self.terminal_context = context
+
+    async def emit_live(
+        self,
+        *,
+        tokens: TokenCounts,
+        context: ContextWindow | None = None,
+    ) -> None:
+        if self.delivered_final:
+            return
+        token_tuple = (
+            tokens.input_tokens,
+            tokens.output_tokens,
+            tokens.cached_input_tokens,
+            tokens.reasoning_output_tokens,
+        )
+        context_tuple = (
+            (context.occupied_tokens, context.capacity_tokens, context.compaction_count)
+            if context is not None
+            else None
+        )
+        if token_tuple == self.last_tokens and context_tuple == self.last_context:
+            return
+
+        self.sequence += 1
+        event_id = f"{self.binding.source.source_id}-live-{self.sequence}"
+        unknown = self._unknown(tokens, context)
+        obs = Observation(
+            binding=self.binding,
+            event_id=event_id,
+            sequence=self.sequence,
+            counter_kind=CounterKind.CUMULATIVE,
+            tokens=tokens,
+            context=context,
+            unknown_dimensions=unknown,
+            final=False,
+        )
+        self.last_tokens = token_tuple
+        self.last_context = context_tuple
+        if context is not None:
+            self.latest_context = context
+        self.last_live_event_id = event_id
+        if self._worker is None:
+            self._worker = asyncio.create_task(self._deliver())
+        try:
+            self._queue.put_nowait(obs)
+        except asyncio.QueueFull:
+            self.delivery_incomplete = True
+        await asyncio.sleep(0)
+
+    async def emit_final(
+        self,
+        *,
+        tokens: TokenCounts,
+        status: str,
+        context: ContextWindow | None = None,
+    ) -> None:
+        if self.delivered_final:
+            return
+        self.delivered_final = True
+        self.sequence += 1
+        context = context or self.latest_context
+        event_id = f"{self.binding.source.source_id}-final"
+        unknown = self._unknown(tokens, context)
+        obs = Observation(
+            binding=self.binding,
+            event_id=event_id,
+            sequence=self.sequence,
+            counter_kind=CounterKind.CUMULATIVE,
+            tokens=tokens,
+            context=context,
+            unknown_dimensions=unknown,
+            final=True,
+            final_status=status[:32] if status else "unknown",
+            reconciles_event_id=self.last_live_event_id,
+        )
+        try:
+            try:
+                async with asyncio.timeout(0.5):
+                    await self._queue.join()
+            except asyncio.CancelledError:
+                self.delivery_incomplete = True
+            except TimeoutError:
+                self.delivery_incomplete = True
+            await self.close()
+            try:
+                async with asyncio.timeout(0.5):
+                    await self.sink.observe_usage(obs)
+            except asyncio.CancelledError:
+                self.delivery_incomplete = True
+            except Exception:  # noqa: BLE001 - observation cannot change provider outcome
+                self.delivery_incomplete = True
+        finally:
+            await self.close()
+
+
+def _validate_subscription_usage_binding(
+    binding: WorkUnitBinding,
+    request: SubscriptionInvocationRequest,
+    expected_model: str,
+) -> None:
+    if not isinstance(binding, WorkUnitBinding):
+        raise TypeError("usage binding must be a WorkUnitBinding")
+    if binding.subject.kind != "run":
+        raise ValueError("subscription usage binding requires a run subject")
+    if binding.subject.subject_id != request.attempt.run_id:
+        raise ValueError("usage binding subject does not match attempt run id")
+    if binding.source.kind != "subscription_attempt":
+        raise ValueError("subscription usage binding requires a subscription_attempt source")
+    if binding.source.source_id != request.attempt.attempt_id:
+        raise ValueError("usage binding source does not match attempt id")
+    if binding.source.parent_id != request.attempt.task_id:
+        raise ValueError("usage binding parent does not match attempt task id")
+    effective = request.task.route.effective
+    role = request.task.purpose.value if hasattr(request.task.purpose, "value") else str(request.task.purpose)
+    effort = effective.effort.value if effective.effort is not None else None
+    if not any(
+        m.role == role
+        and m.provider == effective.provider
+        and m.model == effective.model
+        and m.model == expected_model
+        and m.reasoning_effort == effort
+        for m in binding.effective_route.members
+    ):
+        raise ValueError("usage binding effective route does not match attempt route")
+
+
+def _validate_authoring_usage_binding(
+    binding: WorkUnitBinding,
+    job: AuthoringJobSnapshot,
+    attempt_id: UUID,
+    *,
+    expected_model: str | None = None,
+) -> None:
+    if not isinstance(binding, WorkUnitBinding):
+        raise TypeError("usage binding must be a WorkUnitBinding")
+    if binding.subject.kind != "authoring_job":
+        raise ValueError("authoring usage binding requires an authoring_job subject")
+    if binding.subject.subject_id != job.job_id:
+        raise ValueError("usage binding subject does not match authoring job id")
+    if binding.subject.project_id != job.project_id:
+        raise ValueError("usage binding project does not match authoring job project")
+    if binding.source.kind != "authoring_attempt":
+        raise ValueError("authoring usage binding requires an authoring_attempt source")
+    if binding.source.source_id != attempt_id:
+        raise ValueError("usage binding source does not match authoring attempt id")
+    effective = job.route.effective
+    effort = effective.effort.value if effective.effort is not None else None
+    if not any(
+        m.role == "authoring"
+        and m.provider == effective.provider
+        and m.model == effective.model
+        and (expected_model is None or m.model == expected_model)
+        and m.reasoning_effort == effort
+        for m in binding.effective_route.members
+    ):
+        raise ValueError("usage binding effective route does not match authoring model")
+
+
+def _tokens_from_usage(value: object) -> TokenCounts:
+    if not isinstance(value, Mapping):
+        return TokenCounts(input_tokens=None, output_tokens=None)
+    in_t = value.get("input_tokens")
+    out_t = value.get("output_tokens")
+    cache_t = (
+        value.get("cache_read_tokens")
+        if "cache_read_tokens" in value
+        else value.get("cached_input_tokens")
+    )
+    think_t = (
+        value.get("thinking_tokens")
+        if "thinking_tokens" in value
+        else value.get("reasoning_output_tokens")
+    )
+
+    in_val = in_t if (type(in_t) is int and 0 <= in_t <= MAX_SIGNED_BIGINT) else None
+    out_val = out_t if (type(out_t) is int and 0 <= out_t <= MAX_SIGNED_BIGINT) else None
+    cache_val = cache_t if (type(cache_t) is int and 0 <= cache_t <= MAX_SIGNED_BIGINT) else None
+    think_val = think_t if (type(think_t) is int and 0 <= think_t <= MAX_SIGNED_BIGINT) else None
+
+    if cache_val is not None and in_val is not None and cache_val > in_val:
+        cache_val = None
+    if think_val is not None and out_val is not None and think_val > out_val:
+        think_val = None
+
+    return TokenCounts(
+        input_tokens=in_val,
+        output_tokens=out_val,
+        cached_input_tokens=cache_val,
+        reasoning_output_tokens=think_val,
+    )
+
+
+def _context_from_payload(payload: Mapping[str, object]) -> ContextWindow | None:
+    context_data = payload.get("context") or payload.get("context_window")
+    if not isinstance(context_data, Mapping) and isinstance(payload.get("usage"), Mapping):
+        usage_data = payload["usage"]
+        assert isinstance(usage_data, Mapping)
+        if any(
+            k in usage_data
+            for k in (
+                "occupied_tokens",
+                "context_occupied_tokens",
+                "capacity_tokens",
+                "context_capacity_tokens",
+                "compaction_count",
+            )
+        ):
+            context_data = usage_data
+    if not isinstance(context_data, Mapping):
+        return None
+    occupied = (
+        context_data["occupied_tokens"]
+        if "occupied_tokens" in context_data
+        else context_data.get("context_occupied_tokens")
+    )
+    capacity = (
+        context_data["capacity_tokens"]
+        if "capacity_tokens" in context_data
+        else context_data.get("context_capacity_tokens")
+    )
+    compaction = context_data.get("compaction_count")
+
+    occ_val = occupied if (type(occupied) is int and 0 <= occupied <= MAX_SIGNED_BIGINT) else None
+    cap_val = capacity if (type(capacity) is int and 0 <= capacity <= MAX_SIGNED_BIGINT) else None
+    comp_val = compaction if (type(compaction) is int and 0 <= compaction <= MAX_SIGNED_BIGINT) else None
+
+    if occ_val is None and cap_val is None and comp_val is None:
+        return None
+    if cap_val is not None and occ_val is not None and occ_val > cap_val:
+        occ_val = None
+    return ContextWindow(
+        occupied_tokens=occ_val,
+        capacity_tokens=cap_val,
+        compaction_count=comp_val,
+    )
 
 _HANDOFF_GUIDANCE = """
 For a completed handoff, populate check_results with one record per named-check
@@ -253,6 +561,62 @@ class AntigravityGateway:
         self.supervisor = supervisor or ClientProcessSupervisor()
 
     async def execute(self, request: SubscriptionInvocationRequest) -> SubscriptionInvocationResult:
+        return await self._execute_internal(request)
+
+    async def execute_observed(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> SubscriptionInvocationResult:
+        _validate_subscription_usage_binding(usage_binding, request, self.installation.model)
+        if not hasattr(usage_sink, "observe_usage"):
+            raise TypeError("usage sink must implement observe_usage")
+        publisher = _ObservationPublisher(usage_binding, usage_sink)
+        interrupted_exc: SubscriptionInterrupted | None = None
+        try:
+            try:
+                result = await self._execute_internal(request, publisher=publisher)
+            except SubscriptionInterrupted as exc:
+                interrupted_exc = exc
+                result = exc.result
+
+            status = result.failure.value if result.failure else (
+                "interrupted" if interrupted_exc is not None else "succeeded"
+            )
+            tokens = publisher.terminal_tokens or _tokens_from_usage(
+                {
+                    "input_tokens": result.telemetry.input_tokens,
+                    "output_tokens": result.telemetry.output_tokens,
+                    "cache_read_tokens": result.telemetry.cached_input_tokens,
+                }
+            )
+            await publisher.emit_final(
+                tokens=tokens, status=status, context=publisher.terminal_context
+            )
+        finally:
+            await publisher.close()
+
+        if publisher.delivery_incomplete:
+            result = replace(
+                result,
+                telemetry=replace(
+                    result.telemetry,
+                    unknown_telemetry_reasons=result.telemetry.unknown_telemetry_reasons
+                    + ("usage observation delivery incomplete",),
+                ),
+            )
+        if interrupted_exc is not None:
+            raise SubscriptionInterrupted(result)
+        return result
+
+    async def _execute_internal(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        publisher: _ObservationPublisher | None = None,
+    ) -> SubscriptionInvocationResult:
         route = request.task.route.effective
         if (
             route != _route(self.installation)
@@ -309,7 +673,7 @@ class AntigravityGateway:
                 session = await self.supervisor.start(
                     spec, lifecycle=self.lifecycle, before_stop=mcp.revoke
                 )
-                result, telemetry = await self._exchange(session, request, mcp)
+                result, telemetry = await self._exchange(session, request, mcp, publisher=publisher)
         except asyncio.CancelledError:
             interrupted = True
             result = failed(SubscriptionFailure.INTERRUPTED)
@@ -382,9 +746,9 @@ class AntigravityGateway:
             named_check_count=mcp.checks,
         )
         result = replace(result or failed(SubscriptionFailure.PROTOCOL), telemetry=telemetry)
+        if interrupted and result.failure is not SubscriptionFailure.UNCERTAIN:
+            result = replace(result, failure=SubscriptionFailure.INTERRUPTED, decision=None)
         if interrupted:
-            if result.failure is not SubscriptionFailure.UNCERTAIN:
-                result = replace(result, failure=SubscriptionFailure.INTERRUPTED, decision=None)
             raise SubscriptionInterrupted(result)
         if result.failure is None:
             try:
@@ -400,6 +764,8 @@ class AntigravityGateway:
         session: ClientProcessSession,
         request: SubscriptionInvocationRequest,
         mcp: LocalCliMcp,
+        *,
+        publisher: _ObservationPublisher | None = None,
     ) -> tuple[SubscriptionInvocationResult, AttemptTelemetry]:
         init = await mcp.receive(session)
         if isinstance(init, Mapping) and init.get("event") == "result":
@@ -411,10 +777,15 @@ class AntigravityGateway:
             ):
                 # Startup can fail before a conversation is initialized. Retain
                 # returned usage and backoff classification, never a decision.
+                if publisher is not None:
+                    tokens = _tokens_from_usage(payload.get("usage"))
+                    ctx = _context_from_payload(payload)
+                    publisher.capture_terminal(tokens=tokens, context=ctx)
                 telemetry = _usage(payload.get("usage"))
+                reason = _result_failure(payload, telemetry, request)
                 return SubscriptionInvocationResult(
                     attempt=request.attempt,
-                    failure=_result_failure(payload, telemetry, request),
+                    failure=reason,
                     failure_detail="Antigravity failed before initialization",
                 ), telemetry
         if (
@@ -455,8 +826,20 @@ class AntigravityGateway:
                 or payload.get("conversation_id") != conversation
             ):
                 raise ProtocolError("foreign Antigravity event")
+            if event == "step_update":
+                if publisher is not None and isinstance(payload, Mapping):
+                    usage_data = payload.get("usage")
+                    if isinstance(usage_data, Mapping):
+                        tokens = _tokens_from_usage(usage_data)
+                        ctx = _context_from_payload(payload)
+                        await publisher.emit_live(tokens=tokens, context=ctx)
+                continue
             if event != "result":
                 continue
+            tokens = _tokens_from_usage(payload.get("usage"))
+            ctx = _context_from_payload(payload)
+            if publisher is not None:
+                publisher.capture_terminal(tokens=tokens, context=ctx)
             telemetry = _usage(payload.get("usage"))
             if (reason := _result_failure(payload, telemetry, request)) is not None:
                 return SubscriptionInvocationResult(
@@ -559,9 +942,15 @@ def _usage(value: object) -> AttemptTelemetry:
         ("cached_input_tokens", "cache_read_tokens"),
     ):
         count = None if value is None else value.get(key)
-        if count is not None and (type(count) is not int or not 0 <= count <= 10_000_000):
+        if count is not None and (type(count) is not int or not 0 <= count <= MAX_SIGNED_BIGINT):
             raise ProtocolError("invalid Antigravity token count")
         counts[name] = count
+    if (
+        counts["input_tokens"] is not None
+        and counts["cached_input_tokens"] is not None
+        and counts["cached_input_tokens"] > counts["input_tokens"]
+    ):
+        raise ProtocolError("Antigravity cache exceeds input")
     return AttemptTelemetry(
         input_tokens=counts["input_tokens"],
         output_tokens=counts["output_tokens"],

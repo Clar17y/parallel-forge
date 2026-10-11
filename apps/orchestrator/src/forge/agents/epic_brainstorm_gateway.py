@@ -7,10 +7,16 @@ import hmac
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
-from forge.agents.antigravity_runtime import AntigravityAuthoringHome, AntigravityInstallation
+from forge.agents.antigravity_runtime import (
+    AntigravityAuthoringHome,
+    AntigravityInstallation,
+    _ObservationPublisher,
+    _validate_authoring_usage_binding,
+)
 from forge.agents.capability_verification import stable_executable_digest
 from forge.agents.claude_gateway import (
     CLAUDE_SUBSCRIPTION_LAUNCH_ENVIRONMENT,
@@ -46,9 +52,12 @@ from forge.agents.subscription_protocol import (
     ProtocolError,
 )
 from forge.application.ports.epic_brainstorm import (
+    AuthoringGatewayResult,
     BrainstormGatewayResult,
     BrainstormProcessLifecycle,
+    ObservableBrainstormGateway,
 )
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.epic_brainstorm import AuthoringJobSnapshot, BrainstormProposal, BrainstormTurn
 from forge.domain.epic_decomposition import DecompositionProposal
 from forge.domain.local_cli import LocalCliTrust
@@ -59,7 +68,9 @@ from forge.domain.subscription_installations import (
     CodexInstallationSpec,
     GeminiInstallationSpec,
     SubscriptionInstallationSpec,
+    quota_route_for,
 )
+from forge.domain.task_usage_contract import TokenCounts, WorkUnitBinding
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 from pydantic import ValidationError
 
@@ -113,6 +124,77 @@ class EpicBrainstormGateway:
             job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
         )
 
+    async def execute_observed(
+        self,
+        job: AuthoringJobSnapshot,
+        turns: tuple[BrainstormTurn, ...],
+        reader: BrainstormReadOnlyTools,
+        *,
+        cancelled: Callable[[], Awaitable[bool]],
+        lifecycle: BrainstormProcessLifecycle,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> AuthoringGatewayResult:
+        if not isinstance(usage_binding, WorkUnitBinding):
+            raise TypeError("usage binding must be a WorkUnitBinding")
+        lifecycle_attempt = getattr(lifecycle, "attempt_id", None)
+        attempt_id = (
+            lifecycle_attempt
+            if isinstance(lifecycle_attempt, UUID)
+            else usage_binding.source.source_id
+        )
+        expected_model = getattr(self.installation, "model", None)
+        _validate_authoring_usage_binding(
+            usage_binding, job, attempt_id, expected_model=expected_model
+        )
+        if self.installation is not None:
+            effective = job.route.effective
+            if not quota_route_for(self.installation).matches(effective) or (
+                effective.effort is not None
+                and self.installation.effort != effective.effort.value
+            ):
+                raise ValueError("authoring installation does not match frozen route")
+        publisher = _ObservationPublisher(binding=usage_binding, sink=usage_sink)
+        observed_started = time.monotonic()
+        try:
+            if self.installation is not None:
+                result = await self._execute_official(
+                    job, turns, reader, cancelled=cancelled, lifecycle=lifecycle,
+                    publisher=publisher, attempt_id_override=attempt_id,
+                )
+            else:
+                result = await self._execute_inner(
+                    job, turns, reader, cancelled=cancelled, lifecycle=lifecycle,
+                    publisher=publisher,
+                )
+            telemetry = result.telemetry
+            tokens = publisher.terminal_tokens or TokenCounts(
+                input_tokens=telemetry.input_tokens if telemetry else None,
+                output_tokens=telemetry.output_tokens if telemetry else None,
+                cached_input_tokens=telemetry.cached_input_tokens if telemetry else None,
+                reasoning_output_tokens=getattr(telemetry, "reasoning_output_tokens", None),
+            )
+            await publisher.emit_final(
+                tokens=tokens,
+                status=result.failure or "succeeded",
+                context=publisher.terminal_context,
+            )
+        finally:
+            await publisher.close()
+        if publisher.delivery_incomplete:
+            telemetry = result.telemetry or AttemptTelemetry(
+                duration_ms=int((time.monotonic() - observed_started) * 1000)
+            )
+            result = replace(
+                result,
+                telemetry=replace(
+                    telemetry,
+                    unknown_telemetry_reasons=telemetry.unknown_telemetry_reasons
+                    + ("usage observation delivery incomplete",),
+                ),
+            )
+        return result
+
     async def _execute_official(
         self,
         job: AuthoringJobSnapshot,
@@ -121,6 +203,8 @@ class EpicBrainstormGateway:
         *,
         cancelled: Callable[[], Awaitable[bool]],
         lifecycle: BrainstormProcessLifecycle,
+        publisher: _ObservationPublisher | None = None,
+        attempt_id_override: UUID | None = None,
     ) -> BrainstormGatewayResult:
         if await cancelled():
             return BrainstormGatewayResult(proposal=None, telemetry=None, failure="cancelled")
@@ -133,7 +217,11 @@ class EpicBrainstormGateway:
         ):
             return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
         lifecycle_attempt = getattr(lifecycle, "attempt_id", None)
-        attempt_id = lifecycle_attempt if isinstance(lifecycle_attempt, UUID) else uuid4()
+        attempt_id = (
+            attempt_id_override
+            if attempt_id_override is not None
+            else (lifecycle_attempt if isinstance(lifecycle_attempt, UUID) else uuid4())
+        )
         duration = float(job.budget.max_duration_seconds)
         started = time.monotonic()
         usage = AuthoringUsage()
@@ -261,6 +349,7 @@ class EpicBrainstormGateway:
                     usage,
                     model=gemini_model,
                     cwd=gemini_cwd,
+                    publisher=publisher,
                 )
                 await tools.start()
             elif isinstance(installation, AntigravityInstallationSpec):
@@ -328,6 +417,7 @@ class EpicBrainstormGateway:
                     tools,
                     usage,
                     model=antigravity_model,
+                    publisher=publisher,
                 )
             else:
                 return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
@@ -403,14 +493,17 @@ class EpicBrainstormGateway:
             proposal = None
         elapsed_ms = max(1, int((time.monotonic() - started) * 1000))
         telemetry = usage.telemetry(elapsed_ms)
-        if (
-            job.budget.max_input_tokens is not None
-            and telemetry.input_tokens is not None
-            and telemetry.input_tokens > job.budget.max_input_tokens
-        ) or (
-            job.budget.max_output_tokens is not None
-            and telemetry.output_tokens is not None
-            and telemetry.output_tokens > job.budget.max_output_tokens
+        if failure is None and (
+            (
+                job.budget.max_input_tokens is not None
+                and telemetry.input_tokens is not None
+                and telemetry.input_tokens > job.budget.max_input_tokens
+            )
+            or (
+                job.budget.max_output_tokens is not None
+                and telemetry.output_tokens is not None
+                and telemetry.output_tokens > job.budget.max_output_tokens
+            )
         ):
             failure, proposal = "budget_exhausted", None
         return BrainstormGatewayResult(
@@ -425,6 +518,7 @@ class EpicBrainstormGateway:
         *,
         cancelled: Callable[[], Awaitable[bool]],
         lifecycle: BrainstormProcessLifecycle,
+        publisher: _ObservationPublisher | None = None,
     ) -> BrainstormGatewayResult:
         if await cancelled():
             return BrainstormGatewayResult(proposal=None, telemetry=None, failure="cancelled")
@@ -620,4 +714,6 @@ class EpicBrainstormGateway:
         )
 
 
-__all__ = ["EpicBrainstormGateway"]
+ObservableEpicBrainstormGateway = ObservableBrainstormGateway
+
+__all__ = ["EpicBrainstormGateway", "ObservableEpicBrainstormGateway"]

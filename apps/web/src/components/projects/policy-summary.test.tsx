@@ -162,10 +162,18 @@ test('shows model reasoning strength separately from inspectable exact token bud
     planner_model: { provider: 'google', model: 'gemini-3.8-flash', reasoning_effort: 'high', max_input_tokens: 123456, max_output_tokens: 23456 },
   } }} />);
   expect(screen.getByText('Reasoning: high')).toBeInTheDocument();
-  expect(screen.getByText('123456')).toBeInTheDocument();
-  expect(screen.getByText('23456')).toBeInTheDocument();
+  expect(screen.getByText(/^123456 tokens \(hard cap\)$/)).toBeInTheDocument();
+  expect(screen.getByText(/^23456 tokens \(hard cap\)$/)).toBeInTheDocument();
   const modelDetails = screen.getByText('Reasoning: high').closest('details');
   expect(modelDetails).not.toHaveAttribute('open');
+});
+
+test('shows unbounded (no hard cap) when model token caps are null or omitted', () => {
+  render(<PolicySummary policy={{ ...samplePolicy, document: {
+    planner_model: { provider: 'google', model: 'gemini-3.8-flash', max_input_tokens: null, max_output_tokens: null },
+  } }} />);
+  const unboundedElements = screen.getAllByText('Unbounded (no hard cap)');
+  expect(unboundedElements.length).toBeGreaterThanOrEqual(2);
 });
 
 test.each([

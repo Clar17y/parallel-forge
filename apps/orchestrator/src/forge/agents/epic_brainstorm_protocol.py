@@ -10,10 +10,15 @@ import asyncio
 import json
 import secrets
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from forge.agents.antigravity_runtime import (
+    _context_from_payload,
+    _ObservationPublisher,
+    _tokens_from_usage,
+)
 from forge.agents.claude_gateway import (
     ClaudeGateway,
     _QuotaState,
@@ -21,6 +26,7 @@ from forge.agents.claude_gateway import (
     claude_preinit_handshake_frame_is,
     claude_setup_handshake_frame_is,
 )
+from forge.agents.claude_gateway import _Usage as _ClaudeUsage
 from forge.agents.claude_protocol import ClaudeStreamCodec
 from forge.agents.client_process import ClientProcessSession
 from forge.agents.codex_gateway import (
@@ -45,6 +51,7 @@ from forge.domain.epic_brainstorm import AuthoringJobSnapshot, BrainstormProposa
 from forge.domain.epic_decomposition import DecompositionProposal
 from forge.domain.provider_quota import utc_now
 from forge.domain.subscription import AttemptTelemetry
+from forge.domain.task_usage_contract import MAX_SIGNED_BIGINT, TokenCounts
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 from pydantic import ValidationError
 
@@ -197,6 +204,16 @@ class AuthoringUsage:
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
     tool_calls: int = 0
+    _claude_usage: _ClaudeUsage = field(
+        default_factory=_ClaudeUsage, init=False, repr=False, compare=False
+    )
+
+    def observe_claude(self, source: object) -> None:
+        """Use the Claude counter normalizer for its uncached input semantics."""
+        self._claude_usage.observe(source)
+        self.input_tokens = self._claude_usage.input
+        self.output_tokens = self._claude_usage.output
+        self.cached_input_tokens = self._claude_usage.cached
 
     def observe(
         self, source: object, *, input_key: str, output_key: str, cache_key: str | None = None
@@ -204,18 +221,28 @@ class AuthoringUsage:
         if not isinstance(source, Mapping):
             raise ProtocolError("invalid authoring usage")
         values = (source.get(input_key), source.get(output_key))
-        if any(type(value) is not int or not 0 <= value <= 10_000_000 for value in values):
+        if any(
+            value is not None and (type(value) is not int or not 0 <= value <= MAX_SIGNED_BIGINT)
+            for value in values
+        ):
             raise ProtocolError("invalid authoring token count")
         source_count, target_count = values
-        assert isinstance(source_count, int) and isinstance(target_count, int)
-        if (self.input_tokens is not None and source_count < self.input_tokens) or (
-            self.output_tokens is not None and target_count < self.output_tokens
+        if (source_count is not None and self.input_tokens is not None and source_count < self.input_tokens) or (
+            target_count is not None and self.output_tokens is not None and target_count < self.output_tokens
         ):
             raise ProtocolError("authoring token counters regressed")
-        self.input_tokens, self.output_tokens = source_count, target_count
-        if cache_key is not None and (cached := source.get(cache_key)) is not None:
-            if type(cached) is not int or not 0 <= cached <= 10_000_000:
-                raise ProtocolError("invalid authoring cache count")
+        cached = source.get(cache_key) if cache_key is not None else None
+        if cached is not None and (type(cached) is not int or not 0 <= cached <= MAX_SIGNED_BIGINT):
+            raise ProtocolError("invalid authoring cache count")
+        if cached is not None and self.cached_input_tokens is not None and cached < self.cached_input_tokens:
+            raise ProtocolError("authoring cache counter regressed")
+        effective_input = source_count if source_count is not None else self.input_tokens
+        effective_cache = cached if cached is not None else self.cached_input_tokens
+        if effective_input is not None and effective_cache is not None and effective_cache > effective_input:
+            raise ProtocolError("authoring cache exceeds input")
+        self.input_tokens = effective_input
+        self.output_tokens = target_count if target_count is not None else self.output_tokens
+        if cached is not None:
             self.cached_input_tokens = cached
 
     def telemetry(self, elapsed_ms: int) -> AttemptTelemetry:
@@ -738,8 +765,8 @@ async def claude_exchange(
             if terminal.get("is_error") or terminal.get("permission_denials"):
                 raise ProtocolError("Claude authoring failed")
             value = terminal.get("usage")
-            if isinstance(value, Mapping) and value.get("input_tokens") is not None:
-                usage.observe(value, input_key="input_tokens", output_key="output_tokens")
+            if isinstance(value, Mapping):
+                usage.observe_claude(value)
             await session.close_stdin()
             await session.wait_closed()
             return proposal_from_output(terminal.get("structured_output"), job)
@@ -755,6 +782,7 @@ async def gemini_exchange(
     *,
     model: str,
     cwd: str,
+    publisher: _ObservationPublisher | None = None,
 ) -> BrainstormProposal | DecompositionProposal:
     await session.send(
         {
@@ -905,11 +933,33 @@ async def gemini_exchange(
         counts = quota.get("token_count") if isinstance(quota, Mapping) else None
         models_used = quota.get("model_usage") if isinstance(quota, Mapping) else None
         if isinstance(counts, Mapping) and isinstance(models_used, list) and models_used:
+            if publisher is not None:
+                publisher.capture_terminal(tokens=_tokens_from_usage({
+                    "input_tokens": counts.get("input_tokens"),
+                    "output_tokens": counts.get("output_tokens"),
+                    "cache_read_tokens": counts.get(
+                        "cached_content_token_count", counts.get("cached_input_tokens")
+                    ),
+                }))
             if any(
                 not isinstance(item, Mapping) or item.get("model") != model for item in models_used
             ):
                 raise ProtocolError("Gemini authoring used another model")
-            usage.observe(counts, input_key="input_tokens", output_key="output_tokens")
+            usage.observe(
+                counts,
+                input_key="input_tokens",
+                output_key="output_tokens",
+                cache_key="cached_content_token_count"
+                if "cached_content_token_count" in counts
+                else "cached_input_tokens",
+            )
+        if publisher is not None:
+            tokens = TokenCounts(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cached_input_tokens=usage.cached_input_tokens,
+            )
+            publisher.capture_terminal(tokens=tokens)
         await session.close_stdin()
         await session.wait_closed()
         return proposal_from_output(parse_json("".join(parts)), job)
@@ -924,6 +974,7 @@ async def antigravity_exchange(
     usage: AuthoringUsage,
     *,
     model: str,
+    publisher: _ObservationPublisher | None = None,
 ) -> BrainstormProposal | DecompositionProposal:
     first = await tools.receive(session)
     if (
@@ -958,10 +1009,32 @@ async def antigravity_exchange(
         ):
             raise ProtocolError("foreign Antigravity authoring event")
         if event == "step_update":
+            if publisher is not None and isinstance(payload, Mapping):
+                usage_data = payload.get("usage")
+                if isinstance(usage_data, Mapping):
+                    tokens = _tokens_from_usage(usage_data)
+                    ctx = _context_from_payload(payload)
+                    await publisher.emit_live(tokens=tokens, context=ctx)
             continue
         if payload.get("status") != "SUCCESS" or payload.get("denied_actions"):
+            if publisher is not None:
+                tokens = _tokens_from_usage(payload.get("usage"))
+                ctx = _context_from_payload(payload)
+                publisher.capture_terminal(tokens=tokens, context=ctx)
+            counts = payload.get("usage")
+            if isinstance(counts, Mapping) and counts.get("input_tokens") is not None:
+                usage.observe(
+                    counts,
+                    input_key="input_tokens",
+                    output_key="output_tokens",
+                    cache_key="cache_read_tokens",
+                )
             raise ProtocolError("Antigravity authoring failed")
         counts = payload.get("usage")
+        if publisher is not None:
+            tokens = _tokens_from_usage(counts)
+            ctx = _context_from_payload(payload)
+            publisher.capture_terminal(tokens=tokens, context=ctx)
         if isinstance(counts, Mapping) and counts.get("input_tokens") is not None:
             usage.observe(
                 counts,

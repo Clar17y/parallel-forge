@@ -15,8 +15,8 @@ test('offers Google model presets and preserves custom identities and owner limi
   expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'google', model: 'gemini-3.5-flash', max_input_tokens: 900000 }));
   await userEvent.click(screen.getByText('Advanced model and budget'));
   expect(screen.getByLabelText('Planner provider')).toHaveValue('google-custom');
-  expect(screen.getByRole('slider', { name: 'Planner input tokens' })).toHaveValue('900000');
-  fireEvent.change(screen.getByRole('slider', { name: 'Planner input tokens' }), { target: { value: '1000000' } });
+  expect(screen.getByRole('textbox', { name: 'Planner input tokens hard cap' })).toHaveValue('900000');
+  fireEvent.change(screen.getByRole('textbox', { name: 'Planner input tokens hard cap' }), { target: { value: '1000000' } });
   expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ max_input_tokens: 1000000 }));
 });
 
@@ -31,25 +31,79 @@ test('preserves a custom provider that shares a Google model ID until explicitly
   expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'google', model: 'gemini-3.5-flash' }));
 });
 
-test('uses token presets and exact values without changing the saved budget when the model changes', async () => {
+test('preserves exact saved hard cap without changing it on model selection', async () => {
   const change = vi.fn();
   render(<ModelPolicy role="Planner" value={{ ...defaultModel, max_input_tokens: 2_000_000 }} onChange={change} />);
   await userEvent.click(screen.getByText('Advanced model and budget'));
-  expect(screen.getByText('2,000,000 tokens')).toBeInTheDocument();
-  await userEvent.click(screen.getAllByRole('button', { name: '25%' })[0]);
-  expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ max_input_tokens: 262_144 }));
-  const slider = screen.getByRole('slider', { name: 'Planner input tokens' });
-  fireEvent.change(slider, { target: { value: '300000' } });
+  expect(screen.getByText(/Saved hard cap: 2,000,000 tokens/)).toBeInTheDocument();
+  const cap = screen.getByRole('textbox', { name: 'Planner input tokens hard cap' });
+  expect(cap).toHaveValue('2000000');
+  fireEvent.change(cap, { target: { value: '300000' } });
   expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ max_input_tokens: 300000 }));
 });
 
-test('associates a project budget error with the corresponding slider', async () => {
-  render(<ModelPolicy role="Planner" value={defaultModel} onChange={vi.fn()} errors={{ max_input_tokens: 'Input budget must be at least one' }} />);
+test('associates a project budget error with the cap input', async () => {
+  render(<ModelPolicy role="Planner" value={{ ...defaultModel, max_input_tokens: 100000 }} onChange={vi.fn()} errors={{ max_input_tokens: 'Input budget must be at least one' }} />);
   await userEvent.click(screen.getByText('Advanced model and budget'));
-  const slider = screen.getByRole('slider', { name: 'Planner input tokens' });
-  expect(slider).toHaveAttribute('aria-invalid', 'true');
-  expect(slider).toHaveAttribute('aria-describedby');
-  expect(document.getElementById(slider.getAttribute('aria-describedby')!)).toHaveTextContent('Input budget must be at least one');
+  const cap = screen.getByRole('textbox', { name: 'Planner input tokens hard cap' });
+  expect(cap).toHaveAttribute('aria-invalid', 'true');
+  expect(screen.getByRole('alert')).toHaveTextContent('Input budget must be at least one');
+});
+
+test('preserves external budget error precedence over local draft validation error', async () => {
+  const change = vi.fn();
+  render(
+    <ModelPolicy
+      role="Planner"
+      value={{ ...defaultModel, max_input_tokens: 100000 }}
+      onChange={change}
+      errors={{ max_input_tokens: 'External project error takes precedence' }}
+    />
+  );
+  await userEvent.click(screen.getByText('Advanced model and budget'));
+  const cap = screen.getByRole('textbox', { name: 'Planner input tokens hard cap' });
+  expect(cap).toHaveAttribute('aria-invalid', 'true');
+  expect(screen.getByRole('alert')).toHaveTextContent('External project error takes precedence');
+
+  fireEvent.change(cap, { target: { value: '9007199254740993' } });
+  expect(change).not.toHaveBeenCalled();
+  expect(cap).toHaveAttribute('aria-invalid', 'true');
+  expect(screen.getByRole('alert')).toHaveTextContent('External project error takes precedence');
+});
+
+test('default model policy has null unbounded token caps without mandatory slider, and allows setting/clearing caps', async () => {
+  const change = vi.fn();
+  expect(defaultModel.max_input_tokens).toBeNull();
+  expect(defaultModel.max_output_tokens).toBeNull();
+
+  render(<ModelPolicy role="Planner" value={defaultModel} onChange={change} />);
+  await userEvent.click(screen.getByText('Advanced model and budget'));
+
+  expect(screen.getByText('Input tokens: Unbounded (no hard cap)')).toBeInTheDocument();
+  expect(screen.getByText('Output tokens: Unbounded (no hard cap)')).toBeInTheDocument();
+  expect(screen.queryByRole('slider', { name: 'Planner input tokens' })).not.toBeInTheDocument();
+
+  // Setting optional hard cap
+  await userEvent.type(screen.getByRole('textbox', { name: 'Planner input tokens hard cap' }), '1000000');
+  expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ max_input_tokens: 1_000_000 }));
+
+  // Clearing hard cap
+  cleanup();
+  const changeClear = vi.fn();
+  render(<ModelPolicy role="Planner" value={{ ...defaultModel, max_input_tokens: 500000 }} onChange={changeClear} />);
+  await userEvent.click(screen.getByText('Advanced model and budget'));
+  expect(screen.getByRole('textbox', { name: 'Planner input tokens hard cap' })).toHaveValue('500000');
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Planner input tokens hard cap' }));
+  expect(changeClear).toHaveBeenCalledWith(expect.objectContaining({ max_input_tokens: null }));
+});
+
+test('rejects unsafe hard cap without emitting a rounded project policy value', async () => {
+  const change = vi.fn();
+  render(<ModelPolicy role="Planner" value={defaultModel} onChange={change} />);
+  await userEvent.click(screen.getByText('Advanced model and budget'));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Planner input tokens hard cap' }), { target: { value: '9007199254740993' } });
+  expect(change).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert')).toHaveTextContent(/safe integer limit/i);
 });
 
 test('renders visible reasoning strength selector outside advanced disclosure with choices', async () => {

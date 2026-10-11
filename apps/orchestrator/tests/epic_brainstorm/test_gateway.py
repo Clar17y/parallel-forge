@@ -32,6 +32,7 @@ from forge.agents.epic_brainstorm_protocol import (
     claude_exchange,
     gemini_exchange,
 )
+from forge.agents.subscription_protocol import ProtocolError
 from forge.domain.epic_brainstorm import (
     AuthoringJobSnapshot,
     BrainstormProposal,
@@ -51,6 +52,14 @@ from forge.domain.subscription_installations import (
     ClaudeInstallationSpec,
     CodexInstallationSpec,
     GeminiInstallationSpec,
+)
+from forge.domain.task_usage_contract import (
+    Observation,
+    RouteCohort,
+    RouteMember,
+    SourceBinding,
+    SubjectKey,
+    WorkUnitBinding,
 )
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 from forge.tools.repository import RepositoryReader
@@ -853,6 +862,348 @@ class _ScriptedSession:
         self.settled = True
 
 
+def test_authoring_usage_sparse_zero_large_and_invalid_updates_are_atomic() -> None:
+    usage = AuthoringUsage()
+    usage.observe(
+        {"input_tokens": 0, "cached_input_tokens": 0},
+        input_key="input_tokens", output_key="output_tokens", cache_key="cached_input_tokens",
+    )
+    assert usage.telemetry(1).input_tokens == 0
+    assert usage.telemetry(1).output_tokens is None
+    usage.observe(
+        {"input_tokens": 10_000_017, "output_tokens": 0,
+         "cached_input_tokens": 3},
+        input_key="input_tokens", output_key="output_tokens", cache_key="cached_input_tokens",
+    )
+    measured = usage.telemetry(1)
+    assert (measured.input_tokens, measured.output_tokens, measured.cached_input_tokens) == (
+        10_000_017, 0, 3
+    )
+    for bad in (
+        {"input_tokens": 10_000_018, "cached_input_tokens": 10_000_019},
+        {"input_tokens": 2**63, "output_tokens": 1},
+        {"input_tokens": 10_000_016, "output_tokens": 1},
+        {"input_tokens": 10_000_018, "cached_input_tokens": 2},
+    ):
+        with pytest.raises(ProtocolError):
+            usage.observe(
+                bad, input_key="input_tokens", output_key="output_tokens",
+                cache_key="cached_input_tokens",
+            )
+        assert usage.telemetry(1) == measured
+
+
+def test_claude_authoring_usage_normalizes_cache_and_sparse_replay() -> None:
+    usage = AuthoringUsage()
+    usage.observe_claude({"input_tokens": 2, "output_tokens": 4,
+                          "cache_read_input_tokens": 20,
+                          "cache_creation_input_tokens": 3})
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == (25, 4, 23)
+    usage.observe_claude({"input_tokens": 2, "output_tokens": 4,
+                          "cache_read_input_tokens": 20,
+                          "cache_creation_input_tokens": 3})
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == (25, 4, 23)
+    usage.observe_claude({"output_tokens": 5})
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == (25, 5, 23)
+    usage.observe_claude({"cache_read_input_tokens": 21, "thinking_tokens": True})
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == (26, 5, 24)
+    before = (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens)
+    for invalid in (
+        {"input_tokens": True}, {"input_tokens": -1},
+        {"input_tokens": 2**63}, {"input_tokens": 2**63 - 1},
+        {"cache_read_input_tokens": 20},
+    ):
+        with pytest.raises(ProtocolError):
+            usage.observe_claude(invalid)
+        assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == before
+
+    zero = AuthoringUsage()
+    zero.observe_claude({"input_tokens": 0, "output_tokens": 0,
+                         "cache_read_input_tokens": 0})
+    assert (zero.input_tokens, zero.output_tokens, zero.cached_input_tokens) == (0, 0, 0)
+    missing = AuthoringUsage()
+    missing.observe_claude({"input_tokens": 2, "output_tokens": 0})
+    assert (missing.input_tokens, missing.output_tokens, missing.cached_input_tokens) == (
+        2, 0, None,
+    )
+    for cache_name in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        one_component = AuthoringUsage()
+        one_component.observe_claude({"input_tokens": 2, "output_tokens": 0,
+                                      cache_name: 3, "thinking_tokens": True})
+        assert (one_component.input_tokens, one_component.output_tokens,
+                one_component.cached_input_tokens) == (5, 0, 3)
+    overflow = AuthoringUsage()
+    with pytest.raises(ProtocolError):
+        overflow.observe_claude({"input_tokens": 2**63 - 1,
+                                 "cache_read_input_tokens": 1})
+    assert (overflow.input_tokens, overflow.cached_input_tokens) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_failure"),
+    [("success", None), ("invalid", "invalid_output"), ("cap", "budget_exhausted")],
+)
+@pytest.mark.asyncio
+async def test_observed_antigravity_authoring_actual_stream_settles_before_final(
+    tmp_path: Path, case: str, expected_failure: str,
+) -> None:
+    model = "gemini-scripted-brainstorm"
+    job = _make_snapshot(
+        TaskBudget(max_provider_attempts=2, max_duration_seconds=10, max_input_tokens=10)
+        if case == "cap" else None
+    )
+    job = job.model_copy(update={"route": replace(
+        job.route,
+        requested=replace(job.route.requested, client="antigravity_cli", model=model),
+        effective=replace(job.route.effective, client="antigravity_cli", model=model),
+    )})
+    lifecycle = MockLifecycle()
+    route = RouteCohort.from_members((RouteMember(
+        role="authoring", provider="google", model=model,
+        reasoning_effort="low", ordinal=0,
+    ),))
+    binding = WorkUnitBinding(
+        subject=SubjectKey(project_id=job.project_id, kind="authoring_job", subject_id=job.job_id),
+        work_unit_id=uuid4(), admitted_phase_id="authoring_exchange",
+        configured_route=route, effective_route=route,
+        source=SourceBinding(kind="authoring_attempt", source_id=lifecycle.attempt_id),
+    )
+    session = _ScriptedSession([
+        {"event": "init", "init": {"model": model},
+         "conversation_id": "agy-thread"},
+        {"event": "step_update", "step_update": {
+            "conversation_id": "agy-thread", "usage": {"input_tokens": 2, "output_tokens": 1},
+            "context": {"occupied_tokens": 5, "capacity_tokens": 100}}},
+        {"event": "result", "result": {
+            "conversation_id": "agy-thread", "status": "SUCCESS",
+            "usage": {"input_tokens": 10_000_017, "output_tokens": 4,
+                      "cache_read_tokens": 3},
+            "context": {"occupied_tokens": 200 if case == "success" else 7,
+                        "capacity_tokens": 100, "compaction_count": 0},
+            "structured_output": {"proposal": {
+                "turn_id": str(uuid4() if case == "invalid" else job.prompt_turn_id),
+                "problem": "proposal"}},
+        }},
+    ])
+    session.closed = False
+
+    async def close(*, completed: bool = False):
+        session.closed = True
+        assert completed is (case != "invalid")
+        return ClientProcessResult(
+            receipt=ClientProcessReceipt("scripted", 1, "scripted", 0.0),
+            return_code=0, frames=(), stdout_byte_count=0, stderr="",
+            stderr_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+            outcome="completed", stop_confirmed=True,
+        )
+
+    session.close = close  # type: ignore[attr-defined, method-assign]
+
+    class Supervisor:
+        async def start(self, *_args, **_kwargs):
+            return session
+
+    class Sink:
+        def __init__(self) -> None:
+            self.events: list[Observation] = []
+
+        async def observe_usage(self, event: Observation) -> None:
+            if event.final:
+                assert session.closed and session.settled
+            self.events.append(event)
+
+    executable = Path(sys.executable)
+    installation = AntigravityInstallationSpec(
+        client="antigravity_cli", account="dev-account", model=model,
+        effort="low", executable=str(executable),
+        executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        client_version="0.59.0", cwd=str(tmp_path), home=str(tmp_path),
+        quota={"account": "dev-account", "pool": "default-pool"},
+    )
+    reader = BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=()))
+    sink = Sink()
+    result = await EpicBrainstormGateway(
+        installation=installation, supervisor=Supervisor()
+    ).execute_observed(
+        job, (), reader, cancelled=lambda: asyncio.sleep(0, result=False),
+        lifecycle=lifecycle, usage_binding=binding, usage_sink=sink,
+    )
+
+    assert result.failure == expected_failure
+    assert result.telemetry is not None and result.telemetry.input_tokens == 10_000_017
+    finals = [event for event in sink.events if event.final]
+    assert len(finals) == 1
+    assert finals[0].final_status == (result.failure or "succeeded")
+    assert finals[0].tokens.input_tokens == 10_000_017
+    assert finals[0].context is not None
+    assert (finals[0].context.occupied_tokens, finals[0].context.capacity_tokens,
+            finals[0].context.compaction_count) == (
+        (None if case == "success" else 7), 100, 0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_failure"),
+    [("invalid", "invalid_output"), ("cap_unsettled", "process_unsettled"),
+     ("cap_cancelled", "cancelled"), ("cap_rejected", "budget_exhausted"),
+     ("nonzero", "process_failed"), ("large_success", None),
+     ("sparse_zero", None), ("delivery_deadline", None),
+     ("delivery_cancel_twice", None)],
+)
+@pytest.mark.asyncio
+async def test_observed_gemini_authoring_final_follows_classification_and_close(
+    tmp_path: Path, case: str, expected_failure: str,
+) -> None:
+    budget = (
+        TaskBudget(max_provider_attempts=2, max_duration_seconds=10, max_input_tokens=10)
+        if case.startswith("cap_") else (
+            TaskBudget(max_provider_attempts=2, max_duration_seconds=1)
+            if case == "delivery_deadline" else None
+        )
+    )
+    job = _make_snapshot(budget)
+    lifecycle = MockLifecycle()
+    route = RouteCohort.from_members((RouteMember(
+        role="authoring", provider="google", model="scripted-brainstorm",
+        reasoning_effort="low", ordinal=0,
+    ),))
+    binding = WorkUnitBinding(
+        subject=SubjectKey(project_id=job.project_id, kind="authoring_job", subject_id=job.job_id),
+        work_unit_id=uuid4(), admitted_phase_id="authoring_exchange",
+        configured_route=route, effective_route=route,
+        source=SourceBinding(kind="authoring_attempt", source_id=lifecycle.attempt_id),
+    )
+    session = _ScriptedSession([
+        {"jsonrpc": "2.0", "id": 1, "result": {
+            "protocolVersion": 1, "agentInfo": {"name": "gemini-cli", "version": "0.59.0"}}},
+        {"jsonrpc": "2.0", "id": 2, "result": {
+            "sessionId": "gemini-thread", "models": {"currentModelId": "scripted-brainstorm"}}},
+        {"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "gemini-thread", "update": {"sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": json.dumps({"proposal": {
+                    "turn_id": str(uuid4() if case == "invalid" else job.prompt_turn_id),
+                    "problem": "proposal"}})}}}},
+        {"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn", "_meta": {
+            "quota": {"token_count": {
+                "input_tokens": 10_000_017 if case == "large_success" else (
+                    0 if case == "sparse_zero" else 17),
+                "output_tokens": None if case == "sparse_zero" else 4,
+                "cached_content_token_count": 0 if case == "sparse_zero" else 3},
+                "model_usage": [{"model": "scripted-brainstorm"}]}}}},
+    ])
+    session.closed = False
+
+    if case == "cap_cancelled":
+        async def cancelled_wait_closed():
+            session.settled = True
+            raise asyncio.CancelledError
+
+        session.wait_closed = cancelled_wait_closed  # type: ignore[method-assign]
+    if case == "delivery_deadline":
+        async def near_deadline_wait_closed():
+            await asyncio.sleep(0.75)
+            session.settled = True
+
+        session.wait_closed = near_deadline_wait_closed  # type: ignore[method-assign]
+
+    async def close(*, completed: bool = False):
+        session.closed = True
+        assert completed is (case in {
+            "cap_unsettled", "cap_rejected", "nonzero", "large_success", "sparse_zero",
+            "delivery_deadline", "delivery_cancel_twice",
+        })
+        return ClientProcessResult(
+            receipt=ClientProcessReceipt("scripted", 1, "scripted", 0.0),
+            return_code=1 if case == "nonzero" else 0,
+            frames=(), stdout_byte_count=0, stderr="",
+            stderr_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+            outcome="stop_uncertain" if case == "cap_unsettled" else "completed",
+            stop_confirmed=case != "cap_unsettled",
+        )
+
+    session.close = close  # type: ignore[attr-defined, method-assign]
+
+    class Supervisor:
+        async def start(self, *_args, **_kwargs):
+            return session
+
+    class Sink:
+        def __init__(self) -> None:
+            self.events: list[Observation] = []
+            self.entered = asyncio.Event()
+            self.cleaning = asyncio.Event()
+            self.active = False
+            self.cancellations = 0
+            self.delivery_task: asyncio.Task[None] | None = None
+
+        async def observe_usage(self, event: Observation) -> None:
+            assert session.closed and session.settled
+            if case.startswith("delivery_"):
+                self.delivery_task = asyncio.current_task()
+                self.active = True
+                self.entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancellations += 1
+                    if case == "delivery_cancel_twice":
+                        self.cleaning.set()
+                        try:
+                            await asyncio.Event().wait()
+                        except asyncio.CancelledError:
+                            self.cancellations += 1
+                            raise
+                    raise
+                finally:
+                    self.active = False
+            self.events.append(event)
+
+    executable = Path(sys.executable)
+    installation = GeminiInstallationSpec(
+        client="gemini_cli", account="dev-account", model="scripted-brainstorm",
+        effort="low", executable=str(executable),
+        executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        client_version="0.59.0", cwd=str(tmp_path), home=str(tmp_path),
+        quota={"account": "dev-account", "pool": "default-pool"},
+    )
+    reader = BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=()))
+    sink = Sink()
+    gateway = EpicBrainstormGateway(installation=installation, supervisor=Supervisor())
+    started = asyncio.get_running_loop().time()
+    execution = asyncio.create_task(gateway.execute_observed(
+        job, (), reader, cancelled=lambda: asyncio.sleep(0, result=False),
+        lifecycle=lifecycle, usage_binding=binding, usage_sink=sink,
+    ))
+    if case == "delivery_cancel_twice":
+        await asyncio.wait_for(sink.entered.wait(), 5)
+        assert session.closed and session.settled
+        execution.cancel()
+        await asyncio.wait_for(sink.cleaning.wait(), 1)
+        execution.cancel()
+    result = await asyncio.wait_for(execution, 5)
+    assert result.failure == expected_failure
+    assert result.telemetry is not None
+    assert result.telemetry.input_tokens == (
+        10_000_017 if case == "large_success" else (0 if case == "sparse_zero" else 17)
+    )
+    if case.startswith("delivery_"):
+        assert not sink.events and not sink.active
+        assert sink.delivery_task is not None and sink.delivery_task.done()
+        assert "usage observation delivery incomplete" in result.telemetry.unknown_telemetry_reasons
+        if case == "delivery_deadline":
+            assert asyncio.get_running_loop().time() - started > job.budget.max_duration_seconds
+            assert sink.cancellations == 1
+        else:
+            assert sink.cancellations == 2
+    else:
+        assert len(sink.events) == 1
+        assert sink.events[0].final_status == (result.failure or "succeeded")
+        assert sink.events[0].tokens.input_tokens == result.telemetry.input_tokens
+    if case == "sparse_zero":
+        assert result.telemetry.output_tokens is None
+        assert sink.events[0].tokens.output_tokens is None
+
+
 @pytest.mark.asyncio
 async def test_gemini_authoring_uses_acp_and_preserves_unknown_usage(tmp_path: Path) -> None:
     job = _make_snapshot()
@@ -1302,6 +1653,137 @@ async def test_claude_authoring_uses_stream_json_mcp_handshake(
     assert session.sent[-1]["type"] == "user"
     assert session.stdin_closed and session.settled
     assert usage.telemetry(1).output_tokens == 6
+
+
+@pytest.mark.asyncio
+async def test_observed_official_claude_actual_exchange_normalizes_cached_input(
+    tmp_path: Path,
+) -> None:
+    route = RouteSpec(
+        provider="anthropic", client="claude_code", model="claude-test",
+        effort=ReasoningEffort.MEDIUM, auth_mode=AuthMode.SUBSCRIPTION,
+        billing_mode=BillingMode.ALLOWANCE_ONLY,
+    )
+    job = _make_snapshot().model_copy(update={
+        "route": RouteBinding(requested=route, effective=route),
+    })
+    attempt_id = uuid4()
+    cohort = RouteCohort.from_members((RouteMember(
+        role="authoring", provider="anthropic", model="claude-test",
+        reasoning_effort="medium", ordinal=0,
+    ),))
+    binding = WorkUnitBinding(
+        subject=SubjectKey(project_id=job.project_id, kind="authoring_job", subject_id=job.job_id),
+        work_unit_id=uuid4(), admitted_phase_id="authoring_exchange",
+        configured_route=cohort, effective_route=cohort,
+        source=SourceBinding(kind="authoring_attempt", source_id=attempt_id),
+    )
+    identity = str(job.job_id)
+
+    def mcp(request_id: str, message: dict[str, object]) -> dict[str, object]:
+        return {"type": "control_request", "request_id": request_id,
+                "request": {"subtype": "mcp_message", "server_name": "forge", "message": message}}
+
+    session = _ScriptedSession([
+        mcp("mcp-init", {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                    "clientInfo": {"name": "peer", "version": "1"}}}),
+        {"type": "control_response", "response": {
+            "subtype": "success", "request_id": "forge_initialize", "response": {}}},
+        mcp("mcp-ready", {"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        mcp("mcp-list", {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        {"type": "control_response", "response": {
+            "subtype": "success", "request_id": "forge_settings",
+            "response": {"applied": {"model": "claude-test", "effort": "medium"}}}},
+        {"type": "system", "subtype": "init", "session_id": identity, "model": "claude-test"},
+        mcp("mcp-call", {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                         "params": {"name": "list_files", "arguments": {"path": "."},
+                                    "_meta": {"claudecode/toolUseId": "authoring-read-1",
+                                              "progressToken": 1}}}),
+        {"type": "result", "subtype": "success", "session_id": identity,
+         "is_error": False,
+         "usage": {"input_tokens": 2, "output_tokens": 6,
+                   "cache_read_input_tokens": 20, "cache_creation_input_tokens": 3},
+         "structured_output": {"proposal": {
+             "turn_id": str(job.prompt_turn_id), "problem": "Cached Claude proposal"}}},
+    ])
+    session.closed = False
+
+    async def close(*, completed: bool = False) -> ClientProcessResult:
+        assert supervisor.before_stop is not None
+        await supervisor.before_stop()
+        supervisor.stop_hook_called = True
+        session.closed = True
+        session.completed = completed
+        return ClientProcessResult(
+            receipt=ClientProcessReceipt("scripted", 1, "scripted", 0.0),
+            return_code=0, frames=(), stdout_byte_count=0, stderr="",
+            stderr_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+            outcome="completed", stop_confirmed=True,
+        )
+
+    session.close = close  # type: ignore[attr-defined, method-assign]
+
+    class Supervisor:
+        before_stop = None
+        stop_hook_called = False
+
+        async def start(self, *_args, **_kwargs):
+            self.before_stop = _kwargs.get("before_stop")
+            return session
+
+    class Sink:
+        def __init__(self) -> None:
+            self.events: list[Observation] = []
+
+        async def observe_usage(self, event: Observation) -> None:
+            assert session.closed and session.settled
+            self.events.append(event)
+
+    class MinimalLifecycle:
+        async def launch_intent(self, launch_id: str) -> None:
+            pass
+
+        async def started(self, receipt: object) -> None:
+            pass
+
+        async def finished(self, receipt: object, result: object) -> None:
+            pass
+
+    executable = Path(sys.executable)
+    installation = ClaudeInstallationSpec(
+        client="claude_code", account="dev-account", model="claude-test", effort="medium",
+        executable=str(executable), executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        client_version="1.0.0", cwd=str(tmp_path), home=str(tmp_path),
+        quota={"account": "dev-account", "pool": "default-pool"},
+    )
+    sink = Sink()
+    supervisor = Supervisor()
+    result = await EpicBrainstormGateway(
+        installation=installation, supervisor=supervisor,
+    ).execute_observed(
+        job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        cancelled=lambda: asyncio.sleep(0, result=False), lifecycle=MinimalLifecycle(),
+        usage_binding=binding, usage_sink=sink,
+    )
+    assert result.failure is None and result.proposal is not None, (
+        result.failure, [frame.get("type") for frame in session.sent],
+        [frame.get("type") for frame in session.frames],
+    )
+    assert session.completed
+    assert supervisor.stop_hook_called
+    assert result.telemetry is not None
+    assert (result.telemetry.input_tokens, result.telemetry.output_tokens,
+            result.telemetry.cached_input_tokens, result.telemetry.tool_call_count) == (25, 6, 23, 1)
+    assert len(sink.events) == 1 and sink.events[0].final
+    assert sink.events[0].binding.source.source_id == attempt_id
+    assert (sink.events[0].tokens.input_tokens, sink.events[0].tokens.cached_input_tokens) == (25, 23)
+    assert any(
+        frame.get("type") == "control_response"
+        and isinstance(frame.get("response"), dict)
+        and frame["response"].get("request_id") == "mcp-call"
+        for frame in session.sent
+    )
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import { Field, lines } from './form-fields';
 import { JevSettings } from './jev-settings';
 import { defaultModel, ModelPolicy } from './model-policy';
 import { Button } from '@/components/ui/button';
+import { validateSafeInteger } from '@/lib/api/monitoring-policy';
 import styles from './project-policy.module.css';
 
 export type ProjectInput = components['schemas']['ProjectCreateRequest'];
@@ -105,6 +106,16 @@ export function ProjectForm({ onSave, initial, policyOnly = false }: {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy.current) return;
+    for (const role of ['planner_model', 'developer_model', 'reviewer_model'] as const) {
+      for (const cap of ['max_input_tokens', 'max_output_tokens'] as const) {
+        const numeric = value[role]?.[cap];
+        if (numeric != null && !validateSafeInteger(numeric, { fieldName: `${role} ${cap}`, min: 1 }).valid) {
+          setModelsOpen(true);
+          setError(`${role} ${cap} must be a positive safe integer or blank to remain unbounded.`);
+          return;
+        }
+      }
+    }
     if (!value.allowed_merge_methods.length) {
       setDeliveryOpen(true);
       setError('Select at least one allowed merge method.');

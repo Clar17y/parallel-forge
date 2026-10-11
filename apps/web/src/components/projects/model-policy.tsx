@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef } from 'react';
 import type { components } from '@/lib/api/schema';
 import { Field } from './form-fields';
-import { TokenBudgetSlider } from '../model-selection/token-budget-slider';
+import { OptionalTokenCapInput } from '../model-selection/optional-token-cap-input';
 import {
   getModelReasoningSupport,
   reasoningEffortChoices,
@@ -19,8 +19,8 @@ const googleModelChoices = [
 export const defaultModel: Model = {
   provider: 'google',
   model: 'gemini-3.5-flash',
-  max_input_tokens: 100000,
-  max_output_tokens: 16000,
+  max_input_tokens: null,
+  max_output_tokens: null,
   max_tool_calls: 100,
   max_duration_seconds: 1800,
   max_cost_minor: 1000,
@@ -147,26 +147,31 @@ export function ModelPolicy({ role, value, onChange, errors = {} }: {
           onChange={text => onChange({ ...value, model: text })}
           error={errors.model}
         />
-        <TokenBudgetSlider
-          label={`${role} input tokens`}
-          dimension="input"
-          provider={value.provider}
-          model={value.model}
-          min={1}
-          value={value.max_input_tokens ?? defaultModel.max_input_tokens!}
-          error={errors.max_input_tokens}
-          onChange={max_input_tokens => onChange({ ...value, max_input_tokens })}
-        />
-        <TokenBudgetSlider
-          label={`${role} output tokens`}
-          dimension="output"
-          provider={value.provider}
-          model={value.model}
-          min={1}
-          value={value.max_output_tokens ?? defaultModel.max_output_tokens!}
-          error={errors.max_output_tokens}
-          onChange={max_output_tokens => onChange({ ...value, max_output_tokens })}
-        />
+        {(['input', 'output'] as const).map(dimension => {
+          const key = dimension === 'input' ? 'max_input_tokens' : 'max_output_tokens';
+          const label = `${role} ${dimension} tokens`;
+          const cap = value[key];
+          const hasCap = cap != null;
+          return (
+            <div key={key} className="space-y-2">
+              <OptionalTokenCapInput
+                caption={`${label} hard cap`}
+                helpText="(optional; blank is unbounded)"
+                ariaLabel={`${label} hard cap`}
+                fieldName={label}
+                value={cap}
+                error={errors[key]}
+                onChange={next => onChange({ ...value, [key]: next })}
+              />
+              <span className="text-xs">{hasCap ? `Saved hard cap: ${cap.toLocaleString()} tokens` : `${dimension === 'input' ? 'Input' : 'Output'} tokens: Unbounded (no hard cap)`}</span>
+              {errors[key] && !hasCap && (
+                <p role="alert" className="text-xs text-[var(--danger)]">
+                  {errors[key]}
+                </p>
+              )}
+            </div>
+          );
+        })}
         {([
       ['max_tool_calls', 'tool calls', 0], ['max_duration_seconds', 'duration seconds', 1],
       ['max_cost_minor', 'cost limit in minor currency units', 0],

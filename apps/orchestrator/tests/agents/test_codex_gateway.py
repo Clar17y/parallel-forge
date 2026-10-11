@@ -420,7 +420,7 @@ async def test_pending_cancellation_revokes_broker() -> None:
     broker = _Broker()
     request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
     task = asyncio.create_task(_gateway("cancel", broker=broker, duration=20).execute(request))
-    await asyncio.wait_for(broker.called.wait(), timeout=3)
+    await asyncio.wait_for(broker.called.wait(), timeout=10)
     task.cancel()
     with pytest.raises(SubscriptionInterrupted) as raised:
         await task

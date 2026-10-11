@@ -47,14 +47,22 @@ from forge.agents.subscription_protocol import (
     tool_input_schema,
     tool_result_frame,
 )
+from forge.agents.subscription_usage_observations import (
+    _extract_context_window,
+    _optional_reasoning,
+    _UsagePublisher,
+    _validate_usage_binding,
+)
 from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
+    ObservableSubscriptionGateway,
     RoleDecisionRejection,
     SubscriptionFailure,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
 )
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.capability_evidence import (
     CapabilityEvidenceScope,
     ResolvedCapabilityEvidence,
@@ -68,6 +76,11 @@ from forge.domain.provider_quota import (
     utc_now,
 )
 from forge.domain.subscription import AttemptTelemetry, AuthMode, BillingMode
+from forge.domain.task_usage_contract import (
+    MAX_SIGNED_BIGINT,
+    TokenCounts,
+    WorkUnitBinding,
+)
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
 
@@ -340,6 +353,7 @@ class _Usage:
         self.input: int | None = None
         self.output: int | None = None
         self.cached: int | None = None
+        self.reasoning: int | None = None
         self.calls = 0
         self.checks = 0
 
@@ -349,12 +363,25 @@ class _Usage:
         if not isinstance(total, Mapping):
             raise ProtocolError("invalid token usage")
         values = [total.get(key) for key in ("inputTokens", "outputTokens", "cachedInputTokens")]
-        if any(type(value) is not int or value < 0 for value in values):
+        if any(type(value) is not int or not 0 <= value <= MAX_SIGNED_BIGINT for value in values):
             raise ProtocolError("invalid token counters")
         counters = cast(list[int], values)
+        if counters[2] > counters[0]:
+            raise ProtocolError("cached input exceeds total input")
         prior = (self.input, self.output, self.cached)
         if any(old is not None and new < old for old, new in zip(prior, counters, strict=True)):
             raise ProtocolError("token counters regressed")
+        reasoning = total.get("reasoningOutputTokens", total.get("reasoningTokens"))
+        if "reasoningOutputTokens" in total or "reasoningTokens" in total:
+            next_reasoning = _optional_reasoning(reasoning, counters[1])
+            self.reasoning = (
+                next_reasoning
+                if next_reasoning is None or self.reasoning is None
+                or next_reasoning >= self.reasoning
+                else None
+            )
+        elif self.reasoning is not None and self.reasoning > counters[1]:
+            self.reasoning = None
         self.input, self.output, self.cached = counters
 
     def telemetry(self, started: float) -> AttemptTelemetry:
@@ -506,7 +533,7 @@ def _client_status_notification(
     return True
 
 
-class CodexGateway:
+class CodexGateway(ObservableSubscriptionGateway):
     def __init__(
         self,
         installation: CodexInstallation,
@@ -528,6 +555,33 @@ class CodexGateway:
         self._now = now or utc_now
 
     async def execute(self, request: SubscriptionInvocationRequest) -> SubscriptionInvocationResult:
+        return await self._execute(request, publisher=None)
+
+    async def execute_observed(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> SubscriptionInvocationResult:
+        if type(request) is not SubscriptionInvocationRequest:
+            raise TypeError("subscription request is required")
+        _validate_usage_binding(usage_binding, request)
+        if usage_sink is None or not callable(getattr(usage_sink, "observe_usage", None)):
+            raise TypeError("usage_sink must be a TaskUsageObserver")
+        publisher = _UsagePublisher(usage_binding, usage_sink)
+        publisher.start()
+        try:
+            return await self._execute(request, publisher=publisher)
+        finally:
+            await publisher.close()
+
+    async def _execute(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        publisher: _UsagePublisher | None = None,
+    ) -> SubscriptionInvocationResult:
         if type(request) is not SubscriptionInvocationRequest:
             raise TypeError("subscription request is required")
         scope = capability_scope(request)
@@ -641,6 +695,7 @@ class CodexGateway:
                         session.pinned_path(CODEX_MODEL_CATALOG_ARGUMENT)
                         if self._trust is LocalCliTrust.VERIFIED
                         else None,
+                        publisher=publisher,
                     )
         except asyncio.CancelledError:
             interrupted = True
@@ -701,16 +756,43 @@ class CodexGateway:
                 await asyncio.sleep(0)
         if result is None:
             result = failed(SubscriptionFailure.PROTOCOL)
-        result = replace(result, telemetry=usage.telemetry(started))
-        if interrupted:
-            raise SubscriptionInterrupted(result)
-        if result.failure is None:
+        base_telemetry = usage.telemetry(started)
+        result = replace(result, telemetry=base_telemetry)
+        if not interrupted and result.failure is None:
             try:
                 request.budget.unknown_telemetry_policy.validate_telemetry(
                     result.telemetry, request.task.route.effective.billing_mode
                 )
             except ValueError:
-                return failed(SubscriptionFailure.POLICY_DENIED)
+                result = replace(
+                    failed(SubscriptionFailure.POLICY_DENIED),
+                    launch_proof=result.launch_proof,
+                )
+        if publisher is not None:
+            final_status = (
+                "succeeded"
+                if result.failure is None and not interrupted
+                else (result.failure.value if result.failure is not None else "failed")
+            )
+            await publisher.publish_final(
+                event_id=f"codex-final-{request.attempt.attempt_id}",
+                status=final_status,
+                tokens=TokenCounts(
+                    input_tokens=usage.input,
+                    output_tokens=usage.output,
+                    cached_input_tokens=usage.cached,
+                    reasoning_output_tokens=usage.reasoning,
+                ),
+                observed_at=self._now(),
+            )
+        if publisher is not None and publisher.dropped_or_failed:
+            unknown_reasons = base_telemetry.unknown_telemetry_reasons + (
+                "usage observation delivery incomplete",
+            )
+            base_telemetry = replace(base_telemetry, unknown_telemetry_reasons=unknown_reasons)
+        result = replace(result, telemetry=base_telemetry)
+        if interrupted:
+            raise SubscriptionInterrupted(result)
         return result
 
     def _configuration(self, model_catalog_path: str | None = None) -> dict[str, object]:
@@ -762,6 +844,8 @@ class CodexGateway:
         started: float,
         terminal_error: _TerminalError,
         model_catalog_path: str | None,
+        *,
+        publisher: _UsagePublisher | None = None,
     ) -> SubscriptionInvocationResult:
         await self._rpc(
             session,
@@ -992,6 +1076,19 @@ class CodexGateway:
                 raise ProtocolError("unregistered provider request")
             elif method == "thread/tokenUsage/updated":
                 usage.observe(params)
+                if publisher is not None:
+                    publisher.publish_live(
+                        event_id=params.get("eventId"),
+                        tokens=TokenCounts(
+                            input_tokens=usage.input,
+                            output_tokens=usage.output,
+                            cached_input_tokens=usage.cached,
+                            reasoning_output_tokens=usage.reasoning,
+                        ),
+                        context=_extract_context_window(params),
+                        counter_epoch=thread_id or "source",
+                        observed_at=self._now(),
+                    )
                 if (
                     request.budget.max_input_tokens is not None
                     and usage.input is not None

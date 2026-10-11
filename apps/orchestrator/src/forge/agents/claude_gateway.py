@@ -47,15 +47,22 @@ from forge.agents.subscription_protocol import (
     output_schema,
     tool_input_schema,
 )
+from forge.agents.subscription_usage_observations import (
+    _extract_context_window,
+    _optional_reasoning,
+    _UsagePublisher,
+    _validate_usage_binding,
+)
 from forge.application.ports.capability_evidence import CapabilityEvidenceSourceError
 from forge.application.ports.subscription_gateway import (
+    ObservableSubscriptionGateway,
     RoleDecisionRejection,
     SubscriptionFailure,
-    SubscriptionGateway,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
 )
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.capability_evidence import (
     CapabilityEvidenceScope,
     ResolvedCapabilityEvidence,
@@ -69,6 +76,11 @@ from forge.domain.provider_quota import (
     utc_now,
 )
 from forge.domain.subscription import AttemptTelemetry, AuthMode, BillingMode, TaskBudget
+from forge.domain.task_usage_contract import (
+    MAX_SIGNED_BIGINT,
+    TokenCounts,
+    WorkUnitBinding,
+)
 from forge.domain.tool import ToolName
 from pydantic import TypeAdapter
 
@@ -707,9 +719,15 @@ class _Usage:
     def __init__(self) -> None:
         self.input: int | None = None
         self.output: int | None = None
+        self.cached: int | None = None
+        self.reasoning: int | None = None
+        self._uncached: int | None = None
+        self._cache_read: int | None = None
+        self._cache_created: int | None = None
+        self._cache_complete = False
         self.calls = 0
         self.checks = 0
-        self._messages: dict[str, tuple[int, int]] = {}
+        self._messages: dict[str, tuple[int | None, ...]] = {}
 
     def validate_budget(self, budget: TaskBudget) -> None:
         if (
@@ -728,46 +746,209 @@ class _Usage:
             return
         source = value.get("input_tokens", value.get("inputTokens"))
         target = value.get("output_tokens", value.get("outputTokens"))
-        if source is None and target is None:
+        if source is None and target is None and not any(
+            key in value for key in (
+                "cache_read_input_tokens", "cached_input_tokens",
+                "cache_creation_input_tokens", "thinking_tokens", "reasoning_output_tokens",
+            )
+        ):
             return
-        if (
-            type(source) is not int
-            or type(target) is not int
-            or source < 0
-            or target < 0
-            or (self.input is not None and source < self.input)
-            or (self.output is not None and target < self.output)
+        if any(
+            type(item) is not int or not 0 <= item <= MAX_SIGNED_BIGINT
+            for item in (source, target) if item is not None
         ):
             raise ProtocolError("invalid Claude usage")
-        self.input, self.output = source, target
+        read, created, cache_subtotal = self._cache_update(
+            value, self._cache_read, self._cache_created
+        )
+        uncached = source if type(source) is int else self._uncached
+        normalized_input = uncached + (cache_subtotal or 0) if uncached is not None else None
+        cache_present = any(key in value for key in (
+            "cache_read_input_tokens", "cached_input_tokens", "cache_creation_input_tokens"
+        ))
+        cache_complete = self._cache_complete or (
+            cache_subtotal is not None and cache_present and (
+                not self._messages or (
+                type(value.get("cache_read_input_tokens", value.get("cached_input_tokens"))) is int
+                and type(value.get("cache_creation_input_tokens")) is int
+            ))
+        )
+        cached = cache_subtotal if cache_complete else None
+        if normalized_input is not None and normalized_input > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude usage")
+        effective_input = normalized_input if normalized_input is not None else self.input
+        if cached is not None and effective_input is not None and cached > effective_input:
+            raise ProtocolError("invalid Claude cached usage")
+        if (self.input is not None and normalized_input is not None and normalized_input < self.input) or (
+            self.output is not None and type(target) is int and target < self.output
+        ):
+            raise ProtocolError("regressing Claude usage")
+        reasoning_present = "thinking_tokens" in value or "reasoning_output_tokens" in value
+        reasoning = value.get("thinking_tokens", value.get("reasoning_output_tokens"))
+        effective_output = target if type(target) is int else self.output
+        next_reasoning = (
+            _optional_reasoning(reasoning, effective_output)
+            if reasoning_present else self.reasoning
+        )
+        if next_reasoning is not None and effective_output is not None and next_reasoning > effective_output:
+            next_reasoning = None
+        if next_reasoning is not None and self.reasoning is not None and next_reasoning < self.reasoning:
+            next_reasoning = None
+        if normalized_input is not None:
+            self.input = normalized_input
+        if type(target) is int:
+            self.output = target
+        self.cached = cached
+        self.reasoning = next_reasoning
+        self._uncached, self._cache_read, self._cache_created = uncached, read, created
+        self._cache_complete = cache_complete
 
-    def observe_assistant(self, frame: Mapping[str, object], session_id: str) -> None:
+    def observe_assistant(
+        self, frame: Mapping[str, object], session_id: str
+    ) -> tuple[str, TokenCounts] | None:
         if frame.get("type") != "assistant":
-            return
+            return None
         message = frame.get("message")
         if not isinstance(message, Mapping) or message.get("usage") is None:
-            return
+            return None
         if frame.get("session_id") != session_id:
             raise ProtocolError("foreign Claude usage session")
         ident, value = message.get("id"), message["usage"]
         if type(ident) is not str or not ident or not isinstance(value, Mapping):
             raise ProtocolError("unidentified Claude usage")
         source, target = value.get("input_tokens"), value.get("output_tokens")
-        if type(source) is not int or type(target) is not int or source < 0 or target < 0:
+        if any(
+            type(item) is not int or not 0 <= item <= MAX_SIGNED_BIGINT
+            for item in (source, target) if item is not None
+        ):
             raise ProtocolError("invalid Claude assistant usage")
+        reasoning = value.get("thinking_tokens", value.get("reasoning_output_tokens"))
+        reasoning_present = "thinking_tokens" in value or "reasoning_output_tokens" in value
         prior = self._messages.get(ident)
-        if prior is not None and (source < prior[0] or target < prior[1]):
+        read, created, cached_int = self._cache_update(
+            value, prior[5] if prior is not None else None,
+            prior[6] if prior is not None else None,
+        )
+        if prior is not None and target is None:
+            target = prior[1]
+        uncached = source if type(source) is int else (prior[4] if prior is not None else None)
+        normalized_input = uncached + (cached_int or 0) if uncached is not None else None
+        if normalized_input is not None and normalized_input > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude assistant usage")
+        if cached_int is not None and normalized_input is not None and cached_int > normalized_input:
+            raise ProtocolError("invalid Claude cached usage")
+        reasoning_int = (
+            _optional_reasoning(reasoning, target)
+            if reasoning_present else prior[3] if prior is not None else None
+        )
+        if reasoning_int is not None and target is not None and reasoning_int > target:
+            reasoning_int = None
+        if (
+            prior is not None and reasoning_int is not None and prior[3] is not None
+            and reasoning_int < prior[3]
+        ):
+            reasoning_int = None
+        if normalized_input is None and target is None and cached_int is None and reasoning_int is None:
+            return None
+        current = (normalized_input, target, cached_int, reasoning_int, uncached, read, created)
+        if prior == current:
+            return None
+        if prior is not None and (
+            normalized_input is not None and prior[0] is not None and normalized_input < prior[0]
+            or target is not None and prior[1] is not None and target < prior[1]
+        ):
             raise ProtocolError("regressing Claude assistant usage")
         if prior is None and len(self._messages) >= 1024:
             raise ProtocolError("too many Claude usage messages")
-        self._messages[ident] = (source, target)
-        self.input = sum(item[0] for item in self._messages.values())
-        self.output = sum(item[1] for item in self._messages.values())
+        messages = {**self._messages, ident: current}
+        next_input = self._sum_messages(messages, 0)
+        next_output = self._sum_messages(messages, 1)
+        next_cached = self._sum_messages(messages, 2)
+        next_reasoning = _optional_reasoning(self._sum_messages(messages, 3), next_output)
+        next_uncached = self._sum_messages(messages, 4)
+        next_read = self._sum_known_messages(messages, 5)
+        next_created = self._sum_known_messages(messages, 6)
+        if (next_read or 0) + (next_created or 0) > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude cached usage")
+        if next_cached is not None and next_input is not None and next_cached > next_input:
+            raise ProtocolError("invalid Claude cached usage")
+        observed_tokens = TokenCounts(
+            input_tokens=normalized_input,
+            output_tokens=target,
+            cached_input_tokens=cached_int,
+            reasoning_output_tokens=reasoning_int,
+        )
+        self._messages = messages
+        self.input, self.output, self.cached, self.reasoning = (
+            next_input, next_output, next_cached, next_reasoning
+        )
+        self._uncached, self._cache_read, self._cache_created = (
+            next_uncached, next_read, next_created
+        )
+        self._cache_complete = next_cached is not None
+        return ident, observed_tokens
+
+    @staticmethod
+    def _sum_messages(
+        messages: Mapping[str, tuple[int | None, ...]],
+        index: int,
+    ) -> int | None:
+        values = [message[index] for message in messages.values()]
+        if not all(value is not None for value in values):
+            return None
+        total = sum(value for value in values if value is not None)
+        if total > MAX_SIGNED_BIGINT:
+            if index == 3:
+                return None
+            raise ProtocolError("invalid Claude assistant usage")
+        return total
+
+    @staticmethod
+    def _sum_known_messages(
+        messages: Mapping[str, tuple[int | None, ...]], index: int
+    ) -> int | None:
+        values = [value for message in messages.values() if (value := message[index]) is not None]
+        if not values:
+            return None
+        total = sum(values)
+        if total > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude assistant usage")
+        return total
+
+    @staticmethod
+    def _cache_update(
+        value: Mapping[str, object], prior_read: int | None, prior_created: int | None
+    ) -> tuple[int | None, int | None, int | None]:
+        read = value.get("cache_read_input_tokens", value.get("cached_input_tokens"))
+        created = value.get("cache_creation_input_tokens")
+        if any(
+            type(item) is not int or not 0 <= item <= MAX_SIGNED_BIGINT
+            for item in (read, created) if item is not None
+        ):
+            raise ProtocolError("invalid Claude cached usage")
+        if read is None and created is None:
+            if prior_read is None and prior_created is None:
+                return None, None, None
+            read, created = prior_read, prior_created
+        else:
+            read = read if type(read) is int else (prior_read or 0)
+            created = created if type(created) is int else (prior_created or 0)
+        if (
+            prior_read is not None and read is not None and read < prior_read
+        ) or (
+            prior_created is not None and created is not None and created < prior_created
+        ):
+            raise ProtocolError("regressing Claude cached usage")
+        total = (read or 0) + (created or 0)
+        if total > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude cached usage")
+        return read, created, total
 
     def telemetry(self, started: float) -> AttemptTelemetry:
         return AttemptTelemetry(
             input_tokens=self.input,
             output_tokens=self.output,
+            cached_input_tokens=self.cached,
             duration_ms=int((monotonic() - started) * 1000),
             tool_call_count=self.calls,
             named_check_count=self.checks,
@@ -776,7 +957,7 @@ class _Usage:
         )
 
 
-class ClaudeGateway(SubscriptionGateway):
+class ClaudeGateway(ObservableSubscriptionGateway):
     def __init__(
         self,
         installation: ClaudeInstallation,
@@ -797,6 +978,33 @@ class ClaudeGateway(SubscriptionGateway):
         self._now = now or utc_now
 
     async def execute(self, request: SubscriptionInvocationRequest) -> SubscriptionInvocationResult:
+        return await self._execute(request, publisher=None)
+
+    async def execute_observed(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> SubscriptionInvocationResult:
+        if type(request) is not SubscriptionInvocationRequest:
+            raise TypeError("subscription request is required")
+        _validate_usage_binding(usage_binding, request)
+        if usage_sink is None or not callable(getattr(usage_sink, "observe_usage", None)):
+            raise TypeError("usage_sink must be a TaskUsageObserver")
+        publisher = _UsagePublisher(usage_binding, usage_sink)
+        publisher.start()
+        try:
+            return await self._execute(request, publisher=publisher)
+        finally:
+            await publisher.close()
+
+    async def _execute(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        publisher: _UsagePublisher | None = None,
+    ) -> SubscriptionInvocationResult:
         if type(request) is not SubscriptionInvocationRequest:
             raise TypeError("subscription request is required")
         scope = capability_scope(request)
@@ -888,7 +1096,9 @@ class ClaudeGateway(SubscriptionGateway):
                     session = await self._supervisor.start(
                         spec, lifecycle=self._lifecycle, before_stop=revoke
                     )
-                    result = await self._exchange(session, request, usage, quota)
+                    result = await self._exchange(
+                        session, request, usage, quota, publisher=publisher
+                    )
         except asyncio.CancelledError:
             interrupted = True
             result = failed(SubscriptionFailure.INTERRUPTED)
@@ -926,18 +1136,45 @@ class ClaudeGateway(SubscriptionGateway):
                     await revoke()
             except Exception:  # noqa: BLE001 - failed revocation makes settlement uncertain
                 result = failed(SubscriptionFailure.UNCERTAIN)
-        result = replace(
-            result or failed(SubscriptionFailure.PROTOCOL), telemetry=usage.telemetry(started)
-        )
-        if interrupted:
-            raise SubscriptionInterrupted(result)
-        if result.failure is None:
+        if result is None:
+            result = failed(SubscriptionFailure.PROTOCOL)
+        base_telemetry = usage.telemetry(started)
+        result = replace(result, telemetry=base_telemetry)
+        if not interrupted and result.failure is None:
             try:
                 request.budget.unknown_telemetry_policy.validate_telemetry(
                     result.telemetry, route.billing_mode
                 )
             except ValueError:
-                return failed(SubscriptionFailure.POLICY_DENIED)
+                result = replace(
+                    failed(SubscriptionFailure.POLICY_DENIED),
+                    launch_proof=result.launch_proof,
+                )
+        if publisher is not None:
+            final_status = (
+                "succeeded"
+                if result.failure is None and not interrupted
+                else (result.failure.value if result.failure is not None else "failed")
+            )
+            await publisher.publish_final(
+                event_id=f"claude-final-{request.attempt.attempt_id}",
+                status=final_status,
+                tokens=TokenCounts(
+                    input_tokens=usage.input,
+                    output_tokens=usage.output,
+                    cached_input_tokens=usage.cached,
+                    reasoning_output_tokens=usage.reasoning,
+                ),
+                observed_at=self._now(),
+            )
+        if publisher is not None and publisher.dropped_or_failed:
+            unknown_reasons = base_telemetry.unknown_telemetry_reasons + (
+                "usage observation delivery incomplete",
+            )
+            base_telemetry = replace(base_telemetry, unknown_telemetry_reasons=unknown_reasons)
+        result = replace(result, telemetry=base_telemetry)
+        if interrupted:
+            raise SubscriptionInterrupted(result)
         return result
 
     def _command(self, request: SubscriptionInvocationRequest) -> tuple[str, ...]:
@@ -984,6 +1221,8 @@ class ClaudeGateway(SubscriptionGateway):
         request: SubscriptionInvocationRequest,
         usage: _Usage,
         quota: _QuotaState,
+        *,
+        publisher: _UsagePublisher | None = None,
     ) -> SubscriptionInvocationResult:
         thread, turn = str(request.attempt.attempt_id), str(uuid4())
         allowed = frozenset(tool.value for tool in request.authorization.permitted_tools)
@@ -1148,7 +1387,20 @@ class ClaudeGateway(SubscriptionGateway):
                 # Capture confirmed evidence before optional usage validation or
                 # supervisor settlement can fail.
                 failure = quota.terminal(codec.terminal, self._now())
-            usage.observe_assistant(frame, thread)
+            observed_msg = usage.observe_assistant(frame, thread)
+            if publisher is not None and observed_msg is not None:
+                publisher.publish_live(
+                    event_id=frame.get("uuid"),
+                    tokens=TokenCounts(
+                        input_tokens=usage.input,
+                        output_tokens=usage.output,
+                        cached_input_tokens=usage.cached,
+                        reasoning_output_tokens=usage.reasoning,
+                    ),
+                    context=_extract_context_window(frame),
+                    counter_epoch="source",
+                    observed_at=self._now(),
+                )
             usage.validate_budget(request.budget)
             if reply is not None:
                 await session.send(reply)
@@ -1157,6 +1409,19 @@ class ClaudeGateway(SubscriptionGateway):
                     raise ProtocolError("Claude completed before initialization metadata")
                 terminal = codec.terminal
                 usage.observe(terminal.get("usage"))
+                if publisher is not None and terminal.get("usage") is not None:
+                    publisher.publish_live(
+                        event_id=terminal.get("uuid"),
+                        tokens=TokenCounts(
+                            input_tokens=usage.input,
+                            output_tokens=usage.output,
+                            cached_input_tokens=usage.cached,
+                            reasoning_output_tokens=usage.reasoning,
+                        ),
+                        context=_extract_context_window(terminal),
+                        counter_epoch="source",
+                        observed_at=self._now(),
+                    )
                 usage.validate_budget(request.budget)
                 if failure is not None:
                     return SubscriptionInvocationResult(
