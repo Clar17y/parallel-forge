@@ -192,6 +192,79 @@ async def test_codex_public_long_epoch_and_live_final_id_collision_settle() -> N
 
 
 @pytest.mark.asyncio
+async def test_codex_earlier_final_id_collision_preserves_distinct_final() -> None:
+    request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    final_id = f"codex-final-{request.attempt.attempt_id}"
+    script = _script("tool").replace(
+        "def send(value): print(json.dumps(value),flush=True)",
+        "def send(value):\n"
+        " if value.get('method') == 'thread/tokenUsage/updated':\n"
+        f"  value['params']['eventId'] = {final_id!r}\n"
+        "  print(json.dumps(value),flush=True)\n"
+        "  value['params']['eventId'] = 'later-live'\n"
+        " print(json.dumps(value),flush=True)",
+    )
+    gateway = _gateway("tool", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=("-c", script))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert [event.event_id for event in sink.events if not event.final] == [final_id, "later-live"]
+    assert sink.events[-1].reconciles_event_id == "later-live"
+    assert len({event.event_id for event in sink.events}) == len(sink.events)
+
+
+@pytest.mark.asyncio
+async def test_final_namespace_survives_reserved_live_id_and_queue_overflow() -> None:
+    request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    binding = _valid_binding(request)
+    sink = RecordingUsageObserver()
+    publisher = _UsagePublisher(binding, sink)
+    publisher.start()
+    reserved = f"forge:final:{binding.work_unit_id}"
+    for index in range(100):
+        publisher.publish_live(
+            event_id=reserved if index == 0 else f"live-{index}",
+            tokens=TokenCounts(input_tokens=index, output_tokens=0),
+        )
+    await publisher.publish_final(
+        event_id="provider-final", status="succeeded",
+        tokens=TokenCounts(input_tokens=99, output_tokens=0),
+    )
+    assert publisher.dropped_or_failed
+    assert len(sink.events) == 65
+    assert sink.events[0].event_id.startswith("forge:sha256:")
+    assert sink.events[-1].event_id == reserved
+    assert sink.events[-1].reconciles_event_id == "live-63"
+
+
+@pytest.mark.parametrize("position", [0, 1, 2])
+@pytest.mark.asyncio
+async def test_final_namespace_is_disjoint_from_any_live_position(position: int) -> None:
+    request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    binding = _valid_binding(request)
+    sink = RecordingUsageObserver()
+    publisher = _UsagePublisher(binding, sink)
+    publisher.start()
+    candidate = f"codex-final-{request.attempt.attempt_id}"
+    for index in range(3):
+        publisher.publish_live(
+            event_id=candidate if index == position else f"live-{index}",
+            tokens=TokenCounts(input_tokens=index, output_tokens=0),
+        )
+    await publisher.publish_final(
+        event_id=candidate, status="succeeded",
+        tokens=TokenCounts(input_tokens=3, output_tokens=0),
+    )
+    assert len({event.event_id for event in sink.events}) == 4
+    assert sink.events[-1].reconciles_event_id == sink.events[-2].event_id
+    assert sink.events[-1].event_id == f"forge:final:{binding.work_unit_id}"
+
+
+@pytest.mark.asyncio
 async def test_codex_observed_untrusted_context_and_colliding_long_ids_settle() -> None:
     long_prefix = "provider-" + "x" * 260
     original = _script("tool")

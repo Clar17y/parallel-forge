@@ -220,6 +220,110 @@ async def test_claude_public_live_final_id_collision_settles(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_claude_earlier_final_id_collision_preserves_distinct_final(tmp_path: Path) -> None:
+    request = _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    final_id = f"claude-final-{request.attempt.attempt_id}"
+    peer = Path(__file__).with_name("claude_stream_peer.py").read_text()
+    original = 'def send(value):\n    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    replacement = (
+        "def send(value):\n"
+        "    if value.get('type') == 'result':\n"
+        "        extra = {'type':'assistant', 'session_id':value['session_id'], "
+        "'uuid':" + repr(final_id) + ", 'message':{'id':'extra', 'role':'assistant', "
+        "'content':[], 'usage':{'input_tokens':13, 'output_tokens':5}}}\n"
+        '        print(json.dumps(extra, separators=(",", ":")), flush=True)\n'
+        "        value['uuid'] = 'later-live'\n"
+        '    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    )
+    assert original in peer
+    script = tmp_path / "claude_earlier_collision_peer.py"
+    script.write_text(peer.replace(original, replacement))
+    gateway = _gateway("success", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=(str(script), "success"))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert [event.event_id for event in sink.events if not event.final] == [final_id, "later-live"]
+    assert sink.events[-1].reconciles_event_id == "later-live"
+    assert len({event.event_id for event in sink.events}) == len(sink.events)
+
+
+@pytest.mark.asyncio
+async def test_claude_public_sparse_cache_updates_preserve_success_and_stop(tmp_path: Path) -> None:
+    peer = Path(__file__).with_name("claude_stream_peer.py").read_text()
+    original = 'def send(value):\n    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    replacement = (
+        "def send(value):\n"
+        "    if value.get('type') == 'result':\n"
+        "        for uuid, usage in [('sparse-first', {'input_tokens':2, "
+        "'cache_read_input_tokens':5, 'output_tokens':5}), "
+        "('sparse-second', {'cache_read_input_tokens':6})]:\n"
+        "            extra = {'type':'assistant', 'session_id':value['session_id'], "
+        "'uuid':uuid, 'message':{'id':'sparse', 'role':'assistant', "
+        "'content':[], 'usage':usage}}\n"
+        '            print(json.dumps(extra, separators=(",", ":")), flush=True)\n'
+        '    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    )
+    assert original in peer
+    script = tmp_path / "claude_sparse_peer.py"
+    script.write_text(peer.replace(original, replacement))
+    broker = _Broker()
+    gateway = _gateway("success", broker=broker)
+    gateway._installation = replace(gateway._installation, script=(str(script), "success"))
+    request = _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert broker.revoked and len(broker.calls) == 1
+    assert [(event.tokens.input_tokens, event.tokens.cached_input_tokens)
+            for event in sink.events if not event.final] == [(7, 5), (8, 6), (19, 6)]
+    assert (sink.events[-1].tokens.input_tokens, sink.events[-1].tokens.cached_input_tokens) == (19, 6)
+
+
+@pytest.mark.asyncio
+async def test_claude_public_mixed_cache_output_only_terminal_preserves_success(tmp_path: Path) -> None:
+    peer = Path(__file__).with_name("claude_stream_peer.py").read_text()
+    original = 'def send(value):\n    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    replacement = (
+        "def send(value):\n"
+        "    if value.get('type') == 'result':\n"
+        "        for ident, usage in [('a', {'input_tokens':2, "
+        "'cache_read_input_tokens':5, 'output_tokens':1}), "
+        "('b', {'input_tokens':3, 'output_tokens':1})]:\n"
+        "            extra = {'type':'assistant', 'session_id':value['session_id'], "
+        "'uuid':'mixed-'+ident, 'message':{'id':ident, 'role':'assistant', "
+        "'content':[], 'usage':usage}}\n"
+        '            print(json.dumps(extra, separators=(",", ":")), flush=True)\n'
+        "        value['usage'] = {'output_tokens':2}\n"
+        '    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    )
+    assert original in peer
+    script = tmp_path / "claude_mixed_cache_peer.py"
+    script.write_text(peer.replace(original, replacement))
+    broker = _Broker()
+    gateway = _gateway("success", broker=broker)
+    gateway._installation = replace(gateway._installation, script=(str(script), "success"))
+    request = _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert broker.revoked and len(broker.calls) == 1
+    assert [(event.tokens.input_tokens, event.tokens.cached_input_tokens)
+            for event in sink.events if not event.final] == [(7, 5), (10, None), (10, None)]
+    assert (sink.events[-1].tokens.input_tokens,
+            sink.events[-1].tokens.cached_input_tokens) == (10, None)
+
+
+@pytest.mark.asyncio
 async def test_claude_observed_untrusted_context_and_colliding_long_ids_settle(tmp_path: Path) -> None:
     long_prefix = "provider-" + "x" * 260
     peer = Path(__file__).with_name("claude_stream_peer.py").read_text()
@@ -359,6 +463,171 @@ def test_claude_cached_input_is_in_normalized_total() -> None:
     usage.observe({"input_tokens": 2, "cache_read_input_tokens": 20,
                    "cache_creation_input_tokens": 3, "output_tokens": 4})
     assert usage.input == 25
+
+
+def test_claude_sparse_cache_replay_and_terminal_conserve_uncached_input() -> None:
+    usage = _Usage()
+
+    def message(ident: str, **counters: object) -> TokenCounts | None:
+        observed = usage.observe_assistant(
+            {"type": "assistant", "session_id": "session", "message": {
+                "id": ident, "usage": counters}}, "session",
+        )
+        return observed[1] if observed else None
+
+    first = message("one", input_tokens=2, cache_read_input_tokens=5, output_tokens=1)
+    assert first is not None and (first.input_tokens, first.cached_input_tokens) == (7, 5)
+    grown = message("one", cache_read_input_tokens=6)
+    assert grown is not None and (grown.input_tokens, grown.cached_input_tokens) == (8, 6)
+    assert message("one", cache_read_input_tokens=6) is None
+    created = message("one", cache_creation_input_tokens=3)
+    assert created is not None and (created.input_tokens, created.cached_input_tokens) == (11, 9)
+    assert message("two", input_tokens=1, cache_read_input_tokens=0, output_tokens=0)
+    assert (usage.input, usage.cached, usage.output) == (12, 9, 1)
+    assert message("one", input_tokens=3) is not None
+    assert (usage.input, usage.cached) == (13, 9)
+
+    terminal = _Usage()
+    terminal.observe({"input_tokens": 2, "cache_read_input_tokens": 5, "output_tokens": 1})
+    terminal.observe({"cache_read_input_tokens": 6})
+    assert (terminal.input, terminal.cached) == (8, 6)
+    terminal.observe({"cache_creation_input_tokens": 3})
+    assert (terminal.input, terminal.cached) == (11, 9)
+    terminal.observe({"input_tokens": 3})
+    assert (terminal.input, terminal.cached) == (12, 9)
+    zero = _Usage()
+    zero.observe({"input_tokens": 0, "cache_read_input_tokens": 0})
+    assert (zero.input, zero.cached) == (0, 0)
+
+
+def test_claude_sparse_unknown_and_invalid_updates_preserve_state() -> None:
+    usage = _Usage()
+    usage.observe({"cache_read_input_tokens": 5})
+    assert usage.input is None and usage.cached == 5
+    usage.observe({"input_tokens": 2})
+    assert (usage.input, usage.cached) == (7, 5)
+    with pytest.raises(ProtocolError):
+        usage.observe({"input_tokens": 1, "cache_read_input_tokens": True})
+    assert (usage.input, usage.cached) == (7, 5)
+    with pytest.raises(ProtocolError):
+        usage.observe({"input_tokens": 10, "cache_read_input_tokens": 4})
+    assert (usage.input, usage.cached) == (7, 5)
+
+    assistant = _Usage()
+    def message(**counters: object) -> TokenCounts | None:
+        observed = assistant.observe_assistant(
+            {"type": "assistant", "session_id": "session", "message": {
+                "id": "one", "usage": counters}}, "session",
+        )
+        return observed[1] if observed else None
+
+    first = message(cache_read_input_tokens=5)
+    assert first is not None and first.input_tokens is None and first.cached_input_tokens == 5
+    second = message(input_tokens=2, output_tokens=0)
+    assert second is not None and (second.input_tokens, second.output_tokens) == (7, 0)
+    with pytest.raises(ProtocolError):
+        message(cache_read_input_tokens=2**63)
+    assert (assistant.input, assistant.cached, assistant.output) == (7, 5, 0)
+    with pytest.raises(ProtocolError):
+        message(input_tokens=10, cache_read_input_tokens=4)
+    assert (assistant.input, assistant.cached, assistant.output) == (7, 5, 0)
+
+
+def test_claude_mixed_cache_handoff_preserves_known_subtotal_and_unknown_dimension() -> None:
+    usage = _Usage()
+
+    def message(ident: str, **counters: object) -> None:
+        assert usage.observe_assistant(
+            {"type": "assistant", "session_id": "session", "message": {
+                "id": ident, "usage": counters}}, "session",
+        ) is not None
+
+    message("a", input_tokens=2, cache_read_input_tokens=5, output_tokens=1)
+    message("b", input_tokens=3, output_tokens=1)
+    assert (usage.input, usage.output, usage.cached) == (10, 2, None)
+    usage.observe({"output_tokens": 2})
+    assert (usage.input, usage.output, usage.cached) == (10, 2, None)
+    usage.observe({"reasoning_output_tokens": 0})
+    assert (usage.input, usage.cached, usage.reasoning) == (10, None, 0)
+    usage.observe({"input_tokens": 6})
+    assert (usage.input, usage.cached) == (11, None)
+    usage.observe({"cache_creation_input_tokens": 2})
+    assert (usage.input, usage.cached) == (13, None)
+    with pytest.raises(ProtocolError):
+        usage.observe({"input_tokens": 5})
+    assert (usage.input, usage.cached, usage.reasoning) == (13, None, 0)
+    usage.observe({"input_tokens": 6, "cache_read_input_tokens": 5,
+                   "cache_creation_input_tokens": 2})
+    assert (usage.input, usage.cached) == (13, 7)
+
+
+def test_claude_mixed_cache_only_and_unknown_uncached_are_not_fabricated() -> None:
+    usage = _Usage()
+    for ident, counters in (
+        ("a", {"input_tokens": 2, "cache_read_input_tokens": 5, "output_tokens": 1}),
+        ("b", {"input_tokens": 3, "output_tokens": 1}),
+    ):
+        usage.observe_assistant(
+            {"type": "assistant", "session_id": "session", "message": {
+                "id": ident, "usage": counters}}, "session",
+        )
+    usage.observe({"cache_read_input_tokens": 6})
+    assert (usage.input, usage.cached) == (11, None)
+    usage.observe({"cache_creation_input_tokens": 0})
+    assert (usage.input, usage.cached) == (11, None)
+    usage.observe({"cache_read_input_tokens": 6, "cache_creation_input_tokens": None})
+    assert (usage.input, usage.cached) == (11, None)
+
+    unknown = _Usage()
+    unknown.observe_assistant(
+        {"type": "assistant", "session_id": "session", "message": {
+            "id": "a", "usage": {"input_tokens": 2, "cache_read_input_tokens": 5}}},
+        "session",
+    )
+    unknown.observe_assistant(
+        {"type": "assistant", "session_id": "session", "message": {
+            "id": "b", "usage": {"cache_read_input_tokens": 3}}},
+        "session",
+    )
+    assert (unknown.input, unknown.cached) == (None, 8)
+    unknown.observe({"output_tokens": 0})
+    assert (unknown.input, unknown.cached, unknown.output) == (None, 8, 0)
+    unknown.observe({"input_tokens": 6})
+    assert (unknown.input, unknown.cached) == (14, 8)
+
+
+def test_claude_mixed_cache_overflow_rejects_without_partial_state() -> None:
+    usage = _Usage()
+    def message(ident: str, **counters: object) -> None:
+        usage.observe_assistant(
+            {"type": "assistant", "session_id": "session", "message": {
+                "id": ident, "usage": counters}}, "session",
+        )
+
+    message("a", cache_read_input_tokens=2**63 - 1)
+    before = (usage.input, usage.cached, usage._cache_read, dict(usage._messages))
+    with pytest.raises(ProtocolError):
+        message("b", cache_read_input_tokens=1)
+    assert (usage.input, usage.cached, usage._cache_read, usage._messages) == before
+    with pytest.raises(ProtocolError):
+        usage.observe({"input_tokens": 1})
+    assert (usage.input, usage.cached, usage._cache_read, usage._messages) == before
+
+    mixed = _Usage()
+    def mixed_message(ident: str, **counters: object) -> None:
+        mixed.observe_assistant(
+            {"type": "assistant", "session_id": "session", "message": {
+                "id": ident, "usage": counters}}, "session",
+        )
+
+    mixed_message("a", cache_read_input_tokens=2**63 - 1)
+    mixed_message("b", output_tokens=0)
+    mixed_before = (mixed.input, mixed.cached, mixed._cache_read,
+                    mixed._cache_created, dict(mixed._messages))
+    with pytest.raises(ProtocolError):
+        mixed_message("c", cache_creation_input_tokens=1)
+    assert (mixed.input, mixed.cached, mixed._cache_read,
+            mixed._cache_created, mixed._messages) == mixed_before
 
 
 def test_claude_partial_message_stays_unknown_until_completed() -> None:

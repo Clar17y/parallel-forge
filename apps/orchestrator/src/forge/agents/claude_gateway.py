@@ -721,9 +721,13 @@ class _Usage:
         self.output: int | None = None
         self.cached: int | None = None
         self.reasoning: int | None = None
+        self._uncached: int | None = None
+        self._cache_read: int | None = None
+        self._cache_created: int | None = None
+        self._cache_complete = False
         self.calls = 0
         self.checks = 0
-        self._messages: dict[str, tuple[int | None, int | None, int | None, int | None]] = {}
+        self._messages: dict[str, tuple[int | None, ...]] = {}
 
     def validate_budget(self, budget: TaskBudget) -> None:
         if (
@@ -754,10 +758,22 @@ class _Usage:
             for item in (source, target) if item is not None
         ):
             raise ProtocolError("invalid Claude usage")
-        cached = self._cached_input(value)
-        if cached is None:
-            cached = self.cached
-        normalized_input = source + (cached or 0) if type(source) is int else None
+        read, created, cache_subtotal = self._cache_update(
+            value, self._cache_read, self._cache_created
+        )
+        uncached = source if type(source) is int else self._uncached
+        normalized_input = uncached + (cache_subtotal or 0) if uncached is not None else None
+        cache_present = any(key in value for key in (
+            "cache_read_input_tokens", "cached_input_tokens", "cache_creation_input_tokens"
+        ))
+        cache_complete = self._cache_complete or (
+            cache_subtotal is not None and cache_present and (
+                not self._messages or (
+                type(value.get("cache_read_input_tokens", value.get("cached_input_tokens"))) is int
+                and type(value.get("cache_creation_input_tokens")) is int
+            ))
+        )
+        cached = cache_subtotal if cache_complete else None
         if normalized_input is not None and normalized_input > MAX_SIGNED_BIGINT:
             raise ProtocolError("invalid Claude usage")
         effective_input = normalized_input if normalized_input is not None else self.input
@@ -784,6 +800,8 @@ class _Usage:
             self.output = target
         self.cached = cached
         self.reasoning = next_reasoning
+        self._uncached, self._cache_read, self._cache_created = uncached, read, created
+        self._cache_complete = cache_complete
 
     def observe_assistant(
         self, frame: Mapping[str, object], session_id: str
@@ -804,18 +822,17 @@ class _Usage:
             for item in (source, target) if item is not None
         ):
             raise ProtocolError("invalid Claude assistant usage")
-        cached_int = self._cached_input(value)
         reasoning = value.get("thinking_tokens", value.get("reasoning_output_tokens"))
         reasoning_present = "thinking_tokens" in value or "reasoning_output_tokens" in value
         prior = self._messages.get(ident)
-        if prior is not None:
-            if cached_int is None:
-                cached_int = prior[2]
-            if target is None:
-                target = prior[1]
-        normalized_input = source + (cached_int or 0) if type(source) is int else (
-            prior[0] if prior is not None else None
+        read, created, cached_int = self._cache_update(
+            value, prior[5] if prior is not None else None,
+            prior[6] if prior is not None else None,
         )
+        if prior is not None and target is None:
+            target = prior[1]
+        uncached = source if type(source) is int else (prior[4] if prior is not None else None)
+        normalized_input = uncached + (cached_int or 0) if uncached is not None else None
         if normalized_input is not None and normalized_input > MAX_SIGNED_BIGINT:
             raise ProtocolError("invalid Claude assistant usage")
         if cached_int is not None and normalized_input is not None and cached_int > normalized_input:
@@ -833,7 +850,7 @@ class _Usage:
             reasoning_int = None
         if normalized_input is None and target is None and cached_int is None and reasoning_int is None:
             return None
-        current = (normalized_input, target, cached_int, reasoning_int)
+        current = (normalized_input, target, cached_int, reasoning_int, uncached, read, created)
         if prior == current:
             return None
         if prior is not None and (
@@ -848,22 +865,32 @@ class _Usage:
         next_output = self._sum_messages(messages, 1)
         next_cached = self._sum_messages(messages, 2)
         next_reasoning = _optional_reasoning(self._sum_messages(messages, 3), next_output)
+        next_uncached = self._sum_messages(messages, 4)
+        next_read = self._sum_known_messages(messages, 5)
+        next_created = self._sum_known_messages(messages, 6)
+        if (next_read or 0) + (next_created or 0) > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude cached usage")
         if next_cached is not None and next_input is not None and next_cached > next_input:
             raise ProtocolError("invalid Claude cached usage")
-        self._messages = messages
-        self.input, self.output, self.cached, self.reasoning = (
-            next_input, next_output, next_cached, next_reasoning
-        )
-        return ident, TokenCounts(
+        observed_tokens = TokenCounts(
             input_tokens=normalized_input,
             output_tokens=target,
             cached_input_tokens=cached_int,
             reasoning_output_tokens=reasoning_int,
         )
+        self._messages = messages
+        self.input, self.output, self.cached, self.reasoning = (
+            next_input, next_output, next_cached, next_reasoning
+        )
+        self._uncached, self._cache_read, self._cache_created = (
+            next_uncached, next_read, next_created
+        )
+        self._cache_complete = next_cached is not None
+        return ident, observed_tokens
 
     @staticmethod
     def _sum_messages(
-        messages: Mapping[str, tuple[int | None, int | None, int | None, int | None]],
+        messages: Mapping[str, tuple[int | None, ...]],
         index: int,
     ) -> int | None:
         values = [message[index] for message in messages.values()]
@@ -877,7 +904,21 @@ class _Usage:
         return total
 
     @staticmethod
-    def _cached_input(value: Mapping[str, object]) -> int | None:
+    def _sum_known_messages(
+        messages: Mapping[str, tuple[int | None, ...]], index: int
+    ) -> int | None:
+        values = [value for message in messages.values() if (value := message[index]) is not None]
+        if not values:
+            return None
+        total = sum(values)
+        if total > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude assistant usage")
+        return total
+
+    @staticmethod
+    def _cache_update(
+        value: Mapping[str, object], prior_read: int | None, prior_created: int | None
+    ) -> tuple[int | None, int | None, int | None]:
         read = value.get("cache_read_input_tokens", value.get("cached_input_tokens"))
         created = value.get("cache_creation_input_tokens")
         if any(
@@ -886,13 +927,22 @@ class _Usage:
         ):
             raise ProtocolError("invalid Claude cached usage")
         if read is None and created is None:
-            return None
-        total = (read if type(read) is int else 0) + (
-            created if type(created) is int else 0
-        )
+            if prior_read is None and prior_created is None:
+                return None, None, None
+            read, created = prior_read, prior_created
+        else:
+            read = read if type(read) is int else (prior_read or 0)
+            created = created if type(created) is int else (prior_created or 0)
+        if (
+            prior_read is not None and read is not None and read < prior_read
+        ) or (
+            prior_created is not None and created is not None and created < prior_created
+        ):
+            raise ProtocolError("regressing Claude cached usage")
+        total = (read or 0) + (created or 0)
         if total > MAX_SIGNED_BIGINT:
             raise ProtocolError("invalid Claude cached usage")
-        return total
+        return read, created, total
 
     def telemetry(self, started: float) -> AttemptTelemetry:
         return AttemptTelemetry(

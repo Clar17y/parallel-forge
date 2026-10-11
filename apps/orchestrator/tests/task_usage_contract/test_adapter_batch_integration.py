@@ -28,7 +28,7 @@ for directory in ("agents", "persistence"):
     if helper_path not in sys.path:
         sys.path.insert(0, helper_path)
 
-from test_codex_gateway import _Broker, _gateway
+from test_codex_gateway import _Broker, _gateway, _script
 from test_scheduler_acceptance import _admit_run, _remove_disposable_subscription_rows  # noqa: F401
 from test_subscription_protocol import _request
 
@@ -45,8 +45,9 @@ class _DurableReplaySink:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("collide_earlier_live", (False, True), ids=("normal_ids", "earlier_final_id"))
 async def test_supervised_adapter_observations_reconcile_once_in_postgres(
-    session_factory, persisted_run
+    session_factory, persisted_run, collide_earlier_live: bool
 ) -> None:
     request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
     async with PostgresUnitOfWork(session_factory) as work:
@@ -109,7 +110,20 @@ async def test_supervised_adapter_observations_reconcile_once_in_postgres(
     await writer.bind(binding)
     sink = _DurableReplaySink(writer)
     broker = _Broker()
-    result = await _gateway("tool", broker=broker).execute_observed(
+    gateway = _gateway("tool", broker=broker)
+    if collide_earlier_live:
+        final_id = f"codex-final-{attempt.attempt_id}"
+        script = _script("tool").replace(
+            "def send(value): print(json.dumps(value),flush=True)",
+            "def send(value):\n"
+            " if value.get('method') == 'thread/tokenUsage/updated':\n"
+            f"  value['params']['eventId'] = {final_id!r}\n"
+            "  print(json.dumps(value),flush=True)\n"
+            "  value['params']['eventId'] = 'later-live'\n"
+            " print(json.dumps(value),flush=True)",
+        )
+        gateway._installation = replace(gateway._installation, script=("-c", script))
+    result = await gateway.execute_observed(
         request, usage_binding=binding, usage_sink=sink
     )
     assert result.failure is None
@@ -120,6 +134,8 @@ async def test_supervised_adapter_observations_reconcile_once_in_postgres(
     assert sink.events and any(not item.final for item in sink.events)
     assert all(item.binding == binding for item in sink.events)
     assert len({item.event_id for item in sink.events}) == len(sink.events)
+    assert sum(item.final for item in sink.events) == 1
+    assert sink.events[-1].reconciles_event_id == sink.events[-2].event_id
 
     query = TaskUsageTotalsQuery(session_factory)
     observed = await query.totals(binding.subject)

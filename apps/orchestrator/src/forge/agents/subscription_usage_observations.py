@@ -234,11 +234,11 @@ class _UsagePublisher:
             return
         self._closed = True
         self.sequence += 1
-        event_id = _bounded_identity(
-            event_id, fallback=f"forge:missing-final:{self.sequence}", limit=256
-        )
-        if event_id == self.last_event_id:
-            event_id = f"forge:final:{self.sequence}"
+        # The durable key is (work_unit_id, event_id). Provider IDs in the
+        # reserved forge: namespace are hashed by publish_live, so this stable
+        # final identity is disjoint from every live event, including earlier
+        # events whose IDs are no longer the reconciliation target.
+        event_id = f"forge:final:{self.binding.work_unit_id}"
         context = context or self.last_context
         unknowns = _extract_unknown_dimensions(tokens, context)
         final_obs = Observation(
