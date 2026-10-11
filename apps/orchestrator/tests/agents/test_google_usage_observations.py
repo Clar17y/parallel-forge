@@ -1,6 +1,8 @@
 """Providerless tests for Google Gemini and Antigravity task usage observations."""
 
 import asyncio
+import hashlib
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -15,6 +17,7 @@ from forge.agents.antigravity_runtime import (
     _validate_authoring_usage_binding,
     _validate_subscription_usage_binding,
 )
+from forge.agents.client_process import ClientProcessError
 from forge.agents.epic_brainstorm_gateway import (
     EpicBrainstormGateway,
 )
@@ -669,6 +672,144 @@ async def test_antigravity_execute_observed_live_and_final(monkeypatch: pytest.M
 
 
 # --- Authoring EpicBrainstormGateway execute_observed Tests ---
+
+
+@pytest.mark.asyncio
+async def test_epic_brainstorm_observed_uses_binding_attempt_without_lifecycle_attribute(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
+    job = _make_authoring_job(job_id, project_id)
+    binding = _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash")
+    installation = GeminiInstallationSpec(
+        client="gemini_cli", account="dev-account", model="gemini-flash", effort="low",
+        executable=str(tmp_path / "gemini.exe"), executable_digest="a" * 64,
+        client_version="1.0.0", cwd=str(tmp_path), home=str(tmp_path),
+        quota=InstallationQuota(account="dev-account", pool="default-pool"),
+    )
+    called: list[UUID] = []
+
+    async def fake_official(
+        self: object, job: object, turns: object, reader: object, *,
+        cancelled: object, lifecycle: object, publisher: _ObservationPublisher | None = None,
+        attempt_id_override: UUID | None = None,
+    ) -> BrainstormGatewayResult:
+        assert attempt_id_override is not None
+        called.append(attempt_id_override)
+        return BrainstormGatewayResult(
+            proposal=None, telemetry=AttemptTelemetry(duration_ms=1, input_tokens=3),
+            failure="invalid_output",
+        )
+
+    class MinimalLifecycle:
+        async def launch_intent(self, launch_id: str) -> None:
+            pass
+
+        async def started(self, receipt: object) -> None:
+            pass
+
+        async def finished(self, receipt: object, result: object) -> None:
+            pass
+
+    monkeypatch.setattr(EpicBrainstormGateway, "_execute_official", fake_official)
+    sink = FakeUsageObserver()
+    result = await EpicBrainstormGateway(installation=installation).execute_observed(
+        job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        cancelled=AsyncMock(return_value=False), lifecycle=MinimalLifecycle(),
+        usage_binding=binding, usage_sink=sink,
+    )
+    assert result.failure == "invalid_output"
+    assert called == [attempt_id]
+    assert len(sink.observations) == 1
+    assert sink.observations[0].binding.source.source_id == attempt_id
+
+    inner_sink = FakeUsageObserver()
+    inner = await EpicBrainstormGateway(installation=None, launch_spec=None).execute_observed(
+        job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        cancelled=AsyncMock(return_value=False), lifecycle=MinimalLifecycle(),
+        usage_binding=_make_authoring_binding(
+            job_id, project_id, attempt_id, model="scripted-brainstorm"
+        ),
+        usage_sink=inner_sink,
+    )
+    assert inner.failure == "unavailable"
+    assert len(inner_sink.observations) == 1
+    assert inner_sink.observations[0].binding.source.source_id == attempt_id
+
+    matching = await EpicBrainstormGateway(installation=installation).execute_observed(
+        job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        cancelled=AsyncMock(return_value=False), lifecycle=MockLifecycle(attempt_id),
+        usage_binding=binding, usage_sink=FakeUsageObserver(),
+    )
+    assert matching.failure == "invalid_output"
+    assert called == [attempt_id, attempt_id]
+
+    invalid = (
+        (MockLifecycle(uuid4()), binding),
+        (MinimalLifecycle(), _make_authoring_binding(uuid4(), project_id, attempt_id, model="gemini-flash")),
+        (MinimalLifecycle(), _make_authoring_binding(job_id, uuid4(), attempt_id, model="gemini-flash")),
+        (MinimalLifecycle(), _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash", role="review")),
+        (MinimalLifecycle(), _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash", effort="high")),
+        (MinimalLifecycle(), _make_authoring_binding(job_id, project_id, attempt_id, model="other-model")),
+    )
+    for bad_lifecycle, bad_binding in invalid:
+        with pytest.raises(ValueError):
+            await EpicBrainstormGateway(installation=installation).execute_observed(
+                job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+                cancelled=AsyncMock(return_value=False), lifecycle=bad_lifecycle,
+                usage_binding=bad_binding, usage_sink=FakeUsageObserver(),
+            )
+    assert called == [attempt_id, attempt_id]
+
+
+@pytest.mark.asyncio
+async def test_epic_brainstorm_observed_official_home_uses_binding_attempt_without_lifecycle_id(
+    tmp_path: Path,
+) -> None:
+    job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
+    job = _make_authoring_job(job_id, project_id)
+    binding = _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash")
+    executable = Path(sys.executable)
+    installation = GeminiInstallationSpec(
+        client="gemini_cli", account="dev-account", model="gemini-flash", effort="low",
+        executable=str(executable), executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        client_version="1.0.0", cwd=str(tmp_path), home=str(tmp_path),
+        quota=InstallationQuota(account="dev-account", pool="default-pool"),
+    )
+
+    class CapturingSupervisor:
+        def __init__(self) -> None:
+            self.specs: list[object] = []
+
+        async def start(self, spec: object, **_kwargs: object) -> None:
+            self.specs.append(spec)
+            raise ClientProcessError("scripted launch rejection")
+
+    class MinimalLifecycle:
+        async def launch_intent(self, launch_id: str) -> None:
+            pass
+
+        async def started(self, receipt: object) -> None:
+            pass
+
+        async def finished(self, receipt: object, result: object) -> None:
+            pass
+
+    supervisor = CapturingSupervisor()
+    sink = FakeUsageObserver()
+    result = await EpicBrainstormGateway(
+        installation=installation, supervisor=supervisor,
+    ).execute_observed(
+        job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        cancelled=AsyncMock(return_value=False), lifecycle=MinimalLifecycle(),
+        usage_binding=binding, usage_sink=sink,
+    )
+    assert result.failure == "invalid_output"
+    assert len(supervisor.specs) == 1
+    assert str(attempt_id) in supervisor.specs[0].cwd
+    assert len(sink.observations) == 1
+    assert sink.observations[0].binding.source.source_id == attempt_id
+
 
 @pytest.mark.asyncio
 async def test_epic_brainstorm_execute_observed_gemini(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

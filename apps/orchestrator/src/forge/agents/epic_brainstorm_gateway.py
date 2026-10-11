@@ -134,8 +134,14 @@ class EpicBrainstormGateway:
         usage_binding: WorkUnitBinding,
         usage_sink: TaskUsageObserver,
     ) -> AuthoringGatewayResult:
+        if not isinstance(usage_binding, WorkUnitBinding):
+            raise TypeError("usage binding must be a WorkUnitBinding")
         lifecycle_attempt = getattr(lifecycle, "attempt_id", None)
-        attempt_id = lifecycle_attempt if isinstance(lifecycle_attempt, UUID) else uuid4()
+        attempt_id = (
+            lifecycle_attempt
+            if isinstance(lifecycle_attempt, UUID)
+            else usage_binding.source.source_id
+        )
         expected_model = getattr(self.installation, "model", None)
         _validate_authoring_usage_binding(
             usage_binding, job, attempt_id, expected_model=expected_model

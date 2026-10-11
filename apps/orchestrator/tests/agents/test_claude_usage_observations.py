@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from forge.agents.claude_gateway import _Usage
+from forge.agents.subscription_protocol import ProtocolError
 from forge.agents.subscription_usage_observations import _UsagePublisher
 from forge.application.ports.subscription_gateway import (
     ObservableSubscriptionGateway,
@@ -49,6 +50,103 @@ class RecordingUsageObserver(TaskUsageObserver):
         if self.fail:
             raise RuntimeError("sink delivery failure")
         self.events.append(observation)
+
+
+def test_claude_optional_reasoning_message_replay_reorder_and_terminal() -> None:
+    usage = _Usage()
+
+    def message(ident: str, source: int, output: int, **extra: object) -> None:
+        usage.observe_assistant({
+            "type": "assistant", "session_id": "thread",
+            "message": {"id": ident, "usage": {
+                "input_tokens": source, "output_tokens": output, **extra,
+            }},
+        }, "thread")
+
+    message("m2", 7, 2, thinking_tokens=1)
+    message("m1", 6, 3, thinking_tokens=2)
+    assert (usage.input, usage.output, usage.reasoning) == (13, 5, 3)
+    message("m1", 6, 3, thinking_tokens=2)
+    assert usage.reasoning == 3
+    message("m1", 6, 3, thinking_tokens=True)
+    assert usage.reasoning is None
+    message("m1", 6, 3, thinking_tokens=0)
+    assert usage.reasoning == 1
+    message("m1", 6, 3, thinking_tokens=4)
+    assert usage.reasoning is None
+    usage.observe({"input_tokens": 13, "output_tokens": 5, "thinking_tokens": 5})
+    assert usage.reasoning == 5
+    usage.observe({"input_tokens": 13, "output_tokens": 5, "thinking_tokens": True})
+    assert usage.reasoning is None
+    usage.observe({"input_tokens": 13, "output_tokens": 5, "thinking_tokens": 0})
+    assert usage.reasoning == 0
+    usage.observe({"input_tokens": 13, "output_tokens": 5, "thinking_tokens": 2**63})
+    assert usage.reasoning is None
+    usage.observe({"input_tokens": 13, "output_tokens": 5, "thinking_tokens": -1})
+    assert usage.reasoning is None
+    usage.observe({"input_tokens": 13, "output_tokens": 5, "thinking_tokens": 6})
+    assert usage.reasoning is None
+    usage.observe({"input_tokens": 13, "output_tokens": 5})
+    assert usage.reasoning is None
+    usage.observe({"thinking_tokens": 4})
+    assert usage.reasoning == 4
+    usage.observe({"thinking_tokens": True})
+    assert usage.reasoning is None
+    with pytest.raises(ProtocolError):
+        usage.observe({"input_tokens": 2**63, "output_tokens": 5})
+    with pytest.raises(ProtocolError):
+        usage.observe({"input_tokens": 13, "output_tokens": 5,
+                       "cache_read_input_tokens": 2**63})
+    assert (usage.input, usage.output) == (13, 5)
+
+    maximum = _Usage()
+    event = maximum.observe_assistant({
+        "type": "assistant", "session_id": "thread",
+        "message": {"id": "large", "usage": {
+            "input_tokens": 1, "output_tokens": 2**63 - 1,
+            "thinking_tokens": 2**63 - 1,
+        }},
+    }, "thread")
+    assert event is not None and event[1].reasoning_output_tokens == 2**63 - 1
+    assert maximum.reasoning == 2**63 - 1
+    maximum.observe_assistant({
+        "type": "assistant", "session_id": "thread",
+        "message": {"id": "large", "usage": {
+            "input_tokens": 1, "output_tokens": 2**63 - 1,
+            "thinking_tokens": -1,
+        }},
+    }, "thread")
+    assert maximum.reasoning is None
+
+
+@pytest.mark.asyncio
+async def test_claude_observed_optional_reasoning_bool_does_not_fail_settled_turn(
+    tmp_path: Path,
+) -> None:
+    peer = Path(__file__).with_name("claude_stream_peer.py").read_text()
+    original = 'def send(value):\n    print(json.dumps(value, separators=(",", ":")), flush=True)'
+    replacement = (
+        "def send(value):\n"
+        "    if value.get('type') == 'assistant' and value.get('message', {}).get('usage'):\n"
+        "        value['message']['usage']['thinking_tokens'] = True\n"
+        "    if value.get('type') == 'result' and value.get('usage'):\n"
+        "        value['usage']['thinking_tokens'] = True\n"
+        "    print(json.dumps(value, separators=(\",\", \":\")), flush=True)"
+    )
+    assert original in peer
+    script = tmp_path / "claude_reasoning_peer.py"
+    script.write_text(peer.replace(original, replacement))
+    gateway = _gateway("usage_sum", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=(str(script), "usage_sum"))
+    request = _anthropic_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert result.telemetry.output_tokens == 5
+    assert all(event.tokens.reasoning_output_tokens is None for event in sink.events)
 
 
 @pytest.mark.parametrize(

@@ -23,8 +23,16 @@ __all__ = [
     "_UsagePublisher",
     "_extract_context_window",
     "_extract_unknown_dimensions",
+    "_optional_reasoning",
     "_validate_usage_binding",
 ]
+
+
+def _optional_reasoning(value: object, output: int | None) -> int | None:
+    """Discard malformed optional reasoning without changing measured output."""
+    if type(value) is not int or not 0 <= value <= MAX_SIGNED_BIGINT:
+        return None
+    return value if output is None or value <= output else None
 
 
 def _validate_usage_binding(

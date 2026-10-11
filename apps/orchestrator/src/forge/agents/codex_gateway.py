@@ -49,6 +49,7 @@ from forge.agents.subscription_protocol import (
 )
 from forge.agents.subscription_usage_observations import (
     _extract_context_window,
+    _optional_reasoning,
     _UsagePublisher,
     _validate_usage_binding,
 )
@@ -76,6 +77,7 @@ from forge.domain.provider_quota import (
 )
 from forge.domain.subscription import AttemptTelemetry, AuthMode, BillingMode
 from forge.domain.task_usage_contract import (
+    MAX_SIGNED_BIGINT,
     TokenCounts,
     WorkUnitBinding,
 )
@@ -361,16 +363,26 @@ class _Usage:
         if not isinstance(total, Mapping):
             raise ProtocolError("invalid token usage")
         values = [total.get(key) for key in ("inputTokens", "outputTokens", "cachedInputTokens")]
-        if any(type(value) is not int or value < 0 for value in values):
+        if any(type(value) is not int or not 0 <= value <= MAX_SIGNED_BIGINT for value in values):
             raise ProtocolError("invalid token counters")
         counters = cast(list[int], values)
+        if counters[2] > counters[0]:
+            raise ProtocolError("cached input exceeds total input")
         prior = (self.input, self.output, self.cached)
         if any(old is not None and new < old for old, new in zip(prior, counters, strict=True)):
             raise ProtocolError("token counters regressed")
-        self.input, self.output, self.cached = counters
         reasoning = total.get("reasoningOutputTokens", total.get("reasoningTokens"))
-        if isinstance(reasoning, int) and reasoning >= 0:
-            self.reasoning = reasoning
+        if "reasoningOutputTokens" in total or "reasoningTokens" in total:
+            next_reasoning = _optional_reasoning(reasoning, counters[1])
+            self.reasoning = (
+                next_reasoning
+                if next_reasoning is None or self.reasoning is None
+                or next_reasoning >= self.reasoning
+                else None
+            )
+        elif self.reasoning is not None and self.reasoning > counters[1]:
+            self.reasoning = None
+        self.input, self.output, self.cached = counters
 
     def telemetry(self, started: float) -> AttemptTelemetry:
         return AttemptTelemetry(

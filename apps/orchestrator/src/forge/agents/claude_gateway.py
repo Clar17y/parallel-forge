@@ -49,6 +49,7 @@ from forge.agents.subscription_protocol import (
 )
 from forge.agents.subscription_usage_observations import (
     _extract_context_window,
+    _optional_reasoning,
     _UsagePublisher,
     _validate_usage_binding,
 )
@@ -76,6 +77,7 @@ from forge.domain.provider_quota import (
 )
 from forge.domain.subscription import AttemptTelemetry, AuthMode, BillingMode, TaskBudget
 from forge.domain.task_usage_contract import (
+    MAX_SIGNED_BIGINT,
     TokenCounts,
     WorkUnitBinding,
 )
@@ -740,26 +742,48 @@ class _Usage:
             return
         source = value.get("input_tokens", value.get("inputTokens"))
         target = value.get("output_tokens", value.get("outputTokens"))
-        if source is None and target is None:
+        if source is None and target is None and not any(
+            key in value for key in (
+                "cache_read_input_tokens", "cached_input_tokens",
+                "cache_creation_input_tokens", "thinking_tokens", "reasoning_output_tokens",
+            )
+        ):
             return
-        if any(type(item) is not int or item < 0 for item in (source, target) if item is not None):
+        if any(
+            type(item) is not int or not 0 <= item <= MAX_SIGNED_BIGINT
+            for item in (source, target) if item is not None
+        ):
             raise ProtocolError("invalid Claude usage")
         cached = self._cached_input(value)
         if cached is None:
             cached = self.cached
         normalized_input = source + (cached or 0) if type(source) is int else None
+        if normalized_input is not None and normalized_input > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude usage")
+        effective_input = normalized_input if normalized_input is not None else self.input
+        if cached is not None and effective_input is not None and cached > effective_input:
+            raise ProtocolError("invalid Claude cached usage")
         if (self.input is not None and normalized_input is not None and normalized_input < self.input) or (
             self.output is not None and type(target) is int and target < self.output
         ):
             raise ProtocolError("regressing Claude usage")
+        reasoning_present = "thinking_tokens" in value or "reasoning_output_tokens" in value
+        reasoning = value.get("thinking_tokens", value.get("reasoning_output_tokens"))
+        effective_output = target if type(target) is int else self.output
+        next_reasoning = (
+            _optional_reasoning(reasoning, effective_output)
+            if reasoning_present else self.reasoning
+        )
+        if next_reasoning is not None and effective_output is not None and next_reasoning > effective_output:
+            next_reasoning = None
+        if next_reasoning is not None and self.reasoning is not None and next_reasoning < self.reasoning:
+            next_reasoning = None
         if normalized_input is not None:
             self.input = normalized_input
         if type(target) is int:
             self.output = target
         self.cached = cached
-        reasoning = value.get("thinking_tokens", value.get("reasoning_output_tokens"))
-        if isinstance(reasoning, int) and reasoning >= 0:
-            self.reasoning = reasoning
+        self.reasoning = next_reasoning
 
     def observe_assistant(
         self, frame: Mapping[str, object], session_id: str
@@ -775,22 +799,38 @@ class _Usage:
         if type(ident) is not str or not ident or not isinstance(value, Mapping):
             raise ProtocolError("unidentified Claude usage")
         source, target = value.get("input_tokens"), value.get("output_tokens")
-        if any(type(item) is not int or item < 0 for item in (source, target) if item is not None):
+        if any(
+            type(item) is not int or not 0 <= item <= MAX_SIGNED_BIGINT
+            for item in (source, target) if item is not None
+        ):
             raise ProtocolError("invalid Claude assistant usage")
         cached_int = self._cached_input(value)
         reasoning = value.get("thinking_tokens", value.get("reasoning_output_tokens"))
-        reasoning_int = reasoning if isinstance(reasoning, int) and reasoning >= 0 else None
+        reasoning_present = "thinking_tokens" in value or "reasoning_output_tokens" in value
         prior = self._messages.get(ident)
         if prior is not None:
             if cached_int is None:
                 cached_int = prior[2]
-            if reasoning_int is None:
-                reasoning_int = prior[3]
             if target is None:
                 target = prior[1]
         normalized_input = source + (cached_int or 0) if type(source) is int else (
             prior[0] if prior is not None else None
         )
+        if normalized_input is not None and normalized_input > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude assistant usage")
+        if cached_int is not None and normalized_input is not None and cached_int > normalized_input:
+            raise ProtocolError("invalid Claude cached usage")
+        reasoning_int = (
+            _optional_reasoning(reasoning, target)
+            if reasoning_present else prior[3] if prior is not None else None
+        )
+        if reasoning_int is not None and target is not None and reasoning_int > target:
+            reasoning_int = None
+        if (
+            prior is not None and reasoning_int is not None and prior[3] is not None
+            and reasoning_int < prior[3]
+        ):
+            reasoning_int = None
         if normalized_input is None and target is None and cached_int is None and reasoning_int is None:
             return None
         current = (normalized_input, target, cached_int, reasoning_int)
@@ -803,11 +843,17 @@ class _Usage:
             raise ProtocolError("regressing Claude assistant usage")
         if prior is None and len(self._messages) >= 1024:
             raise ProtocolError("too many Claude usage messages")
-        self._messages[ident] = current
-        self.input = self._sum_messages(0)
-        self.output = self._sum_messages(1)
-        self.cached = self._sum_messages(2)
-        self.reasoning = self._sum_messages(3)
+        messages = {**self._messages, ident: current}
+        next_input = self._sum_messages(messages, 0)
+        next_output = self._sum_messages(messages, 1)
+        next_cached = self._sum_messages(messages, 2)
+        next_reasoning = _optional_reasoning(self._sum_messages(messages, 3), next_output)
+        if next_cached is not None and next_input is not None and next_cached > next_input:
+            raise ProtocolError("invalid Claude cached usage")
+        self._messages = messages
+        self.input, self.output, self.cached, self.reasoning = (
+            next_input, next_output, next_cached, next_reasoning
+        )
         return ident, TokenCounts(
             input_tokens=normalized_input,
             output_tokens=target,
@@ -815,23 +861,38 @@ class _Usage:
             reasoning_output_tokens=reasoning_int,
         )
 
-    def _sum_messages(self, index: int) -> int | None:
-        values = [message[index] for message in self._messages.values()]
-        return sum(value for value in values if value is not None) if all(
-            value is not None for value in values
-        ) else None
+    @staticmethod
+    def _sum_messages(
+        messages: Mapping[str, tuple[int | None, int | None, int | None, int | None]],
+        index: int,
+    ) -> int | None:
+        values = [message[index] for message in messages.values()]
+        if not all(value is not None for value in values):
+            return None
+        total = sum(value for value in values if value is not None)
+        if total > MAX_SIGNED_BIGINT:
+            if index == 3:
+                return None
+            raise ProtocolError("invalid Claude assistant usage")
+        return total
 
     @staticmethod
     def _cached_input(value: Mapping[str, object]) -> int | None:
         read = value.get("cache_read_input_tokens", value.get("cached_input_tokens"))
         created = value.get("cache_creation_input_tokens")
-        if any(type(item) is not int or item < 0 for item in (read, created) if item is not None):
+        if any(
+            type(item) is not int or not 0 <= item <= MAX_SIGNED_BIGINT
+            for item in (read, created) if item is not None
+        ):
             raise ProtocolError("invalid Claude cached usage")
         if read is None and created is None:
             return None
-        return (read if type(read) is int else 0) + (
+        total = (read if type(read) is int else 0) + (
             created if type(created) is int else 0
         )
+        if total > MAX_SIGNED_BIGINT:
+            raise ProtocolError("invalid Claude cached usage")
+        return total
 
     def telemetry(self, started: float) -> AttemptTelemetry:
         return AttemptTelemetry(

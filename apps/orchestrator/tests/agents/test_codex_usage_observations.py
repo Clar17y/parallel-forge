@@ -7,6 +7,8 @@ from dataclasses import replace
 from uuid import UUID, uuid4
 
 import pytest
+from forge.agents.codex_gateway import _Usage
+from forge.agents.subscription_protocol import ProtocolError
 from forge.agents.subscription_usage_observations import (
     _extract_context_window,
     _UsagePublisher,
@@ -44,6 +46,57 @@ class RecordingUsageObserver(TaskUsageObserver):
         if self.fail:
             raise RuntimeError("sink delivery failure")
         self.events.append(observation)
+
+
+def test_codex_optional_reasoning_cumulative_validation_and_core_counters() -> None:
+    usage = _Usage()
+
+    def observe(input_tokens: int, output_tokens: int, cached: int, **extra: object) -> None:
+        usage.observe({"tokenUsage": {"total": {
+            "inputTokens": input_tokens, "outputTokens": output_tokens,
+            "cachedInputTokens": cached, **extra,
+        }}})
+
+    observe(13, 5, 2, reasoningOutputTokens=2)
+    assert usage.reasoning == 2
+    observe(13, 5, 2)
+    assert usage.reasoning == 2
+    for invalid in (True, -1, 6, 2**63):
+        observe(13, 5, 2, reasoningOutputTokens=invalid)
+        assert usage.reasoning is None
+    observe(13, 5, 2, reasoningOutputTokens=0)
+    assert usage.reasoning == 0
+    observe(2**63 - 1, 2**63 - 1, 2, reasoningOutputTokens=2**63 - 1)
+    assert usage.reasoning == 2**63 - 1
+    observe(2**63 - 1, 2**63 - 1, 2, reasoningOutputTokens=2**63)
+    assert usage.reasoning is None
+    with pytest.raises(ProtocolError):
+        observe(2**63, 2**63 - 1, 2)
+    with pytest.raises(ProtocolError):
+        observe(2**63 - 1, 2**63 - 1, 2**63)
+    assert (usage.input, usage.output, usage.cached) == (2**63 - 1, 2**63 - 1, 2)
+
+
+@pytest.mark.asyncio
+async def test_codex_observed_optional_reasoning_bool_does_not_fail_settled_turn() -> None:
+    script = _script("tool").replace(
+        "def send(value): print(json.dumps(value),flush=True)",
+        "def send(value):\n"
+        " if value.get('method') == 'thread/tokenUsage/updated':\n"
+        "  value['params']['tokenUsage']['total']['reasoningOutputTokens'] = True\n"
+        " print(json.dumps(value),flush=True)",
+    )
+    gateway = _gateway("tool", broker=_Broker())
+    gateway._installation = replace(gateway._installation, script=("-c", script))
+    request = _request(tools=frozenset({ToolName.REPOSITORY_READ_FILE}))
+    sink = RecordingUsageObserver()
+    result = await gateway.execute_observed(
+        request, usage_binding=_valid_binding(request), usage_sink=sink,
+    )
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert result.telemetry.output_tokens == 5
+    assert [event.tokens.reasoning_output_tokens for event in sink.events] == [None, None]
 
 
 @pytest.mark.parametrize(
