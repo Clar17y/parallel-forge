@@ -7,7 +7,7 @@
     97,
     100
   ],
-  "status": "Locally implemented, simplified and repaired; PR #108 published, round-four repair push pending at this snapshot.",
+  "status": "Locally implemented, simplified and repaired; PR #108 published, round-five repair push pending at this snapshot.",
   "feature_complete": false,
   "candidate": {
     "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
@@ -694,6 +694,107 @@
       "published_head_before_repair": "f697f83881b6767ee9549f23ba56f263180043b8",
       "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38100286864",
       "previous_head_codex": "completed with one new finding; first seven threads already resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round5": {
+    "snapshot_at": "2026-10-11T02:13:34.922191+00:00",
+    "source_commit": "9f93e528f8fe0fc698128ef1780bd6d7579dd32e",
+    "source_tree": "55c8beacf67ada67183e390016bee89fcae02303",
+    "starting_head": "75c104573c67b16d97562a250d4fa35fdfd681f1",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "17b9f6c5aff68d3d5b2569e2fdaa22f973d86aac19bc5eea01628fb3be5dfcb6",
+    "repair_delta_sha256": "83c1fd4ab38889cc70f335785856f8e23627bddfeb734e46dc1bc43568afbb55",
+    "worker_scoped_candidates": {
+      "reporting": {
+        "owned_diff_matches_worker": true,
+        "owned_diff_sha256": "83c1fd4ab38889cc70f335785856f8e23627bddfeb734e46dc1bc43568afbb55",
+        "worker_raw_diff_sha256": "291dd985c1a66460ddf2e4ec242efa775f531ca967660f876eb527b29090c61e",
+        "receipt_normalization": "Only CRLF-to-LF normalization of saved PowerShell patch; canonical git diff bytes matched.",
+        "worker_diff_path": ".llm-output/pr108-round5/reporting/scoped-diff.patch",
+        "starting_head": "75c104573c67b16d97562a250d4fa35fdfd681f1",
+        "owned_files": {
+          "apps/orchestrator/src/forge/application/services/task_usage_baselines.py": "05ba482e81e11713c543182590037a51abcc563db4c38e90a544c3a73af2fd3f",
+          "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "3fd5c36e41fb820195688998e9281114d4ec54275a6e93632b09e6649575e8e8",
+          "apps/orchestrator/src/forge/domain/task_usage_baselines.py": "bdc8805acc8616e55a6fe8ee33151a2267b7fc7b3653846f925dce9c29846735",
+          "apps/orchestrator/tests/application/test_task_usage_baselines.py": "904f6cdac2a9afa257fa0bcf75c61e184adbdc3f101a8244472bfb1acaf40dc3",
+          "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "bea0499253b9cd76cfafbb77491c178c8f25b29bc55554dd526f35c2b2cbb81c",
+          "apps/orchestrator/tests/domain/test_task_usage_baselines.py": "12d8c0746be6ea01f658091a8ec9ebb072ce9fdf4a41e864a45a5300d6e0ae05",
+          "apps/orchestrator/tests/api/test_task_usage_reporting.py": "e7055c2b2f80d2b3d556c72bb1c8a3871f8ee16e08083c0f35e084c5f1a3ecc6",
+          "apps/orchestrator/src/forge/persistence/queries/task_usage_totals.py": "e5028075cb9bb7575816ed86343257e5151251df87f9ececee49fed1f70aa1d9",
+          "apps/orchestrator/tests/persistence/test_task_usage_observations.py": "7d6a0a9e904efec6130af5969e847d1a4e7b3ee6db0aa0f92b950989ad8dd682"
+        }
+      },
+      "unchanged_gateway": {
+        "scope": "policy",
+        "all_file_hashes_match": true,
+        "manifest_sha256": "1ae936eeabef5819465bc12d06529a05200e6920d8cb6a17c085232adfc17d3d",
+        "files": {
+          "apps/orchestrator/src/forge/application/services/task_usage_policy.py": "66c5ef1201dfe06503670c877034a1e6a440d85934eb8461f89e6fae964e987d",
+          "apps/orchestrator/src/forge/worker/bound_delivery.py": "0966f94ac12c0c6d01ab7216a9729565c55df640399e74a77cdfc1d913d8b01c",
+          "apps/orchestrator/src/forge/worker/composition.py": "1134fd581eca97ade8ea6cfe7bde756a1866a6ffb12e428a12f959707165a754",
+          "apps/orchestrator/tests/application/test_bound_delivery.py": "dec2976568b44d9e2635d286cc306a258b0dd62bd3d102df2b6728ff9ca8bf1b",
+          "apps/orchestrator/tests/application/test_worker_composition.py": "b8b5d5f5ed69c25c28032ea8f1855fbc3e1bd6c333a0a4acf97b2b0fc2d395f7",
+          "apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py": "cfdaadd58f81f87cd3e1ee779f6120c2a25f7d7aea07f9fff1b16865854eaa61"
+        }
+      }
+    },
+    "fixed_findings": [
+      {
+        "id": "PR108-09",
+        "thread": "PRRT_kwDOUDBiTc6rJULU",
+        "comment": 4239850832
+      },
+      {
+        "id": "PR108-10",
+        "thread": "PRRT_kwDOUDBiTc6rJULW",
+        "comment": 4239850834
+      }
+    ],
+    "summary": "Historical run samples and exclusions use immutable creation, acceptance and terminal-event evidence so later merge and evaluation settlement retain earlier history. Unsupported derived or cross-source token sums remain unavailable with honest coverage, preserving measured source facts and malformed-input validation. The final reporting affected suites passed 55 tests; the observation suite passed 15 tests before its final test-only extension, and all six final overflow-focused cases passed. Scoped mypy, Ruff and whitespace checks passed; unchanged 121-test gateway evidence remains matched.",
+    "detail": "Actual PostgreSQL failure/pass regressions cover measured accepted history surviving a normal merge, inclusive acceptance/merge boundaries, replay of an earlier ready frozen baseline, and production evaluation completion/failure/cancellation before and at settlement despite later mutable updates. Inclusive cohort window edges and malformed outcome payloads remain honest. Signed64 MAX/MAX+1 within/across sources and input/output/cache/reasoning channels cover report/exclusion agreement and manual freeze. Domain/legacy cases cover phase/role overflow while preserving valid totals, route and failed-attempt facts. The final worker patch matches current source/tests after only CRLF-to-LF receipt normalization. No final whole-repository rerun, additional manual full hosted CI or live-provider acceptance is claimed.",
+    "acceptance": "Primary verified concrete final regression assertions, actual red/green/affected/static receipts, the active-worktree import and candidate source/test match. Scoped correctness finding R5-GATE-01 is repaired and verified against production settlement plus PostgreSQL evidence. Earlier review and tests are reused only where relevant inputs match; no extra whole-change review is claimed. Strict unused convenience interfaces were preserved; the observation writer validates history before immutable insertion.",
+    "coverage": "# PR108-09/10 candidate coverage\n\nStarting HEAD `75c104573c67b16d97562a250d4fa35fdfd681f1`; final scoped diff SHA-256 `291DD985C1A66460DDF2E4EC242EFA775F531CA967660F876EB527B29090C61E` (six owned source/test paths, `scoped-diff.patch`). The earlier pre-fixture checkpoint is preserved separately by the primary; this hash is the final lifecycle candidate. Active `forge.__file__` proof in `import.txt`. Real PostgreSQL disposable fixtures on port 5435. No provider or hosted runs.\n\n| Case | Evidence and result |\n| --- | --- |\n| C09-A measured accepted-to-merge and inclusive boundaries | `test_accepted_run_remains_in_historical_report_after_merge` exercises real acceptance fixture, normal merge repository transition and `run.merge_completed`. The fixture now binds its complete admitted source inventory with explicit known final measurements (reservations alone are never counted). Before acceptance is unknown/in-progress; at acceptance accepted; prior-to-merge sample and report have one measured sample with complete source inventory. After later merge, that earlier cutoff retains the same measured total, exclusion counts and report overview; at/after merge outcome is completed. A separate target freezes a ready reference from this accepted measured history before merge, and replay after merge is identical. Original red in `red.txt`, final green in `green-lifecycle-focused.txt` and `affected-fixture-final.txt`. |\n| C09-B durable creation/window, terminal events, shared snapshot | Query uses `Run.created_at`, authoritative acceptance timestamp and immutable terminal event sequence/timestamp, with SQL window prefilter and Python event reconstruction in both samples and exclusions. `test_terminal_event_does_not_retroactively_change_historical_exclusion` proves generic failed/cancelled before/inclusive cutoffs. Existing source-inventory, authority, query-count/batching, report snapshot, freeze and optional-policy cases included in 55 affected passes (`affected-fixture-final.txt`). Current acceptance authority still uses current run candidate/policy; full bitemporal reconstruction of mutable candidate/policy and eventless legacy rows is deliberately unproved. Eventless terminal rows use current state only when `updated_at <= as_of`; accepted eventless older snapshots remain accepted before newer terminal current update. |\n| C09-D production evaluation settlement | `test_evaluation_fixture_settlement_keeps_historical_run_and_window` calls `EvaluationService._settle_fixture_lifecycle` with teardown disabled and proves its actual event payload for completed, failed and cancelled. Before settlement the extant run remains in progress; at settlement, after an unrelated later `Run.updated_at`, and at the inclusive one-day window edge, samples/exclusions/report use the immutable terminal outcome/time. Beyond the edge they omit it. Corrupt list-valued outcome fails closed to unknown/in-progress. `red-fixture.txt` proves all three pre-fix history failures; `green-lifecycle-focused.txt` has 4 lifecycle passes; `affected-fixture-final.txt` has 55 reporting passes. |\n| C10-A bound exact MAX, MAX+1, multi-source, exclusions/report/freeze | Real PG `test_bound_derived_token_overflow_is_unknown_and_excluded_without_losing_components`: exact MAX measured; MAX+1 single-source and two-source derived sums, plus same-channel MAX+1, unmeasured/incomplete; individual representable source facts retained. Report omits unsupported sample. Configured manual freeze with overflowing history returns manual 75 without crash. Red in `red.txt`/`red-channel.txt`, final focused green `green-same-channel-report.txt`. Existing ready/manual freeze and warning-threshold tests in 52 affected passes. |\n| C10-B legacy and domain aggregate | Pure legacy-row test preserves route/failure, marks combined/phase sum unknown; domain test proves two individually valid MAX+1 phase-role amounts aggregate to `None` while measured sample counts remain accurate, and rejects an invalid phase-role integer. Both covered in 52 affected passes. |\n| C10-C same-channel production totals | Real PG `test_valid_source_channels_can_exceed_aggregate_signed64_without_losing_facts` covers input, output, cached and reasoning subset channels at exact MAX and MAX+1; both primary channels overflowing yields `unknown`, one yields `lower_bound`, and all per-source facts retain actual values. `red-channel.txt` has the pre-fix ValueError; `green-channel-final.txt` has 6 passes after the final test extension. Four malformed-storage-value cases still raise. The existing observation suite proves final-over-live and read batching (`observations-final.txt`, 15 passes before the final test-only both-channel extension). The reporting suite (`affected-expanded-final.txt`, 52 passes) covers same-channel report/exclusion/manual freeze. `_sum_known` is used for model rows per execution and subject aggregates; each now returns unavailable on unsupported sum, while `_measured` retains strict stored-value validation. The source observation projector rejects a per-epoch overflow during append before persistence; its strict convenience `known_total_tokens` property and the port convenience property are not production report callers. |\n| C09/10-C static/affected | Four reporting modules: `55 passed` (`affected-fixture-final.txt`). Observation module: `15 passed` (`observations-final.txt`) before final both-channel test-only extension; final focused `6 passed` (`green-channel-final.txt`); totals source is unchanged from those numeric receipts. Source mypy: 3 files clean (`mypy-fixture-final.txt`). Scoped Ruff clean (`ruff-fixture-final.txt`); `git diff --check` clean (`diff-check.txt`). |\n\nKnown limit: full bitemporal mutable candidate/policy reconstruction remains outside this bounded repair. The standalone SourceUsage and UsageTotals `known_total_tokens` convenience properties remain strict on unsupported combined sums; exact production caller search found no report/freeze uses of them.\n",
+    "evidence": {
+      "reporting": ".llm-output/pr108-round5/reporting/coverage.md",
+      "previous_repairs": ".llm-output/pr108-round4/acceptance.json",
+      "unchanged_gateway": ".llm-output/pr108-round3/policy/coverage.json",
+      "unchanged_batch": "docs/usage-monitoring-batch-validation.json",
+      "scoped_correctness": ".llm-output/pr108-round5/correctness-result.json"
+    },
+    "jev": {
+      "search": "jev-search.json: partial (unscored_candidates, operation_budget_reached). Exact RunEvent schema lookup identified execution.py beyond the initial scopes. jev-search-totals.json: complete for the substantiated same-channel aggregate expansion. Unused strict convenience properties were adjudicated by exact references and preserved.",
+      "review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        }
+      },
+      "diff_sha256": "17b9f6c5aff68d3d5b2569e2fdaa22f973d86aac19bc5eea01628fb3be5dfcb6",
+      "focus_disposition": "Jev remains partial due to hunk/operation limits. Its compatibility/test focus names unchanged gateway/runtime paths, whose matched 121-test evidence is reused. The complete supplemental totals search informed the one-channel repair and strict convenience-property adjudication. No all-clear or test success is inferred from scores.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "Full historical reconstruction of mutable candidate/policy/task lineage and eventless legacy histories remains outside this bounded repair.",
+      "The final observation test-only extension was checked in six focused cases; unchanged observation cases reuse the preceding 15-test affected result.",
+      "Strict convenience sum properties have no current production report/freeze callers and retain their existing overflow-rejection semantics.",
+      "No final full repository rerun, additional manual full hosted CI, high-volume benchmark, runtime live-provider acceptance or merge.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain other epic children; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-five repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "75c104573c67b16d97562a250d4fa35fdfd681f1",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38101480473",
+      "previous_head_codex": "completed with two new findings; first eight threads already resolved",
       "new_head_smoke": "pending",
       "new_head_codex": "pending",
       "human_code_owner_review": "pending",
