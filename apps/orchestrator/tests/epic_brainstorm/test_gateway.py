@@ -954,8 +954,8 @@ async def test_observed_antigravity_authoring_actual_stream_settles_before_final
     )
     job = job.model_copy(update={"route": replace(
         job.route,
-        requested=replace(job.route.requested, model=model),
-        effective=replace(job.route.effective, model=model),
+        requested=replace(job.route.requested, client="antigravity_cli", model=model),
+        effective=replace(job.route.effective, client="antigravity_cli", model=model),
     )})
     lifecycle = MockLifecycle()
     route = RouteCohort.from_members((RouteMember(

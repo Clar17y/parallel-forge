@@ -68,6 +68,7 @@ from forge.domain.subscription_installations import (
     CodexInstallationSpec,
     GeminiInstallationSpec,
     SubscriptionInstallationSpec,
+    quota_route_for,
 )
 from forge.domain.task_usage_contract import TokenCounts, WorkUnitBinding
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
@@ -146,6 +147,13 @@ class EpicBrainstormGateway:
         _validate_authoring_usage_binding(
             usage_binding, job, attempt_id, expected_model=expected_model
         )
+        if self.installation is not None:
+            effective = job.route.effective
+            if not quota_route_for(self.installation).matches(effective) or (
+                effective.effort is not None
+                and self.installation.effort != effective.effort.value
+            ):
+                raise ValueError("authoring installation does not match frozen route")
         publisher = _ObservationPublisher(binding=usage_binding, sink=usage_sink)
         observed_started = time.monotonic()
         try:

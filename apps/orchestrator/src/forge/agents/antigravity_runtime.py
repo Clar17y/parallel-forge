@@ -277,7 +277,8 @@ def _validate_authoring_usage_binding(
     if not any(
         m.role == "authoring"
         and m.provider == effective.provider
-        and m.model == (expected_model or effective.model)
+        and m.model == effective.model
+        and (expected_model is None or m.model == expected_model)
         and m.reasoning_effort == effort
         for m in binding.effective_route.members
     ):

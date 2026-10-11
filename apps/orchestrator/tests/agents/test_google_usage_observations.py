@@ -52,6 +52,7 @@ from forge.domain.subscription import (
     TaskHandoff,
 )
 from forge.domain.subscription_installations import (
+    ClaudeInstallationSpec,
     GeminiInstallationSpec,
     InstallationQuota,
 )
@@ -183,14 +184,18 @@ def _make_authoring_job(
     project_id: UUID,
     *,
     max_input: int | None = None,
+    model: str = "scripted-brainstorm",
+    client: str = "gemini_cli",
+    auth_mode: AuthMode = AuthMode.SUBSCRIPTION,
+    billing_mode: BillingMode = BillingMode.ALLOWANCE_ONLY,
 ) -> AuthoringJobSnapshot:
     route = RouteSpec(
         provider="google",
-        client="gemini_cli",
-        model="scripted-brainstorm",
+        client=client,
+        model=model,
         effort=ReasoningEffort.LOW,
-        auth_mode=AuthMode.SUBSCRIPTION,
-        billing_mode=BillingMode.ALLOWANCE_ONLY,
+        auth_mode=auth_mode,
+        billing_mode=billing_mode,
     )
     return AuthoringJobSnapshot(
         job_id=job_id,
@@ -306,7 +311,7 @@ def test_subscription_binding_validation() -> None:
 
 def test_authoring_binding_validation() -> None:
     job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
-    job = _make_authoring_job(job_id, project_id)
+    job = _make_authoring_job(job_id, project_id, model="gemini-test")
 
     valid_binding = _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-test")
     _validate_authoring_usage_binding(valid_binding, job, attempt_id, expected_model="gemini-test")
@@ -344,6 +349,32 @@ def test_authoring_binding_validation() -> None:
     # Wrong model
     with pytest.raises(ValueError, match="model"):
         _validate_authoring_usage_binding(valid_binding, job, attempt_id, expected_model="wrong-model")
+
+
+@pytest.mark.parametrize(
+    ("job_model", "installed_model", "binding_model", "accepted"),
+    [
+        ("same", "same", "same", True),
+        ("same", "same", "other", False),
+        ("same", "other", "same", False),
+        ("other", "same", "same", False),
+        ("job", "installed", "binding", False),
+        ("same", None, "same", True),
+        ("same", None, "other", False),
+        ("same", "", "same", False),
+    ],
+)
+def test_authoring_binding_requires_frozen_and_installed_model(
+    job_model: str, installed_model: str | None, binding_model: str, accepted: bool,
+) -> None:
+    job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
+    job = _make_authoring_job(job_id, project_id, model=job_model)
+    binding = _make_authoring_binding(job_id, project_id, attempt_id, model=binding_model)
+    if accepted:
+        _validate_authoring_usage_binding(binding, job, attempt_id, expected_model=installed_model)
+    else:
+        with pytest.raises(ValueError, match="model"):
+            _validate_authoring_usage_binding(binding, job, attempt_id, expected_model=installed_model)
 
 
 # --- ObservationPublisher Unit Tests ---
@@ -697,12 +728,108 @@ async def test_antigravity_execute_observed_live_and_final(monkeypatch: pytest.M
 # --- Authoring EpicBrainstormGateway execute_observed Tests ---
 
 
+@pytest.mark.parametrize(
+    ("job_model", "installed_model", "binding_model"),
+    [
+        ("job", "job", "binding"),
+        ("job", "installed", "job"),
+        ("job", "installed", "installed"),
+        ("job", "installed", "binding"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_authoring_observed_rejects_model_mismatch_before_effects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    job_model: str, installed_model: str, binding_model: str,
+) -> None:
+    job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
+    job = _make_authoring_job(job_id, project_id, model=job_model)
+    binding = _make_authoring_binding(job_id, project_id, attempt_id, model=binding_model)
+    installation = GeminiInstallationSpec(
+        client="gemini_cli", account="dev-account", model=installed_model, effort="low",
+        executable=str(tmp_path / "gemini.exe"), executable_digest="a" * 64,
+        client_version="1.0.0", cwd=str(tmp_path), home=str(tmp_path),
+        quota=InstallationQuota(account="dev-account", pool="default-pool"),
+    )
+    launch = AsyncMock()
+    monkeypatch.setattr(EpicBrainstormGateway, "_execute_official", launch)
+    lifecycle = MockLifecycle(attempt_id)
+    sink = FakeUsageObserver()
+    cancelled = AsyncMock(return_value=False)
+    with pytest.raises(ValueError, match="model|route"):
+        await EpicBrainstormGateway(installation=installation).execute_observed(
+            job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+            cancelled=cancelled, lifecycle=lifecycle, usage_binding=binding, usage_sink=sink,
+        )
+    launch.assert_not_awaited()
+    cancelled.assert_not_awaited()
+    assert not lifecycle.launch_ids and not lifecycle.receipts and not lifecycle.results
+    assert not sink.observations
+
+
+@pytest.mark.parametrize("installation_case", ["provider", "effort", "client", "auth", "billing"])
+@pytest.mark.parametrize("minimal_lifecycle", [False, True])
+@pytest.mark.asyncio
+async def test_authoring_observed_rejects_installed_route_before_effects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    installation_case: str, minimal_lifecycle: bool,
+) -> None:
+    job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
+    job = _make_authoring_job(
+        job_id, project_id,
+        client="antigravity_cli" if installation_case == "client" else "gemini_cli",
+        auth_mode=AuthMode.API_KEY if installation_case == "auth" else AuthMode.SUBSCRIPTION,
+        billing_mode=BillingMode.PAID_OPT_IN if installation_case == "billing" else BillingMode.ALLOWANCE_ONLY,
+    )
+    binding = _make_authoring_binding(
+        job_id, project_id, attempt_id, model="scripted-brainstorm",
+    )
+    installation_type = ClaudeInstallationSpec if installation_case == "provider" else GeminiInstallationSpec
+    installation = installation_type(
+        client="claude_code" if installation_case == "provider" else "gemini_cli",
+        account="dev-account", model="scripted-brainstorm",
+        effort="medium" if installation_case == "effort" else "low",
+        executable=str(tmp_path / "client.exe"), executable_digest="a" * 64,
+        client_version="1.0.0", cwd=str(tmp_path), home=str(tmp_path),
+        quota=InstallationQuota(account="dev-account", pool="default-pool"),
+    )
+    launched: list[object] = []
+
+    async def fake_official(self: object, *args: object, **kwargs: object) -> BrainstormGatewayResult:
+        launched.append((args, kwargs))
+        return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
+
+    monkeypatch.setattr(EpicBrainstormGateway, "_execute_official", fake_official)
+    explicit = MockLifecycle(attempt_id)
+    lifecycle = (
+        type("MinimalLifecycle", (), {
+            "launch_intent": AsyncMock(), "started": AsyncMock(), "finished": AsyncMock(),
+        })()
+        if minimal_lifecycle else explicit
+    )
+    sink = FakeUsageObserver()
+    cancelled = AsyncMock(return_value=False)
+    with pytest.raises(ValueError, match="route"):
+        await EpicBrainstormGateway(installation=installation).execute_observed(
+            job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+            cancelled=cancelled, lifecycle=lifecycle, usage_binding=binding, usage_sink=sink,
+        )
+    assert not launched and not sink.observations
+    cancelled.assert_not_awaited()
+    if minimal_lifecycle:
+        lifecycle.launch_intent.assert_not_awaited()
+        lifecycle.started.assert_not_awaited()
+        lifecycle.finished.assert_not_awaited()
+    else:
+        assert not explicit.launch_ids and not explicit.receipts and not explicit.results
+
+
 @pytest.mark.asyncio
 async def test_epic_brainstorm_observed_uses_binding_attempt_without_lifecycle_attribute(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
-    job = _make_authoring_job(job_id, project_id)
+    job = _make_authoring_job(job_id, project_id, model="gemini-flash")
     binding = _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash")
     installation = GeminiInstallationSpec(
         client="gemini_cli", account="dev-account", model="gemini-flash", effort="low",
@@ -750,9 +877,7 @@ async def test_epic_brainstorm_observed_uses_binding_attempt_without_lifecycle_a
     inner = await EpicBrainstormGateway(installation=None, launch_spec=None).execute_observed(
         job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
         cancelled=AsyncMock(return_value=False), lifecycle=MinimalLifecycle(),
-        usage_binding=_make_authoring_binding(
-            job_id, project_id, attempt_id, model="scripted-brainstorm"
-        ),
+        usage_binding=_make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash"),
         usage_sink=inner_sink,
     )
     assert inner.failure == "unavailable"
@@ -790,7 +915,7 @@ async def test_epic_brainstorm_observed_official_home_uses_binding_attempt_witho
     tmp_path: Path,
 ) -> None:
     job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
-    job = _make_authoring_job(job_id, project_id)
+    job = _make_authoring_job(job_id, project_id, model="gemini-flash")
     binding = _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash")
     executable = Path(sys.executable)
     installation = GeminiInstallationSpec(
@@ -837,7 +962,7 @@ async def test_epic_brainstorm_observed_official_home_uses_binding_attempt_witho
 @pytest.mark.asyncio
 async def test_epic_brainstorm_execute_observed_gemini(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
-    job = _make_authoring_job(job_id, project_id)
+    job = _make_authoring_job(job_id, project_id, model="gemini-flash")
     binding = _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash")
     sink = FakeUsageObserver()
 
@@ -904,7 +1029,7 @@ async def test_epic_brainstorm_execute_observed_gemini(monkeypatch: pytest.Monke
 async def test_epic_brainstorm_execute_observed_budget_exhausted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     job_id, project_id, attempt_id = uuid4(), uuid4(), uuid4()
     # Hard cap of 50 input tokens
-    job = _make_authoring_job(job_id, project_id, max_input=50)
+    job = _make_authoring_job(job_id, project_id, max_input=50, model="gemini-flash")
     binding = _make_authoring_binding(job_id, project_id, attempt_id, model="gemini-flash")
     sink = FakeUsageObserver()
 
