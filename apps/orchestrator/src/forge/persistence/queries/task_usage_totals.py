@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -137,6 +137,19 @@ class TaskUsageTotalsQuery:
                 .order_by(TaskUsageWorkUnit.id)
             )
         ).all()
+        return (await self.totals_for_units_in(session, {subject: list(units)}, as_of=as_of))[subject]
+
+    async def totals_for_units_in(
+        self,
+        session: AsyncSession,
+        units_by_subject: dict[SubjectKey, list[TaskUsageWorkUnit]],
+        *,
+        as_of: datetime | None = None,
+    ) -> dict[SubjectKey, UsageTotals]:
+        """Project already selected subjects in one transaction with bounded evidence reads."""
+        if as_of is not None and as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone aware")
+        units = [unit for subject_units in units_by_subject.values() for unit in subject_units]
         unit_ids = [unit.id for unit in units]
         observation_rows: dict[UUID, list[TaskUsageObservation]] = {}
         for batch in _batches(unit_ids):
@@ -153,12 +166,15 @@ class TaskUsageTotalsQuery:
                 )
             ).all():
                 observation_rows.setdefault(row.work_unit_id, []).append(row)
-        agent_ids = [unit.source_id for unit in units if unit.source_kind == "agent_execution"]
-        model_rows: dict[UUID, list[ModelUsage]] = {}
-        for batch in _batches(agent_ids):
+        agent_keys = [
+            (unit.subject_id, unit.source_id)
+            for unit in units if unit.source_kind == "agent_execution"
+        ]
+        model_rows: dict[tuple[UUID, UUID], list[ModelUsage]] = {}
+        for start in range(0, len(agent_keys), _BATCH_SIZE):
+            agent_batch = agent_keys[start : start + _BATCH_SIZE]
             model_filters: list[ColumnElement[bool]] = [
-                ModelUsage.run_id == subject.subject_id,
-                ModelUsage.agent_execution_id.in_(batch),
+                tuple_(ModelUsage.run_id, ModelUsage.agent_execution_id).in_(agent_batch),
             ]
             if as_of is not None:
                 model_filters.append(ModelUsage.created_at <= as_of)
@@ -169,7 +185,7 @@ class TaskUsageTotalsQuery:
                     .order_by(ModelUsage.agent_execution_id, ModelUsage.id)
                 )
             ).all():
-                model_rows.setdefault(record.agent_execution_id, []).append(record)
+                model_rows.setdefault((record.run_id, record.agent_execution_id), []).append(record)
         attempt_ids = [
             unit.source_id for unit in units if unit.source_kind == "subscription_attempt"
         ]
@@ -184,84 +200,98 @@ class TaskUsageTotalsQuery:
                 select(SubscriptionAttemptConsumption).where(*consumption_filters)
             )
             consumptions.update({row.attempt_id: row for row in consumption_rows.all()})
-        facts: list[FinalizedSourceFact] = []
-        usages: list[SourceUsage] = []
-        fingerprint: list[object] = []
-        for unit in units:
-            binding = decode_binding(unit)
-            rows = observation_rows.get(unit.id, [])
-            usage = project_source(tuple(decode_observation(row, binding) for row in rows))
-            evidence_kind = "observation_final" if usage.final else "live"
-            fingerprint.append((str(unit.id), [(row.event_id, row.sequence) for row in rows]))
-            if unit.source_kind == "subscription_attempt":
-                consumption = consumptions.get(unit.source_id)
-                if consumption is not None:
-                    measured = consumption.observed
-                    usage = _from_authoritative(
-                        usage,
-                        input_tokens=_measured(measured.get("input_tokens")),
-                        output_tokens=_measured(measured.get("output_tokens")),
-                        cached_input_tokens=_measured(measured.get("cached_input_tokens")),
-                    )
-                    evidence_kind = "subscription_consumption"
-                    fingerprint.append(("subscription", str(unit.source_id), measured))
-            elif unit.source_kind == "agent_execution":
-                records = model_rows.get(unit.source_id, [])
-                if records:
-                    usage = _from_authoritative(
-                        usage,
-                        input_tokens=_sum_known([
-                            record.input_tokens + record.cached_input_tokens for record in records
-                        ]),
-                        output_tokens=_sum_known([record.output_tokens for record in records]),
-                        cached_input_tokens=_sum_known(
-                            [record.cached_input_tokens for record in records]
-                        ),
-                    )
-                    evidence_kind = "model_usage"
-                    fingerprint.append(("model_usage", [str(record.id) for record in records]))
-            usages.append(usage)
-            facts.append(
-                FinalizedSourceFact(
-                    binding=binding,
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    cached_input_tokens=usage.cached_input_tokens,
-                    reasoning_output_tokens=usage.reasoning_output_tokens,
-                    context_occupied_tokens=usage.context_occupied_tokens,
-                    context_capacity_tokens=usage.context_capacity_tokens,
-                    compaction_count=usage.compaction_count,
-                    completeness=usage.completeness,
-                    final_status=usage.final_status,
-                    evidence_kind=evidence_kind,
-                    disagreements=usage.disagreements,
-                )
-            )
-        inputs = _sum_known([usage.input_tokens for usage in usages])
-        outputs = _sum_known([usage.output_tokens for usage in usages])
-        completeness = (
-            "unknown"
-            if inputs is None and outputs is None
-            else "complete"
-            if usages and all(usage.completeness == "complete" for usage in usages)
-            else "lower_bound"
-        )
-        digest = hashlib.sha256(
-            json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        return UsageTotals(
-            subject=subject,
-            snapshot_digest=digest,
-            source_count=len(units),
-            final_source_count=sum(_finalized(fact) for fact in facts),
-            input_tokens=inputs,
-            output_tokens=outputs,
-            cached_input_tokens=_sum_known([usage.cached_input_tokens for usage in usages]),
-            reasoning_output_tokens=_sum_known([usage.reasoning_output_tokens for usage in usages]),
-            completeness=completeness,
-            source_facts=tuple(facts),
-        )
+        return {
+            subject: _project_totals(subject, sorted(subject_units, key=lambda unit: str(unit.id)),
+                                     observation_rows, model_rows, consumptions)
+            for subject, subject_units in units_by_subject.items()
+        }
 
     async def finalized_sources(self, subject: SubjectKey) -> tuple[FinalizedSourceFact, ...]:
         totals = await self.totals(subject)
         return tuple(fact for fact in totals.source_facts if _finalized(fact))
+
+
+def _project_totals(
+    subject: SubjectKey,
+    units: list[TaskUsageWorkUnit],
+    observation_rows: dict[UUID, list[TaskUsageObservation]],
+    model_rows: dict[tuple[UUID, UUID], list[ModelUsage]],
+    consumptions: dict[UUID, SubscriptionAttemptConsumption],
+) -> UsageTotals:
+    facts: list[FinalizedSourceFact] = []
+    usages: list[SourceUsage] = []
+    fingerprint: list[object] = []
+    for unit in units:
+        binding = decode_binding(unit)
+        rows = observation_rows.get(unit.id, [])
+        usage = project_source(tuple(decode_observation(row, binding) for row in rows))
+        evidence_kind = "observation_final" if usage.final else "live"
+        fingerprint.append((str(unit.id), [(row.event_id, row.sequence) for row in rows]))
+        if unit.source_kind == "subscription_attempt":
+            consumption = consumptions.get(unit.source_id)
+            if consumption is not None:
+                measured = consumption.observed
+                usage = _from_authoritative(
+                    usage,
+                    input_tokens=_measured(measured.get("input_tokens")),
+                    output_tokens=_measured(measured.get("output_tokens")),
+                    cached_input_tokens=_measured(measured.get("cached_input_tokens")),
+                )
+                evidence_kind = "subscription_consumption"
+                fingerprint.append(("subscription", str(unit.source_id), measured))
+        elif unit.source_kind == "agent_execution":
+            records = model_rows.get((subject.subject_id, unit.source_id), [])
+            if records:
+                usage = _from_authoritative(
+                    usage,
+                    input_tokens=_sum_known([
+                        record.input_tokens + record.cached_input_tokens for record in records
+                    ]),
+                    output_tokens=_sum_known([record.output_tokens for record in records]),
+                    cached_input_tokens=_sum_known(
+                        [record.cached_input_tokens for record in records]
+                    ),
+                )
+                evidence_kind = "model_usage"
+                fingerprint.append(("model_usage", [str(record.id) for record in records]))
+        usages.append(usage)
+        facts.append(
+            FinalizedSourceFact(
+                binding=binding,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cached_input_tokens=usage.cached_input_tokens,
+                reasoning_output_tokens=usage.reasoning_output_tokens,
+                context_occupied_tokens=usage.context_occupied_tokens,
+                context_capacity_tokens=usage.context_capacity_tokens,
+                compaction_count=usage.compaction_count,
+                completeness=usage.completeness,
+                final_status=usage.final_status,
+                evidence_kind=evidence_kind,
+                disagreements=usage.disagreements,
+            )
+        )
+    inputs = _sum_known([usage.input_tokens for usage in usages])
+    outputs = _sum_known([usage.output_tokens for usage in usages])
+    completeness = (
+        "unknown"
+        if inputs is None and outputs is None
+        else "complete"
+        if usages and all(usage.completeness == "complete" for usage in usages)
+        else "lower_bound"
+    )
+    digest = hashlib.sha256(
+        json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return UsageTotals(
+        subject=subject,
+        snapshot_digest=digest,
+        source_count=len(units),
+        final_source_count=sum(_finalized(fact) for fact in facts),
+        input_tokens=inputs,
+        output_tokens=outputs,
+        cached_input_tokens=_sum_known([usage.cached_input_tokens for usage in usages]),
+        reasoning_output_tokens=_sum_known([usage.reasoning_output_tokens for usage in usages]),
+        completeness=completeness,
+        source_facts=tuple(facts),
+    )

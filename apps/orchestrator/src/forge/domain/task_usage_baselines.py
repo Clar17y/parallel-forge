@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from statistics import fmean, median
@@ -162,6 +163,12 @@ def _p90(values: list[int]) -> float:
     return float(ordered[lower] + (ordered[upper] - ordered[lower]) * (rank - lower))
 
 
+def _advisory_threshold(reference: float, multiplier: float) -> float:
+    """Keep valid policy products representable by durable advisory snapshots."""
+    product = reference * multiplier
+    return min(product, sys.float_info.max)
+
+
 def summarize_samples(
     samples: list[BaselineSample] | tuple[BaselineSample, ...],
     *,
@@ -297,8 +304,8 @@ def summarize_selection(
                 project_ids=(),
                 labels=("manual_estimate",),
                 phase_role_breakdown=(),
-                warning_threshold_tokens=estimate * rules.warning_multiplier,
-                checkpoint_threshold_tokens=estimate * rules.checkpoint_multiplier,
+                warning_threshold_tokens=_advisory_threshold(estimate, rules.warning_multiplier),
+                checkpoint_threshold_tokens=_advisory_threshold(estimate, rules.checkpoint_multiplier),
             )
         if not measured:
             result = _empty_summary("insufficient_history", rules)
@@ -370,9 +377,9 @@ def summarize_selection(
             )
         ),
         phase_role_breakdown=_breakdown(selected),
-        warning_threshold_tokens=median_value * rules.warning_multiplier if ready else None,
+        warning_threshold_tokens=_advisory_threshold(median_value, rules.warning_multiplier) if ready else None,
         checkpoint_threshold_tokens=(
-            max(median_value * rules.checkpoint_multiplier, p90_value) if ready else None
+            max(_advisory_threshold(median_value, rules.checkpoint_multiplier), p90_value) if ready else None
         ),
         failed_attempt_count=sum(sample.failed_attempt_count for sample in selected),
     )

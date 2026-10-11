@@ -197,6 +197,103 @@ async def test_history_sql_bounds_candidates_before_loading_work_units(
 
 
 @pytest.mark.integration
+async def test_many_candidates_batch_sample_and_exclusion_evidence_queries(
+    session_factory, persisted_run, monkeypatch
+):
+    runs = []
+    for _ in range(6):
+        run = RunSnapshot(id=uuid4(), project_id=persisted_run.project_id,
+                          task_id=persisted_run.task_id,
+                          policy_version=persisted_run.policy_version)
+        async with PostgresUnitOfWork(session_factory) as work:
+            await work.runs.create(run)
+            await work.commit()
+        runs.append(run)
+    execution_ids = {}
+    async with session_factory() as session, session.begin():
+        legacy_id = uuid4()
+        session.add(AgentExecution(id=legacy_id, run_id=persisted_run.id, role="developer",
+                                   instruction_version="v1", provider="provider-a",
+                                   model="model-a", status="SUCCEEDED"))
+        session.add(ModelUsage(id=uuid4(), run_id=persisted_run.id,
+                               agent_execution_id=legacy_id, provider="provider-a",
+                               model="model-a", prompt_version="v1", input_tokens=4,
+                               output_tokens=1, cached_input_tokens=2, duration_ms=1,
+                               tool_call_count=0, pricing_version="v1", currency="USD",
+                               estimated_cost_minor=0))
+        await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
+        for index, run in enumerate(runs):
+            execution_id = uuid4()
+            execution_ids[run.id] = execution_id
+            session.add(AgentExecution(id=execution_id, run_id=run.id, role="developer",
+                                       instruction_version="v1", provider="provider-a",
+                                       model="model-a", status="FAILED" if index == 0 else "SUCCEEDED"))
+            session.add(ModelUsage(id=uuid4(), run_id=run.id,
+                                   agent_execution_id=execution_id, provider="provider-a",
+                                   model="model-a", prompt_version="v1", input_tokens=10 + index,
+                                   output_tokens=2, cached_input_tokens=3, duration_ms=1,
+                                   tool_call_count=0, pricing_version="v1", currency="USD",
+                                   estimated_cost_minor=0))
+            await session.execute(update(Run).where(Run.id == run.id).values(state="COMPLETED"))
+    observations = PostgresTaskUsageObservations(session_factory)
+    for run in runs:
+        await observations.bind(_binding(run, execution_ids[run.id]))
+    query = TaskUsageBaselineQuery(session_factory)
+    as_of = datetime.now(UTC) + timedelta(seconds=1)
+    subjects = {(run.project_id, "run", run.id) for run in runs}
+    engine = session_factory.kw["bind"].sync_engine
+    statements = []
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().lower().startswith("select"):
+            statements.append(statement)
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        samples = await query.samples(project_ids={persisted_run.project_id},
+                                      as_of=as_of, window_days=365)
+        sample_queries = len(statements)
+        statements.clear()
+        exclusions = await query.exclusions(project_ids={persisted_run.project_id},
+                                            as_of=as_of, window_days=365, subjects=subjects)
+        exclusion_queries = len(statements)
+        monkeypatch.setattr(baseline_module, "_BATCH_SIZE", 2)
+        monkeypatch.setattr(__import__("forge.persistence.queries.task_usage_totals", fromlist=["_BATCH_SIZE"]),
+                            "_BATCH_SIZE", 2)
+        split = await query.samples(project_ids={persisted_run.project_id},
+                                    as_of=as_of, window_days=365)
+        split_exclusions = await query.exclusions(project_ids={persisted_run.project_id},
+                                                  as_of=as_of, window_days=365, subjects=subjects)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert sample_queries <= 20
+    assert exclusion_queries <= 20
+    assert split == samples and split_exclusions == exclusions
+    assert {row.subject_id: row.total_tokens for row in samples if row.subject_id in {r.id for r in runs}} == {
+        run.id: 15 + index for index, run in enumerate(runs)
+    }
+    assert next(row for row in samples if row.subject_id == runs[0].id).failed_attempt_count == 1
+    legacy = next(row for row in samples if row.subject_id == persisted_run.id)
+    assert legacy.total_tokens == 7 and legacy.finalized and legacy.source_count == 1
+    async with session_factory() as session:
+        await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        units = (await session.scalars(select(TaskUsageWorkUnit).where(
+            TaskUsageWorkUnit.subject_id.in_([run.id for run in runs])
+        ))).all()
+        keyed = {
+            SubjectKey(project_id=run.project_id, kind="run", subject_id=run.id):
+            [unit for unit in units if unit.subject_id == run.id]
+            for run in runs
+        }
+        batched = await TaskUsageTotalsQuery(session_factory).totals_for_units_in(
+            session, keyed, as_of=as_of,
+        )
+        for subject in keyed:
+            assert batched[subject] == await TaskUsageTotalsQuery(session_factory).totals_in(
+                session, subject, as_of=as_of,
+            )
+    assert exclusions == {}
+
+
+@pytest.mark.integration
 async def test_exact_window_boundary_retains_older_admitted_unit_and_huge_window(
     session_factory, persisted_run
 ):
@@ -649,6 +746,8 @@ async def test_each_subscription_attempt_inherits_its_admitted_task_purpose(monk
     units = [SimpleNamespace(source_kind="subscription_attempt", source_id=attempts[index],
                              subscription_task_id=task_a if index < 2 else task_b)
              for index in range(3)]
+    units.append(SimpleNamespace(source_kind="authoring_attempt", source_id=attempts[0],
+                                 subscription_task_id=None))
     class Result:
         def all(self):
             return [(task_a, {"purpose": "independent_review"}),
@@ -662,9 +761,10 @@ async def test_each_subscription_attempt_inherits_its_admitted_task_purpose(monk
         return contract
     monkeypatch.setattr(baseline_module, "decode_subscription_record", decode)
     roles = await baseline_module._source_roles(Session(), units)
-    assert [roles[attempt] for attempt in attempts] == [
+    assert [roles[("subscription_attempt", attempt)] for attempt in attempts] == [
         "independent_review", "independent_review", "routine_implementation"
     ]
+    assert roles[("authoring_attempt", attempts[0])] == "authoring"
 
 
 @pytest.mark.integration
@@ -705,6 +805,67 @@ async def test_frozen_evidence_uses_same_rolling_fallback_cohort_as_statistics(
     assert frozen.status == "ready"
     assert (frozen.sample_count, frozen.outcome_count, frozen.source_count) == (1, 2, 2)
     assert frozen.mean_tokens == 40
+
+
+@pytest.mark.integration
+async def test_colliding_run_and_authoring_ids_keep_failed_and_legacy_facts_separate(
+    session_factory, persisted_run, monkeypatch,
+):
+    shared_id = persisted_run.id
+    epic_id, conversation_id = uuid4(), uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(Epic(id=epic_id, project_id=persisted_run.project_id,
+                         title="collision", draft={}))
+        session.add(BrainstormConversation(id=conversation_id, epic_id=epic_id,
+                                          project_id=persisted_run.project_id, version=1))
+        session.add(BrainstormJobRow(
+            id=shared_id, epic_id=epic_id, project_id=persisted_run.project_id,
+            conversation_id=conversation_id, version=1, state="proposed",
+            snapshot={}, proposal={"title": "collision"}, proposal_digest="c" * 64,
+            current_attempt_id=None, adopted_revision_id=None,
+            wait_pool_revision=None, retry_authorized_until=None,
+            override_unknown_usage=False,
+        ))
+        for status, input_tokens in (("SUCCEEDED", 4), ("FAILED", 2)):
+            execution_id = uuid4()
+            session.add(AgentExecution(
+                id=execution_id, run_id=shared_id, role="developer",
+                instruction_version="v1", provider="provider-a", model="model-a",
+                status=status,
+            ))
+            session.add(ModelUsage(
+                id=uuid4(), run_id=shared_id, agent_execution_id=execution_id,
+                provider="provider-a", model="model-a", prompt_version="v1",
+                input_tokens=input_tokens, output_tokens=1, cached_input_tokens=1,
+                duration_ms=1, tool_call_count=0, pricing_version="v1",
+                currency="USD", estimated_cost_minor=0,
+            ))
+        await session.execute(update(Run).where(Run.id == shared_id).values(state="COMPLETED"))
+    as_of = datetime.now(UTC) + timedelta(seconds=1)
+    query = TaskUsageBaselineQuery(session_factory)
+    rows = await query.samples(project_ids={persisted_run.project_id},
+                               as_of=as_of, window_days=365)
+    by_kind = {(row.subject_kind, row.subject_id): row for row in rows}
+    measured = by_kind[("run", shared_id)]
+    unknown = by_kind[("authoring_job", shared_id)]
+    assert measured.total_tokens == 10 and measured.finalized
+    assert measured.failed_attempt_count == 1
+    assert unknown.total_tokens is None and not unknown.finalized
+    assert unknown.failed_attempt_count == 0 and unknown.source_count == 0
+    exclusions = await query.exclusions(
+        project_ids={persisted_run.project_id}, as_of=as_of, window_days=365,
+        subjects={(persisted_run.project_id, "run", shared_id),
+                  (persisted_run.project_id, "authoring_job", shared_id)},
+    )
+    assert exclusions["unclassified_legacy"] == 1
+    monkeypatch.setattr(baseline_module, "_BATCH_SIZE", 1)
+    assert await query.samples(project_ids={persisted_run.project_id},
+                               as_of=as_of, window_days=365) == rows
+    assert await query.exclusions(
+        project_ids={persisted_run.project_id}, as_of=as_of, window_days=365,
+        subjects={(persisted_run.project_id, "run", shared_id),
+                  (persisted_run.project_id, "authoring_job", shared_id)},
+    ) == exclusions
 
 
 @pytest.mark.integration
@@ -819,6 +980,78 @@ async def test_manual_frozen_baseline_is_labelled_and_has_no_measured_samples(
     assert reference.status == "manual"
     assert reference.reference_tokens == 75
     assert reference.sample_count == reference.coverage_count == reference.outcome_count == 0
+
+
+@pytest.mark.integration
+async def test_extreme_manual_threshold_freezes_and_replays_after_policy_revision(
+    session_factory, persisted_run,
+):
+    binding = _binding(persisted_run, uuid4())
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=binding.source.source_id, run_id=persisted_run.id,
+                                   role="developer", instruction_version="v1",
+                                   provider="provider-a", model="model-a", status="RUNNING"))
+        session.add(TaskUsagePolicyRevision(
+            project_id=persisted_run.project_id, revision=1, mode="report_only",
+            warning_multiplier=1e308, checkpoint_multiplier=1e308,
+            history_limit=50, minimum_comparables=20,
+            manual_estimate_tokens=2**63 - 1,
+            allow_cross_project_fallback=True, actor_id=uuid4(),
+        ))
+    await PostgresTaskUsageObservations(session_factory).bind(binding)
+    query = TaskUsageBaselineQuery(session_factory)
+    frozen = await query.freeze_baseline(binding)
+    assert frozen is not None and frozen.status == "manual"
+    assert frozen.warning_threshold_tokens == sys.float_info.max
+    assert frozen.checkpoint_threshold_tokens == sys.float_info.max
+    async with session_factory() as session, session.begin():
+        session.add(TaskUsagePolicyRevision(
+            project_id=persisted_run.project_id, revision=2, mode="report_only",
+            warning_multiplier=1.5, checkpoint_multiplier=2.0,
+            history_limit=50, minimum_comparables=20, manual_estimate_tokens=75,
+            allow_cross_project_fallback=True, actor_id=uuid4(),
+        ))
+    assert await query.freeze_baseline(binding) == frozen
+
+
+@pytest.mark.integration
+async def test_extreme_ready_history_threshold_freezes_from_large_measured_value(
+    session_factory, persisted_run,
+):
+    target = RunSnapshot(id=uuid4(), project_id=persisted_run.project_id,
+                         task_id=persisted_run.task_id,
+                         policy_version=persisted_run.policy_version)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(target)
+        await work.commit()
+    history_binding = _binding(persisted_run, uuid4())
+    target_binding = _binding(target, uuid4())
+    async with session_factory() as session, session.begin():
+        for binding, run_id in ((history_binding, persisted_run.id),
+                                (target_binding, target.id)):
+            session.add(AgentExecution(id=binding.source.source_id, run_id=run_id,
+                                       role="developer", instruction_version="v1",
+                                       provider="provider-a", model="model-a", status="SUCCEEDED"))
+        session.add(ModelUsage(id=uuid4(), run_id=persisted_run.id,
+                               agent_execution_id=history_binding.source.source_id,
+                               provider="provider-a", model="model-a", prompt_version="v1",
+                               input_tokens=2_000_000_000, output_tokens=0,
+                               cached_input_tokens=0, duration_ms=1, tool_call_count=0,
+                               pricing_version="v1", currency="USD", estimated_cost_minor=0))
+        await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
+        session.add(TaskUsagePolicyRevision(
+            project_id=persisted_run.project_id, revision=1, mode="report_only",
+            warning_multiplier=1e308, checkpoint_multiplier=1e308,
+            history_limit=50, minimum_comparables=1, manual_estimate_tokens=None,
+            allow_cross_project_fallback=False, actor_id=uuid4(),
+        ))
+    writer = PostgresTaskUsageObservations(session_factory)
+    await writer.bind(history_binding)
+    await writer.bind(target_binding)
+    frozen = await TaskUsageBaselineQuery(session_factory).freeze_baseline(target_binding)
+    assert frozen is not None and frozen.status == "ready" and frozen.sample_count == 1
+    assert frozen.warning_threshold_tokens == sys.float_info.max
+    assert frozen.checkpoint_threshold_tokens == sys.float_info.max
 
 
 @pytest.mark.integration

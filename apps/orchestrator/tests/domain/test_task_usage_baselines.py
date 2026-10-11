@@ -1,3 +1,5 @@
+import math
+import sys
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -168,3 +170,24 @@ def test_selected_fallback_cohort_matches_rolling_summary():
     assert selection.cohort_source == summary.cohort_source == "accessible_cross_project"
     assert tuple(row.subject_id for row in selection.samples) == (rows[2].subject_id, rows[3].subject_id)
     assert summary.sample_count == 1 and summary.mean_tokens == 40
+
+
+def test_valid_extreme_multipliers_saturate_manual_and_ready_advisory_thresholds():
+    at = datetime(2026, 2, 1, tzinfo=UTC)
+    extreme = SamplingRules(
+        history_limit=2, minimum_comparables=1,
+        manual_estimate_tokens=2**63 - 1,
+        warning_multiplier=1e308, checkpoint_multiplier=1e308,
+    )
+    manual = summarize_samples([], rules=extreme, as_of=at)
+    ready = summarize_samples([sample(2**63 - 1, 0)], rules=extreme, as_of=at)
+    for summary in (manual, ready):
+        assert summary.warning_threshold_tokens == sys.float_info.max
+        assert summary.checkpoint_threshold_tokens == sys.float_info.max
+        assert math.isfinite(summary.reference_tokens)
+    zero = summarize_samples([sample(0, 0)], rules=extreme, as_of=at)
+    assert zero.warning_threshold_tokens == zero.checkpoint_threshold_tokens == 0
+    ordinary = summarize_samples(
+        [], rules=SamplingRules(manual_estimate_tokens=100), as_of=at,
+    )
+    assert (ordinary.warning_threshold_tokens, ordinary.checkpoint_threshold_tokens) == (150, 200)

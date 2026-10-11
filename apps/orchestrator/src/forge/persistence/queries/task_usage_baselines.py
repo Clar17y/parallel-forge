@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import exists, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import Row
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
@@ -54,6 +55,31 @@ def _candidate_batches(
     ordered = sorted(keys, key=lambda key: (str(key[0]), key[1], str(key[2])))
     for start in range(0, len(ordered), _BATCH_SIZE):
         yield ordered[start : start + _BATCH_SIZE]
+
+
+def _id_batches(identities: set[UUID] | list[UUID]) -> Iterator[list[UUID]]:
+    ordered = sorted(identities, key=str)
+    for start in range(0, len(ordered), _BATCH_SIZE):
+        yield ordered[start : start + _BATCH_SIZE]
+
+
+async def _candidate_units(
+    session: AsyncSession, keys: set[tuple[UUID, str, UUID]], *, as_of: datetime,
+) -> dict[tuple[UUID, str, UUID], list[TaskUsageWorkUnit]]:
+    units: dict[tuple[UUID, str, UUID], list[TaskUsageWorkUnit]] = {}
+    for batch in _candidate_batches(keys):
+        scalar_rows = await session.scalars(
+            select(TaskUsageWorkUnit).where(
+                tuple_(TaskUsageWorkUnit.project_id, TaskUsageWorkUnit.subject_kind,
+                       TaskUsageWorkUnit.subject_id).in_(batch),
+                TaskUsageWorkUnit.created_at <= as_of,
+            ).order_by(TaskUsageWorkUnit.created_at, TaskUsageWorkUnit.id)
+        )
+        for unit in scalar_rows.all():
+            units.setdefault((unit.project_id, unit.subject_kind, unit.subject_id), []).append(unit)
+    for subject_units in units.values():
+        subject_units.sort(key=lambda unit: (unit.created_at, str(unit.id)))
+    return units
 
 
 class TaskUsageBaselineQuery:
@@ -297,36 +323,29 @@ class TaskUsageBaselineQuery:
             except OverflowError:
                 # Every representable sample is in range; omit the SQL lower bound.
                 lower = None
-        run_filters = [Run.project_id.in_(project_ids), Run.updated_at <= as_of]
+        run_filters = [Run.updated_at <= as_of]
         job_filters = [
-            BrainstormJobRow.project_id.in_(project_ids),
             BrainstormJobRow.updated_at <= as_of,
         ]
         if lower is not None:
             run_filters.append(Run.updated_at >= lower)
             job_filters.append(BrainstormJobRow.updated_at >= lower)
-        runs = (
-            await session.execute(
-                select(
-                    Run.id,
-                    Run.project_id,
-                    Run.state,
-                    Run.updated_at,
-                    _has_current_acceptance(),
-                ).where(*run_filters)
-            )
-        ).all()
-        jobs = (
-            await session.execute(
-                select(
-                    BrainstormJobRow.id,
-                    BrainstormJobRow.project_id,
-                    BrainstormJobRow.state,
-                    BrainstormJobRow.proposal_digest,
-                    BrainstormJobRow.updated_at,
-                ).where(*job_filters)
-            )
-        ).all()
+        runs: list[Row[tuple[Any, ...]]] = []
+        jobs: list[Row[tuple[Any, ...]]] = []
+        for project_batch in _id_batches(project_ids):
+            runs.extend((await session.execute(
+                select(Run.id, Run.project_id, Run.state, Run.updated_at,
+                       _has_current_acceptance()).where(
+                    Run.project_id.in_(project_batch), *run_filters
+                )
+            )).all())
+            jobs.extend((await session.execute(
+                select(BrainstormJobRow.id, BrainstormJobRow.project_id,
+                       BrainstormJobRow.state, BrainstormJobRow.proposal_digest,
+                       BrainstormJobRow.updated_at).where(
+                    BrainstormJobRow.project_id.in_(project_batch), *job_filters
+                )
+            )).all())
         candidates = [
             (
                 project,
@@ -355,27 +374,28 @@ class TaskUsageBaselineQuery:
         if not candidates:
             return ()
         candidate_keys = {(project, kind, identity) for project, kind, identity, *_ in candidates}
-        unit_rows: list[TaskUsageWorkUnit] = []
-        for batch in _candidate_batches(candidate_keys):
-            rows = await session.scalars(
-                select(TaskUsageWorkUnit)
-                .where(
-                    tuple_(
-                        TaskUsageWorkUnit.project_id,
-                        TaskUsageWorkUnit.subject_kind,
-                        TaskUsageWorkUnit.subject_id,
-                    ).in_(batch),
-                    TaskUsageWorkUnit.created_at <= as_of,
-                )
-                .order_by(TaskUsageWorkUnit.created_at, TaskUsageWorkUnit.id)
-            )
-            unit_rows.extend(rows.all())
-        unit_rows.sort(key=lambda unit: (unit.created_at, str(unit.id)))
-        units_by_subject: dict[tuple[UUID, str, UUID], list[TaskUsageWorkUnit]] = {}
-        for unit in unit_rows:
-            key = (unit.project_id, unit.subject_kind, unit.subject_id)
-            units_by_subject.setdefault(key, []).append(unit)
+        units_by_subject = await _candidate_units(session, candidate_keys, as_of=as_of)
         inventory = await _source_inventory(session, candidate_keys, as_of=as_of)
+        totals = await self._totals.totals_for_units_in(
+            session,
+            {SubjectKey(project_id=project, kind=kind, subject_id=identity): units
+             for (project, kind, identity), units in units_by_subject.items()},
+            as_of=as_of,
+        )
+        roles = await _source_roles(
+            session, [unit for units in units_by_subject.values() for unit in units]
+        )
+        failed_counts = await _failed_run_attempt_counts(
+            session, {identity for _, kind, identity, *_ in candidates if kind == "run"},
+            as_of=as_of,
+        )
+        legacy = await _legacy_model_usage_samples(
+            session,
+            {identity: (project, completed_at, state, successful, accepted)
+             for project, kind, identity, _, state, successful, accepted, completed_at in candidates
+             if kind == "run" and (project, kind, identity) not in units_by_subject},
+            as_of=as_of,
+        )
         # The owning query's final projection is authoritative. Returned facts
         # are per subject and already replace live/provisional values per source.
         samples: list[BaselineSample] = []
@@ -384,26 +404,11 @@ class TaskUsageBaselineQuery:
             units = units_by_subject.get(key, [])
             outcome = _outcome(state, successful, accepted)
             if not units:
-                legacy = (
-                    await _legacy_model_usage_sample(
-                        session,
-                        project_id=project,
-                        subject_id=identity,
-                        completed_at=completed_at,
-                        as_of=as_of,
-                        state=state,
-                        successful=successful,
-                        accepted=accepted,
-                    )
-                    if kind == "run"
-                    else None
-                )
-                if legacy is not None:
-                    samples.append(legacy)
+                legacy_sample = legacy.get(identity) if kind == "run" else None
+                if legacy_sample is not None:
+                    samples.append(legacy_sample)
                     continue
-                failed_attempt_count = await _failed_run_attempt_count(
-                    session, identity, as_of=as_of
-                )
+                failed_attempt_count = failed_counts.get(identity, 0) if kind == "run" else 0
                 samples.append(
                     BaselineSample(
                         project_id=project,
@@ -422,32 +427,27 @@ class TaskUsageBaselineQuery:
                     )
                 )
                 continue
-            totals = await self._totals.totals_in(
-                session, SubjectKey(project_id=project, kind=kind, subject_id=identity), as_of=as_of
-            )
+            subject_totals = totals[SubjectKey(project_id=project, kind=kind, subject_id=identity)]
             facts = tuple(
                 fact
-                for fact in totals.source_facts
+                for fact in subject_totals.source_facts
                 if fact.evidence_kind != "live"
             )
-            roles = await _source_roles(session, units)
-            failed_attempt_count = await _failed_run_attempt_count(
-                session, identity, as_of=as_of
-            )
+            failed_attempt_count = failed_counts.get(identity, 0) if kind == "run" else 0
             bound_sources = {(unit.source_kind, unit.source_id) for unit in units}
             inventory_complete = bound_sources == inventory.get(key, set())
-            source_final = bool(totals.source_count) and totals.final_source_count == totals.source_count
+            source_final = bool(subject_totals.source_count) and subject_totals.final_source_count == subject_totals.source_count
             fully_measured = (
                 source_final
                 and inventory_complete
-                and totals.completeness == "complete"
-                and totals.input_tokens is not None
-                and totals.output_tokens is not None
+                and subject_totals.completeness == "complete"
+                and subject_totals.input_tokens is not None
+                and subject_totals.output_tokens is not None
             )
             total_tokens = (
-                totals.input_tokens + totals.output_tokens
-                if totals.input_tokens is not None
-                and totals.output_tokens is not None
+                subject_totals.input_tokens + subject_totals.output_tokens
+                if subject_totals.input_tokens is not None
+                and subject_totals.output_tokens is not None
                 and fully_measured
                 else None
             )
@@ -470,7 +470,7 @@ class TaskUsageBaselineQuery:
                     phase_role_breakdown=(
                         _phase_role_facts(facts, roles) if inventory_complete else ()
                     ),
-                    source_count=max(totals.source_count, len(inventory.get(key, set()))),
+                    source_count=max(subject_totals.source_count, len(inventory.get(key, set()))),
                     failed_attempt_count=failed_attempt_count,
                 )
             )
@@ -498,9 +498,9 @@ class TaskUsageBaselineQuery:
             except OverflowError:
                 lower = None
         async with self._factory() as session:
-            run_filters = [Run.project_id.in_(projects), Run.updated_at <= as_of]
+            await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+            run_filters = [Run.updated_at <= as_of]
             job_filters = [
-                BrainstormJobRow.project_id.in_(projects),
                 BrainstormJobRow.updated_at <= as_of,
             ]
             run_ids = {identity for project, kind, identity in subjects if kind == "run" and project in projects}
@@ -509,21 +509,23 @@ class TaskUsageBaselineQuery:
                 for project, kind, identity in subjects
                 if kind == "authoring_job" and project in projects
             }
-            run_filters.append(Run.id.in_(run_ids))
-            job_filters.append(BrainstormJobRow.id.in_(job_ids))
             if lower is not None:
                 run_filters.append(Run.updated_at >= lower)
                 job_filters.append(BrainstormJobRow.updated_at >= lower)
-            runs = (
-                await session.scalars(
-                    select(Run).where(*run_filters)
-                )
-            ).all()
-            jobs = (
-                await session.scalars(
-                    select(BrainstormJobRow).where(*job_filters)
-                )
-            ).all()
+            runs: list[Run] = []
+            jobs: list[BrainstormJobRow] = []
+            for batch in _id_batches(run_ids):
+                runs.extend((await session.scalars(
+                    select(Run).where(Run.id.in_(batch), *run_filters)
+                )).all())
+            for batch in _id_batches(job_ids):
+                jobs.extend((await session.scalars(
+                    select(BrainstormJobRow).where(BrainstormJobRow.id.in_(batch), *job_filters)
+                )).all())
+            runs = [run for run in runs if run.project_id in projects
+                    and (run.project_id, "run", run.id) in subjects]
+            jobs = [job for job in jobs if job.project_id in projects
+                    and (job.project_id, "authoring_job", job.id) in subjects]
             count = {
                 "failed": 0,
                 "cancelled": 0,
@@ -533,16 +535,11 @@ class TaskUsageBaselineQuery:
                 "unclassified_legacy": 0,
             }
             run_ids = {identity for project, kind, identity in subjects if kind == "run" and project in projects}
-            accepted_run_ids = set(
-                (
-                    await session.scalars(
-                        select(Run.id).where(
-                            Run.id.in_(run_ids),
-                            _has_current_acceptance(),
-                        )
-                    )
-                ).all()
-            ) if run_ids else set()
+            accepted_run_ids: set[UUID] = set()
+            for batch in _id_batches({run.id for run in runs}):
+                accepted_run_ids.update((await session.scalars(
+                    select(Run.id).where(Run.id.in_(batch), _has_current_acceptance())
+                )).all())
             for run in runs:
                 if run.state == "FAILED":
                     count["failed"] += 1
@@ -567,125 +564,110 @@ class TaskUsageBaselineQuery:
                 if job.state == "proposed" and job.proposal_digest is not None
             }
             candidate_keys &= subjects
-            known: set[tuple[UUID, str, UUID]] = set()
-            for batch in _candidate_batches(candidate_keys):
-                rows = await session.execute(
-                    select(
-                        TaskUsageWorkUnit.project_id,
-                        TaskUsageWorkUnit.subject_kind,
-                        TaskUsageWorkUnit.subject_id,
-                    ).where(
-                        tuple_(
-                            TaskUsageWorkUnit.project_id,
-                            TaskUsageWorkUnit.subject_kind,
-                            TaskUsageWorkUnit.subject_id,
-                        ).in_(batch),
-                        TaskUsageWorkUnit.created_at <= as_of,
-                    )
-                )
-                known.update((project, kind, subject) for project, kind, subject in rows.all())
+            units_by_subject = await _candidate_units(session, candidate_keys, as_of=as_of)
+            known = set(units_by_subject)
             run_by_id = {run.id: run for run in runs}
             inventory = await _source_inventory(session, candidate_keys, as_of=as_of)
+            legacy = await _legacy_model_usage_samples(
+                session,
+                {identity: (project, run_by_id[identity].updated_at,
+                            run_by_id[identity].state,
+                            run_by_id[identity].state == "COMPLETED",
+                            identity in accepted_run_ids)
+                 for project, kind, identity in candidate_keys
+                 if kind == "run" and (project, kind, identity) not in known},
+                as_of=as_of,
+            )
+            totals = await self._totals.totals_for_units_in(
+                session,
+                {SubjectKey(project_id=project, kind=kind, subject_id=identity): units
+                 for (project, kind, identity), units in units_by_subject.items()},
+                as_of=as_of,
+            )
             for project, kind, subject in candidate_keys:
                 if (project, kind, subject) in known:
                     continue
-                candidate_run = run_by_id.get(subject) if kind == "run" else None
-                legacy_sample = (
-                    await _legacy_model_usage_sample(
-                        session,
-                        project_id=project,
-                        subject_id=subject,
-                        completed_at=candidate_run.updated_at,
-                        as_of=as_of,
-                        state=candidate_run.state,
-                        successful=candidate_run.state == "COMPLETED",
-                        accepted=candidate_run.id in accepted_run_ids,
-                    )
-                    if candidate_run is not None
-                    else None
-                )
-                if legacy_sample is None:
+                if kind != "run" or subject not in legacy:
                     count["unclassified_legacy"] += 1
             for project, kind, subject in candidate_keys:
                 if (project, kind, subject) not in known:
                     continue
-                totals = await self._totals.totals_in(
-                    session, SubjectKey(project_id=project, kind=kind, subject_id=subject), as_of=as_of
-                )
-                bound_rows = (
-                    await session.scalars(
-                        select(TaskUsageWorkUnit).where(
-                            TaskUsageWorkUnit.project_id == project,
-                            TaskUsageWorkUnit.subject_kind == kind,
-                            TaskUsageWorkUnit.subject_id == subject,
-                            TaskUsageWorkUnit.created_at <= as_of,
-                        )
-                    )
-                ).all()
+                subject_totals = totals[SubjectKey(project_id=project, kind=kind, subject_id=subject)]
+                bound_rows = units_by_subject[(project, kind, subject)]
                 bound_sources = {(unit.source_kind, unit.source_id) for unit in bound_rows}
                 if (
-                    totals.completeness != "complete"
+                    subject_totals.completeness != "complete"
                     or bound_sources != inventory.get((project, kind, subject), set())
                 ):
                     count["incomplete_usage"] += 1
                 if any(
                     fact.final_status in {"truncated", "incomplete", "partial"}
-                    for fact in totals.source_facts
+                    for fact in subject_totals.source_facts
                 ):
                     count["truncated"] += 1
             return {name: amount for name, amount in count.items() if amount}
 
 
-async def _legacy_model_usage_sample(
+async def _legacy_model_usage_samples(
     session: AsyncSession,
-    *,
-    project_id: UUID,
-    subject_id: UUID,
-    completed_at: datetime,
-    as_of: datetime,
-    state: str,
-    successful: bool,
-    accepted: bool,
-) -> BaselineSample | None:
-    """Use legacy rows only when every provider execution has durable usage."""
-    executions = set(
-        (
-            await session.scalars(
-                select(AgentExecution.id).where(AgentExecution.run_id == subject_id)
+    candidates: dict[UUID, tuple[UUID, datetime, str, bool, bool]],
+    *, as_of: datetime,
+) -> dict[UUID, BaselineSample]:
+    """Classify unbound runs with bounded reads and the old exact coverage rule."""
+    executions: dict[UUID, set[UUID]] = {}
+    subscriptions: set[UUID] = set()
+    rows_by_run: dict[UUID, list[Row[tuple[Any, ...]]]] = {}
+    for batch in _id_batches(set(candidates)):
+        for execution_id, run_id in (
+            await session.execute(select(AgentExecution.id, AgentExecution.run_id)
+                                  .where(AgentExecution.run_id.in_(batch)))
+        ).all():
+            executions.setdefault(run_id, set()).add(execution_id)
+        subscriptions.update((await session.scalars(
+            select(SubscriptionAttempt.run_id).where(SubscriptionAttempt.run_id.in_(batch))
+        )).all())
+        eligible = [identity for identity in batch
+                    if executions.get(identity) and identity not in subscriptions]
+        if not eligible:
+            continue
+        for row in (
+            await session.execute(
+                select(
+                    ModelUsage.run_id,
+                    ModelUsage.agent_execution_id,
+                    ModelUsage.provider,
+                    ModelUsage.model,
+                    ModelUsage.input_tokens,
+                    ModelUsage.cached_input_tokens,
+                    ModelUsage.output_tokens,
+                    AgentExecution.role,
+                    AgentExecution.status,
+                    Step.kind,
+                )
+                .join(AgentExecution, AgentExecution.id == ModelUsage.agent_execution_id)
+                .outerjoin(Step, Step.id == AgentExecution.step_id)
+                .where(ModelUsage.run_id.in_(eligible), ModelUsage.created_at <= as_of)
+                .order_by(ModelUsage.id)
             )
-        ).all()
-    )
-    if not executions:
-        return None
-    if await session.scalar(
-        select(SubscriptionAttempt.id)
-        .where(SubscriptionAttempt.run_id == subject_id)
-        .limit(1)
-    ) is not None:
-        # Without the new source bindings we cannot prove that historical
-        # subscription consumption is complete or route-comparable.
-        return None
-    rows = (
-        await session.execute(
-            select(
-                ModelUsage.agent_execution_id,
-                ModelUsage.provider,
-                ModelUsage.model,
-                ModelUsage.input_tokens,
-                ModelUsage.cached_input_tokens,
-                ModelUsage.output_tokens,
-                AgentExecution.role,
-                AgentExecution.status,
-                Step.kind,
-            )
-            .join(AgentExecution, AgentExecution.id == ModelUsage.agent_execution_id)
-            .outerjoin(Step, Step.id == AgentExecution.step_id)
-            .where(ModelUsage.run_id == subject_id, ModelUsage.created_at <= as_of)
-            .order_by(ModelUsage.id)
+        ).all():
+            rows_by_run.setdefault(row.run_id, []).append(row)
+    result: dict[UUID, BaselineSample] = {}
+    for subject_id, (project_id, completed_at, state, successful, accepted) in candidates.items():
+        rows = rows_by_run.get(subject_id, [])
+        if (not executions.get(subject_id) or subject_id in subscriptions or not rows
+            or {row.agent_execution_id for row in rows} != executions[subject_id]):
+            continue
+        result[subject_id] = _legacy_sample_from_rows(
+            rows, project_id=project_id, subject_id=subject_id,
+            completed_at=completed_at, state=state, successful=successful, accepted=accepted,
         )
-    ).all()
-    if not rows or {row.agent_execution_id for row in rows} != executions:
-        return None
+    return result
+
+
+def _legacy_sample_from_rows(
+    rows: Sequence[Row[tuple[Any, ...]]], *, project_id: UUID, subject_id: UUID,
+    completed_at: datetime, state: str, successful: bool, accepted: bool,
+) -> BaselineSample:
     total = sum(row.input_tokens + row.cached_input_tokens + row.output_tokens for row in rows)
     if total > 2**63 - 1:
         total = -1
@@ -697,8 +679,6 @@ async def _legacy_model_usage_sample(
             }
         )
     )
-    if not members:
-        return None
     route = RouteCohort.from_members(
         tuple(
             RouteMember(role=role, provider=provider, model=model, ordinal=index)
@@ -735,19 +715,22 @@ async def _legacy_model_usage_sample(
     )
 
 
-async def _failed_run_attempt_count(
-    session: AsyncSession, run_id: UUID, *, as_of: datetime
-) -> int:
-    return int(
-        await session.scalar(
-            select(func.count()).select_from(AgentExecution).where(
-                AgentExecution.run_id == run_id,
-                AgentExecution.status.in_(("FAILED", "CANCELLED")),
-                AgentExecution.created_at <= as_of,
+async def _failed_run_attempt_counts(
+    session: AsyncSession, run_ids: set[UUID], *, as_of: datetime,
+) -> dict[UUID, int]:
+    counts: dict[UUID, int] = {}
+    for batch in _id_batches(run_ids):
+        for run_id, amount in (
+            await session.execute(
+                select(AgentExecution.run_id, func.count()).where(
+                    AgentExecution.run_id.in_(batch),
+                    AgentExecution.status.in_(("FAILED", "CANCELLED")),
+                    AgentExecution.created_at <= as_of,
+                ).group_by(AgentExecution.run_id)
             )
-        )
-        or 0
-    )
+        ).all():
+            counts[run_id] = int(amount)
+    return counts
 
 
 async def _source_inventory(
@@ -761,18 +744,18 @@ async def _source_inventory(
     job_projects = {subject: project for project, kind, subject in subjects if kind == "authoring_job"}
     run_ids = set(run_projects)
     job_ids = set(job_projects)
-    if run_ids:
+    for batch in _id_batches(run_ids):
         executions = (
             await session.execute(
                 select(AgentExecution.id, AgentExecution.run_id).where(
-                    AgentExecution.run_id.in_(run_ids), AgentExecution.created_at <= as_of
+                    AgentExecution.run_id.in_(batch), AgentExecution.created_at <= as_of
                 )
             )
         ).all()
         attempts = (
             await session.execute(
                 select(SubscriptionAttempt.id, SubscriptionAttempt.run_id).where(
-                    SubscriptionAttempt.run_id.in_(run_ids), SubscriptionAttempt.created_at <= as_of
+                    SubscriptionAttempt.run_id.in_(batch), SubscriptionAttempt.created_at <= as_of
                 )
             )
         ).all()
@@ -784,11 +767,11 @@ async def _source_inventory(
             inventory.setdefault((run_projects[run_id], "run", run_id), set()).add(
                 ("subscription_attempt", source_id)
             )
-    if job_ids:
+    for batch in _id_batches(job_ids):
         attempts = (
             await session.execute(
                 select(BrainstormAttemptRow.id, BrainstormAttemptRow.job_id).where(
-                    BrainstormAttemptRow.job_id.in_(job_ids), BrainstormAttemptRow.created_at <= as_of
+                    BrainstormAttemptRow.job_id.in_(batch), BrainstormAttemptRow.created_at <= as_of
                 )
             )
         ).all()
@@ -947,7 +930,7 @@ def _route_composition(facts: tuple[FinalizedSourceFact, ...], name: str) -> str
 
 def _phase_role_facts(
     facts: tuple[FinalizedSourceFact, ...],
-    roles: dict[UUID, str],
+    roles: dict[tuple[str, UUID], str],
 ) -> tuple[tuple[str, str, int | None], ...]:
     output: list[tuple[str, str, int | None]] = []
     for fact in facts:
@@ -958,44 +941,46 @@ def _phase_role_facts(
         )
         binding = fact.binding
         phase = binding.admitted_phase_id
-        output.append((phase, roles.get(binding.source.source_id, "unknown"), amount))
+        output.append((phase, roles.get((binding.source.kind, binding.source.source_id), "unknown"), amount))
     return tuple(output)
 
 
 async def _source_roles(
     session: AsyncSession, units: list[TaskUsageWorkUnit]
-) -> dict[UUID, str]:
+) -> dict[tuple[str, UUID], str]:
     execution_ids = [unit.source_id for unit in units if unit.source_kind == "agent_execution"]
     task_ids = [unit.subscription_task_id for unit in units if unit.subscription_task_id]
-    roles = {
-        identity: role
-        for identity, role in (
+    roles: dict[tuple[str, UUID], str] = {}
+    for batch in _id_batches(execution_ids):
+        roles.update({
+            ("agent_execution", identity): role for identity, role in (
             await session.execute(
                 select(AgentExecution.id, AgentExecution.role).where(
-                    AgentExecution.id.in_(execution_ids)
+                    AgentExecution.id.in_(batch)
                 )
             )
-        ).all()
-    } if execution_ids else {}
+            ).all()
+        })
     if task_ids:
         purposes: dict[UUID, str] = {}
-        for identity, payload in (
-            await session.execute(
-                select(SubscriptionTask.id, SubscriptionTask.payload).where(
-                    SubscriptionTask.id.in_(task_ids)
+        for batch in _id_batches(task_ids):
+            for identity, payload in (
+                await session.execute(
+                    select(SubscriptionTask.id, SubscriptionTask.payload).where(
+                        SubscriptionTask.id.in_(batch)
+                    )
                 )
-            )
-        ).all():
-            try:
-                contract = decode_subscription_record(payload)
-            except (TypeError, ValueError, KeyError):
-                continue
-            if isinstance(contract, LogicalTaskContract):
-                purposes[identity] = contract.purpose.value
+            ).all():
+                try:
+                    contract = decode_subscription_record(payload)
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if isinstance(contract, LogicalTaskContract):
+                    purposes[identity] = contract.purpose.value
         for unit in units:
             if unit.source_kind == "subscription_attempt" and unit.subscription_task_id in purposes:
-                roles[unit.source_id] = purposes[unit.subscription_task_id]
+                roles[(unit.source_kind, unit.source_id)] = purposes[unit.subscription_task_id]
     for unit in units:
         if unit.source_kind == "authoring_attempt":
-            roles[unit.source_id] = "authoring"
+            roles[(unit.source_kind, unit.source_id)] = "authoring"
     return roles
