@@ -7,19 +7,22 @@
     99,
     103
   ],
-  "status": "local_batch_complete_unpublished",
+  "status": "simplified_local_candidate_ready_for_authorized_pr_publication",
   "feature_complete": false,
   "source": {
     "base": "e2c93d0a35102fd16162ee492da4044b3070a59f",
     "branch": "codex/usage-monitoring-adapters-ui",
     "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge",
     "initial_integrated_diff_sha256": "359bfca502d1d5dd67dd0d47a029a840e3f7f94d5ac698b350b09c145a1e8f84",
-    "final_source_commit": "c43dd2a8ef822812b0480618954a86bdde7288a1",
-    "final_source_tree": "8b33ceeb38318c6f73d1c7956281623560a4d9ff",
-    "final_source_diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
-    "changed_files": 34,
-    "candidate_manifest": ".llm-output/usage-adapters-ui/candidate-final.json",
-    "base_origin_main_fetched": true
+    "final_source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+    "final_source_tree": "27082f8a035eedc5e9c7df93b403a16eb04858d0",
+    "final_source_diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de",
+    "changed_files": 36,
+    "candidate_manifest": ".llm-output/usage-adapters-ui/simplify/candidate.json",
+    "base_origin_main_fetched": true,
+    "previous_local_source_commit": "c43dd2a8ef822812b0480618954a86bdde7288a1",
+    "previous_local_source_tree": "8b33ceeb38318c6f73d1c7956281623560a4d9ff",
+    "previous_local_source_diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e"
   },
   "previous_delivery": {
     "foundation_pr": 107,
@@ -84,6 +87,27 @@
         "receipt": "jev-review.json"
       },
       "final_review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de",
+        "receipt": "simplify/jev-review.json",
+        "added_lines": 5290,
+        "changed_files": 36,
+        "deleted_lines": 185,
+        "hunks": 113,
+        "hunks_omitted": 17,
+        "hunks_total": 113,
+        "unknown_count": 558
+      },
+      "acceptance_limit": "Jev scores are advisory; incomplete coverage is not absence, test evidence or merge approval.",
+      "pre_simplify_review": {
         "diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
         "status": "partial",
         "coverage": {
@@ -99,8 +123,7 @@
         "hunks_omitted": 17,
         "unknown_count": 656,
         "receipt": "jev-review-final.json"
-      },
-      "acceptance_limit": "Jev scores are advisory; incomplete coverage is not absence, test evidence or merge approval."
+      }
     },
     "repair_continuity": "The same Solmedium adapter owner retained the complex cancellation/settlement outcome after failed routine implementations. Gemini local availability remained available_to_try; no exhaustion was claimed. Final follow-up closes named test evidence gaps, not an extra review gate.",
     "tdd": {
@@ -115,6 +138,47 @@
         "ui-repair/red-report-window.log"
       ],
       "note": "Existing receipts retain failed setup/collection attempts separately. Those failures are not counted as behavior TDD proof. Candidate-specific green results below establish the accepted local behavior."
+    },
+    "simplify": {
+      "review": "One fresh Astra-low integrated simplification review after checked pinned Opus5.5 provider_error before completed steps; not quota exhaustion. Three substantiated suggestions resolved.",
+      "implementation": "Two checked Gemini Flash tasks with disjoint ownership, both terminal success. Root retained final integration, removed unused generic cap props, verified source equality, and reran checks where raw worker evidence was missing.",
+      "findings": [
+        {
+          "id": "SIMP-01",
+          "status": "resolved",
+          "reason": "Identical 218-line block, original SHA256 bbbb1cd43a70d0fa157d59f1cd46942316427b48f4661abfe5f287b3037c9e88",
+          "owner": "Gemini backend bounded outcome",
+          "resolution": "Extracted helper bodies exactly match both originals; gateway call placement remains unchanged. Fresh gateway and durable reconciliation checks passed."
+        },
+        {
+          "id": "SIMP-02",
+          "status": "resolved",
+          "reason": "Same raw draft, validation, custom validity and nullable callback; different captions/accessible names/external error preserved as explicit props",
+          "owner": "Gemini UI bounded outcome",
+          "resolution": "Shared draft/validation/null callback implementation with explicit caller labels, field names, help and error precedence. Primary removed unused generic props. Three affected UI suites passed."
+        },
+        {
+          "id": "SIMP-03",
+          "status": "resolved",
+          "reason": "Only one handleCeilingChange occurrence, definition; active input uses direct state update",
+          "owner": "Gemini UI bounded outcome",
+          "resolution": "Removed the sole uncalled definition. Active exact-cap and owner rebase controls remain covered by the epic panel suite."
+        }
+      ],
+      "final_jev": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de",
+        "receipt": "simplify/jev-review.json"
+      },
+      "evidence": "simplify/acceptance.json"
     }
   },
   "coverage": [
@@ -219,7 +283,8 @@
         "ui-repair/monitoring-api-final.log"
       ],
       "candidate": "ui-repair/candidate.json; 22 matching unchanged file hashes; page superseded",
-      "reuse": "Focused later checks cover changed guards; counts overlap and are not added into a unique total. Historical raw stdout does not itself retain exact argv."
+      "reuse": "Focused later checks cover changed guards; counts overlap and are not added into a unique total. Historical raw stdout does not itself retain exact argv.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Final project-page draft lifecycle and monitoring editor/API",
@@ -229,7 +294,8 @@
       "evidence": [
         "draft-repair/affected-final.log",
         "draft-repair/coverage.md"
-      ]
+      ],
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Final UI static checks",
@@ -242,7 +308,8 @@
       "evidence": [
         "draft-repair/typecheck.log",
         "draft-repair/lint.log"
-      ]
+      ],
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Generated API consistency",
@@ -251,7 +318,8 @@
       "evidence": [
         "integration/api-check.txt"
       ],
-      "reuse": "Shared API source and generated files unchanged in this batch; explicit active-worktree PYTHONPATH."
+      "reuse": "Shared API source and generated files unchanged in this batch; explicit active-worktree PYTHONPATH.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "UI presentation contract",
@@ -260,7 +328,8 @@
       "evidence": [
         "integration/ui-contract.txt"
       ],
-      "reuse": "Matching unchanged presentation contract inputs."
+      "reuse": "Matching unchanged presentation contract inputs.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Final web production build",
@@ -270,7 +339,8 @@
       "evidence": [
         "integration/web-build-final.txt"
       ],
-      "limits": "Build is not a real authenticated browser journey."
+      "limits": "Build is not a real authenticated browser journey.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Adapter finalization affected-final.txt",
@@ -280,7 +350,8 @@
         "finalization-repair/affected-final.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
-      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Adapter finalization authoring-suite-post-selfreview.txt",
@@ -290,7 +361,8 @@
         "finalization-repair/authoring-suite-post-selfreview.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
-      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Adapter finalization integration-final.txt",
@@ -300,7 +372,8 @@
         "finalization-repair/integration-final.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
-      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Adapter finalization ruff-final.txt",
@@ -310,7 +383,8 @@
         "finalization-repair/ruff-final.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
-      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Adapter finalization mypy-final.txt",
@@ -320,7 +394,8 @@
         "finalization-repair/mypy-final.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
-      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Final public gateway and adjacent authoring boundary suites",
@@ -330,7 +405,8 @@
         "finalization-repair/public-boundary-final.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
-      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Final repeated cancellation and deadline cleanup assertions",
@@ -340,7 +416,8 @@
         "finalization-repair/public-task-cleanup-final.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
-      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Google supervised settlement after import formatting",
@@ -350,7 +427,8 @@
         "finalization-repair/public-google-post-import.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
-      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Actual adjacent authoring composition suite",
@@ -360,7 +438,8 @@
         "finalization-repair/legacy-authoring-composition.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
-      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Final changed adapter test static checks",
@@ -370,7 +449,8 @@
         "finalization-repair/public-boundary-ruff-final.txt"
       ],
       "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
-      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run.",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Primary PostgreSQL regression static check",
@@ -378,7 +458,8 @@
       "result": "passed",
       "evidence": [
         "integration/postgres-test-ruff-final.txt"
-      ]
+      ],
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
     },
     {
       "name": "Final staged whitespace validation",
@@ -387,7 +468,192 @@
       "evidence": [
         "integration/final-staged-diff-check.txt"
       ],
-      "candidate": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e"
+      "candidate": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
+      "evidence_scope": "Pre-simplify snapshot c43dd2a; reuse only for unchanged scoped inputs. Changed Codex/Claude helpers and cap/epic components superseded by simplify checks below."
+    },
+    {
+      "name": "Simplify final source-import",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "python",
+        "-c",
+        "import forge,sys; print(sys.version); print(forge.__file__)"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\source-import.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
+    },
+    {
+      "name": "Simplify final gateway-tests",
+      "command": [
+        "rtk",
+        "proxy",
+        "uv",
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "python",
+        "-m",
+        "pytest",
+        "apps/orchestrator/tests/agents/test_codex_usage_observations.py",
+        "apps/orchestrator/tests/agents/test_claude_usage_observations.py",
+        "apps/orchestrator/tests/agents/test_codex_gateway.py",
+        "apps/orchestrator/tests/agents/test_claude_gateway.py",
+        "apps/orchestrator/tests/agents/test_claude_supervised.py",
+        "apps/orchestrator/tests/agents/test_subscription_attempt_budget.py",
+        "-q",
+        "-m",
+        "not live_provider and not live_github"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\gateway-tests.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
+    },
+    {
+      "name": "Simplify final postgres-integration",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "python",
+        "-m",
+        "pytest",
+        "apps/orchestrator/tests/task_usage_contract/test_adapter_batch_integration.py",
+        "-q"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\postgres-integration.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
+    },
+    {
+      "name": "Simplify final ruff",
+      "command": [
+        "rtk",
+        "proxy",
+        "uv",
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "ruff",
+        "check",
+        "apps/orchestrator/src/forge/agents/codex_gateway.py",
+        "apps/orchestrator/src/forge/agents/claude_gateway.py",
+        "apps/orchestrator/src/forge/agents/subscription_usage_observations.py"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\ruff.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
+    },
+    {
+      "name": "Simplify final mypy",
+      "command": [
+        "rtk",
+        "proxy",
+        "uv",
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "mypy",
+        "apps/orchestrator/src/forge/agents/codex_gateway.py",
+        "apps/orchestrator/src/forge/agents/claude_gateway.py",
+        "apps/orchestrator/src/forge/agents/subscription_usage_observations.py"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\mypy.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
+    },
+    {
+      "name": "Simplify final web-tests",
+      "command": [
+        "rtk",
+        "proxy",
+        "npm",
+        "run",
+        "test:web",
+        "--",
+        "--run",
+        "src/components/projects/model-policy.test.tsx",
+        "src/components/subscription-profiles/profile-editor.test.tsx",
+        "src/components/epics/epic-budget-panel.test.tsx"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\web-tests.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
+    },
+    {
+      "name": "Simplify final web-typecheck",
+      "command": [
+        "rtk",
+        "proxy",
+        "npm",
+        "run",
+        "typecheck:web"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\web-typecheck.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
+    },
+    {
+      "name": "Simplify final web-lint",
+      "command": [
+        "rtk",
+        "proxy",
+        "npm",
+        "run",
+        "lint:web"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\web-lint.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
+    },
+    {
+      "name": "Simplify final web-build",
+      "command": [
+        "rtk",
+        "proxy",
+        "npm",
+        "run",
+        "build:web"
+      ],
+      "result": "exit 0",
+      "evidence": [
+        ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\web-build.txt"
+      ],
+      "candidate": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de"
     }
   ],
   "remaining_limitations": [
@@ -403,8 +669,8 @@
   ],
   "authorization": {
     "local_work_issue_updates_tested_commits": "authorized",
-    "push": "not authorized/not run",
-    "ci_triggering_pr_operations": "not authorized/not run",
+    "push": "Explicitly authorized by latest user request; not yet run at this record.",
+    "ci_triggering_pr_operations": "Explicitly authorized by latest user request: publish PR, monitor/fix Codex findings, push tested repair batches and review requests; not yet run at this record.",
     "hosted_full_ci": "not authorized/not run",
     "runtime_live_providers": "not authorized/not run",
     "merge": "not authorized/not run"
@@ -415,7 +681,7 @@
     104,
     106
   ],
-  "recorded_at_utc": "2026-10-11T16:31:06.761049+00:00",
+  "recorded_at_utc": "2026-10-11T17:04:46.646781+00:00",
   "review_findings": [
     {
       "id": "UM-REV-001",
@@ -438,8 +704,8 @@
     }
   ],
   "acceptance": {
-    "decision": "Accepted for local commits and issue handoff for this bounded batch only.",
-    "owner_action": "User requested implementation, tested commits and issue updates.",
+    "decision": "Simplified source accepted for the explicitly authorized push/PR. PR acceptance remains pending automatic checks and Codex review at the final head.",
+    "owner_action": "Latest user requested simplify, push, PR publication and complete Codex findings/review-conversation cleanup.",
     "authenticated_operator": "Clar17y",
     "independent_review": "One integrated review reused after targeted repair adjudication; both findings resolved. No automatic extra review gate.",
     "whole_feature_delivered": false,
@@ -447,5 +713,216 @@
     "unrun_checks": "Actual runtime providers, hosted CI/PR checks, real authenticated browser journey and final whole backend suite unrun."
   },
   "receipt_root": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge/.llm-output/usage-adapters-ui",
-  "receipt_note": "Local contracts, helper JSON, raw output, failing attempts and per-file hashes are preserved in ignored .llm-output. Exact final command headers are retained. Earlier 415/127/54 adapter stdout lacks complete argv provenance and is not used as final affected-suite evidence; the actual current authoring composition path is apps/orchestrator/tests/epic_brainstorm/test_gateway_composition.py (80 passed)."
+  "receipt_note": "Local contracts, helper JSON, raw output, failing attempts and per-file hashes are preserved in ignored .llm-output. Exact final command headers are retained. Earlier 415/127/54 adapter stdout lacks complete argv provenance and is not used as final affected-suite evidence; the actual current authoring composition path is apps/orchestrator/tests/epic_brainstorm/test_gateway_composition.py (80 passed).",
+  "simplify_acceptance": {
+    "source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+    "source_tree": "27082f8a035eedc5e9c7df93b403a16eb04858d0",
+    "candidate_manifest": "simplify/candidate.json",
+    "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de",
+    "checks": [
+      {
+        "name": "source-import",
+        "argv": [
+          "uv",
+          "run",
+          "--frozen",
+          "--extra",
+          "dev",
+          "python",
+          "-c",
+          "import forge,sys; print(sys.version); print(forge.__file__)"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\source-import.txt",
+        "started": "2026-10-11T17:02:50.787726+00:00",
+        "finished": "2026-10-11T17:02:50.929616+00:00"
+      },
+      {
+        "name": "gateway-tests",
+        "argv": [
+          "rtk",
+          "proxy",
+          "uv",
+          "run",
+          "--frozen",
+          "--extra",
+          "dev",
+          "python",
+          "-m",
+          "pytest",
+          "apps/orchestrator/tests/agents/test_codex_usage_observations.py",
+          "apps/orchestrator/tests/agents/test_claude_usage_observations.py",
+          "apps/orchestrator/tests/agents/test_codex_gateway.py",
+          "apps/orchestrator/tests/agents/test_claude_gateway.py",
+          "apps/orchestrator/tests/agents/test_claude_supervised.py",
+          "apps/orchestrator/tests/agents/test_subscription_attempt_budget.py",
+          "-q",
+          "-m",
+          "not live_provider and not live_github"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\gateway-tests.txt",
+        "started": "2026-10-11T17:02:50.930199+00:00",
+        "finished": "2026-10-11T17:03:03.967617+00:00"
+      },
+      {
+        "name": "postgres-integration",
+        "argv": [
+          "uv",
+          "run",
+          "--frozen",
+          "--extra",
+          "dev",
+          "python",
+          "-m",
+          "pytest",
+          "apps/orchestrator/tests/task_usage_contract/test_adapter_batch_integration.py",
+          "-q"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\postgres-integration.txt",
+        "started": "2026-10-11T17:03:03.968192+00:00",
+        "finished": "2026-10-11T17:03:11.141649+00:00"
+      },
+      {
+        "name": "ruff",
+        "argv": [
+          "rtk",
+          "proxy",
+          "uv",
+          "run",
+          "--frozen",
+          "--extra",
+          "dev",
+          "ruff",
+          "check",
+          "apps/orchestrator/src/forge/agents/codex_gateway.py",
+          "apps/orchestrator/src/forge/agents/claude_gateway.py",
+          "apps/orchestrator/src/forge/agents/subscription_usage_observations.py"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\ruff.txt",
+        "started": "2026-10-11T17:03:11.142437+00:00",
+        "finished": "2026-10-11T17:03:11.366345+00:00"
+      },
+      {
+        "name": "mypy",
+        "argv": [
+          "rtk",
+          "proxy",
+          "uv",
+          "run",
+          "--frozen",
+          "--extra",
+          "dev",
+          "mypy",
+          "apps/orchestrator/src/forge/agents/codex_gateway.py",
+          "apps/orchestrator/src/forge/agents/claude_gateway.py",
+          "apps/orchestrator/src/forge/agents/subscription_usage_observations.py"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\mypy.txt",
+        "started": "2026-10-11T17:03:11.367000+00:00",
+        "finished": "2026-10-11T17:03:12.151501+00:00"
+      },
+      {
+        "name": "web-tests",
+        "argv": [
+          "rtk",
+          "proxy",
+          "npm",
+          "run",
+          "test:web",
+          "--",
+          "--run",
+          "src/components/projects/model-policy.test.tsx",
+          "src/components/subscription-profiles/profile-editor.test.tsx",
+          "src/components/epics/epic-budget-panel.test.tsx"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\web-tests.txt",
+        "started": "2026-10-11T17:02:51.003381+00:00",
+        "finished": "2026-10-11T17:03:04.255282+00:00"
+      },
+      {
+        "name": "web-typecheck",
+        "argv": [
+          "rtk",
+          "proxy",
+          "npm",
+          "run",
+          "typecheck:web"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\web-typecheck.txt",
+        "started": "2026-10-11T17:03:04.255916+00:00",
+        "finished": "2026-10-11T17:03:05.736453+00:00"
+      },
+      {
+        "name": "web-lint",
+        "argv": [
+          "rtk",
+          "proxy",
+          "npm",
+          "run",
+          "lint:web"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\web-lint.txt",
+        "started": "2026-10-11T17:03:05.737176+00:00",
+        "finished": "2026-10-11T17:03:21.485077+00:00"
+      },
+      {
+        "name": "web-build",
+        "argv": [
+          "rtk",
+          "proxy",
+          "npm",
+          "run",
+          "build:web"
+        ],
+        "exit_code": 0,
+        "log": ".llm-output\\usage-adapters-ui\\simplify\\final-checks\\web-build.txt",
+        "started": "2026-10-11T17:03:21.485662+00:00",
+        "finished": "2026-10-11T17:03:51.442079+00:00"
+      }
+    ],
+    "primary_self_review": "Original extracted helper equality verified. Shared cap input retains existing callbacks, validity and external error precedence; unused generic props removed. No lifecycle or accounting algorithm changes.",
+    "worker_evidence_limit": "Both Gemini CLI tasks terminated successfully. UI did not save its promised handoff/logs; backend saved claims but not raw command output. Primary reran the affected checks with command headers and captured raw output. Worker claims alone were not accepted.",
+    "coverage": [
+      {
+        "invariant": "Observation identities, counters and settled final delivery preserved",
+        "checks": [
+          "Exact original helper body SHA256 bbbb1cd43a70d0fa157d59f1cd46942316427b48f4661abfe5f287b3037c9e88",
+          "122 Codex/Claude and gateway/budget cases passed",
+          "Real PostgreSQL adapter final/replay regression: 1 passed"
+        ],
+        "limits": "No new real-provider certification; no claim that every queue/sink schedule was exhaustively tested."
+      },
+      {
+        "invariant": "Optional cap drafts and owner policy transitions preserved",
+        "checks": [
+          "Project/model-policy, profile-editor and epic-budget-panel: 56 passed",
+          "External error precedence characterization added",
+          "TypeScript/lint/production build passed"
+        ],
+        "limits": "Component checks, not a real authenticated browser journey."
+      }
+    ],
+    "jev": {
+      "status": "partial",
+      "coverage": {
+        "complete": false,
+        "reasons": [
+          "hunk_limit",
+          "operation_budget_reached",
+          "oversized_hunk_omitted"
+        ]
+      },
+      "diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de",
+      "receipt": "simplify/jev-review.json"
+    },
+    "unchanged_evidence": "Earlier Google subscription and authoring, API/presentation, page draft and policy/replay evidence retained only for matching scoped inputs. Codex/Claude extraction and changed cap/epic components use fresh affected checks. No final whole backend suite claim.",
+    "recorded_at_utc": "2026-10-11T17:04:46.645257+00:00"
+  }
 }
