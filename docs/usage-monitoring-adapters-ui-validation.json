@@ -1,0 +1,451 @@
+{
+  "schema_version": 1,
+  "epic": 94,
+  "repository": "Clar17y/parallel-forge",
+  "batch_issues": [
+    98,
+    99,
+    103
+  ],
+  "status": "local_batch_complete_unpublished",
+  "feature_complete": false,
+  "source": {
+    "base": "e2c93d0a35102fd16162ee492da4044b3070a59f",
+    "branch": "codex/usage-monitoring-adapters-ui",
+    "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge",
+    "initial_integrated_diff_sha256": "359bfca502d1d5dd67dd0d47a029a840e3f7f94d5ac698b350b09c145a1e8f84",
+    "final_source_commit": "c43dd2a8ef822812b0480618954a86bdde7288a1",
+    "final_source_tree": "8b33ceeb38318c6f73d1c7956281623560a4d9ff",
+    "final_source_diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
+    "changed_files": 34,
+    "candidate_manifest": ".llm-output/usage-adapters-ui/candidate-final.json",
+    "base_origin_main_fetched": true
+  },
+  "previous_delivery": {
+    "foundation_pr": 107,
+    "foundation_merge": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "adapters_foundation_pr": 108,
+    "merge": "e2c93d0a35102fd16162ee492da4044b3070a59f",
+    "tested_pr_head": "29041086f80638426179be0797cac79569a4025b",
+    "closed_issues": [
+      95,
+      96,
+      97,
+      100,
+      105
+    ],
+    "receipt_root": "C:/Users/sdyer/.codex/worktree-evidence/parallel-forge/usage-monitoring-batch-2904108-pr108-35871bc4d8214a3fa4dc8a0194876fe1/.llm-output",
+    "historical_suite_note": "Earlier broad backend receipt included failures and later scoped repairs. It is not a final whole-suite pass for this batch.",
+    "foundation_receipt_root": "C:/Users/sdyer/.codex/worktree-evidence/parallel-forge/usage-monitoring-99a05af-d64cbc9f019844e29bd561eee0451161/.llm-output",
+    "starting_receipts": [
+      "pr108-round7/hosted-acceptance.json",
+      "pr108-round7/acceptance.json",
+      "teardown-pr108/merge-reconciliation.json"
+    ],
+    "existing_validation_record": "docs/usage-monitoring-batch-validation.json; retained unchanged"
+  },
+  "environment": {
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "dependencies": "uv sync --frozen --extra dev; npm ci --no-audit --no-fund; lock files unchanged",
+    "source_import": "Active worktree apps/orchestrator/src/forge/__init__.py; explicit PYTHONPATH",
+    "database": "PostgreSQL disposable fixtures on existing local port 5435, migration 0039; no production database writes",
+    "original_checkout": {
+      "path": "C:/dev/parallel-forge",
+      "head": "ed7d16b7a7f37c71df6c99db5f21a12b3f08429d",
+      "preserved_modified_file": "apps/web/next-env.d.ts",
+      "sha256": "0f70629890b72a0a82e91972cc032c04b658b26c265373cb711cf576bfbf8fcc"
+    }
+  },
+  "scope": {
+    "98": "Optional observed Codex/Claude subscription gateways over merged ports; binding, counters, coverage and bounded delivery.",
+    "99": "Optional Google subscription and authoring gateways; honest live/final-only/unavailable evidence and measured context.",
+    "103": "Project monitoring policy authoring using merged API; optional exact project/profile/epic caps and advisory history.",
+    "106": "Primary integration ownership for shared files and real PostgreSQL adapter regression only; final assembly remains subsequent."
+  },
+  "product_invariants": [
+    "Expected usage remains advisory. Explicit hard caps are optional; omitted fields remain unbounded. The 200k/400k examples are not measured defaults.",
+    "Unknown usage differs from measured zero. Reservations are not measurements. Cached and reasoning counters are subsets. Final counters reconcile with live counters rather than adding to them.",
+    "Authoring and implementation subjects, source identities and routes remain distinct. Delegated usage aggregates once; active references remain frozen in the merged foundation.",
+    "Reports retain the existing project access controls. The authoring summary explicitly labels project-wide mixed history and its comparability limitation.",
+    "Owner policy actions are direct authenticated operations with optional notes. Historical policies, actual spending and frozen active envelopes are not rewritten.",
+    "Measured context occupancy and compaction remain separate from cumulative input; diagnostics are advisory and unavailable fields stay unknown.",
+    "Policy writes carry actor_id and expected_revision. New monitoring values use validated signed-64-bit counters. The browser rejects values above Number.MAX_SAFE_INTEGER instead of silently rounding."
+  ],
+  "workflow": {
+    "initial_execution": "Three fresh bounded GeminiFlash contracts with disjoint source/test ownership, checked installed availability. All terminal stopped before native repairs.",
+    "repairs": "Existing two Solmedium complex owners complete consolidated adapter/UI repairs after incomplete Gemini implementations; no quota claim. Shared source/schema/bootstrap/generated changes serialized through primary.",
+    "review": "One integrated Astra-low fallback after an installed availability check and pinned Claude Opus 5.5 provider_error before any completed review step. This was not quota exhaustion. Both substantiated findings were repaired by their existing owners; primary inspected deltas and matched concrete test evidence. Named public-gateway cancellation/deadline gaps were closed by targeted tests rather than a further review round.",
+    "jev": {
+      "search": "Initial and repair search attempts saved under the local receipt root; partial coverage retained.",
+      "initial_review": {
+        "diff_sha256": "359bfca502d1d5dd67dd0d47a029a840e3f7f94d5ac698b350b09c145a1e8f84",
+        "status": "partial",
+        "receipt": "jev-review.json"
+      },
+      "final_review": {
+        "diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "changed_files": 34,
+        "hunks_total": 113,
+        "hunks_omitted": 17,
+        "unknown_count": 656,
+        "receipt": "jev-review-final.json"
+      },
+      "acceptance_limit": "Jev scores are advisory; incomplete coverage is not absence, test evidence or merge approval."
+    },
+    "repair_continuity": "The same Solmedium adapter owner retained the complex cancellation/settlement outcome after failed routine implementations. Gemini local availability remained available_to_try; no exhaustion was claimed. Final follow-up closes named test evidence gaps, not an extra review gate.",
+    "tdd": {
+      "semantic_red_receipts": [
+        "integration/red-source.txt",
+        "finalization-repair/red-authoring-cap-precedence.txt",
+        "finalization-repair/red-google-uncertain.txt",
+        "draft-repair/red-page.log",
+        "draft-repair/red-project-refresh.log",
+        "ui-repair/red-policy.log",
+        "ui-repair/red-slider.log",
+        "ui-repair/red-report-window.log"
+      ],
+      "note": "Existing receipts retain failed setup/collection attempts separately. Those failures are not counted as behavior TDD proof. Candidate-specific green results below establish the accepted local behavior."
+    }
+  },
+  "coverage": [
+    {
+      "invariant": "Optional authoring caps and advisory measured history",
+      "cases": "Omitted, legacy finite, cleared null, measured zero versus missing, safe integer validation, mixed project-wide report caveat",
+      "evidence": [
+        "ui-repair/coverage.md",
+        "ui-repair/affected-final.log",
+        "ui-repair/epic-final.log",
+        "ui-repair/monitoring-api-final.log",
+        "integration/ui-evidence-reuse.json"
+      ],
+      "result": "22 prior owned UI file hashes unchanged; page superseded by the final page repair",
+      "limits": "Component/API-helper evidence; browser against the real authenticated API remains unrun. No per-task comparable history view is claimed."
+    },
+    {
+      "invariant": "Direct owner saves preserve identity, actual revision and draft",
+      "cases": "First absent policy revision 0; receipt revision; identical request replay; guarded double submit; 409 fetches actual revision 8; pending/failed/retried monitoring refresh; outer project refresh",
+      "evidence": [
+        "draft-repair/coverage.md",
+        "draft-repair/candidate.json",
+        "draft-repair/red-page.log",
+        "draft-repair/red-project-refresh.log",
+        "draft-repair/affected-final.log"
+      ],
+      "result": "Final real-hook page and editor/API suites: 39 tests in 3 files passed; primary matched final two-file hashes. UI helpers retain matching prior replay evidence.",
+      "limits": "HTTP fetch and route parameters mocked; real useApi and API helper used. No real browser/network race certification."
+    },
+    {
+      "invariant": "Live/final usage reconciles once through durable storage",
+      "cases": "Actual supervised Codex callback, durable subscription admission, bound source, duplicate observations, durable final settlement, duplicate late larger counters",
+      "evidence": [
+        "integration/red-source.txt",
+        "finalization-repair/integration-final.txt",
+        "integration/adapter-evidence-final-match.json",
+        "apps/orchestrator/tests/task_usage_contract/test_adapter_batch_integration.py"
+      ],
+      "result": "Final-source real PostgreSQL regression passed. Measured 13 input/5 output/18 total, one source, no durable final before settlement then one after settlement; replayed late 80/40 cannot replace durable 18; repair debit zero. Source and fixture inputs matched.",
+      "limits": "One subscription attempt; production live sink composition, run/authoring checkpoint continuation and multi-child integration remain subsequent outcomes."
+    },
+    {
+      "invariant": "Trustworthy observation identity and declared normalized semantics",
+      "cases": "Wrong project/subject/run/task/attempt/role/model/effort rejected before launch; Claude uncached plus cache read/creation, multiple turns, every live prefix, repeat/reorder, final replacement; Codex cumulative counters and subsets; Google stream/final-only/unavailable distinctions",
+      "result": "Focused providerless gateway/parser tests passed; six adapter source hashes and unchanged fixtures match the 300-test receipt. Changed focused tests have later 163-test and cleanup receipts. Real durable duplicate replay verified separately.",
+      "evidence": [
+        "adapter-repair/coverage.md",
+        "finalization-repair/coverage.md",
+        "finalization-repair/affected-final.txt",
+        "finalization-repair/public-boundary-final.txt",
+        "integration/adapter-evidence-final-match.json"
+      ],
+      "limits": "Live installed-client field/schema conformance not certified. Adapter validates only identities present in its invocation; database writer owns durable work-unit/project lineage."
+    },
+    {
+      "invariant": "Final classification, process settlement and bounded observation delivery remain coupled correctly",
+      "cases": "Malformed output after valid terminal; strict cost-telemetry policy; above-cap plus unconfirmed stop/cancellation; nonzero close; one final after settlement; final sink failure/timeout; repeated external cancellation after settled Codex/Claude/Gemini/Antigravity peers; authoring provider deadline crossed by final delivery",
+      "result": "300 affected tests reused on unchanged source; 163 later public-boundary/authoring/composition tests passed. Seven final task-cleanup assertions passed after final test edits. Six Google tests passed after import-only formatting. Final sink tasks completed, captured counters and stop proof retained, incomplete delivery visible.",
+      "evidence": [
+        "finalization-repair/coverage.md",
+        "finalization-repair/affected-final.txt",
+        "finalization-repair/public-boundary-final.txt",
+        "finalization-repair/public-task-cleanup-final.txt",
+        "finalization-repair/public-google-post-import.txt",
+        "review-adjudication.json"
+      ],
+      "limits": "Exact provider-deadline crossing asserted for authoring only. Subscription wrappers tested with repeated cancellation after real process settlement. Hostile indefinitely cancellation-suppressing sinks and native client/network races remain unproved."
+    },
+    {
+      "invariant": "Unknown/zero, signed-64-bit counters, measured context and optional caps",
+      "cases": "Large real peer counters above ten million; sparse measured zero with unknown output; invalid subset/regression/overflow updates atomic; real occupancy zero and compaction retained; inconsistent context unknown; omitted cap versus explicit native cap",
+      "result": "Focused source/parser and actual scripted exchange tests passed. Existing explicit-cap regression inputs remained unchanged and are included in the 300-test run. Context is not derived from cumulative input.",
+      "evidence": [
+        "finalization-repair/coverage.md",
+        "finalization-repair/affected-final.txt",
+        "finalization-repair/public-google-post-import.txt",
+        "apps/orchestrator/tests/agents/test_google_usage_observations.py",
+        "apps/orchestrator/tests/epic_brainstorm/test_gateway.py"
+      ],
+      "limits": "Authoring signed-64-bit overflow has an explicit test. Antigravity subscription overflow is validated in code but not separately exercised by an overflow peer. Browser numbers cannot represent the full signed-64-bit range."
+    },
+    {
+      "invariant": "Scope and final assembly remain explicit",
+      "cases": "Optional observation entry points, merged ports/fixtures, actual single Codex-to-PostgreSQL path, generated API consistency, policy UI production build",
+      "result": "Batch #98/#99/#103 is locally implemented and committed. Shared contracts, migrations, model/UoW registries, bootstrap/composition and generated API files remain unchanged. One root-owned durable integration regression prepares #106.",
+      "evidence": [
+        "candidate-final.json",
+        "integration/api-check.txt",
+        "integration/web-build-final.txt",
+        "finalization-repair/integration-final.txt"
+      ],
+      "limits": "Production invocation of optional observer methods, child aggregation across a complete run, checkpoints #101/#102, reporting/continuation UI #104 and #106 end-to-end assembly are subsequent outcomes."
+    }
+  ],
+  "checks": [
+    {
+      "name": "UI authoring affected suites",
+      "result": "145 passed in 10 files before isolated follow-up guards; 15 epic tests and 21 monitoring API tests passed after those repairs",
+      "evidence": [
+        "ui-repair/affected-final.log",
+        "ui-repair/epic-final.log",
+        "ui-repair/monitoring-api-final.log"
+      ],
+      "candidate": "ui-repair/candidate.json; 22 matching unchanged file hashes; page superseded",
+      "reuse": "Focused later checks cover changed guards; counts overlap and are not added into a unique total. Historical raw stdout does not itself retain exact argv."
+    },
+    {
+      "name": "Final project-page draft lifecycle and monitoring editor/API",
+      "command": "npm run test:web -- --run src/app/projects/[projectId]/page.test.tsx src/components/projects/monitoring-policy-editor.test.tsx src/lib/api/monitoring-policy.test.ts",
+      "result": "3 files / 39 tests passed",
+      "candidate": "draft-repair/candidate.json",
+      "evidence": [
+        "draft-repair/affected-final.log",
+        "draft-repair/coverage.md"
+      ]
+    },
+    {
+      "name": "Final UI static checks",
+      "commands": [
+        "rtk npm run typecheck:web",
+        "rtk npm run lint:web"
+      ],
+      "result": "passed",
+      "candidate": "draft-repair/candidate.json plus unchanged prior UI hashes",
+      "evidence": [
+        "draft-repair/typecheck.log",
+        "draft-repair/lint.log"
+      ]
+    },
+    {
+      "name": "Generated API consistency",
+      "command": "npm run api:check",
+      "result": "passed",
+      "evidence": [
+        "integration/api-check.txt"
+      ],
+      "reuse": "Shared API source and generated files unchanged in this batch; explicit active-worktree PYTHONPATH."
+    },
+    {
+      "name": "UI presentation contract",
+      "command": "rtk proxy npm run test:ui-contract --workspace apps/web",
+      "result": "28 passed",
+      "evidence": [
+        "integration/ui-contract.txt"
+      ],
+      "reuse": "Matching unchanged presentation contract inputs."
+    },
+    {
+      "name": "Final web production build",
+      "command": "rtk proxy npm run build:web",
+      "result": "passed; optimized production build, TypeScript and page generation",
+      "candidate": "draft-repair/candidate.json plus unchanged UI file hashes",
+      "evidence": [
+        "integration/web-build-final.txt"
+      ],
+      "limits": "Build is not a real authenticated browser journey."
+    },
+    {
+      "name": "Adapter finalization affected-final.txt",
+      "command": "rtk proxy uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_google_observed_settlement.py apps/orchestrator/tests/agents/test_google_usage_observations.py apps/orchestrator/tests/agents/test_gemini_gateway.py apps/orchestrator/tests/agents/test_gemini_session.py apps/orchestrator/tests/agents/test_antigravity_runtime.py apps/orchestrator/tests/agents/test_codex_usage_observations.py apps/orchestrator/tests/agents/test_claude_usage_observations.py apps/orchestrator/tests/agents/test_codex_gateway.py apps/orchestrator/tests/agents/test_claude_gateway.py apps/orchestrator/tests/agents/test_claude_supervised.py apps/orchestrator/tests/agents/test_subscription_attempt_budget.py apps/orchestrator/tests/epic_brainstorm/test_gateway.py -q -m \"not live_provider and not live_github\"",
+      "result": "300 passed, 5 warnings in 42.50s",
+      "evidence": [
+        "finalization-repair/affected-final.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+    },
+    {
+      "name": "Adapter finalization authoring-suite-post-selfreview.txt",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/epic_brainstorm/test_gateway.py -q",
+      "result": "52 passed, 5 warnings in 3.84s",
+      "evidence": [
+        "finalization-repair/authoring-suite-post-selfreview.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+    },
+    {
+      "name": "Adapter finalization integration-final.txt",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/task_usage_contract/test_adapter_batch_integration.py -q",
+      "result": "1 passed in 4.09s",
+      "evidence": [
+        "finalization-repair/integration-final.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+    },
+    {
+      "name": "Adapter finalization ruff-final.txt",
+      "command": "rtk err uv run --frozen --extra dev ruff check apps/orchestrator/src/forge/agents/antigravity_runtime.py apps/orchestrator/src/forge/agents/gemini_gateway.py apps/orchestrator/src/forge/agents/epic_brainstorm_gateway.py apps/orchestrator/src/forge/agents/epic_brainstorm_protocol.py apps/orchestrator/src/forge/agents/codex_gateway.py apps/orchestrator/src/forge/agents/claude_gateway.py apps/orchestrator/tests/agents/test_google_observed_settlement.py apps/orchestrator/tests/agents/test_google_usage_observations.py apps/orchestrator/tests/agents/test_codex_usage_observations.py apps/orchestrator/tests/agents/test_claude_usage_observations.py apps/orchestrator/tests/agents/antigravity_runtime_peer.py apps/orchestrator/tests/agents/claude_stream_peer.py apps/orchestrator/tests/epic_brainstorm/test_gateway.py",
+      "result": "[ok] Command completed successfully (no errors)",
+      "evidence": [
+        "finalization-repair/ruff-final.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+    },
+    {
+      "name": "Adapter finalization mypy-final.txt",
+      "command": "rtk err uv run --frozen --extra dev mypy apps/orchestrator/src/forge/agents/antigravity_runtime.py apps/orchestrator/src/forge/agents/gemini_gateway.py apps/orchestrator/src/forge/agents/epic_brainstorm_gateway.py apps/orchestrator/src/forge/agents/epic_brainstorm_protocol.py apps/orchestrator/src/forge/agents/codex_gateway.py apps/orchestrator/src/forge/agents/claude_gateway.py",
+      "result": "[ok] Command completed successfully (no errors)",
+      "evidence": [
+        "finalization-repair/mypy-final.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt and integration/adapter-evidence-final-match.json",
+      "reuse": "Six adapter source hashes and unchanged fixtures matched. Earlier results are reused only for unchanged inputs; changed focused test files have the later public-boundary, formatting and cleanup receipts. Counts overlap and are not a unique total."
+    },
+    {
+      "name": "Final public gateway and adjacent authoring boundary suites",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_codex_usage_observations.py apps/orchestrator/tests/agents/test_claude_usage_observations.py apps/orchestrator/tests/agents/test_google_observed_settlement.py apps/orchestrator/tests/epic_brainstorm/test_gateway.py apps/orchestrator/tests/epic_brainstorm/test_gateway_composition.py -q",
+      "result": "163 passed, 5 warnings in 12.79s",
+      "evidence": [
+        "finalization-repair/public-boundary-final.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+    },
+    {
+      "name": "Final repeated cancellation and deadline cleanup assertions",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_codex_usage_observations.py apps/orchestrator/tests/agents/test_claude_usage_observations.py apps/orchestrator/tests/agents/test_google_observed_settlement.py apps/orchestrator/tests/epic_brainstorm/test_gateway.py -q -k 'repeated_cancel or delivery_deadline or delivery_cancel_twice'",
+      "result": "7 passed, 76 deselected, 5 warnings in 4.27s",
+      "evidence": [
+        "finalization-repair/public-task-cleanup-final.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+    },
+    {
+      "name": "Google supervised settlement after import formatting",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_google_observed_settlement.py -q",
+      "result": "6 passed, 5 warnings in 5.02s",
+      "evidence": [
+        "finalization-repair/public-google-post-import.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+    },
+    {
+      "name": "Actual adjacent authoring composition suite",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/epic_brainstorm/test_gateway_composition.py -q",
+      "result": "80 passed, 5 warnings in 2.37s",
+      "evidence": [
+        "finalization-repair/legacy-authoring-composition.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+    },
+    {
+      "name": "Final changed adapter test static checks",
+      "command": "rtk err uv run --frozen --extra dev ruff check apps/orchestrator/tests/agents/test_codex_usage_observations.py apps/orchestrator/tests/agents/test_claude_usage_observations.py apps/orchestrator/tests/agents/test_google_observed_settlement.py apps/orchestrator/tests/epic_brainstorm/test_gateway.py",
+      "result": "[ok] Command completed successfully (no errors)",
+      "evidence": [
+        "finalization-repair/public-boundary-ruff-final.txt"
+      ],
+      "candidate": "Final source commit c43dd2a8ef822812b0480618954a86bdde7288a1; finalization-repair/candidate-hashes.txt",
+      "reuse": "Overlapping counts are not summed. The seven-case receipt covers final cleanup assertions added after the 163-case run."
+    },
+    {
+      "name": "Primary PostgreSQL regression static check",
+      "command": "rtk err uv run --frozen --extra dev ruff check apps/orchestrator/tests/task_usage_contract/test_adapter_batch_integration.py",
+      "result": "passed",
+      "evidence": [
+        "integration/postgres-test-ruff-final.txt"
+      ]
+    },
+    {
+      "name": "Final staged whitespace validation",
+      "command": "git diff --cached --check",
+      "result": "exit 0",
+      "evidence": [
+        "integration/final-staged-diff-check.txt"
+      ],
+      "candidate": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e"
+    }
+  ],
+  "remaining_limitations": [
+    "No runtime live-provider conformance, hosted CI, automated PR review or browser against real authenticated API run.",
+    "Production observer invocation/composition and checkpoint/continuation remain subsequent#101/#102/#106; reporting/continuation UI#104.",
+    "Final JavaScript DTOs represent numbers; UI caps above Number.MAX_SAFE_INTEGER rejected, full signed64 browser roundtrip unproved.",
+    "Non-cooperative sink indefinitely suppressing task cancellation cannot be forcibly killed by asyncio; only cooperative bounds checked.",
+    "Whole backend suite not run on final batch; exact affected subsets plus real PostgreSQL integration only.",
+    "Authoring exact provider deadline crossing proved; each subscription wrapper exact deadline crossing not separately tested.",
+    "Sparse Claude message parsing is covered; a native live client interleaving sparse fields with cancellation is not certified.",
+    "Antigravity subscription overflow is checked in parser code; the authoring overflow test is explicit, a subscription overflow peer is unrun.",
+    "Authoring scripted supervisors assert settlement/close ordering but do not certify OS process identity; real supervised subscription peers cover actual process settlement."
+  ],
+  "authorization": {
+    "local_work_issue_updates_tested_commits": "authorized",
+    "push": "not authorized/not run",
+    "ci_triggering_pr_operations": "not authorized/not run",
+    "hosted_full_ci": "not authorized/not run",
+    "runtime_live_providers": "not authorized/not run",
+    "merge": "not authorized/not run"
+  },
+  "subsequent_outcomes": [
+    101,
+    102,
+    104,
+    106
+  ],
+  "recorded_at_utc": "2026-10-11T16:31:06.761049+00:00",
+  "review_findings": [
+    {
+      "id": "UM-REV-001",
+      "status": "resolved",
+      "resolution": "Capture terminal measurements before later failure; finalize after settlement/classification, preserve failure precedence and isolate delivery from provider timer.",
+      "evidence": [
+        "finalization-repair/coverage.md",
+        "finalization-repair/public-boundary-final.txt",
+        "finalization-repair/public-task-cleanup-final.txt"
+      ]
+    },
+    {
+      "id": "UM-REV-002",
+      "status": "resolved",
+      "resolution": "Keep project monitoring editor mounted through pending/failed monitoring and outer project refresh; retain draft and actual revision.",
+      "evidence": [
+        "draft-repair/coverage.md",
+        "draft-repair/affected-final.log"
+      ]
+    }
+  ],
+  "acceptance": {
+    "decision": "Accepted for local commits and issue handoff for this bounded batch only.",
+    "owner_action": "User requested implementation, tested commits and issue updates.",
+    "authenticated_operator": "Clar17y",
+    "independent_review": "One integrated review reused after targeted repair adjudication; both findings resolved. No automatic extra review gate.",
+    "whole_feature_delivered": false,
+    "issue_state": "Keep #98/#99/#103 open pending publication/merge; #95/#96/#97/#100/#105 remain closed.",
+    "unrun_checks": "Actual runtime providers, hosted CI/PR checks, real authenticated browser journey and final whole backend suite unrun."
+  },
+  "receipt_root": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge/.llm-output/usage-adapters-ui",
+  "receipt_note": "Local contracts, helper JSON, raw output, failing attempts and per-file hashes are preserved in ignored .llm-output. Exact final command headers are retained. Earlier 415/127/54 adapter stdout lacks complete argv provenance and is not used as final affected-suite evidence; the actual current authoring composition path is apps/orchestrator/tests/epic_brainstorm/test_gateway_composition.py (80 passed)."
+}
