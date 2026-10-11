@@ -7,7 +7,7 @@
     97,
     100
   ],
-  "status": "Locally implemented, simplified and repaired; PR #108 published, round-three repair push pending at this snapshot.",
+  "status": "Locally implemented, simplified and repaired; PR #108 published, round-four repair push pending at this snapshot.",
   "feature_complete": false,
   "candidate": {
     "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
@@ -608,6 +608,92 @@
       "published_head_before_repair": "1261db60208e5def412f0381b1420dd33c6f3274",
       "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38098363764",
       "previous_head_codex": "completed with three new findings; first four threads already resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round4": {
+    "snapshot_at": "2026-10-11T01:19:41.578257+00:00",
+    "source_commit": "0f122c3aa5f31cd562d4b7da888204bbd7e5ca28",
+    "source_tree": "7247f35c61726120a8b8cf7d1e960347471281f1",
+    "starting_head": "f697f83881b6767ee9549f23ba56f263180043b8",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "9cef112b92d694166702e6da9421ae632fbc376e74a27c855512df9258c57960",
+    "repair_delta_sha256": "041e1f052a96c519df372cc1815efeb0ebad7b5d3041cc5687fbcb81cae899d0",
+    "worker_scoped_candidates": {
+      "reporting": {
+        "scope": "reporting",
+        "owned_diff_matches_worker": true,
+        "owned_diff_sha256": "041e1f052a96c519df372cc1815efeb0ebad7b5d3041cc5687fbcb81cae899d0",
+        "files": {
+          "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "d9508f5bae7f98a807940af6a86abe3398aeb7578865f64ce4ae642a6426320f",
+          "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "d550e04e19546a7b227115f5b300650b20629d1401b02cf6b3475658a0d5e4b1"
+        }
+      },
+      "unchanged_gateway": {
+        "scope": "policy",
+        "all_file_hashes_match": true,
+        "manifest_sha256": "1ae936eeabef5819465bc12d06529a05200e6920d8cb6a17c085232adfc17d3d",
+        "files": {
+          "apps/orchestrator/src/forge/application/services/task_usage_policy.py": "66c5ef1201dfe06503670c877034a1e6a440d85934eb8461f89e6fae964e987d",
+          "apps/orchestrator/src/forge/worker/bound_delivery.py": "0966f94ac12c0c6d01ab7216a9729565c55df640399e74a77cdfc1d913d8b01c",
+          "apps/orchestrator/src/forge/worker/composition.py": "1134fd581eca97ade8ea6cfe7bde756a1866a6ffb12e428a12f959707165a754",
+          "apps/orchestrator/tests/application/test_bound_delivery.py": "dec2976568b44d9e2635d286cc306a258b0dd62bd3d102df2b6728ff9ca8bf1b",
+          "apps/orchestrator/tests/application/test_worker_composition.py": "b8b5d5f5ed69c25c28032ea8f1855fbc3e1bd6c333a0a4acf97b2b0fc2d395f7",
+          "apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py": "cfdaadd58f81f87cd3e1ee779f6120c2a25f7d7aea07f9fff1b16865854eaa61"
+        }
+      }
+    },
+    "fixed_findings": [
+      {
+        "id": "PR108-08",
+        "thread": "PRRT_kwDOUDBiTc6rJMHK",
+        "comment": 4239799576
+      }
+    ],
+    "summary": "Historical sample and exclusion eligibility now use the inclusive as_of cutoff for acceptance evidence, linked validation evidence and the exact producer task/attempt. The producer join follows its durable row identity, preserving root-task, run, candidate/tree and policy authority. The final reporting application/persistence/API suites passed 32 tests; full source mypy passed across 554 files, scoped Ruff and whitespace checks passed. The unchanged 121-test gateway candidate remains matched and its evidence is reused.",
+    "detail": "Saved PostgreSQL red/green regressions cover later acceptance leaving a prior-as_of sample/exclusion/service report unchanged, exact cutoff visibility, unknown tokens remaining unknown, future producer timestamps, distinct row/logical task IDs, exact accepted attempt versus a decoy and child-task rejection. Both source/test files match the final worker candidate. Prior inventory, coherent report snapshot, batching, namespace and frozen-reference cases passed in the affected suite. The distinct-ID test adjusts the logical ID after normal acceptance persistence because the current runtime writer initially creates equal IDs. No final whole-repository suite, extra full hosted CI or live-provider acceptance is claimed.",
+    "acceptance": "Primary inspected source/FK identities, concrete regression assertions and actual red/green/static receipts. The identity concern found during acceptance was substantiated, repaired by the existing owner and revalidated as one temporal/authority batch. Final scoped diff matches worker evidence; local repair accepted. New published-head smoke and Codex review remain pending at this pre-push snapshot.",
+    "coverage": "# PR108-08 historical acceptance closure\n\nCandidate HEAD f697f83881b6767ee9549f23ba56f263180043b8; owned `candidate.diff` SHA-256 3c0d83bb3e7b3cc73b5ea12f975c3e743bf078e893daa5bff8df15348b803c64. `import.txt` proves `forge.__file__` resolves inside active worktree. Python 3.14, uv frozen/dev, disposable PostgreSQL fixture port 5435. Only query and persistence baseline test changed; worktree has no other unstaged source changes.\n\nTemporal/authority reassessment: `_samples` and `_exclusions_in` were the only `_has_current_acceptance` callers. The predicate joins immutable acceptance and validation evidence with a root producer task; accepted attempt is FK-bound to acceptance. Acceptance, validation, task and attempt creation must each be <= `as_of`. Existing head/tree/policy, run/task and parent-task constraints remain. Other bound and legacy usage inventories and final observations already use `as_of` from prior repair. Mutable `Run.state`, `Run.updated_at`, candidate commit and task parent changes are not fully reconstructible as historical state; this repair does not claim that.\n\n- C08-A proved by real PostgreSQL `test_historical_acceptance_requires_evidence_and_producer_existing_by_cutoff`: before acceptance, VALIDATING run has unknown outcome, unmeasured tokens and in_progress exclusion. After durable acceptance is inserted, same prior-as_of direct sample/exclusion/service report, overview and comparable references remain identical. At exact `EvidenceSet.created_at` inclusive boundary and later, outcome is accepted but tokens remain unknown and unclassified_legacy is projected. Red receipt `red.txt` shows wrong prior-as_of accepted outcome; `green-focused.txt` passes.\n- C08-B proved for acceptance timestamp at exact boundary and for producer task/attempt timestamps moved beyond boundary in disposable PG fixture; each suppresses acceptance in sample, exclusion and report and resumes at inclusive later timestamp. Validation timestamp cutoff is enforced in predicate and normal validation-before-acceptance path passes. EvidenceSet is immutable by DB trigger, so an acceptance predating a future validation cannot be synthesized through supported updates; this abnormal ordering is unproved by test. Existing current acceptance, candidate-head and root-task constraint tests pass in affected suite.\n- C08-C affected suite includes frozen refs, bound/legacy inventory, namespace, batching and concurrent report snapshot cases. Gateway/agent/domain source unchanged; prior 121-test evidence reused, not rerun. No full-suite claim.\n\nCommands and receipts: `uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q -k historical_acceptance_requires_evidence_and_producer_existing_by_cutoff`: red exit1, green exit0. `rtk proxy uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/application/test_task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py apps/orchestrator/tests/api/test_task_usage_reporting.py -q`: 31 passed, exit0 in `affected.txt`. `rtk proxy uv run --frozen --extra dev mypy apps/orchestrator/src/forge`: 554 files clean, exit0 in `mypy.txt`. Scoped Ruff: clean, exit0 in `ruff.txt`. `git diff --check`: clean. Self-review aligned attempt join to existing FK identity to avoid narrowing authority beyond prior behavior.\n\n## Identity follow-up on final candidate\n\nCandidate remains HEAD f697f83881b6767ee9549f23ba56f263180043b8; final owned `identity-candidate.diff` SHA-256 041e1f052a96c519df372cc1815efeb0ebad7b5d3041cc5687fbcb81cae899d0. The runtime subscription repository creates SubscriptionTask with `id=contract.task_id` and `task_id=contract.task_id`, but no database constraint requires equality. EvidenceSet's immutable producer FK binds `(run_id,producer_task_id,producer_attempt_id)` to SubscriptionAttempt `(run_id,task_row_id,id)`, and attempt.task_row_id references SubscriptionTask.id. The acceptance query therefore now joins the producer task by `SubscriptionTask.id`, retaining exact attempt ID, run, root parent, and all current evidence/tree/policy checks. This does not change the writer's normal equal-ID records.\n\n`test_acceptance_uses_producer_row_identity_and_exact_root_attempt` uses real acceptance persistence, then demonstrates a schema-valid durable root task with distinct row/logical IDs. Old query wrongly returns unknown (`identity-red.txt`, exit1); corrected query returns accepted and unclassified usage. An additional same-task attempt cannot substitute for the exact accepted attempt when its creation timestamp is beyond as_of; making the accepted task a child removes acceptance. Existing normal current-acceptance and historical cutoff tests also pass (`identity-green.txt`, 3 passed).\n\nFinal affected baseline application/persistence/API command, same as above: 32 passed, exit0 (`identity-affected.txt`). Mypy on 554 source files exit0 (`identity-mypy.txt`); scoped Ruff exit0 (`identity-ruff.txt`); git diff --check exit0. Unchanged gateway tests were not rerun. The distinct-ID test changes logical task_id after the acceptance writer records immutable evidence, because the current writer always starts with equal IDs; it proves behavior for schema-valid durable state, not a normal writer path that creates distinct IDs.\n",
+    "evidence": {
+      "reporting": ".llm-output/pr108-round4/reporting/coverage.md",
+      "previous_repairs": ".llm-output/pr108-round3/acceptance.json",
+      "unchanged_gateway": ".llm-output/pr108-round3/policy/coverage.json",
+      "unchanged_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "jev": {
+      "search": "jev-search.json: partial (unscored_candidates, scope_not_found, operation_budget_reached). Exact producer schema/identity lookups are an explicit exemption.",
+      "review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        }
+      },
+      "diff_sha256": "9cef112b92d694166702e6da9421ae632fbc376e74a27c855512df9258c57960",
+      "focus_disposition": "Advisory adapter compatibility/test focus concerns unchanged adk_gateway.py/adk_runtime.py, with earlier inspected agent-test evidence retained. No all-clear or test success is inferred from Jev.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "No full historical reconstruction of mutable run state, candidate identity or task parent changes.",
+      "Future validation created after earlier acceptance is an abnormal ordering not newly exercised; both creation cutoffs are present and normal ordering passes.",
+      "The new historical acceptance projection uses unmeasured usage; measured-row late-acceptance cohort transitions were not separately asserted.",
+      "Distinct producer IDs were introduced after normal acceptance persistence; current writer-created task IDs remain equal.",
+      "No final full repository rerun, extra manual full hosted CI, high-volume benchmark, runtime live-provider acceptance or merge.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain other epic children; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-four repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "f697f83881b6767ee9549f23ba56f263180043b8",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38100286864",
+      "previous_head_codex": "completed with one new finding; first seven threads already resolved",
       "new_head_smoke": "pending",
       "new_head_codex": "pending",
       "human_code_owner_review": "pending",
