@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from forge.agents.client_process import ClientSettlementUncertain
@@ -128,6 +129,34 @@ async def test_antigravity_observed_real_counter_scale_and_sparse_zero(
     assert finals[0].final_status == "succeeded"
     assert finals[0].tokens.input_tokens == expected_input
     assert finals[0].tokens.output_tokens == expected_output
+
+
+@pytest.mark.asyncio
+async def test_antigravity_observed_impossible_occupancy_keeps_capacity(tmp_path) -> None:
+    runtime, _ = gateway(tmp_path, "success")
+    peer = Path(__file__).with_name("antigravity_runtime_peer.py").read_text()
+    marker = 'if scenario == "missing_usage":\n'
+    assert marker in peer
+    script = tmp_path / "antigravity_context_peer.py"
+    script.write_text(peer.replace(
+        marker,
+        'result["context"] = {"occupied_tokens": 200, "capacity_tokens": 100, '
+        '"compaction_count": 0}\n' + marker,
+    ))
+    runtime.installation = replace(runtime.installation, script=(str(script), "success"))
+    invocation = request()
+    binding = _make_subscription_binding(
+        invocation.attempt.run_id, invocation.attempt.attempt_id,
+        invocation.attempt.task_id,
+    )
+    sink = FakeUsageObserver()
+    result = await runtime.execute_observed(invocation, usage_binding=binding, usage_sink=sink)
+    assert result.failure is None
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    final = sink.observations[-1]
+    assert final.final and final.context is not None
+    assert (final.context.occupied_tokens, final.context.capacity_tokens,
+            final.context.compaction_count) == (None, 100, 0)
 
 
 @pytest.mark.asyncio

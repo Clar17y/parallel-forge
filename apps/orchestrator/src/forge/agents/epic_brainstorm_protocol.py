@@ -10,7 +10,7 @@ import asyncio
 import json
 import secrets
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
@@ -26,6 +26,7 @@ from forge.agents.claude_gateway import (
     claude_preinit_handshake_frame_is,
     claude_setup_handshake_frame_is,
 )
+from forge.agents.claude_gateway import _Usage as _ClaudeUsage
 from forge.agents.claude_protocol import ClaudeStreamCodec
 from forge.agents.client_process import ClientProcessSession
 from forge.agents.codex_gateway import (
@@ -203,6 +204,16 @@ class AuthoringUsage:
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
     tool_calls: int = 0
+    _claude_usage: _ClaudeUsage = field(
+        default_factory=_ClaudeUsage, init=False, repr=False, compare=False
+    )
+
+    def observe_claude(self, source: object) -> None:
+        """Use the Claude counter normalizer for its uncached input semantics."""
+        self._claude_usage.observe(source)
+        self.input_tokens = self._claude_usage.input
+        self.output_tokens = self._claude_usage.output
+        self.cached_input_tokens = self._claude_usage.cached
 
     def observe(
         self, source: object, *, input_key: str, output_key: str, cache_key: str | None = None
@@ -754,8 +765,8 @@ async def claude_exchange(
             if terminal.get("is_error") or terminal.get("permission_denials"):
                 raise ProtocolError("Claude authoring failed")
             value = terminal.get("usage")
-            if isinstance(value, Mapping) and value.get("input_tokens") is not None:
-                usage.observe(value, input_key="input_tokens", output_key="output_tokens")
+            if isinstance(value, Mapping):
+                usage.observe_claude(value)
             await session.close_stdin()
             await session.wait_closed()
             return proposal_from_output(terminal.get("structured_output"), job)

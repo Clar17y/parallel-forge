@@ -355,7 +355,7 @@ def _context_from_payload(payload: Mapping[str, object]) -> ContextWindow | None
     if occ_val is None and cap_val is None and comp_val is None:
         return None
     if cap_val is not None and occ_val is not None and occ_val > cap_val:
-        cap_val = None
+        occ_val = None
     return ContextWindow(
         occupied_tokens=occ_val,
         capacity_tokens=cap_val,

@@ -89,7 +89,30 @@ def test_google_usage_zero_large_and_inconsistent_context() -> None:
     measured = _context_from_payload({"context": {"occupied_tokens": 0, "capacity_tokens": 100}})
     assert measured is not None and measured.occupied_tokens == 0
     inconsistent = _context_from_payload({"context": {"occupied_tokens": 200, "capacity_tokens": 100}})
-    assert inconsistent is not None and inconsistent.capacity_tokens is None
+    assert inconsistent is not None
+    assert (inconsistent.occupied_tokens, inconsistent.capacity_tokens) == (None, 100)
+    nested = _context_from_payload({"context_window": {
+        "context_occupied_tokens": 201, "context_capacity_tokens": 100,
+        "compaction_count": 0,
+    }})
+    assert nested is not None
+    assert (nested.occupied_tokens, nested.capacity_tokens, nested.compaction_count) == (
+        None, 100, 0,
+    )
+    alias = _context_from_payload({"usage": {
+        "context_occupied_tokens": 2**63, "context_capacity_tokens": 0,
+        "compaction_count": False,
+    }})
+    assert alias is not None
+    assert (alias.occupied_tokens, alias.capacity_tokens, alias.compaction_count) == (
+        None, 0, None,
+    )
+    compaction_only = _context_from_payload({"usage": {
+        "occupied_tokens": -1, "capacity_tokens": True, "compaction_count": 3,
+    }})
+    assert compaction_only is not None
+    assert (compaction_only.occupied_tokens, compaction_only.capacity_tokens,
+            compaction_only.compaction_count) == (None, None, 3)
 
 
 def _make_subscription_binding(

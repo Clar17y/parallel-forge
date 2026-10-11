@@ -893,6 +893,52 @@ def test_authoring_usage_sparse_zero_large_and_invalid_updates_are_atomic() -> N
         assert usage.telemetry(1) == measured
 
 
+def test_claude_authoring_usage_normalizes_cache_and_sparse_replay() -> None:
+    usage = AuthoringUsage()
+    usage.observe_claude({"input_tokens": 2, "output_tokens": 4,
+                          "cache_read_input_tokens": 20,
+                          "cache_creation_input_tokens": 3})
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == (25, 4, 23)
+    usage.observe_claude({"input_tokens": 2, "output_tokens": 4,
+                          "cache_read_input_tokens": 20,
+                          "cache_creation_input_tokens": 3})
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == (25, 4, 23)
+    usage.observe_claude({"output_tokens": 5})
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == (25, 5, 23)
+    usage.observe_claude({"cache_read_input_tokens": 21, "thinking_tokens": True})
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == (26, 5, 24)
+    before = (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens)
+    for invalid in (
+        {"input_tokens": True}, {"input_tokens": -1},
+        {"input_tokens": 2**63}, {"input_tokens": 2**63 - 1},
+        {"cache_read_input_tokens": 20},
+    ):
+        with pytest.raises(ProtocolError):
+            usage.observe_claude(invalid)
+        assert (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens) == before
+
+    zero = AuthoringUsage()
+    zero.observe_claude({"input_tokens": 0, "output_tokens": 0,
+                         "cache_read_input_tokens": 0})
+    assert (zero.input_tokens, zero.output_tokens, zero.cached_input_tokens) == (0, 0, 0)
+    missing = AuthoringUsage()
+    missing.observe_claude({"input_tokens": 2, "output_tokens": 0})
+    assert (missing.input_tokens, missing.output_tokens, missing.cached_input_tokens) == (
+        2, 0, None,
+    )
+    for cache_name in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        one_component = AuthoringUsage()
+        one_component.observe_claude({"input_tokens": 2, "output_tokens": 0,
+                                      cache_name: 3, "thinking_tokens": True})
+        assert (one_component.input_tokens, one_component.output_tokens,
+                one_component.cached_input_tokens) == (5, 0, 3)
+    overflow = AuthoringUsage()
+    with pytest.raises(ProtocolError):
+        overflow.observe_claude({"input_tokens": 2**63 - 1,
+                                 "cache_read_input_tokens": 1})
+    assert (overflow.input_tokens, overflow.cached_input_tokens) == (None, None)
+
+
 @pytest.mark.parametrize(
     ("case", "expected_failure"),
     [("success", None), ("invalid", "invalid_output"), ("cap", "budget_exhausted")],
@@ -932,7 +978,8 @@ async def test_observed_antigravity_authoring_actual_stream_settles_before_final
             "conversation_id": "agy-thread", "status": "SUCCESS",
             "usage": {"input_tokens": 10_000_017, "output_tokens": 4,
                       "cache_read_tokens": 3},
-            "context": {"occupied_tokens": 7, "capacity_tokens": 100},
+            "context": {"occupied_tokens": 200 if case == "success" else 7,
+                        "capacity_tokens": 100, "compaction_count": 0},
             "structured_output": {"proposal": {
                 "turn_id": str(uuid4() if case == "invalid" else job.prompt_turn_id),
                 "problem": "proposal"}},
@@ -988,7 +1035,11 @@ async def test_observed_antigravity_authoring_actual_stream_settles_before_final
     assert len(finals) == 1
     assert finals[0].final_status == (result.failure or "succeeded")
     assert finals[0].tokens.input_tokens == 10_000_017
-    assert finals[0].context is not None and finals[0].context.occupied_tokens == 7
+    assert finals[0].context is not None
+    assert (finals[0].context.occupied_tokens, finals[0].context.capacity_tokens,
+            finals[0].context.compaction_count) == (
+        (None if case == "success" else 7), 100, 0,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1602,6 +1653,137 @@ async def test_claude_authoring_uses_stream_json_mcp_handshake(
     assert session.sent[-1]["type"] == "user"
     assert session.stdin_closed and session.settled
     assert usage.telemetry(1).output_tokens == 6
+
+
+@pytest.mark.asyncio
+async def test_observed_official_claude_actual_exchange_normalizes_cached_input(
+    tmp_path: Path,
+) -> None:
+    route = RouteSpec(
+        provider="anthropic", client="claude_code", model="claude-test",
+        effort=ReasoningEffort.MEDIUM, auth_mode=AuthMode.SUBSCRIPTION,
+        billing_mode=BillingMode.ALLOWANCE_ONLY,
+    )
+    job = _make_snapshot().model_copy(update={
+        "route": RouteBinding(requested=route, effective=route),
+    })
+    attempt_id = uuid4()
+    cohort = RouteCohort.from_members((RouteMember(
+        role="authoring", provider="anthropic", model="claude-test",
+        reasoning_effort="medium", ordinal=0,
+    ),))
+    binding = WorkUnitBinding(
+        subject=SubjectKey(project_id=job.project_id, kind="authoring_job", subject_id=job.job_id),
+        work_unit_id=uuid4(), admitted_phase_id="authoring_exchange",
+        configured_route=cohort, effective_route=cohort,
+        source=SourceBinding(kind="authoring_attempt", source_id=attempt_id),
+    )
+    identity = str(job.job_id)
+
+    def mcp(request_id: str, message: dict[str, object]) -> dict[str, object]:
+        return {"type": "control_request", "request_id": request_id,
+                "request": {"subtype": "mcp_message", "server_name": "forge", "message": message}}
+
+    session = _ScriptedSession([
+        mcp("mcp-init", {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                    "clientInfo": {"name": "peer", "version": "1"}}}),
+        {"type": "control_response", "response": {
+            "subtype": "success", "request_id": "forge_initialize", "response": {}}},
+        mcp("mcp-ready", {"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        mcp("mcp-list", {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        {"type": "control_response", "response": {
+            "subtype": "success", "request_id": "forge_settings",
+            "response": {"applied": {"model": "claude-test", "effort": "medium"}}}},
+        {"type": "system", "subtype": "init", "session_id": identity, "model": "claude-test"},
+        mcp("mcp-call", {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                         "params": {"name": "list_files", "arguments": {"path": "."},
+                                    "_meta": {"claudecode/toolUseId": "authoring-read-1",
+                                              "progressToken": 1}}}),
+        {"type": "result", "subtype": "success", "session_id": identity,
+         "is_error": False,
+         "usage": {"input_tokens": 2, "output_tokens": 6,
+                   "cache_read_input_tokens": 20, "cache_creation_input_tokens": 3},
+         "structured_output": {"proposal": {
+             "turn_id": str(job.prompt_turn_id), "problem": "Cached Claude proposal"}}},
+    ])
+    session.closed = False
+
+    async def close(*, completed: bool = False) -> ClientProcessResult:
+        assert supervisor.before_stop is not None
+        await supervisor.before_stop()
+        supervisor.stop_hook_called = True
+        session.closed = True
+        session.completed = completed
+        return ClientProcessResult(
+            receipt=ClientProcessReceipt("scripted", 1, "scripted", 0.0),
+            return_code=0, frames=(), stdout_byte_count=0, stderr="",
+            stderr_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+            outcome="completed", stop_confirmed=True,
+        )
+
+    session.close = close  # type: ignore[attr-defined, method-assign]
+
+    class Supervisor:
+        before_stop = None
+        stop_hook_called = False
+
+        async def start(self, *_args, **_kwargs):
+            self.before_stop = _kwargs.get("before_stop")
+            return session
+
+    class Sink:
+        def __init__(self) -> None:
+            self.events: list[Observation] = []
+
+        async def observe_usage(self, event: Observation) -> None:
+            assert session.closed and session.settled
+            self.events.append(event)
+
+    class MinimalLifecycle:
+        async def launch_intent(self, launch_id: str) -> None:
+            pass
+
+        async def started(self, receipt: object) -> None:
+            pass
+
+        async def finished(self, receipt: object, result: object) -> None:
+            pass
+
+    executable = Path(sys.executable)
+    installation = ClaudeInstallationSpec(
+        client="claude_code", account="dev-account", model="claude-test", effort="medium",
+        executable=str(executable), executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        client_version="1.0.0", cwd=str(tmp_path), home=str(tmp_path),
+        quota={"account": "dev-account", "pool": "default-pool"},
+    )
+    sink = Sink()
+    supervisor = Supervisor()
+    result = await EpicBrainstormGateway(
+        installation=installation, supervisor=supervisor,
+    ).execute_observed(
+        job, (), BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        cancelled=lambda: asyncio.sleep(0, result=False), lifecycle=MinimalLifecycle(),
+        usage_binding=binding, usage_sink=sink,
+    )
+    assert result.failure is None and result.proposal is not None, (
+        result.failure, [frame.get("type") for frame in session.sent],
+        [frame.get("type") for frame in session.frames],
+    )
+    assert session.completed
+    assert supervisor.stop_hook_called
+    assert result.telemetry is not None
+    assert (result.telemetry.input_tokens, result.telemetry.output_tokens,
+            result.telemetry.cached_input_tokens, result.telemetry.tool_call_count) == (25, 6, 23, 1)
+    assert len(sink.events) == 1 and sink.events[0].final
+    assert sink.events[0].binding.source.source_id == attempt_id
+    assert (sink.events[0].tokens.input_tokens, sink.events[0].tokens.cached_input_tokens) == (25, 23)
+    assert any(
+        frame.get("type") == "control_response"
+        and isinstance(frame.get("response"), dict)
+        and frame["response"].get("request_id") == "mcp-call"
+        for frame in session.sent
+    )
 
 
 @pytest.mark.asyncio
