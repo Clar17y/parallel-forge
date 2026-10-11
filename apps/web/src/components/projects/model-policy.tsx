@@ -1,7 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import type { components } from '@/lib/api/schema';
 import { Field } from './form-fields';
-import { validateSafeInteger } from '@/lib/api/monitoring-policy';
+import { OptionalTokenCapInput } from '../model-selection/optional-token-cap-input';
 import {
   getModelReasoningSupport,
   reasoningEffortChoices,
@@ -26,24 +26,6 @@ export const defaultModel: Model = {
   max_cost_minor: 1000,
   reasoning_effort: null,
 };
-
-function OptionalTokenCap({ label, value, onChange, error }: { label: string; value: number | null | undefined; onChange: (value: number | null) => void; error?: string }) {
-  const [draft, setDraft] = useState(value == null ? '' : String(value));
-  const [localError, setLocalError] = useState<string>();
-  return <label className="block text-xs">{label} hard cap (optional; blank is unbounded)
-    <input type="text" inputMode="numeric" aria-label={`${label} hard cap`} aria-invalid={Boolean(error || localError)}
-      value={draft} onChange={event => {
-        const raw = event.target.value;
-        setDraft(raw);
-        const result = validateSafeInteger(raw, { fieldName: label, min: 1 });
-        const message = result.valid ? '' : result.error!;
-        event.target.setCustomValidity(message);
-        setLocalError(message);
-        if (result.valid) onChange(result.value ?? null);
-      }} />
-    {(error || localError) && <span role="alert">{error || localError}</span>}
-  </label>;
-}
 
 export function ModelPolicy({ role, value, onChange, errors = {} }: {
   role: string; value: Model; onChange: (value: Model) => void; errors?: Record<string, string>;
@@ -172,8 +154,15 @@ export function ModelPolicy({ role, value, onChange, errors = {} }: {
           const hasCap = cap != null;
           return (
             <div key={key} className="space-y-2">
-              <OptionalTokenCap label={label} value={cap} error={errors[key]}
-                onChange={next => onChange({ ...value, [key]: next })} />
+              <OptionalTokenCapInput
+                caption={`${label} hard cap`}
+                helpText="(optional; blank is unbounded)"
+                ariaLabel={`${label} hard cap`}
+                fieldName={label}
+                value={cap}
+                error={errors[key]}
+                onChange={next => onChange({ ...value, [key]: next })}
+              />
               <span className="text-xs">{hasCap ? `Saved hard cap: ${cap.toLocaleString()} tokens` : `${dimension === 'input' ? 'Input' : 'Output'} tokens: Unbounded (no hard cap)`}</span>
               {errors[key] && !hasCap && (
                 <p role="alert" className="text-xs text-[var(--danger)]">

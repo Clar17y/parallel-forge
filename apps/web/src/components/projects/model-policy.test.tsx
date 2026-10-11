@@ -50,6 +50,27 @@ test('associates a project budget error with the cap input', async () => {
   expect(screen.getByRole('alert')).toHaveTextContent('Input budget must be at least one');
 });
 
+test('preserves external budget error precedence over local draft validation error', async () => {
+  const change = vi.fn();
+  render(
+    <ModelPolicy
+      role="Planner"
+      value={{ ...defaultModel, max_input_tokens: 100000 }}
+      onChange={change}
+      errors={{ max_input_tokens: 'External project error takes precedence' }}
+    />
+  );
+  await userEvent.click(screen.getByText('Advanced model and budget'));
+  const cap = screen.getByRole('textbox', { name: 'Planner input tokens hard cap' });
+  expect(cap).toHaveAttribute('aria-invalid', 'true');
+  expect(screen.getByRole('alert')).toHaveTextContent('External project error takes precedence');
+
+  fireEvent.change(cap, { target: { value: '9007199254740993' } });
+  expect(change).not.toHaveBeenCalled();
+  expect(cap).toHaveAttribute('aria-invalid', 'true');
+  expect(screen.getByRole('alert')).toHaveTextContent('External project error takes precedence');
+});
+
 test('default model policy has null unbounded token caps without mandatory slider, and allows setting/clearing caps', async () => {
   const change = vi.fn();
   expect(defaultModel.max_input_tokens).toBeNull();

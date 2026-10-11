@@ -162,12 +162,6 @@ export function EpicBudgetPanel({
     setTouchedDisabledDims(prev => new Set(prev).add(dimKey));
   };
 
-  const handleCeilingChange = (dimKey: string, value: number | null) => {
-    setEditCeilings(prev => ({ ...prev, [dimKey]: value }));
-    setCeilingDrafts(prev => ({ ...prev, [dimKey]: value == null ? '' : String(value) }));
-    setTouchedCeilings(prev => new Set(prev).add(dimKey));
-  };
-
   const handleRebase = async () => {
     if (!budget || isRebasing || mutations.loading || mutations.hasPendingRetry) return;
     setIsRebasing(true);

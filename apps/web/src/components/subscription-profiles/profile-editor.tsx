@@ -14,6 +14,7 @@ import {
 } from './models';
 import { JevSettings, type JevPolicy } from '@/components/projects/jev-settings';
 import { effortLabel, reasoningOptions, routePresetIdentity, routePresets, withCurrentRoute, type RoutePreset } from '@/components/model-selection/model-presets';
+import { OptionalTokenCapInput } from '@/components/model-selection/optional-token-cap-input';
 import styles from '@/components/model-selection/role-selector.module.css';
 import { validateSafeInteger } from '@/lib/api/monitoring-policy';
 
@@ -24,24 +25,6 @@ type Mapping = components['schemas']['MappingInput'];
 
 interface EditablePreference extends Preference {
   id: string;
-}
-
-function ProfileCapInput({ label, value, onChange }: { label: string; value: number | null | undefined; onChange: (value: number | null) => void }) {
-  const [draft, setDraft] = useState(value == null ? '' : String(value));
-  const [error, setError] = useState('');
-  return <label className="block text-xs">{label} (optional hard cap; blank inherits)
-    <input type="text" inputMode="numeric" aria-label={label} value={draft} aria-invalid={Boolean(error)}
-      onChange={event => {
-        const raw = event.target.value;
-        setDraft(raw);
-        const parsed = validateSafeInteger(raw, { fieldName: label, min: 1 });
-        const nextError = parsed.valid ? '' : parsed.error!;
-        event.target.setCustomValidity(nextError);
-        setError(nextError);
-        if (parsed.valid) onChange(parsed.value ?? null);
-      }} />
-    {error && <span role="alert">{error}</span>}
-  </label>;
 }
 
 const purposes: components['schemas']['SpecialistPurpose'][] = [
@@ -404,9 +387,16 @@ export function ProfileEditor({
                 const updateBudget = (value: number | null) => updatePreference(index, {
                   token_budget: { ...budget, [key]: value },
                 });
+                const label = `${profileLabel(preference.purpose)} ${dimension} token budget`;
                 return <div key={dimension} className="space-y-2">
-                  <ProfileCapInput label={`${profileLabel(preference.purpose)} ${dimension} token budget`}
-                    value={budget[key]} onChange={updateBudget} />
+                  <OptionalTokenCapInput
+                    caption={label}
+                    helpText="(optional hard cap; blank inherits)"
+                    ariaLabel={label}
+                    fieldName={label}
+                    value={budget[key]}
+                    onChange={updateBudget}
+                  />
                   <span>{budget[key] == null ? `${dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default` : `Saved ${dimension} hard cap: ${budget[key]!.toLocaleString()} tokens`}</span>
                 </div>;
               })}
