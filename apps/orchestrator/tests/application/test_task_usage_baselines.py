@@ -180,3 +180,28 @@ async def test_member_bucket_excludes_subject_matching_dimensions_on_different_m
     )
     assert report["by_model"]["model-a"]["sample_count"] == 1
     assert report["by_model"]["model-a"]["mean_tokens"] == 100
+
+
+async def test_report_comparable_exclusions_use_exact_or_selected_fallback_scope():
+    local, foreign = uuid4(), uuid4()
+    measured_local = make_sample(local, "model-a", offset=1)
+    measured_foreign = make_sample(foreign, "model-a", offset=2)
+    def failed(row):
+        return replace(row, subject_id=uuid4(), total_tokens=None,
+                       outcome="failed", finalized=False, measured=False)
+    rows = [measured_local, failed(measured_local), measured_foreign,
+            failed(measured_foreign), replace(failed(measured_local), configured_route="other")]
+    source = Source(rows, {local, foreign})
+    at = datetime(2026, 10, 1, tzinfo=UTC)
+    key = f"{local}:run:implementation:configured:effective"
+    exact = await TaskUsageBaselineService(source).report(UsageReportFilters(
+        as_of=at, rules=SamplingRules(history_limit=10, minimum_comparables=1),
+    ))
+    assert exact["overview"]["excluded_count"] == 3
+    assert exact["comparable_references"][key]["cohort_source"] == "exact_project_route"
+    assert exact["comparable_references"][key]["excluded_count"] == 1
+    fallback = await TaskUsageBaselineService(source).report(UsageReportFilters(
+        as_of=at, rules=SamplingRules(history_limit=10, minimum_comparables=2),
+    ))
+    assert fallback["comparable_references"][key]["cohort_source"] == "accessible_cross_project"
+    assert fallback["comparable_references"][key]["excluded_count"] == 2

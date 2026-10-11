@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from forge.agents.adk_gateway import GoogleAdkGateway
 from forge.domain.actor import AgentRole
 from forge.domain.run import RunSnapshot
 from forge.domain.subscription import LogicalTaskContract, SpecialistPurpose
-from forge.domain.task_usage_baselines import BaselineSample
+from forge.domain.task_usage_baselines import BaselineSample, SamplingRules, select_cohort
 from forge.domain.task_usage_contract import (
     MonitoringPolicy,
     RouteCohort,
@@ -795,7 +796,21 @@ async def test_frozen_evidence_uses_same_rolling_fallback_cohort_as_statistics(
                               effective_route=binding.effective_route.fingerprint)
     rows = (history(persisted_run.project_id, 10, 4),
             history(persisted_run.project_id, None, 3),
-            history(persisted_run.project_id, None, 2), history(foreign_id, 40, 1))
+            history(persisted_run.project_id, None, 2), history(foreign_id, 40, 1),
+            replace(history(persisted_run.project_id, None, 5),
+                    outcome="failed", finalized=False),
+            replace(history(foreign_id, None, 6), outcome="failed", finalized=False),
+            replace(history(foreign_id, None, 7), outcome="failed", finalized=False,
+                    configured_route="other"))
+    selected = select_cohort(
+        rows, rules=SamplingRules(history_limit=2, minimum_comparables=1),
+        as_of=at, project_ids={persisted_run.project_id, foreign_id},
+        target_project_id=persisted_run.project_id, subject_kind="run",
+        configured_route=binding.configured_route.fingerprint,
+        effective_route=binding.effective_route.fingerprint,
+    )
+    assert selected.cohort_source == "accessible_cross_project"
+    assert selected.excluded_count == 2
     query = TaskUsageBaselineQuery(session_factory)
     async def fake_samples(session, *, project_ids, as_of, window_days):
         return rows

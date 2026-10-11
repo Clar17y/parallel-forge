@@ -236,22 +236,19 @@ def select_cohort(
         and (task_kind is None or sample.task_kind == task_kind)
         and matches_route_member(sample, provider=provider, model=model, effort=effort)
     ]
-    finalized_outcomes = [
-        sample
-        for sample in filtered
+    route_scope = filtered if overview else [
+        sample for sample in filtered
+        if (configured_route is None or sample.configured_route == configured_route)
+        and (effective_route is None or sample.effective_route == effective_route)
+    ]
+    cohort_scope = route_scope if overview or target_project_id is None else [
+        sample for sample in route_scope if sample.project_id == target_project_id
+    ]
+    eligible = [
+        sample for sample in cohort_scope
         if sample.finalized and sample.outcome in {"accepted", "completed"}
     ]
-    excluded_count = len(filtered) - len(finalized_outcomes)
-    exact = finalized_outcomes
-    if not overview:
-        exact = [
-            sample
-            for sample in finalized_outcomes
-            if (target_project_id is None or sample.project_id == target_project_id)
-            and (configured_route is None or sample.configured_route == configured_route)
-            and (effective_route is None or sample.effective_route == effective_route)
-        ]
-    selected = sorted(exact, key=lambda item: (item.completed_at, str(item.subject_id)))[
+    selected = sorted(eligible, key=lambda item: (item.completed_at, str(item.subject_id)))[
         -rules.history_limit :
     ]
     cohort_source = "overview" if overview else "exact_project_route"
@@ -261,17 +258,18 @@ def select_cohort(
         and rules.allow_cross_project_fallback
         and target_project_id is not None
     ):
-        cross = [
-            sample
-            for sample in finalized_outcomes
-            if sample.project_id != target_project_id
-            and (configured_route is None or sample.configured_route == configured_route)
-            and (effective_route is None or sample.effective_route == effective_route)
+        cohort_scope = route_scope
+        eligible = [
+            sample for sample in cohort_scope
+            if sample.finalized and sample.outcome in {"accepted", "completed"}
         ]
-        selected = sorted(exact + cross, key=lambda item: (item.completed_at, str(item.subject_id)))[
+        selected = sorted(eligible, key=lambda item: (item.completed_at, str(item.subject_id)))[
             -rules.history_limit :
         ]
         cohort_source = "accessible_cross_project"
+    # Outcomes excluded from a comparable cohort span its accessible time window;
+    # history_limit still applies only to eligible samples used for statistics.
+    excluded_count = len(cohort_scope) - len(eligible)
     return CohortSelection(tuple(selected), excluded_count, cohort_source)
 
 

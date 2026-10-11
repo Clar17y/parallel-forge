@@ -191,3 +191,85 @@ def test_valid_extreme_multipliers_saturate_manual_and_ready_advisory_thresholds
         [], rules=SamplingRules(manual_estimate_tokens=100), as_of=at,
     )
     assert (ordinary.warning_threshold_tokens, ordinary.checkpoint_threshold_tokens) == (150, 200)
+
+
+def test_exact_comparable_exclusions_ignore_other_projects_routes_and_kinds():
+    local, foreign, hidden = uuid4(), uuid4(), uuid4()
+    rows = [
+        sample(10, 0, project_id=local),
+        sample(None, 1, project_id=local, outcome="failed", finalized=False),
+        sample(None, 2, project_id=local, configured_route="route-b",
+               outcome="failed", finalized=False),
+        sample(None, 3, project_id=local, effective_route="route-b",
+               outcome="failed", finalized=False),
+        sample(None, 4, project_id=foreign, outcome="failed", finalized=False),
+        sample(None, 5, project_id=hidden, outcome="failed", finalized=False),
+        sample(None, 6, project_id=local, subject_kind="authoring_job",
+               task_kind="authoring", outcome="failed", finalized=False),
+        sample(None, 50, project_id=local, outcome="failed", finalized=False),
+    ]
+    at = datetime(2026, 2, 1, tzinfo=UTC)
+    rules = SamplingRules(history_limit=1, minimum_comparables=1,
+                          allow_cross_project_fallback=True)
+    exact = summarize_samples(
+        rows, rules=rules, as_of=at, project_ids={local, foreign},
+        subject_kind="run", task_kind="implementation", target_project_id=local,
+        configured_route="route-a", effective_route="route-a",
+    )
+    assert exact.cohort_source == "exact_project_route"
+    assert exact.sample_count == 1 and exact.excluded_count == 1
+    overview = summarize_samples(
+        rows, rules=rules, as_of=at, project_ids={local, foreign},
+        subject_kind="run", task_kind="implementation", overview=True,
+    )
+    assert overview.excluded_count == 4
+
+
+def test_fallback_exclusions_follow_selected_accessible_route_cohort():
+    local, foreign, hidden = uuid4(), uuid4(), uuid4()
+    rows = [
+        sample(0, 0, project_id=local),
+        sample(None, 1, project_id=local, outcome="failed", finalized=False),
+        sample(40, 2, project_id=foreign),
+        sample(None, 3, project_id=foreign, outcome="failed", finalized=False),
+        sample(None, 4, project_id=foreign, configured_route="other",
+               outcome="failed", finalized=False),
+        sample(None, 5, project_id=hidden, outcome="failed", finalized=False),
+    ]
+    at = datetime(2026, 2, 1, tzinfo=UTC)
+    kwargs = {"as_of": at, "project_ids": {local, foreign}, "target_project_id": local,
+              "subject_kind": "run", "configured_route": "route-a",
+              "effective_route": "route-a"}
+    fallback = summarize_samples(
+        rows, rules=SamplingRules(history_limit=2, minimum_comparables=2), **kwargs,
+    )
+    assert fallback.cohort_source == "accessible_cross_project"
+    assert fallback.sample_count == 2 and fallback.excluded_count == 2
+    assert fallback.median_tokens == 20
+    ready_exact = summarize_samples(
+        rows, rules=SamplingRules(history_limit=1, minimum_comparables=1), **kwargs,
+    )
+    assert ready_exact.cohort_source == "exact_project_route"
+    assert ready_exact.sample_count == 1 and ready_exact.excluded_count == 1
+    assert ready_exact.median_tokens == 0
+
+
+def test_comparable_exclusions_require_one_matching_route_member():
+    local = uuid4()
+    members = (("developer", "provider-a", "model-a", "medium"),)
+    crossed = (("developer", "provider-a", "model-b", "medium"),
+               ("reviewer", "provider-b", "model-a", "high"))
+    rows = [
+        sample(0, 0, project_id=local, route_members=members),
+        sample(None, 1, project_id=local, route_members=members,
+               outcome="failed", finalized=False),
+        sample(None, 2, project_id=local, route_members=crossed,
+               outcome="failed", finalized=False),
+    ]
+    summary = summarize_samples(
+        rows, rules=SamplingRules(history_limit=1, minimum_comparables=1),
+        as_of=datetime(2026, 2, 1, tzinfo=UTC), project_ids={local},
+        target_project_id=local, configured_route="route-a", effective_route="route-a",
+        provider="provider-a", model="model-a", effort="medium",
+    )
+    assert summary.sample_count == 1 and summary.excluded_count == 1

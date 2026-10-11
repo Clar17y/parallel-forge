@@ -161,7 +161,7 @@ def _limits(request: AgentRequest) -> _BudgetLimits:
     token_caps = (budget.max_input_tokens, budget.max_output_tokens, budget.max_total_tokens)
     values = (budget.max_tool_calls, budget.max_duration_seconds, budget.max_cost_minor)
     if any(
-        value is not None and (type(value) is not int or value < 0 or value > 2**63 - 1)
+        value is not None and (type(value) is not int or value <= 0 or value > 2**63 - 1)
         for value in token_caps
     ):
         raise AgentBudgetExceeded()
@@ -570,6 +570,18 @@ class GoogleAdkGateway:
             duration_ms=_remaining(limits.duration_ms, aggregate.duration_ms),
             cost_minor=_remaining(limits.cost_minor, first_effective_cost),
         )
+        if any(
+            cap == 0
+            for cap in (remaining.input_tokens, remaining.output_tokens, remaining.total_tokens)
+        ):
+            return self._result(
+                request,
+                aggregate,
+                first_priced,
+                AgentFinishStatus.BUDGET_EXCEEDED,
+                None,
+                usage_attempts=(first_priced,),
+            )
         try:
             repair_payload = _repair_payload(original_payload_object, first_errors)
             repair_invocation = self._invocation(
