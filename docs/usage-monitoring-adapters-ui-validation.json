@@ -7,24 +7,25 @@
     99,
     103
   ],
-  "status": "second_codex_repair_local_candidate_awaiting_current_head_hosted_review",
+  "status": "third_codex_repair_local_candidate_awaiting_current_head_hosted_review",
   "feature_complete": false,
   "source": {
     "base": "e2c93d0a35102fd16162ee492da4044b3070a59f",
     "branch": "codex/usage-monitoring-adapters-ui",
     "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge",
     "initial_integrated_diff_sha256": "359bfca502d1d5dd67dd0d47a029a840e3f7f94d5ac698b350b09c145a1e8f84",
-    "final_source_commit": "81354e63646b888479b83a7e08ada22aaa05a6a1",
-    "final_source_tree": "8901ae3c4d1735d328b842539d2dcc47e993ba32",
-    "final_source_diff_sha256": "96b33d8ffd1a7fe24513127e95faa2150ef76598526417b76c825b6df5b0863c",
+    "final_source_commit": "78dd3f4d07fd1f5403b1d77ee6bccf6d14fd7da2",
+    "final_source_tree": "152cd9958e333b51ff47b227a8de0f27b5a32854",
+    "final_source_diff_sha256": "fada25744586e4ae360aa05cd54cdd973434648331e848d15b12791a58f2c021",
     "changed_files": 38,
-    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-round2/candidate-final.txt",
+    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-round3/candidate-final.json",
     "base_origin_main_fetched": true,
     "previous_local_source_commit": "c43dd2a8ef822812b0480618954a86bdde7288a1",
     "previous_local_source_tree": "8b33ceeb38318c6f73d1c7956281623560a4d9ff",
     "previous_local_source_diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
     "pre_codex_repair_source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
-    "pre_round2_source_commit": "c3735120ba0e2e2d5e3943cbbb02a6b0220c82d5"
+    "pre_round2_source_commit": "c3735120ba0e2e2d5e3943cbbb02a6b0220c82d5",
+    "pre_round3_source_commit": "81354e63646b888479b83a7e08ada22aaa05a6a1"
   },
   "previous_delivery": {
     "foundation_pr": 107,
@@ -683,7 +684,7 @@
     104,
     106
   ],
-  "recorded_at_utc": "2026-10-11T17:56:38.613323+00:00",
+  "recorded_at_utc": "2026-10-11T18:33:17.057320+00:00",
   "review_findings": [
     {
       "id": "UM-REV-001",
@@ -963,7 +964,7 @@
       "prior_evidence": "Earlier source/runtime and UI inputs unchanged; affected API-helper fixture suite rerun.",
       "recorded_at_utc": "2026-10-11T17:10:45.911179+00:00"
     },
-    "current_acceptance": "Prior automatic smoke passed on 2309c39; all six findings locally repaired. New candidate awaiting automatic smoke and current-head Codex verdict. No merge authorization.",
+    "current_acceptance": "Prior automatic smoke passed on 7453f55. Eight findings locally addressed; current candidate awaiting automatic smoke and Codex review. No merge authorization.",
     "fixture_repair_jev": {
       "status": "partial",
       "coverage": {
@@ -1302,6 +1303,167 @@
         "#101/#102 checkpoints, #104 reporting/continuation UI and #106 production assembly remain subsequent."
       ],
       "recorded_at_utc": "2026-10-11T17:56:38.613323+00:00"
+    },
+    "codex_repair_round3": {
+      "source_commit": "78dd3f4d07fd1f5403b1d77ee6bccf6d14fd7da2",
+      "source_tree": "152cd9958e333b51ff47b227a8de0f27b5a32854",
+      "source_diff_sha256": "fada25744586e4ae360aa05cd54cdd973434648331e848d15b12791a58f2c021",
+      "owned_sha256": {
+        "apps/orchestrator/src/forge/agents/subscription_usage_observations.py": "739c9982866ef42be10d5e6d4a4c51ddcebd86b24723d39b26b9a032edc4a3c7",
+        "apps/orchestrator/src/forge/agents/claude_gateway.py": "69c6d09ad15a0919c98e282d0ee4a79191fe8fc498eb7a4a088e162071bf6f73",
+        "apps/orchestrator/tests/agents/test_codex_usage_observations.py": "f2d390721219e8a8d50ba8ae52c0798324e09a3196a7dd0858adc18b3718bd6b",
+        "apps/orchestrator/tests/agents/test_claude_usage_observations.py": "c2940bf8ded52ffcf146f363dde2bdae603f34a7a5824695f555207163545206",
+        "apps/orchestrator/tests/task_usage_contract/test_adapter_batch_integration.py": "28c609855445829df2e1ac59f52c1cf75b1ae1c673556eb9363ab4a59152314d"
+      },
+      "unchanged_ui_sha256": {
+        "apps/web/src/components/projects/monitoring-policy-editor.tsx": "37072a45ee7eea5bca663b68991d0baea2dc43d7eaa4acf14fe31c3a4b662283",
+        "apps/web/src/components/projects/monitoring-policy-editor.test.tsx": "3b7d86bbf9432538f15d7c0627dba38a1ba8dbbc652387ed79fed428ff21c46f",
+        "apps/web/src/components/projects/monitoring-policy-summary.tsx": "713594a86d2e56162a094bc2c98f2557a4762e30a372a1d1561a4d25665c32ba",
+        "apps/web/src/components/projects/monitoring-policy-summary.test.tsx": "6849b384667e79a51a0a9ffe9f3a68adbd4f096e244a220fc0557d58a997496e",
+        "apps/web/src/app/projects/[projectId]/page.test.tsx": "1bdc8c98dcff4b48ade0227b81cb9f8547a3356a447c003a6f924a78b4695073"
+      },
+      "primary_adjudication": {
+        "accepted": true,
+        "unresolved_material_findings": [],
+        "integrated_diff_sha256": "fada25744586e4ae360aa05cd54cdd973434648331e848d15b12791a58f2c021",
+        "gate_receipts": [
+          "correctness/verdict.md",
+          "correctness/final-verdict.md"
+        ],
+        "assessment": "The original mixed-cache failure is substantiated and repaired. Inspected known component subtotal versus completeness, source/input/output/cache/optional-only handoff, explicit-null completeness and prospective aggregate/subtotal/TokenCounts checks before map/public/private assignments. Current scoped hashes match raw 269 affected and four focused red/green cases and static checks. Final namespace uses bounded frozen work-unit UUID, all live forge: IDs hash and last queued reconciliation remains correct. The independent scoped final verdict reports the finding resolved and no material remaining issue.",
+        "reused_evidence": "Exact unchanged shared publisher/Codex/PG hashes retain two PostgreSQL and namespace acceptance; unchanged five UI and three prior source/test inputs retain matching policy/authoring validation. Full branch review and broad backend tests were not restarted.",
+        "limitations": "Live CLI/provider schemas, exhaustive numeric combinations, independent indefinite sink cancellation, authenticated browser journeys, full backend/hosted suites and final production assembly remain unproved. Earlier optional test-inclusive mypy failure is historical and not claimed passing."
+      },
+      "findings": [
+        {
+          "id": "PR109-07",
+          "comment_id": 4242614929,
+          "thread_id": "PRRT_kwDOUDBiTc6rQDqX",
+          "fix": "The stable forge:final:<work_unit_id> ID is disjoint from every live provider/generated ID, whose forge: namespace is reserved and hashed. Durable keys are scoped to the frozen work unit, no event-history set is added, and final reconciliation keeps the last queued normalized live ID."
+        },
+        {
+          "id": "PR109-08",
+          "comment_id": 4242614933,
+          "thread_id": "PRRT_kwDOUDBiTc6rQDqY",
+          "fix": "Claude retains uncached input and read/creation components for sparse per-message and terminal updates; cumulative totals conserve them through replay/aggregation and required counters validate prospectively before replacing state."
+        },
+        {
+          "id": "R3-GATE-CACHE",
+          "fix": "Known cache subtotals remain separate from full cached-dimension completeness across mixed assistant messages and sparse terminal handoff. All prospective aggregate/subtotal/TokenCounts validation precedes state assignment; explicit null does not fabricate completeness."
+        }
+      ],
+      "checks": [
+        {
+          "result": "Expected public Codex/Claude identity, sparse growth and cache regression failures before their source repairs",
+          "receipts": [
+            "pr109-round3/worker/red-identity-final.txt",
+            "pr109-round3/worker/red-sparse.txt",
+            "pr109-round3/worker/red-cache-regress.txt"
+          ]
+        },
+        {
+          "result": "Earlier native final ID loses final observation before repair; provider callback and stop still succeed",
+          "receipt": "pr109-round3/postgres-red.txt"
+        },
+        {
+          "result": "Mixed-cache handoff, hidden known-subtotal overflow and explicit-null completeness expected reds, then four focused cases passed",
+          "receipts": [
+            "pr109-round3/worker-cache-repair/red.txt",
+            "pr109-round3/worker-cache-repair/red-known-subtotal.txt",
+            "pr109-round3/worker-cache-repair/red-explicit-null.txt",
+            "pr109-round3/worker-cache-repair/focused-candidate.txt"
+          ]
+        },
+        {
+          "result": "269 passed across nine affected adapter/gateway/budget/authoring files, 5 dependency warnings",
+          "receipt": "pr109-round3/worker-cache-repair/affected-candidate.txt"
+        },
+        {
+          "result": "2 passed, real PostgreSQL normal and earlier collision with duplicate live/final replay; exact unchanged publisher/Codex/test inputs retained after Claude-only repair",
+          "receipt": "pr109-round3/worker/postgres-final.txt"
+        },
+        {
+          "result": "Scoped Ruff passed in four changed worker paths and root-owned integration test",
+          "receipts": [
+            "pr109-round3/worker-cache-repair/ruff-candidate2.txt",
+            "pr109-round3/worker/ruff-candidate.txt",
+            "pr109-round3/ruff-integration.json"
+          ]
+        },
+        {
+          "result": "Final Claude source-only mypy passed; matching unchanged publisher/source gate evidence retained",
+          "receipts": [
+            "pr109-round3/worker-cache-repair/mypy-candidate2.txt",
+            "pr109-round3/worker/mypy.txt"
+          ]
+        },
+        {
+          "result": "Python3.14.5 active-worktree source import, exact five input hashes and git diff --check passed",
+          "receipt": "pr109-round3/worker-cache-repair/candidate.txt"
+        },
+        {
+          "result": "Unchanged 48 web owner/editor/summary/API tests, 56 profile/epic cases and web TypeScript/lint/build retained for matching inputs",
+          "receipts": [
+            "pr109-ui-repair/candidate.json",
+            "pr109-ui-repair/affected-final.log",
+            "pr109-ui-repair/typecheck-final-2.log",
+            "pr109-ui-repair/lint-final-2.log",
+            "pr109-ui-repair/build-final.txt",
+            "simplify/acceptance.json"
+          ]
+        }
+      ],
+      "validation_summary": "269 affected adapter/gateway/budget/authoring tests and 2 real PostgreSQL cases passed; scoped Ruff/source mypy and Python3.14 managed-source imports passed. Matching unchanged evidence retains 48 owner/editor/summary/API tests, 56 profile/epic cap cases and web TypeScript/lint/build.",
+      "coverage": [
+        {
+          "invariant": "Final identities remain disjoint from every live identity within the admitted durable work unit without unbounded history",
+          "cases": "First/middle/last native collision, reserved forge: live IDs, malformed/long IDs, queue overflow, final once/last accepted reconciliation and duplicate PostgreSQL replay.",
+          "evidence": [
+            "pr109-round3/worker/coverage.md",
+            "pr109-round3/worker/affected-candidate.txt",
+            "pr109-round3/worker/postgres-final.txt"
+          ]
+        },
+        {
+          "invariant": "Sparse Claude input/cache updates conserve uncached/read/creation components and reject invalid/regressing prospective state atomically",
+          "cases": "Assistant/terminal cache-only growth, split read/creation, input/output/optional-only, mixed measured/unknown cache and uncached, explicit zero/null/unknown/completeness, duplicate/reorder/message aggregate, signed64/bool/hidden-subtotal overflow/regression, public success with callback and stop.",
+          "evidence": [
+            "pr109-round3/worker/coverage.md",
+            "pr109-round3/worker-cache-repair/coverage.md",
+            "pr109-round3/worker-cache-repair/affected-candidate.txt"
+          ]
+        },
+        {
+          "invariant": "Previous optional metadata/reasoning, authoring identity, cancellation and settlement behavior remains intact",
+          "cases": "Nine-file affected run includes gateway/caps/quota/callback/cancel, Google observation/settlement and binding-derived authoring composition; UI candidate hashes unchanged.",
+          "evidence": [
+            "pr109-round3/worker-cache-repair/affected-candidate.txt",
+            "pr109-round3/candidate-final.json"
+          ]
+        }
+      ],
+      "jev": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "fada25744586e4ae360aa05cd54cdd973434648331e848d15b12791a58f2c021",
+        "receipt": "pr109-round3/jev-review-final.json"
+      },
+      "limitations": [
+        "Scripted supervised peers; actual live native-client/provider conformance and memory profiling are unrun.",
+        "Repeated live event IDs preserve prior replay behavior; uniqueness of every duplicate live emission is not separately claimed.",
+        "Missing cache normalizes as zero when uncached input is known under existing adapter behavior; cache dimension stays unknown until measured.",
+        "Successful official authoring exchange with minimal lifecycle, authenticated browser/API journey, indefinitely cancellation-suppressing sinks and exact deadline crossing for every subscription wrapper remain unproved.",
+        "Prior optional test-inclusive mypy failure receipt is historical and was not rerun or claimed passing on this candidate; normal source gates pass.",
+        "No manual full hosted CI or final whole backend suite run. #101/#102 checkpoints, #104 reporting/continuation and #106 production assembly remain subsequent."
+      ],
+      "recorded_at_utc": "2026-10-11T18:33:17.057320+00:00"
     }
   }
 }
