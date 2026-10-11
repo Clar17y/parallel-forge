@@ -8,6 +8,10 @@ from uuid import uuid4
 
 import pytest
 from forge.agents.adk_gateway import GoogleAdkGateway
+from forge.application.services.task_usage_baselines import (
+    TaskUsageBaselineService,
+    UsageReportFilters,
+)
 from forge.domain.actor import AgentRole
 from forge.domain.run import RunSnapshot
 from forge.domain.subscription import LogicalTaskContract, SpecialistPurpose
@@ -25,7 +29,7 @@ from forge.persistence.models.epic_brief import Epic
 from forge.persistence.models.execution import AgentExecution, ModelUsage
 from forge.persistence.models.project import Project
 from forge.persistence.models.run import Run
-from forge.persistence.models.subscription import SubscriptionTask
+from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionTask
 from forge.persistence.models.task_usage import TaskUsagePolicyRevision, TaskUsageWorkUnit
 from forge.persistence.queries import task_usage_baselines as baseline_module
 from forge.persistence.queries.task_usage_baselines import TaskUsageBaselineQuery
@@ -881,6 +885,132 @@ async def test_colliding_run_and_authoring_ids_keep_failed_and_legacy_facts_sepa
         subjects={(persisted_run.project_id, "run", shared_id),
                   (persisted_run.project_id, "authoring_job", shared_id)},
     ) == exclusions
+
+
+@pytest.mark.integration
+async def test_legacy_source_inventory_honors_historical_cutoff_and_inclusive_boundary(
+    session_factory, persisted_run,
+):
+    second = RunSnapshot(id=uuid4(), project_id=persisted_run.project_id,
+                         task_id=persisted_run.task_id,
+                         policy_version=persisted_run.policy_version)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(second)
+        await work.commit()
+    for run in (persisted_run, second):
+        execution_id = uuid4()
+        async with session_factory() as session, session.begin():
+            session.add(AgentExecution(id=execution_id, run_id=run.id, role="developer",
+                                       instruction_version="v1", provider="provider-a",
+                                       model="model-a", status="SUCCEEDED"))
+            session.add(ModelUsage(id=uuid4(), run_id=run.id,
+                                   agent_execution_id=execution_id, provider="provider-a",
+                                   model="model-a", prompt_version="v1", input_tokens=4,
+                                   output_tokens=1, cached_input_tokens=2, duration_ms=1,
+                                   tool_call_count=0, pricing_version="v1", currency="USD",
+                                   estimated_cost_minor=0))
+            await session.execute(update(Run).where(Run.id == run.id).values(state="COMPLETED"))
+    historical_at = datetime.now(UTC) + timedelta(seconds=1)
+    boundary = historical_at + timedelta(days=1)
+    async with session_factory() as session, session.begin():
+        future_execution_id = uuid4()
+        session.add(AgentExecution(id=future_execution_id, run_id=persisted_run.id,
+                                   role="reviewer", instruction_version="v1",
+                                   provider="provider-a", model="model-a",
+                                   status="FAILED", created_at=boundary))
+        session.add(ModelUsage(id=uuid4(), run_id=persisted_run.id,
+                               agent_execution_id=future_execution_id,
+                               provider="provider-a", model="model-a", prompt_version="v1",
+                               input_tokens=20, output_tokens=1, cached_input_tokens=0,
+                               duration_ms=1, tool_call_count=0, pricing_version="v1",
+                               currency="USD", estimated_cost_minor=0,
+                               created_at=historical_at))
+        task_id = uuid4()
+        session.add(SubscriptionTask(id=task_id, run_id=second.id, task_id=uuid4(),
+                                     idempotency_key="future-task", payload={},
+                                     created_at=boundary))
+        await session.flush()
+        session.add(SubscriptionAttempt(id=uuid4(), run_id=second.id,
+                                        task_row_id=task_id, attempt_number=1,
+                                        idempotency_key="future-attempt", route_payload={},
+                                        created_at=boundary))
+    query = TaskUsageBaselineQuery(session_factory)
+    subjects = {(run.project_id, "run", run.id) for run in (persisted_run, second)}
+    before = await query.samples(project_ids={persisted_run.project_id},
+                                 as_of=historical_at, window_days=365)
+    assert {row.subject_id: (row.total_tokens, row.finalized, row.source_count)
+            for row in before} == {run.id: (7, True, 1) for run in (persisted_run, second)}
+    assert await query.exclusions(project_ids={persisted_run.project_id},
+                                  as_of=historical_at, window_days=365,
+                                  subjects=subjects) == {}
+    at_boundary = await query.samples(project_ids={persisted_run.project_id},
+                                      as_of=boundary, window_days=365)
+    assert {row.subject_id: row.total_tokens for row in at_boundary} == {
+        persisted_run.id: 28, second.id: None,
+    }
+    assert (await query.exclusions(project_ids={persisted_run.project_id},
+                                   as_of=boundary, window_days=365,
+                                   subjects=subjects))["unclassified_legacy"] == 1
+
+
+@pytest.mark.integration
+async def test_report_keeps_one_snapshot_when_final_source_commits_between_projections(
+    session_factory, persisted_run, monkeypatch,
+):
+    first_id = uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=first_id, run_id=persisted_run.id,
+                                   role="developer", instruction_version="v1",
+                                   provider="provider-a", model="model-a", status="SUCCEEDED"))
+        session.add(ModelUsage(id=uuid4(), run_id=persisted_run.id,
+                               agent_execution_id=first_id, provider="provider-a",
+                               model="model-a", prompt_version="v1", input_tokens=4,
+                               output_tokens=1, cached_input_tokens=2, duration_ms=1,
+                               tool_call_count=0, pricing_version="v1", currency="USD",
+                               estimated_cost_minor=0))
+        await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
+    await PostgresTaskUsageObservations(session_factory).bind(_binding(persisted_run, first_id))
+    query = TaskUsageBaselineQuery(session_factory)
+    original = query._samples
+    sampled = asyncio.Event()
+    resume = asyncio.Event()
+    async def paused_samples(session, *, project_ids, as_of, window_days):
+        rows = await original(session, project_ids=project_ids, as_of=as_of,
+                              window_days=window_days)
+        sampled.set()
+        await resume.wait()
+        return rows
+    monkeypatch.setattr(query, "_samples", paused_samples)
+    as_of = datetime.now(UTC) + timedelta(days=1)
+    service = TaskUsageBaselineService(query)
+    filters = UsageReportFilters(as_of=as_of, rules=SamplingRules(
+        history_limit=10, minimum_comparables=1,
+    ))
+    report_task = asyncio.create_task(service.report(filters))
+    try:
+        await asyncio.wait_for(sampled.wait(), 10)
+        second_id = uuid4()
+        async with session_factory() as session, session.begin():
+            session.add(AgentExecution(id=second_id, run_id=persisted_run.id,
+                                       role="reviewer", instruction_version="v1",
+                                       provider="provider-a", model="model-a", status="SUCCEEDED"))
+            session.add(ModelUsage(id=uuid4(), run_id=persisted_run.id,
+                                   agent_execution_id=second_id, provider="provider-a",
+                                   model="model-a", prompt_version="v1", input_tokens=8,
+                                   output_tokens=1, cached_input_tokens=0, duration_ms=1,
+                                   tool_call_count=0, pricing_version="v1", currency="USD",
+                                   estimated_cost_minor=0))
+    finally:
+        resume.set()
+    report = await asyncio.wait_for(report_task, 20)
+    assert report["overview"]["sample_count"] == 1
+    assert report["overview"]["mean_tokens"] == 7
+    assert report["excluded_outcomes"] == {}
+    assert report["failed_attempt_count"] == 0
+    monkeypatch.setattr(query, "_samples", original)
+    later = await service.report(filters)
+    assert later["overview"]["sample_count"] == 0
+    assert later["excluded_outcomes"]["incomplete_usage"] == 1
 
 
 @pytest.mark.integration

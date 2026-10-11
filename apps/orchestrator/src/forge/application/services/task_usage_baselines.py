@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -19,7 +20,7 @@ from forge.domain.task_usage_baselines import (
 from forge.domain.task_usage_contract import BaselineReference, WorkUnitBinding
 
 
-class TaskUsageBaselineSource(Protocol):
+class TaskUsageReportSnapshot(Protocol):
     async def samples(
         self,
         *,
@@ -38,6 +39,10 @@ class TaskUsageBaselineSource(Protocol):
     ) -> dict[str, int]: ...
 
     async def accessible_project_ids(self) -> set[UUID]: ...
+
+
+class TaskUsageBaselineSource(Protocol):
+    def report_snapshot(self) -> AbstractAsyncContextManager[TaskUsageReportSnapshot]: ...
 
     async def freeze_baseline(
         self, binding: WorkUnitBinding, *, frozen_at: datetime | None = None
@@ -77,11 +82,17 @@ class TaskUsageBaselineService:
 
     async def report(self, filters: UsageReportFilters | None = None) -> dict[str, object]:
         filters = filters or UsageReportFilters()
-        accessible = await self._source.accessible_project_ids()
+        async with self._source.report_snapshot() as snapshot:
+            return await self._report_in(snapshot, filters)
+
+    async def _report_in(
+        self, snapshot: TaskUsageReportSnapshot, filters: UsageReportFilters,
+    ) -> dict[str, object]:
+        accessible = await snapshot.accessible_project_ids()
         requested = filters.project_ids
         project_ids = accessible if requested is None else accessible.intersection(requested)
         as_of = filters.as_of or datetime.now(UTC)
-        samples = await self._source.samples(
+        samples = await snapshot.samples(
             project_ids=project_ids,
             as_of=as_of,
             window_days=filters.rules.window_days,
@@ -133,7 +144,7 @@ class TaskUsageBaselineService:
         by_model = _member_breakdown(scoped, dimension="model", filters=filters, projects=project_ids, as_of=as_of)
         by_effort = _member_breakdown(scoped, dimension="effort", filters=filters, projects=project_ids, as_of=as_of)
         comparable = _comparable_references(scoped, filters=filters, projects=project_ids, as_of=as_of)
-        exclusions = await self._source.exclusions(
+        exclusions = await snapshot.exclusions(
             project_ids=project_ids,
             as_of=as_of,
             window_days=filters.rules.window_days,

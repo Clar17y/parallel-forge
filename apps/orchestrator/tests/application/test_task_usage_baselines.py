@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -15,6 +16,10 @@ class Source:
         self._projects = projects
         self.requested_projects = None
         self.requested_subjects = None
+
+    @asynccontextmanager
+    async def report_snapshot(self):
+        yield self
 
     async def accessible_project_ids(self):
         return self._projects

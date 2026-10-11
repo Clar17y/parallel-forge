@@ -12,6 +12,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from forge.application.ports.audit import AuditRepository
+from forge.application.ports.executions import ExecutionAdmission
 from forge.application.ports.mutations import MutationRepository
 from forge.application.ports.projects import ProjectRepository
 from forge.application.ports.task_usage import MonitoringPolicyRepository
@@ -100,6 +101,20 @@ async def resolve_agent_budget_for_admission(
         update={
             "max_total_tokens": policy.hard_token_cap,
             "monitoring_policy_revision": policy.revision,
+        }
+    )
+
+
+def budget_for_frozen_admission(
+    model_policy: AgentModelPolicy, admission: ExecutionAdmission
+) -> AgentBudget:
+    """Rebuild role limits with the monitoring fields frozen at admission."""
+    if not isinstance(admission, ExecutionAdmission):
+        raise TypeError("admission must be an ExecutionAdmission")
+    return AgentBudget.from_model_policy(model_policy).model_copy(
+        update={
+            "max_total_tokens": admission.hard_token_cap,
+            "monitoring_policy_revision": admission.monitoring_policy_revision,
         }
     )
 

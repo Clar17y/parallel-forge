@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -13,6 +14,10 @@ from forge.domain.task_usage_baselines import BaselineSample
 class Source:
     def __init__(self, project_id):
         self.project_id = project_id
+
+    @asynccontextmanager
+    async def report_snapshot(self):
+        yield self
 
     async def accessible_project_ids(self):
         return {self.project_id}
