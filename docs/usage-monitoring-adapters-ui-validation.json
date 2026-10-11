@@ -7,18 +7,18 @@
     99,
     103
   ],
-  "status": "fourth_codex_repair_local_candidate_awaiting_current_head_hosted_review",
+  "status": "fifth_codex_repair_local_candidate_awaiting_current_head_hosted_review",
   "feature_complete": false,
   "source": {
     "base": "e2c93d0a35102fd16162ee492da4044b3070a59f",
     "branch": "codex/usage-monitoring-adapters-ui",
     "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge",
     "initial_integrated_diff_sha256": "359bfca502d1d5dd67dd0d47a029a840e3f7f94d5ac698b350b09c145a1e8f84",
-    "final_source_commit": "215500a09332230a3dbf42a193c78df19402806f",
-    "final_source_tree": "10bb8e911fc0bedf250c7b189ac3bfde54469dd3",
-    "final_source_diff_sha256": "3724b0c7c73dced2d98320d5992287e6539706cfa45378ea5bb513aebed5bcf9",
+    "final_source_commit": "3d18bd18a3b6d2faf71e1f9e43ae094c91bcf155",
+    "final_source_tree": "0b5dab54c47da640913ee09c73398b9672a8bfc8",
+    "final_source_diff_sha256": "eea663cf6adbcd83397a8f0e06f5e4cb5240a27b90474fc9138708e631c9a1b2",
     "changed_files": 38,
-    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-round4/candidate.json",
+    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-round5/candidate.json",
     "base_origin_main_fetched": true,
     "previous_local_source_commit": "c43dd2a8ef822812b0480618954a86bdde7288a1",
     "previous_local_source_tree": "8b33ceeb38318c6f73d1c7956281623560a4d9ff",
@@ -26,7 +26,8 @@
     "pre_codex_repair_source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
     "pre_round2_source_commit": "c3735120ba0e2e2d5e3943cbbb02a6b0220c82d5",
     "pre_round3_source_commit": "81354e63646b888479b83a7e08ada22aaa05a6a1",
-    "pre_round4_source_commit": "78dd3f4d07fd1f5403b1d77ee6bccf6d14fd7da2"
+    "pre_round4_source_commit": "78dd3f4d07fd1f5403b1d77ee6bccf6d14fd7da2",
+    "pre_round5_source_commit": "215500a09332230a3dbf42a193c78df19402806f"
   },
   "previous_delivery": {
     "foundation_pr": 107,
@@ -685,7 +686,7 @@
     104,
     106
   ],
-  "recorded_at_utc": "2026-10-11T18:52:16.991830+00:00",
+  "recorded_at_utc": "2026-10-11T19:07:24.888649+00:00",
   "review_findings": [
     {
       "id": "UM-REV-001",
@@ -965,7 +966,7 @@
       "prior_evidence": "Earlier source/runtime and UI inputs unchanged; affected API-helper fixture suite rerun.",
       "recorded_at_utc": "2026-10-11T17:10:45.911179+00:00"
     },
-    "current_acceptance": "Prior automatic smoke passed on f1c23f6. Ten findings locally addressed; current candidate awaiting automatic smoke and Codex review. No merge authorization.",
+    "current_acceptance": "Prior automatic smoke passed on77f542c. Eleven findings locally addressed; current candidate awaiting automatic smoke and Codex review. No merge authorization.",
     "fixture_repair_jev": {
       "status": "partial",
       "coverage": {
@@ -1630,6 +1631,173 @@
         "No manual full hosted CI or final whole backend suite run. #101/#102 checkpoints, #104 reporting/continuation and #106 production assembly remain subsequent."
       ],
       "recorded_at_utc": "2026-10-11T18:52:16.991830+00:00"
+    },
+    "codex_repair_round5": {
+      "source_commit": "3d18bd18a3b6d2faf71e1f9e43ae094c91bcf155",
+      "source_tree": "0b5dab54c47da640913ee09c73398b9672a8bfc8",
+      "source_diff_sha256": "eea663cf6adbcd83397a8f0e06f5e4cb5240a27b90474fc9138708e631c9a1b2",
+      "owned_sha256": {
+        "apps/orchestrator/src/forge/agents/antigravity_runtime.py": "7b5edc85047e150b5b8b2444bfaae72c4ee65984f78ba13edf1db4e4ab53050a",
+        "apps/orchestrator/src/forge/agents/epic_brainstorm_gateway.py": "47f579f5c8f2e1c388fa5f782f443cb592ac27c933d38a9b440997b1b8e5a852",
+        "apps/orchestrator/tests/agents/test_google_usage_observations.py": "ae245f11dd260f1bb9c5b17ba313be544b20ef2b3661c7a203be2b94661d6f3c",
+        "apps/orchestrator/tests/epic_brainstorm/test_gateway.py": "c691fe69774c1730e4ee38bf206a14241a4e50dc135091ca54a02f83c9835611"
+      },
+      "retained_sha256": {
+        "apps/orchestrator/src/forge/agents/epic_brainstorm_protocol.py": "8a6aa150570b2904d421d83210787402696c17eb0de41011bf0d666b1f529200",
+        "apps/orchestrator/tests/agents/test_google_observed_settlement.py": "85d7c8935b4633c10950b5af1e82c1a45cbc90e42aba0147cff8be676a3edf79",
+        "apps/orchestrator/src/forge/agents/subscription_usage_observations.py": "739c9982866ef42be10d5e6d4a4c51ddcebd86b24723d39b26b9a032edc4a3c7",
+        "apps/orchestrator/src/forge/agents/claude_gateway.py": "69c6d09ad15a0919c98e282d0ee4a79191fe8fc498eb7a4a088e162071bf6f73",
+        "apps/orchestrator/tests/agents/test_codex_usage_observations.py": "f2d390721219e8a8d50ba8ae52c0798324e09a3196a7dd0858adc18b3718bd6b",
+        "apps/orchestrator/tests/agents/test_claude_usage_observations.py": "c2940bf8ded52ffcf146f363dde2bdae603f34a7a5824695f555207163545206",
+        "apps/orchestrator/tests/task_usage_contract/test_adapter_batch_integration.py": "28c609855445829df2e1ac59f52c1cf75b1ae1c673556eb9363ab4a59152314d",
+        "apps/web/src/components/projects/monitoring-policy-editor.tsx": "37072a45ee7eea5bca663b68991d0baea2dc43d7eaa4acf14fe31c3a4b662283",
+        "apps/web/src/components/projects/monitoring-policy-editor.test.tsx": "3b7d86bbf9432538f15d7c0627dba38a1ba8dbbc652387ed79fed428ff21c46f",
+        "apps/web/src/components/projects/monitoring-policy-summary.tsx": "713594a86d2e56162a094bc2c98f2557a4762e30a372a1d1561a4d25665c32ba",
+        "apps/web/src/components/projects/monitoring-policy-summary.test.tsx": "6849b384667e79a51a0a9ffe9f3a68adbd4f096e244a220fc0557d58a997496e",
+        "apps/web/src/app/projects/[projectId]/page.test.tsx": "1bdc8c98dcff4b48ade0227b81cb9f8547a3356a447c003a6f924a78b4695073",
+        "apps/orchestrator/src/forge/agents/codex_gateway.py": "73d9972ba95ad433fb3bdb1c44fc5005d1938bbecd262b0073ade678b39c4471"
+      },
+      "primary_adjudication": {
+        "accepted": true,
+        "unresolved_material_findings": [],
+        "integrated_diff_sha256": "eea663cf6adbcd83397a8f0e06f5e4cb5240a27b90474fc9138708e631c9a1b2",
+        "review": "Primary inspected the two-source predicate/prepublisher delta, all new model/route tests and aligned success fixtures. Four owned hashes and thirteen retained hashes match the candidate. Raw reds, 13 focused model cases, 10 focused public route cases, 348 affected cases and static/source-origin results were inspected.",
+        "consolidation": "The second related authoring identity defect prompted a single batch covering binding/job/installation model agreement and adjacent installed client/provider/effort/auth/billing mismatches. Root alone wrote the gateway composition check using the existing quota_route_for mapping and factory effort rule.",
+        "proportionality": "Focused TDD plus primary delta review and required current-head hosted Codex review are proportionate to this small prelaunch predicate repair. Retain prior integrated/simplify reviews and scoped cache/final-namespace gate for matching unchanged inputs; no additional generic review round."
+      },
+      "finding": {
+        "id": "PR109-11",
+        "comment_id": 4242788950,
+        "thread_id": "PRRT_kwDOUDBiTc6rQem7",
+        "fix": "Installed model cannot replace the frozen job model in binding validation. A root-owned prepublisher check reuses the existing route mapping to reject installed client/provider/model/auth/billing or declared effort mismatches before launch or observation setup."
+      },
+      "checks": [
+        {
+          "result": "Two expected pure model failures and four public installed provider/effort failures observed before source repairs",
+          "receipts": [
+            "pr109-round5/worker/red-command.txt",
+            "pr109-round5/worker/red-raw.txt",
+            "pr109-round5/worker/route-red-command.txt",
+            "pr109-round5/worker/route-red-raw.txt"
+          ]
+        },
+        {
+          "result": "13 focused model/binding cases and 10 public route cases passed; counts overlap with affected suite",
+          "receipts": [
+            "pr109-round5/worker/model-green-command.txt",
+            "pr109-round5/worker/model-green-raw.txt",
+            "pr109-round5/worker/route-green-command.txt",
+            "pr109-round5/worker/route-green-raw.txt"
+          ]
+        },
+        {
+          "result": "348 passed across ten affected adapter/gateway/budget/Google/authoring test files, 5 dependency warnings",
+          "receipts": [
+            "pr109-round5/worker/affected-final-command.txt",
+            "pr109-round5/worker/affected-final-raw.txt"
+          ]
+        },
+        {
+          "result": "Initial affected run exposed three preexisting Antigravity success/cap fixtures with a frozen Gemini client. Corrected those fixtures to their actual installed Antigravity client; three focused cases and final 348-case run passed",
+          "receipts": [
+            "pr109-round5/worker/affected-raw.txt",
+            "pr109-round5/worker/antigravity-aligned-raw.txt",
+            "pr109-round5/worker/affected-final-raw.txt"
+          ]
+        },
+        {
+          "result": "Scoped Ruff and source-only mypy passed in all four changed paths/two sources; Python3.14.5 and diff check passed",
+          "receipts": [
+            "pr109-round5/worker/ruff-final-command.txt",
+            "pr109-round5/worker/ruff-final-raw.txt",
+            "pr109-round5/worker/mypy-final-command.txt",
+            "pr109-round5/worker/mypy-final-raw.txt",
+            "pr109-round5/worker/python-version-raw.txt",
+            "pr109-round5/worker/diff-check-raw.txt"
+          ]
+        },
+        {
+          "result": "Test cwd/PYTHONPATH recorded. Subsequent same-environment source-origin assertions passed for forge and both changed gateway modules under active worktree; no retrospective every-import trace claimed",
+          "receipts": [
+            "pr109-round5/worker/affected-final-environment.txt",
+            "pr109-round5/worker/source-origins-command.txt",
+            "pr109-round5/worker/source-origins-raw.txt"
+          ]
+        },
+        {
+          "result": "2 real PostgreSQL replay/collision cases, final namespace/cache gate and 48 web/56 profile-epic cases plus web TypeScript/lint/build retained for matching inputs",
+          "receipts": [
+            "pr109-round3/worker/postgres-final.txt",
+            "pr109-round3/correctness/final-verdict.md",
+            "pr109-ui-repair/candidate.json",
+            "simplify/acceptance.json",
+            "pr109-round5/candidate.json"
+          ]
+        }
+      ],
+      "validation_summary": "348 affected adapter/gateway/budget/authoring tests passed, including the model/route repairs; 2 real PostgreSQL cases are retained for unchanged inputs. Scoped Ruff/source mypy and Python3.14 active-worktree source-origin assertions passed. Matching unchanged evidence retains 48 owner/editor/summary/API tests, 56 profile/epic cap cases and web TypeScript/lint/build.",
+      "coverage": [
+        {
+          "invariant": "Binding, frozen job and supplied installed model must agree",
+          "cases": "Eight pure combinations: all equal, each pair equal with third different, all distinct, absent installation good/bad binding and empty supplied model; four public mismatch triples reject before effects.",
+          "evidence": [
+            "pr109-round5/worker/coverage.md",
+            "pr109-round5/worker/model-green-raw.txt",
+            "pr109-round5/worker/affected-final-raw.txt"
+          ]
+        },
+        {
+          "invariant": "Installed route matches the frozen job before publisher, launch, callbacks or lifecycle effects",
+          "cases": "Provider, same-provider wrong client, effort, auth and billing mismatches each with explicit/minimal lifecycle; no official execution, cancellation callback, lifecycle hook or sink delivery.",
+          "evidence": [
+            "pr109-round5/worker/route-red-raw.txt",
+            "pr109-round5/worker/route-green-raw.txt",
+            "pr109-round5/worker/affected-final-raw.txt"
+          ]
+        },
+        {
+          "invariant": "Aligned execution, accounting and settlement remain valid",
+          "cases": "No-install path, minimal/explicit lifecycle, aligned scripted official Gemini/Antigravity/Claude, context/cached normalization and callback/close-before-final; factory selection cases included.",
+          "evidence": [
+            "pr109-round5/worker/affected-final-raw.txt",
+            "pr109-round5/worker/coverage.md"
+          ]
+        },
+        {
+          "invariant": "Previous durable replay/namespace/cache and UI policy transition evidence remains applicable",
+          "cases": "Thirteen retained source/test/UI hashes and actual unchanged PG/publisher/Codex/Claude inputs; changed authoring gateway/helper and fixtures are rerun in 348 cases.",
+          "evidence": [
+            "pr109-round5/candidate.json",
+            "pr109-round3/acceptance.json",
+            "pr109-round4/acceptance.json"
+          ]
+        }
+      ],
+      "jev": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "eea663cf6adbcd83397a8f0e06f5e4cb5240a27b90474fc9138708e631c9a1b2",
+        "receipt": "pr109-round5/jev-review.json"
+      },
+      "limitations": [
+        "Official Claude authoring success is proved through the real parser and scripted protocol with a fake supervisor/session; real OS subprocess and live native-client/provider conformance are unrun for that case.",
+        "Authoring Claude usage remains final-only; no invented live coverage or context counters.",
+        "Repeated live event IDs retain prior replay behavior; uniqueness of every duplicate live emission is not separately claimed.",
+        "Missing cache normalizes as zero when uncached input is known under existing adapter behavior; cached dimension stays unknown until measured.",
+        "Authenticated browser/API journey, memory profiling, indefinitely cancellation-suppressing sinks and exact deadline crossing for every subscription wrapper remain unproved.",
+        "Prior optional test-inclusive mypy failure receipt is historical, not rerun or claimed passing on this candidate; normal source gates pass.",
+        "No manual full hosted CI or final whole backend suite run. #101/#102 checkpoints, #104 reporting/continuation and #106 production assembly remain subsequent.",
+        "Empty installed model is pure helper coverage because installation schema forbids it. The four public model-mismatch triples use an explicit lifecycle; minimal-lifecycle rejection is separately proved across installed route dimensions, not every cross product.",
+        "Source-origin assertion verifies the recorded same cwd/PYTHONPATH resolution after tests, not a retrospective trace of every import in the earlier pytest process."
+      ],
+      "recorded_at_utc": "2026-10-11T19:07:24.888649+00:00"
     }
   }
 }
