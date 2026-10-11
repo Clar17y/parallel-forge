@@ -14,6 +14,8 @@ from forge.application.services.projects import (
 from forge.application.services.projects import (
     ProjectRegistrationRequest as ServiceProjectRegistrationRequest,
 )
+from forge.application.services.task_usage_policy import MonitoringPolicyRevisionResult
+from forge.domain.task_usage_contract import MonitoringPolicy
 
 
 class ProjectCreateRequest(ServiceProjectRegistrationRequest):
@@ -22,6 +24,65 @@ class ProjectCreateRequest(ServiceProjectRegistrationRequest):
 
 class ProjectPolicyUpdateRequest(ServicePolicyUpdateRequest):
     """Closed mutable policy update body."""
+
+
+class MonitoringOwnerActionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor_id: UUID
+    action: str
+    affected_snapshot: str
+    warnings: tuple[str, ...]
+    replayed: bool
+
+
+class MonitoringPolicyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: UUID
+    revision: int
+    mode: str
+    warning_multiplier: float
+    checkpoint_multiplier: float
+    history_limit: int
+    window_days: int | None
+    minimum_comparables: int
+    hard_token_cap: int | None
+    hard_context_cap: int | None
+    manual_estimate_tokens: int | None
+    allow_cross_project_fallback: bool
+    owner_action: MonitoringOwnerActionResponse | None = None
+
+    @classmethod
+    def from_policy(cls, policy: MonitoringPolicy) -> MonitoringPolicyResponse:
+        return cls(
+            project_id=policy.project_id,
+            revision=policy.revision,
+            mode=policy.mode.value,
+            warning_multiplier=policy.warning_multiplier,
+            checkpoint_multiplier=policy.checkpoint_multiplier,
+            history_limit=policy.history_limit,
+            window_days=policy.window_days,
+            minimum_comparables=policy.minimum_comparables,
+            hard_token_cap=policy.hard_token_cap,
+            hard_context_cap=policy.hard_context_cap,
+            manual_estimate_tokens=policy.manual_estimate_tokens,
+            allow_cross_project_fallback=policy.allow_cross_project_fallback,
+        )
+
+    @classmethod
+    def from_revision(cls, result: MonitoringPolicyRevisionResult) -> MonitoringPolicyResponse:
+        return cls.from_policy(result.policy).model_copy(
+            update={
+                "owner_action": MonitoringOwnerActionResponse(
+                    actor_id=result.actor_id,
+                    action=result.action,
+                    affected_snapshot=result.affected_snapshot,
+                    warnings=result.warnings,
+                    replayed=result.replayed,
+                )
+            }
+        )
 
 
 ProjectRegistrationRequest = ProjectCreateRequest

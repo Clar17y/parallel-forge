@@ -422,15 +422,18 @@ async def test_gateway_returns_valid_typed_output_for_reviewer() -> None:
 
 @pytest.mark.parametrize("status", ["succeeded", "unknown"])
 async def test_gateway_serializes_review_focus_in_provider_payload(status) -> None:
-    runtime = _FakeAdkRuntime([
-        _make_invocation_result(build_review_output().model_dump_json())
-    ])
+    runtime = _FakeAdkRuntime([_make_invocation_result(build_review_output().model_dump_json())])
     gateway = GoogleAdkGateway(runtime, _make_loader(), _FakeAdkToolProvider(), _pricing_catalog())
     request = _make_request(AgentRole.REVIEWER)
-    focus = UntrustedContent.from_text(
-        '{"scores":[{"topic":"concurrency","score":2}],"advisory_only":true}',
-        source_kind=UntrustedSourceKind.REVIEW, source_reference="jev_review_focus",
-    ) if status == "succeeded" else None
+    focus = (
+        UntrustedContent.from_text(
+            '{"scores":[{"topic":"concurrency","score":2}],"advisory_only":true}',
+            source_kind=UntrustedSourceKind.REVIEW,
+            source_reference="jev_review_focus",
+        )
+        if status == "succeeded"
+        else None
+    )
     context = request.context.model_copy(
         update={"review_focus": focus, "review_focus_status": status}
     )
@@ -519,6 +522,198 @@ async def test_malformed_output_gets_exactly_one_repair_with_remaining_budgets()
     assert result.duration_ms == 400 + 500
     assert result.tool_call_count == 2 + 1
     assert result.usage.provider_request_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_cap", "output_cap", "total_cap"),
+    [(100, None, None), (None, 10, None), (None, None, 110), (100, None, 110)],
+)
+async def test_invalid_output_at_exact_token_cap_stops_before_repair(
+    input_cap: int | None, output_cap: int | None, total_cap: int | None
+) -> None:
+    runtime = _FakeAdkRuntime(
+        [
+            _make_invocation_result(
+                "{}",
+                input_tokens=100,
+                output_tokens=10,
+                provider_request_id="first-exact-cap",
+            ),
+            _make_invocation_result(build_plan_output().model_dump_json()),
+        ]
+    )
+    gateway = GoogleAdkGateway(runtime, _make_loader(), _FakeAdkToolProvider(), _pricing_catalog())
+    budget = AgentBudget(
+        max_input_tokens=input_cap,
+        max_output_tokens=output_cap,
+        max_total_tokens=total_cap,
+        max_tool_calls=10,
+        max_duration_seconds=60,
+        max_cost_minor=1000,
+    )
+
+    result = await gateway.execute(_make_request(AgentRole.PLANNER, budget=budget))
+
+    assert result.finish_status is AgentFinishStatus.BUDGET_EXCEEDED
+    assert result.output is None
+    assert len(runtime.invocations) == 1
+    assert result.usage.input_tokens == 100
+    assert result.usage.output_tokens == 10
+    assert result.usage.provider_request_id == "first-exact-cap"
+    assert len(result.usage_attempts) == 1
+    assert result.usage_attempts[0].provider_request_id == "first-exact-cap"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_cap", "output_cap", "total_cap", "second_input", "second_output"),
+    [
+        (101, None, None, 1, 0),
+        (None, 11, None, 0, 1),
+        (None, None, 112, 1, 1),
+        (None, None, None, 1, 1),
+    ],
+)
+async def test_invalid_output_with_token_room_repairs_without_invented_caps(
+    input_cap: int | None,
+    output_cap: int | None,
+    total_cap: int | None,
+    second_input: int,
+    second_output: int,
+) -> None:
+    runtime = _FakeAdkRuntime(
+        [
+            _make_invocation_result("{}", input_tokens=100, output_tokens=10),
+            _make_invocation_result(
+                build_plan_output().model_dump_json(),
+                input_tokens=second_input,
+                output_tokens=second_output,
+            ),
+        ]
+    )
+    gateway = GoogleAdkGateway(runtime, _make_loader(), _FakeAdkToolProvider(), _pricing_catalog())
+    budget = AgentBudget(
+        max_input_tokens=input_cap,
+        max_output_tokens=output_cap,
+        max_total_tokens=total_cap,
+        max_tool_calls=10,
+        max_duration_seconds=60,
+        max_cost_minor=1000,
+    )
+
+    result = await gateway.execute(_make_request(AgentRole.PLANNER, budget=budget))
+
+    assert result.finish_status is AgentFinishStatus.SUCCEEDED
+    assert len(runtime.invocations) == 2
+    repair = runtime.invocations[1]
+    assert (
+        repair.max_input_tokens is None
+        if input_cap is None
+        else repair.max_input_tokens == input_cap - 100
+    )
+    assert (
+        repair.max_output_tokens is None
+        if output_cap is None
+        else repair.max_output_tokens == output_cap - 10
+    )
+    assert (
+        repair.max_total_tokens is None
+        if total_cap is None
+        else repair.max_total_tokens == total_cap - 110
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cap_field", ("max_input_tokens", "max_output_tokens", "max_total_tokens"))
+async def test_zero_token_cap_cannot_reach_first_provider_request(cap_field: str) -> None:
+    runtime = _FakeAdkRuntime([_make_invocation_result(build_plan_output().model_dump_json())])
+    gateway = GoogleAdkGateway(runtime, _make_loader(), _FakeAdkToolProvider(), _pricing_catalog())
+    # An already validated budget can be tampered with at an internal boundary.
+    budget = AgentBudget().model_copy(update={cap_field: 0})
+
+    with pytest.raises(AgentBudgetExceeded) as raised:
+        await gateway.execute(_make_request(AgentRole.PLANNER, budget=budget))
+
+    assert runtime.invocations == []
+    assert raised.value.usage is None
+    assert raised.value.usage_attempts == ()
+
+
+@pytest.mark.asyncio
+async def test_zero_tool_and_free_cost_allow_valid_no_tool_output() -> None:
+    runtime = _FakeAdkRuntime(
+        [
+            _make_invocation_result(
+                build_plan_output().model_dump_json(),
+                input_tokens=100,
+                output_tokens=10,
+                tool_calls=0,
+                cost_minor=0,
+            )
+        ]
+    )
+    gateway = GoogleAdkGateway(
+        runtime,
+        _make_loader(),
+        _FakeAdkToolProvider(),
+        _pricing_catalog(input_rate="0", output_rate="0", cached_rate="0"),
+    )
+    budget = AgentBudget(
+        max_input_tokens=None,
+        max_output_tokens=None,
+        max_tool_calls=0,
+        max_duration_seconds=60,
+        max_cost_minor=0,
+    )
+
+    result = await gateway.execute(_make_request(AgentRole.PLANNER, budget=budget))
+
+    assert result.finish_status is AgentFinishStatus.SUCCEEDED
+    assert result.usage.estimated_cost_minor == 0
+    assert len(runtime.invocations) == 1
+
+
+@pytest.mark.asyncio
+async def test_zero_tool_and_free_cost_do_not_block_free_output_repair() -> None:
+    runtime = _FakeAdkRuntime(
+        [
+            _make_invocation_result(
+                "{}",
+                input_tokens=100,
+                output_tokens=10,
+                tool_calls=0,
+                cost_minor=0,
+            ),
+            _make_invocation_result(
+                build_plan_output().model_dump_json(),
+                input_tokens=100,
+                output_tokens=10,
+                tool_calls=0,
+                cost_minor=0,
+            ),
+        ]
+    )
+    gateway = GoogleAdkGateway(
+        runtime,
+        _make_loader(),
+        _FakeAdkToolProvider(),
+        _pricing_catalog(input_rate="0", output_rate="0", cached_rate="0"),
+    )
+    budget = AgentBudget(
+        max_input_tokens=None,
+        max_output_tokens=None,
+        max_tool_calls=0,
+        max_duration_seconds=60,
+        max_cost_minor=0,
+    )
+
+    result = await gateway.execute(_make_request(AgentRole.PLANNER, budget=budget))
+
+    assert result.finish_status is AgentFinishStatus.SUCCEEDED
+    assert len(runtime.invocations) == 2
+    assert runtime.invocations[1].max_tool_calls == 0
+    assert runtime.invocations[1].max_cost_minor == 0
 
 
 @pytest.mark.asyncio

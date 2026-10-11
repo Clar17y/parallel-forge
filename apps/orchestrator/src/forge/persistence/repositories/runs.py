@@ -345,7 +345,7 @@ class PostgresRunRepository:
                 remote_remediation_count=0,
                 pending_gate=None,
                 pending_evidence_digest=None,
-                token_budget=0,
+                token_budget=None,
                 cost_budget_minor=0,
                 duration_budget_seconds=0,
                 base_ref=run.base_ref,
@@ -630,7 +630,7 @@ class PostgresRunRepository:
             record.policy_version = policy_version
             record.base_ref = base_ref
             record.base_sha = base_sha
-            record.token_budget = 0
+            record.token_budget = None
             record.cost_budget_minor = 0
             record.duration_budget_seconds = 0
             if self._events is None:

@@ -63,10 +63,10 @@ from forge.application.services.resume_source import (
     resume_origin,
 )
 from forge.application.services.suspended_delivery import record_suspended_delivery
+from forge.application.services.task_usage_policy import resolve_agent_budget_for_admission
 from forge.application.services.tools import CapabilityMatrix
 from forge.domain.actor import AgentRole
 from forge.domain.agent import (
-    AgentBudget,
     AgentFinishStatus,
     AgentRequest,
     DeveloperInput,
@@ -164,7 +164,9 @@ class DevelopmentService:
             system_instruction=prompt.instruction,
             instruction_digest=prompt.digest,
             allowed_tools=_TOOLS,
-            budget=AgentBudget.from_model_policy(approved.policy.developer_model),
+            budget=await resolve_agent_budget_for_admission(
+                work, approved.run.project_id, approved.policy.developer_model
+            ),
             reasoning_effort=approved.policy.developer_model.reasoning_effort,
         )
         input_descriptor = await self._put(
@@ -741,6 +743,8 @@ class DevelopmentService:
             request.provider,
             request.model,
             instruction_digest=request.instruction_digest,
+            monitoring_policy_revision=request.budget.monitoring_policy_revision,
+            hard_token_cap=request.budget.max_total_tokens,
             input_artifact_id=persisted.artifact_id,
         )
         if not admission.is_new:

@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     ForeignKey,
     ForeignKeyConstraint,
@@ -128,7 +129,7 @@ class Run(Base, TimestampMixin):
     suspension_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     local_remediation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     remote_remediation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    token_budget: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    token_budget: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     cost_budget_minor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duration_budget_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     worktree_path: Mapped[str | None] = mapped_column(Text)

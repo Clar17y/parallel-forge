@@ -55,7 +55,7 @@ class PlanApprovalEvidence(EvidenceModel):
     required_checks: Mapping[str, str] = Field(default_factory=dict)
     runner_mode: RunnerMode
     local_remediation_limit: int = Field(ge=0)
-    token_budget: int = Field(ge=0)
+    token_budget: int | None = Field(default=None, ge=0, le=2**63 - 1, strict=True)
     cost_budget_minor: int = Field(ge=0)
     duration_budget_seconds: int = Field(ge=1)
 

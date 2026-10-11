@@ -495,7 +495,8 @@ async def test_bound_terminal_defers_cancellation_until_process_and_capability_r
     task = asyncio.create_task(
         runner.run_terminal(RunCommandRequest(command_name="bound-test", kind=StepKind.TEST))
     )
-    assert await asyncio.to_thread(process.started.wait, 1)
+    # Managed-worktree validation includes real Git calls before process launch.
+    assert await asyncio.to_thread(process.started.wait, 10)
     task.cancel()
     task.cancel()
     await asyncio.sleep(0.05)

@@ -921,6 +921,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/monitoring-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Monitoring Policy */
+        get: operations["get_monitoring_policy_api_projects__project_id__monitoring_policy_get"];
+        put?: never;
+        /** Revise Monitoring Policy */
+        post: operations["revise_monitoring_policy_api_projects__project_id__monitoring_policy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/monitoring-policy/{revision}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Monitoring Policy Revision */
+        get: operations["get_monitoring_policy_revision_api_projects__project_id__monitoring_policy__revision__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/policy-projection": {
         parameters: {
             query?: never;
@@ -1451,6 +1486,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task-usage-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Task Usage Report */
+        get: operations["task_usage_report_api_task_usage_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks": {
         parameters: {
             query?: never;
@@ -1666,14 +1718,14 @@ export interface components {
             max_duration_seconds: number;
             /**
              * Max Input Tokens
-             * @default 100000
+             * @description Optional input hard cap; omitted or null means no token ceiling, not expected usage.
              */
-            max_input_tokens: number;
+            max_input_tokens?: number | null;
             /**
              * Max Output Tokens
-             * @default 16000
+             * @description Optional output hard cap; omitted or null means no token ceiling, not expected usage.
              */
-            max_output_tokens: number;
+            max_output_tokens?: number | null;
             /**
              * Max Tool Calls
              * @default 100
@@ -4210,6 +4262,87 @@ export interface components {
             /** Repository */
             repository: string;
         };
+        /**
+         * MonitoringMode
+         * @enum {string}
+         */
+        MonitoringMode: "report_only" | "warn" | "checkpoint";
+        /** MonitoringOwnerActionResponse */
+        MonitoringOwnerActionResponse: {
+            /** Action */
+            action: string;
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Affected Snapshot */
+            affected_snapshot: string;
+            /** Replayed */
+            replayed: boolean;
+            /** Warnings */
+            warnings: string[];
+        };
+        /** MonitoringPolicyResponse */
+        MonitoringPolicyResponse: {
+            /** Allow Cross Project Fallback */
+            allow_cross_project_fallback: boolean;
+            /** Checkpoint Multiplier */
+            checkpoint_multiplier: number;
+            /** Hard Context Cap */
+            hard_context_cap: number | null;
+            /** Hard Token Cap */
+            hard_token_cap: number | null;
+            /** History Limit */
+            history_limit: number;
+            /** Manual Estimate Tokens */
+            manual_estimate_tokens: number | null;
+            /** Minimum Comparables */
+            minimum_comparables: number;
+            /** Mode */
+            mode: string;
+            owner_action?: components["schemas"]["MonitoringOwnerActionResponse"] | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Revision */
+            revision: number;
+            /** Warning Multiplier */
+            warning_multiplier: number;
+            /** Window Days */
+            window_days: number | null;
+        };
+        /**
+         * MonitoringPolicyRevisionRequest
+         * @description Omitted fields retain their value; explicit null clears optional caps/estimate.
+         */
+        MonitoringPolicyRevisionRequest: {
+            /** Allow Cross Project Fallback */
+            allow_cross_project_fallback?: boolean | null;
+            /** Checkpoint Multiplier */
+            checkpoint_multiplier?: number | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Hard Context Cap */
+            hard_context_cap?: number | null;
+            /** Hard Token Cap */
+            hard_token_cap?: number | null;
+            /** History Limit */
+            history_limit?: number | null;
+            /** Manual Estimate Tokens */
+            manual_estimate_tokens?: number | null;
+            /** Minimum Comparables */
+            minimum_comparables?: number | null;
+            mode?: components["schemas"]["MonitoringMode"] | null;
+            /** Note */
+            note?: string | null;
+            /** Warning Multiplier */
+            warning_multiplier?: number | null;
+            /** Window Days */
+            window_days?: number | null;
+        };
         /** PermissionItem */
         PermissionItem: {
             /** Role */
@@ -6010,6 +6143,52 @@ export interface components {
             /** Untrusted External Content */
             untrusted_external_content: boolean;
         };
+        /**
+         * TaskUsageHistoryResponse
+         * @description Measured history, sample coverage and comparable references for generated clients.
+         */
+        TaskUsageHistoryResponse: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** By Effort */
+            by_effort: {
+                [key: string]: components["schemas"]["UsageHistorySummaryResponse"];
+            };
+            /** By Model */
+            by_model: {
+                [key: string]: components["schemas"]["UsageHistorySummaryResponse"];
+            };
+            /** By Project */
+            by_project: {
+                [key: string]: components["schemas"]["UsageHistorySummaryResponse"];
+            };
+            /** By Provider */
+            by_provider: {
+                [key: string]: components["schemas"]["UsageHistorySummaryResponse"];
+            };
+            /** By Task Type */
+            by_task_type: {
+                [key: string]: components["schemas"]["UsageHistorySummaryResponse"];
+            };
+            /** Comparable References */
+            comparable_references: {
+                [key: string]: components["schemas"]["UsageHistorySummaryResponse"];
+            };
+            /** Excluded Outcomes */
+            excluded_outcomes: {
+                [key: string]: number;
+            };
+            /**
+             * Failed Attempt Count
+             * @default 0
+             */
+            failed_attempt_count: number;
+            filters: components["schemas"]["UsageHistoryFiltersResponse"];
+            overview: components["schemas"]["UsageHistorySummaryResponse"];
+        };
         /** TokenBudgetDefaultsInput */
         TokenBudgetDefaultsInput: {
             /** Max Input Tokens */
@@ -6066,6 +6245,69 @@ export interface components {
              */
             max_uncertain_attempts: number;
         };
+        /** UsageHistoryFiltersResponse */
+        UsageHistoryFiltersResponse: {
+            /** Effort */
+            effort?: string | null;
+            /** History Limit */
+            history_limit: number;
+            /** Minimum Comparables */
+            minimum_comparables: number;
+            /** Model */
+            model?: string | null;
+            /** Project Ids */
+            project_ids: string[];
+            /** Provider */
+            provider?: string | null;
+            /** Subject Kind */
+            subject_kind?: ("run" | "authoring_job") | null;
+            /** Task Kind */
+            task_kind?: string | null;
+            /** Window Days */
+            window_days?: number | null;
+        };
+        /** UsageHistorySummaryResponse */
+        UsageHistorySummaryResponse: {
+            /** Checkpoint Threshold Tokens */
+            checkpoint_threshold_tokens?: number | null;
+            /** Cohort Source */
+            cohort_source: string;
+            /** Coverage Count */
+            coverage_count: number;
+            /** Eligible Count */
+            eligible_count: number;
+            /** Excluded Count */
+            excluded_count: number;
+            /** Labels */
+            labels: string[];
+            /** Mean Tokens */
+            mean_tokens?: number | null;
+            /** Measured Coverage */
+            measured_coverage?: number | null;
+            /** Median Tokens */
+            median_tokens?: number | null;
+            /** P90 Tokens */
+            p90_tokens?: number | null;
+            /** Phase Role Breakdown */
+            phase_role_breakdown: components["schemas"]["UsagePhaseRoleResponse"][];
+            /** Project Ids */
+            project_ids: string[];
+            /** Reference Tokens */
+            reference_tokens?: number | null;
+            /** Sample Count */
+            sample_count: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "insufficient_history" | "manual";
+            /** Warning Threshold Tokens */
+            warning_threshold_tokens?: number | null;
+            /** Window Ended At */
+            window_ended_at?: string | null;
+            /** Window Started At */
+            window_started_at?: string | null;
+        };
         /** UsageItem */
         UsageItem: {
             /** Currency */
@@ -6096,6 +6338,15 @@ export interface components {
             run_id: string;
             /** Unpriced Calls */
             unpriced_calls: number;
+        };
+        /** UsagePhaseRoleResponse */
+        UsagePhaseRoleResponse: {
+            /** Phase */
+            phase: string;
+            /** Role */
+            role: string;
+            /** Tokens */
+            tokens: number | null;
         };
         /** UsageSummary */
         UsageSummary: {
@@ -8303,6 +8554,106 @@ export interface operations {
             };
         };
     };
+    get_monitoring_policy_api_projects__project_id__monitoring_policy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitoringPolicyResponse"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revise_monitoring_policy_api_projects__project_id__monitoring_policy_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MonitoringPolicyRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitoringPolicyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_monitoring_policy_revision_api_projects__project_id__monitoring_policy__revision__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitoringPolicyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     policy_api_projects__project_id__policy_projection_get: {
         parameters: {
             query?: never;
@@ -9433,6 +9784,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SubscriptionUsagePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    task_usage_report_api_task_usage_report_get: {
+        parameters: {
+            query?: {
+                project_id?: string[] | null;
+                subject_kind?: string | null;
+                task_kind?: string | null;
+                provider?: string | null;
+                model?: string | null;
+                effort?: string | null;
+                window_days?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskUsageHistoryResponse"];
                 };
             };
             /** @description Validation Error */

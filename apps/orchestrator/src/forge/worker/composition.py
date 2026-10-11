@@ -95,13 +95,14 @@ from forge.application.services.subscription_task_controls import (
     SubscriptionTaskControlService,
     TaskControlUnitOfWork,
 )
+from forge.application.services.task_usage_policy import budget_for_frozen_admission
 from forge.application.services.tool_recovery import ToolRecoveryService
 from forge.application.services.tools import ControlledToolService
 from forge.application.services.validation import ValidationService
 from forge.application.services.worker import CommandHandler
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.actor import AgentRole
-from forge.domain.agent import AgentBudget, AgentRequest, AgentResult, PlannerInput, PolicySummary
+from forge.domain.agent import AgentRequest, AgentResult, PlannerInput, PolicySummary
 from forge.domain.command import CommandEnvelope
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunState
@@ -319,6 +320,7 @@ class BoundPlanningGateway:
             if request.reasoning_effort != policy.planner_model.reasoning_effort:
                 raise AgentGatewayError("policy planner reasoning mismatch")
 
+            expected_budget = budget_for_frozen_admission(policy.planner_model, execution)
             envelope = None
             if self._underlying_gateway_factory is None:
                 subscription = getattr(uow, "subscription", None)
@@ -347,7 +349,7 @@ class BoundPlanningGateway:
             if (
                 policy.planner_model.provider != request.provider
                 or policy.planner_model.model != request.model
-                or request.budget != AgentBudget.from_model_policy(policy.planner_model)
+                or request.budget != expected_budget
                 or type(request.context) is not PlannerInput
                 or request.context.policy_summary != PolicySummary.from_policy(policy)
                 or request.context.base_commit != run.base_sha
@@ -357,7 +359,7 @@ class BoundPlanningGateway:
                 if envelope is None:
                     raise AgentGatewayError("policy planner model mismatch")
                 if (
-                    request.budget != AgentBudget.from_model_policy(policy.planner_model)
+                    request.budget != expected_budget
                     or type(request.context) is not PlannerInput
                     or request.context.policy_summary != PolicySummary.from_policy(policy)
                     or request.context.base_commit != run.base_sha
@@ -426,6 +428,27 @@ class BoundPlanningGateway:
             except RouteUnavailable:
                 raise AgentGatewayError("planning route is unavailable") from None
 
+        # Recheck durable authority after constructing tools and the runtime gateway.
+        async with self._unit_of_work_factory() as uow:
+            current_run = await uow.runs.get(request.run_id)
+            current_execution = await uow.executions.get_admission(
+                request.run_id, request.execution_id
+            )
+            current_policy = await uow.projects.get_policy(project_id, policy_version)
+            if (
+                current_run is None
+                or (
+                    current_run.project_id,
+                    current_run.task_id,
+                    current_run.state,
+                    current_run.policy_version,
+                    current_run.base_sha,
+                )
+                != (run.project_id, run.task_id, run.state, run.policy_version, run.base_sha)
+                or current_execution != execution
+                or current_policy != policy_record
+            ):
+                raise AgentGatewayError("planning authority changed")
         return await gateway.execute(request)
 
 

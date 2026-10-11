@@ -1,0 +1,1009 @@
+{
+  "schema_version": 1,
+  "repository": "Clar17y/parallel-forge",
+  "epic": 94,
+  "children": [
+    96,
+    97,
+    100
+  ],
+  "status": "Locally implemented, simplified and repaired; PR #108 published, round-seven repair push pending at this snapshot.",
+  "feature_complete": false,
+  "candidate": {
+    "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
+    "source_tree": "889e3548dc71ea6ec58702e6667cdd3801b7fa3f",
+    "initial_source_commit": "49e36fec38d1272120742196ea084b037e577a49",
+    "initial_source_tree": "1e738af108d98dbec88de71548edcb25f1e786fe",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "branch": "codex/usage-monitoring-accounting-policy",
+    "migration_head": "20261010_0039",
+    "integrated_diff_sha256": "cb4e4a6954111743ff4795040986b94bad36136b5ed69578cabfa4f554ad9e22",
+    "binding": "Initial source49e36fe matched the checked managed repair tree before transfer. Simplified source9592471 adds the five owned source/test paths covered below. The integrated code diff excludes this non-code validation record; this revised evidence-only file is excluded from the source identity. Earlier receipts retain their actual candidate and are reused only for unchanged relevant inputs. This top-level candidate retains the pre-Codex validation snapshot; the latest repaired source is codex_repairs.source_commit."
+  },
+  "environment": {
+    "platform": "Windows",
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "postgresql": "local port 5435; isolated disposable fixture databases",
+    "python_execution": "uv run --frozen --extra dev; PYTHONPATH explicitly resolves to the active managed worktree apps/orchestrator/src",
+    "source_import": "forge.__file__ verified in both primary and repair worktrees; TaskUsageTotalsQuery source path verified again after final transfer",
+    "primary_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-batch/parallel-forge",
+    "repair_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-repairs/parallel-forge",
+    "main_checkout": "C:/dev/parallel-forge; unrelated apps/web/next-env.d.ts modification preserved"
+  },
+  "delivered": {
+    "96": "Typed immutable source bindings, independent durable observation transactions, idempotent replay/conflict handling, explicit counter epochs, consistent totals and source facts, final settlement replacing provisional usage, honest unknown/lower-bound reporting and normalized cached-input subsets.",
+    "97": "Measured mean/median/p90, eligibility and coverage, separate authoring/run histories, comparable rolling cohorts, access-filtered cross-project reports and breakdowns, immutable baseline snapshots and manual-estimate provenance. Missing durable policy returns no reference rather than enabling monitoring.",
+    "100": "Optional input/output/aggregate token caps across backend policy and API execution paths, authenticated append-only CAS/idempotent monitoring revisions, API/CLI authoring and templates, frozen execution policy metadata and preserved legacy spending/limits.",
+    "shared_integration": "One owner serialized contracts, additive migration0039, models/UoW/bootstrap, typed reporting schemas, generated API files and shared regression tests. Foundation0038 was not rewritten."
+  },
+  "checks": [
+    {
+      "name": "broad local Python suite",
+      "command": "rtk proxy uv run --frozen --extra dev python -m pytest -q -m 'not integration and not docker and not live_provider and not live_github'",
+      "candidate": "f193a9dcc851aedfd2984dbe209b561ca8d97718; tree feec2d778c245a2401f17435ef0ce65174c2ac06",
+      "result": "6200 passed, 4 failed, 89 skipped, 2407 deselected; 2942.74 seconds",
+      "receipt": ".llm-output/integrated-local-unit.log",
+      "reuse": "Passing unchanged paths retain their evidence. All four failures were repaired and checked in affected suites below. Later accounting/reporting repairs have separate matching evidence. The complete suite was not rerun, and no final whole-suite all-pass claim is made."
+    },
+    {
+      "name": "shared storage and subscription regressions",
+      "candidate": "f193a9dcc851aedfd2984dbe209b561ca8d97718; tree feec2d778c245a2401f17435ef0ce65174c2ac06",
+      "execution": "Local pytest -q storage/contract/migration/schema/run/subscription and API projection target set; exact selectors were not retained in stdout",
+      "result": "192 passed",
+      "receipt": ".llm-output/integrated-storage-regression.log",
+      "reuse": "Relevant migration, storage, run, policy and subscription inputs are unchanged. Changed ModelUsage normalization and baseline-selection paths were checked separately."
+    },
+    {
+      "name": "PostgreSQL observation, settlement and execution admission",
+      "candidate": "f193a9dcc851aedfd2984dbe209b561ca8d97718",
+      "targets": [
+        "persistence/test_task_usage_observations.py",
+        "persistence/test_subscription_usage.py::test_observed_subscription_tokens_are_replaced_by_measured_settlement",
+        "persistence/test_task_usage_execution_policy.py"
+      ],
+      "result": "9 passed; 39.12 seconds",
+      "receipt": ".llm-output/accounting-admission-acceptance.log",
+      "reuse": "Admission and subscription-settlement branches retain matching evidence; changed authoritative ModelUsage reading also has the later PostgreSQL and gateway checks."
+    },
+    {
+      "name": "coupled policy/reporting/shared acceptance",
+      "candidate": "bb3a4524206e9ff528d5a659b7cbf7f2b3808335; superseded reviewed checkpoint",
+      "targets": [
+        "four baseline suites",
+        "application/test_task_usage_policy.py::test_idempotency_distinguishes_omitted_preserve_from_explicit_clear",
+        "task_usage_contract/test_batch_contract.py",
+        "task_usage_contract/test_batch_integration.py"
+      ],
+      "result": "32 passed; 48.59 seconds",
+      "receipt": ".llm-output/integration-repairs/final-coupled-acceptance.log",
+      "reuse": "The four omission/null policy cases, shared contracts and normal authenticated PostgreSQL API path are unchanged. Repaired baseline paths have subsequent receipts."
+    },
+    {
+      "name": "consolidated accounting/reporting repairs",
+      "execution": "uv run --frozen --extra dev python -m pytest <affected targets> -q",
+      "targets": [
+        "domain/test_task_usage_baselines.py",
+        "application/test_task_usage_baselines.py",
+        "persistence/test_task_usage_baselines.py",
+        "api/test_task_usage_reporting.py",
+        "application/test_task_usage_observations.py",
+        "persistence/test_task_usage_observations.py",
+        "task_usage_contract/test_batch_integration.py"
+      ],
+      "result": "40 affected tests passed; 18 PostgreSQL tests passed; final domain/application and repair focus passed 12 plus 3 tests",
+      "receipts": [
+        ".llm-output/integration-repairs/lane-integrated-repair/affected.txt",
+        ".llm-output/integration-repairs/lane-integrated-repair/pg-final.txt",
+        ".llm-output/integration-repairs/lane-integrated-repair/final-focus.txt",
+        ".llm-output/integration-repairs/lane-integrated-repair/final-repair.txt"
+      ],
+      "binding": "The 40/18 checks precede a source-role simplification. Its affected cases were rerun in the 3-test focus and final 13-test persistence file. The 12-test focus covers final member/cohort source changes. Other relevant source inputs remain unchanged."
+    },
+    {
+      "name": "real gateway record through storage to totals and baseline",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q",
+      "result": "New gateway test passed; final affected persistence file: 13 passed",
+      "receipts": [
+        ".llm-output/integration-repairs/lane-integrated-repair/gateway-store-bound.txt",
+        ".llm-output/integration-repairs/lane-integrated-repair/gateway-affected-file.txt"
+      ],
+      "evidence": "Local ADK stub emits prompt100/cache80 and prompt100/cache10. UsageRepository retains uncached20/cache80 and uncached90/cache10. Bound totals are input200/output10/cache90; baseline and phase totals sum to210. No provider call."
+    },
+    {
+      "name": "broad-suite failure repairs",
+      "commands": [
+        "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_contracts.py apps/orchestrator/tests/agents/test_failed_agent_usage.py -q",
+        "rtk proxy uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/tools/test_worktree_runner.py -q"
+      ],
+      "result": "63 agent tests passed; 15 runner tests passed",
+      "receipts": [
+        ".llm-output/integration-repairs/unit-fixture-repair-green.log",
+        ".llm-output/integration-repairs/runner-affected-suite.log",
+        ".llm-output/integration-repairs/runner-timing-recheck.log",
+        ".llm-output/integration-repairs/runner-timing-repair-green.log"
+      ],
+      "scope": "Agent tests now expect omitted token caps to be None and supply the admitted project's identity. An unchanged runner reproduced its one-second Git-validation startup timeout; its bounded test wait is ten seconds, with all cancellation/process/capability assertions retained. Production runner/Git code is unchanged against the foundation."
+    },
+    {
+      "name": "final static and generated contract checks",
+      "commands": [
+        "rtk proxy uv run --frozen --extra dev mypy apps/orchestrator/src/forge",
+        "rtk proxy uv run --frozen --extra dev ruff check apps/orchestrator/src apps/orchestrator/tests tests scripts apps/orchestrator/migrations",
+        "uv run --frozen --extra dev python scripts/export-openapi.py",
+        "npm run api:check",
+        "git diff --cached --check"
+      ],
+      "result": "mypy: 554 source files passed; Ruff, OpenAPI consistency, generated API types and whitespace checks passed",
+      "receipts": [
+        ".llm-output/integration-repairs/post-repair-full-mypy.log",
+        ".llm-output/integration-repairs/post-repair-full-ruff-corrected.log",
+        ".llm-output/integration-repairs/post-repair-openapi-check.log",
+        ".llm-output/integration-repairs/post-repair-api-check.log"
+      ],
+      "binding": "mypy covers final source; subsequent changes were test-only. Ruff and generated contract checks cover final inputs. An earlier Ruff command mistakenly targeted a nonexistent root migrations directory; that diagnostic is retained separately."
+    },
+    {
+      "name": "web regression and build",
+      "candidate": "f193a9dcc851aedfd2984dbe209b561ca8d97718",
+      "result": "798 tests passed across 76 files; web typecheck, lint and build passed",
+      "receipts": [
+        ".llm-output/integrated-web-tests.log",
+        ".llm-output/integrated-web-types.log",
+        ".llm-output/integrated-web-lint.log",
+        ".llm-output/integrated-web-build.log"
+      ],
+      "reuse": "Web runtime, tests, dependencies and generated type shapes are unchanged. Later Field descriptions changed OpenAPI descriptions/generated comments only; final API consistency passed."
+    }
+  ],
+  "coverage": [
+    {
+      "invariant": "Admitted source identity and once-only cumulative contribution",
+      "proved": "PostgreSQL binding replay/project/phase authority, conflicting and concurrent duplicate observations, reordered cumulative/delta counters, explicit epochs, concurrent sources and consistent snapshots",
+      "evidence": ".llm-output/lane-96/coverage.json and retained accounting/repair receipts",
+      "unproved": "Production adapter delivery, crash recovery across assembled API/worker/provider paths"
+    },
+    {
+      "invariant": "Final replaces live; unknown differs from zero and reservation",
+      "proved": "Subscription settlement replaces provisional usage; provider-final observation alone does not train a finalized baseline; unknown/lower-bound fields and subset/overflow handling",
+      "evidence": "Accounting admission and lane-integrated-repair PostgreSQL tests",
+      "unproved": "Live-provider final-only and cancelled-process late delivery across the assembled lifecycle"
+    },
+    {
+      "invariant": "Measured samples, access and comparable immutable reference",
+      "proved": "Accepted/completed classification, failed/incomplete/legacy inventory coverage, separate subject kinds, access/filter boundary, one-member filters, rolling fallback statistics/evidence, frozen replay and manual zero-measurement provenance",
+      "evidence": "Baseline domain/application/API/PostgreSQL receipts and final 13-test persistence file",
+      "unproved": "Frozen-cohort persistence test stubs history retrieval; finer project ACL does not exist; duplicate acceptance is not a separately added fixture"
+    },
+    {
+      "invariant": "Optional caps and direct authenticated append-only revisions",
+      "proved": "Omission/null/finite legacy/signed64 values, authenticated CAS/replay/conflicting keys, preserve-versus-clear semantics, concurrent revisions and immutable old execution metadata",
+      "evidence": "Shared contract/migration tests, policy four-case repair, normal PostgreSQL API and execution admission receipts",
+      "unproved": "Whole-run checkpoint enforcement and assembled active-owner continuation"
+    },
+    {
+      "invariant": "Missing policy is inert and actual references remain immutable",
+      "proved": "Concurrent/replayed no-policy freeze returns None; real actor/expected_revision initialization; sparse configured reference; frozen replay after policy change; revision/freeze race",
+      "evidence": "test_unconfigured_project_freeze_is_inert_and_replay_is_none in final persistence receipt",
+      "unproved": "Later monitor assemblers must handle the optional no-reference result explicitly"
+    }
+  ],
+  "review": {
+    "jev": {
+      "status": "attempted; partial",
+      "initial_receipt": ".llm-output/integration-repairs/jev-review-final.json",
+      "final_receipt": ".llm-output/simplify/jev-publish-code.json",
+      "diff_sha256": "cb4e4a6954111743ff4795040986b94bad36136b5ed69578cabfa4f554ad9e22",
+      "limits": [
+        "hunk_limit",
+        "operation_budget_reached",
+        "oversized_hunk_omitted"
+      ],
+      "meaning": "Prepared on every code change against the foundation before first push; this non-code validation file is explicitly excluded. Advisory signals and incomplete coverage are not an all-clear."
+    },
+    "independent": "One integrated fresh Astra-low review of bb3a452 after the locally checked Claude Opus 5.5 route failed expired OAuth authentication. All five substantiated findings were consolidated into one accounting-owner repair; no automatic extra gate or whole-change re-review.",
+    "resolved_findings": [
+      "UM-001: cached input normalized only at ModelUsage read boundaries, gateway/storage/totals path checked",
+      "UM-002: conjunctive member matching shared across selection and buckets",
+      "UM-003: one rolling cohort drives summary and frozen evidence",
+      "UM-004: no fabricated policy revision for an unconfigured project",
+      "UM-005: subscription attempt source IDs inherit task purpose"
+    ],
+    "provider_routing": "Initial routine Gemini attempt was blocked by adapter instruction-path setup before launch, not quota exhaustion; native Luna-medium fallback completed #97. Stateful #96/#100 and consolidated repairs used native Sol-medium complex workers. Claude auth failure was disclosed; no quota state was falsified.",
+    "receipts": ".llm-output/integration-repairs/integrated-review-findings.json; review-1/; agent-framework/; lane-integrated-repair/coverage.json; initial lane contracts and failed receipts retained"
+  },
+  "simplify": {
+    "starting_head": "fd6dee14f60411ae5d04f94c81d0f3949cd76cb1",
+    "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
+    "scoped_diff_sha256": "9f738ac2d9f0df79e3eac7801682b62f34e374172b0c52d79351f384eb1afb65",
+    "review": "One integrated fresh Astra-low reuse/quality/efficiency audit after the locally checked Claude Opus 5.5 medium route failed expired OAuth authentication. All three substantiated simplifications were assigned to one Sol-medium accounting owner, followed by primary delta/evidence inspection; no extra review gate.",
+    "changes": [
+      "SIM-001: SQL time-window predicates and exact candidate work-unit keys avoid loading discarded history; older admitted units remain available for eligible subjects.",
+      "SIM-002: observations and authoritative usage are loaded in bounded same-session groups while preserving per-source ordering, totals and exact snapshot fingerprints.",
+      "SIM-003: owner policy reads and baseline freezing share one pure persisted-row decoder.",
+      "A historical-exclusion cutoff correction prevents later-admitted sources from falsely making earlier complete usage incomplete; a discriminating PostgreSQL red/green test proves historical and current behavior."
+    ],
+    "checks": [
+      {
+        "command": "uv run --frozen --extra dev python -m pytest <seven affected accounting/baseline/application/API/shared suites> -q",
+        "result": "45 passed",
+        "receipt": ".llm-output/simplify/worker/affected.txt"
+      },
+      {
+        "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q",
+        "result": "17 passed; final test-only PostgreSQL-clock refinement followed by its focused passing check",
+        "receipt": ".llm-output/simplify/worker/cutoff-baseline-file.txt"
+      },
+      {
+        "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q -k historical_exclusions",
+        "result": "1 passed, 16 deselected; both cutoff assertions use PostgreSQL's clock",
+        "receipt": ".llm-output/simplify/cutoff-final.log"
+      },
+      {
+        "command": "rtk proxy uv run --frozen --extra dev mypy apps/orchestrator/src/forge",
+        "result": "554 source files passed",
+        "receipt": ".llm-output/simplify/worker/mypy-final.txt"
+      },
+      {
+        "command": "rtk proxy uv run --frozen --extra dev ruff check <five owned source/test files>; final changed test file checked again; git diff --cached --check",
+        "result": "passed",
+        "receipts": [
+          ".llm-output/simplify/worker/ruff-final.txt",
+          ".llm-output/simplify/cutoff-final-ruff.log"
+        ]
+      }
+    ],
+    "coverage": "Source inspection, exact ordered digest, bounded query-count/split-group equality, SQL window/empty candidates, mixed project/subject identity, older evidence retention, signed64 window overflow with UTC/+14:00, nullable/max policy decoding, historical cutoff and existing reconciliation/concurrency/frozen-reference checks.",
+    "limitations": [
+      "Split-group behavior was exercised with reduced test group sizes, without a 1,000-source fixture or large-history latency benchmark.",
+      "New query-count coverage uses agent sources; subscription and authoring retain affected-suite evidence and the unchanged projection contract."
+    ],
+    "receipts": ".llm-output/simplify/worker/coverage.json; accepted-simplify.diff; repair-task.json; failed red receipts retained"
+  },
+  "remaining_limits": [
+    "Adapter streaming/final-only observation delivery and authoring telemetry remain #98/#99.",
+    "Durable run/authoring checkpoint settlement, restart/cancellation races and direct owner continuation remain #101/#102.",
+    "Policy/reporting/continuation UI and complete production assembly/acceptance remain #103/#104/#106.",
+    "The monitoring aggregate hard cap currently applies per newly admitted API agent execution; a whole-run checkpoint guard is not claimed.",
+    "Context occupancy is separate from cumulative input. Context diagnostics remain advisory; usable live capacity and context-cap enforcement are not established by this batch.",
+    "Unclassified or incompletely attributed legacy histories do not train whole-subject expectations. Accessible reporting follows the existing operator/project boundary; finer ACL behavior is unproved.",
+    "At this pre-publication snapshot, no final complete-suite rerun, hosted CI, automatic PR smoke or live-provider acceptance was performed for this batch. Local pre-simplification PR smoke passed 8 tests; hosted publication results are recorded in the PR and issues."
+  ],
+  "publication": {
+    "snapshot": "before first push; user explicitly authorized simplify, push, PR creation, monitoring and repairs with thread replies/resolution",
+    "pushed": false,
+    "pr_created": false,
+    "hosted_ci_dispatched": false,
+    "runtime_live_provider_called": false,
+    "merged": false,
+    "authorization_required": [
+      "additional full hosted CI run",
+      "runtime live-provider work",
+      "immediate merge"
+    ]
+  },
+  "issue_state": "#96/#97/#100 remain open pending merge; #95/#105 remain closed; foundation PR #107 is merged.",
+  "codex_repairs": {
+    "source_commit": "9898e353396d7a3e8fba604ab8bb1f9cc21956e8",
+    "source_tree": "1c10c7bba7aeaa44a5a5c85dc4a4b833c931385f",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "starting_head": "efabb3513263daa25f8c81ee199392faa3dc3a2c",
+    "scoped_diff_sha256": "bd432c751dbdbfa8d24b6bbafc435eaf1e7df10e66190454f70e1bc68316410d",
+    "integrated_code_diff_sha256": "57143a4c271bf174c2601962d816580bf8ce366ea8127c35a2dbd177f40ad9cd",
+    "summary": "Codex finding repairs bound advisory thresholds to the largest finite float without changing accepted policy inputs or optional caps, and batch report samples/exclusions across candidates in the same repeatable-read transaction. A real PostgreSQL shared-UUID regression also keeps run and authoring measurements, failed counts and exclusions separate. The affected suites passed 50 tests at the pre-collision checkpoint; the final baseline persistence file passed 21 tests after that local guard correction. Final source mypy passed across 554 files, scoped Ruff and whitespace checks passed. Earlier matching evidence is reused only for unchanged paths.",
+    "acceptance": "Primary matched both scoped hashes, inspected the complete source repair, concrete assertions and red/green/affected/static receipts. No material finding remains in the local candidate. Hosted smoke and fresh Codex review on the pushed head remain pending at this snapshot.",
+    "coverage": [
+      {
+        "invariant": "Valid finite multipliers and signed64 estimates/history produce durable finite advisory thresholds without introducing hard caps.",
+        "cases": [
+          "manual and ready signed64 maximum with 1e308 multipliers",
+          "zero measured usage and ordinary finite products",
+          "real PostgreSQL manual freeze with maximum estimate and replay after policy revision",
+          "real PostgreSQL ready freeze with 2-billion-token legacy ModelUsage"
+        ],
+        "evidence": [
+          "worker/red-overflow.txt: expected inf failure",
+          "worker/green-focused-final-candidate.txt: 5 passed",
+          "worker/affected-final-candidate.txt: 50 passed at scoped checkpoint e3cf0137fb87881b71a9b8a498abdf923b2da40afe5e85e2bf218275d546c4c2",
+          "worker/baseline-file-followup-final.txt: final 21 passed"
+        ],
+        "status": "proved",
+        "limitation": "Existing ModelUsage token columns are int32. Durable ready saturation used 2,000,000,000; maximum signed64 ready history was checked in domain calculations rather than inserted into that legacy table."
+      },
+      {
+        "invariant": "Batched candidate reads retain exact subject attribution, authoritative reconciliation and accounting fingerprints.",
+        "cases": [
+          "six bound runs and one legacy run",
+          "varied cached tokens and failed API attempt",
+          "samples and exclusions each bounded to at most 20 SELECTs",
+          "forced two-key splitting equals normal results",
+          "bulk and per-subject totals/digests equal within one repeatable-read session",
+          "existing authoring/subscription, cutoff, unknown/zero, route-member and frozen cohort tests"
+        ],
+        "evidence": [
+          "worker/red-query-count.txt: expected 37 > 20 sample-query failure",
+          "worker/green-focused-final-candidate.txt",
+          "worker/affected-final-candidate.txt",
+          "worker/baseline-file-followup-final.txt"
+        ],
+        "status": "proved",
+        "limitation": "No high-volume database fixture or latency benchmark. Chunk-size-two splitting proves relevant batching behavior; the source uses bounded chunks."
+      },
+      {
+        "invariant": "Run and authoring job identities remain separate even when UUID values coincide.",
+        "cases": [
+          "same UUID for completed legacy measured run and proposed unbound authoring job",
+          "run failed count one, authoring failed count zero",
+          "authoring remains unknown and retains its unclassified exclusion",
+          "one-key splitting equals normal samples and exclusions"
+        ],
+        "evidence": [
+          "worker/red-namespace-collision.txt: expected inherited count failure",
+          "worker/green-namespace-collision.txt",
+          "worker/baseline-file-followup-final.txt: 21 passed",
+          "primary inspected guards at both failed-count lookups and the legacy exclusion lookup"
+        ],
+        "status": "proved"
+      }
+    ],
+    "static": {
+      "mypy": "worker/mypy-followup.txt: 554 source files",
+      "ruff": "worker/ruff-followup-final.txt: all owned paths passed",
+      "whitespace": "worker and primary git diff --check, primary staged check passed",
+      "source_import": "source-import-check.txt: Python3.14.5, active managed worktree forge.__file__"
+    },
+    "jev": {
+      "search": "jev-search.json: partial (unscored candidates, operation budget)",
+      "review": "jev-review.json: partial (hunk limit, operation budget, oversized hunk omitted)",
+      "diff_sha256": "57143a4c271bf174c2601962d816580bf8ce366ea8127c35a2dbd177f40ad9cd",
+      "non_code_exemption": "docs/usage-monitoring-batch-validation.json only records validation and is excluded from the code diff; it changes no source behavior."
+    },
+    "remaining_limits": [
+      "No final full repository suite rerun or additional manual full hosted CI; historical failed receipts retained and matching unchanged evidence reused.",
+      "No runtime live-provider acceptance or merge.",
+      "Adapter telemetry, checkpoints/continuation, UI and assembly remain in #98/#99, #101/#102, #103/#104 and #106.",
+      "Monitoring aggregate cap remains per newly admitted API execution; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before repair push",
+      "existing_pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "efabb3513263daa25f8c81ee199392faa3dc3a2c",
+      "old_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38094053288",
+      "new_head_smoke": "pending",
+      "new_head_codex_review": "pending",
+      "owner_authorized": "push, PR publication, automatic checks, Codex repairs/replies/resolution",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round2": {
+    "snapshot_at": "2026-10-11T00:24:41.151705+00:00",
+    "source_commit": "90015d104e98e3a98335851f4af28cb265a390f5",
+    "source_tree": "f83a5db0ce0421d5cb8a312791be00aa14ced6c4",
+    "starting_head": "33e8505f507e75740393ffe25fbfc44095ca7344",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "4d239df46df954521d536df635782ed3325bffcdb1c33fc9c808dd50643f6607",
+    "repair_delta_sha256": "2165578fd93a93118ff8e2ba3f15030673b899a764944898ed7a865cdc9a0578",
+    "worker_scoped_candidates": {
+      "cohort_sha256": "e14f2f8be671f426bc2e5d8e34cb6dd4db0d6bf2ca22aad6e0be841fbbad1373",
+      "cohort_hash_matches_worker": true,
+      "policy_sha256": "d6f0e239368870a892492f3d2c4bdf556295dda635264940070a25f62883ba86",
+      "policy_raw_blob_sha1": "50116462fd324df8861f7c92e0e3a9a3f89e297b",
+      "policy_worker_blob_sha1": "50116462fd324df8861f7c92e0e3a9a3f89e297b",
+      "policy_blob_matches_worker": true
+    },
+    "fixed_findings": [
+      {
+        "id": "PR108-03",
+        "thread": "PRRT_kwDOUDBiTc6rI5Dk",
+        "comment": 4239675984
+      },
+      {
+        "id": "PR108-04",
+        "thread": "PRRT_kwDOUDBiTc6rI5Dm",
+        "comment": 4239675986
+      }
+    ],
+    "summary": "The latest Codex repairs prevent output repair after exact exhaustion of an explicit input/output/aggregate token cap, preserving first-attempt measurements and identity. They also count comparable exclusions only inside the exact project/route cohort or selected accessible matching-route fallback. The final gateway candidate passed 121 affected agent tests; baseline domain/application/PostgreSQL suites passed 37 tests, followed by 11 domain tests after a test-only lint correction. Full source mypy (554 files), scoped Ruff and whitespace checks passed. Earlier matching evidence is retained for unchanged paths.",
+    "detail": "Valid output at the exact cap still succeeds; omitted caps remain unbounded, and zero-tool/free-cost work remains usable. Tests cover initial zero-token admission, exact versus chosen fallback exclusions, inaccessible/incompatible history, measured zero, report projections and frozen rolling statistics. Frozen baselines do not persist excluded_count, so no stored-count assertion is claimed. The original gateway red result was observed but not retained as raw output; its disclosure and final green receipts are saved. No final whole-repository rerun, high-volume latency benchmark or live-provider acceptance is claimed. Integrated Jev preparation is partial due to processing limits.",
+    "acceptance": "Primary inspected source and concrete assertions, matched both worker-scoped candidate hashes and read retained green/affected/static receipts; cohort red receipt retained and gateway red limitation disclosed. Local repairs are accepted. New published-head smoke and Codex review are pending at this pre-push snapshot.",
+    "coverage": {
+      "policy": [
+        {
+          "invariant": "C03-A: exact finite token exhaustion stops repair without losing measured first attempt",
+          "cases": "input-only, output-only, aggregate-only, mixed input/aggregate; invalid completed output",
+          "evidence": "New parameterized test expected red: 4 failed because runtime.invocations was 2 instead of 1. Green: 4 passed; assertions verify BUDGET_EXCEEDED, one provider call, one usage_attempt, exact input/output counts and original provider request identity."
+        },
+        {
+          "invariant": "C03-B: usable token room and omitted caps remain usable",
+          "cases": "positive remaining input/output/total, all None, valid first output exactly at finite cap",
+          "evidence": "New positive-room/all-None parameterized test passed 4 cases and checks passed repair limits. Existing gateway first-attempt equality test and cached aggregate exact-boundary test passed in affected 121-test batch."
+        },
+        {
+          "invariant": "C03-C: initial required token cap zero cannot start a provider request",
+          "cases": "input, output and aggregate zero introduced through model_copy bypass of schema validation",
+          "evidence": "New parameterized preflight test passed 3 cases; no invocation, no fabricated usage or attempt."
+        },
+        {
+          "invariant": "C03-D: zeros in other resources and existing lifecycle paths retain meaning",
+          "cases": "zero tools/no-tool valid output, zero-cost free output and free repair; cancellation, non-completed first status, overage, cached normalization, multi-attempt accounting",
+          "evidence": "Two new zero-resource tests passed. Existing affected gateway/runtime/call-ordering/attempt/cache/tool-bridge suites passed 121 total. No provider or hosted run was invoked.",
+          "unproved": "Exotic provider behavior with zero-duration repair and non-cooperative live cancellation was not exercised; existing local cancellation tests passed."
+        }
+      ],
+      "cohort": [
+        {
+          "id": "C04-A",
+          "proved": "Exact no-fallback count only includes accessible same-project, same-kind, same configured/effective route failures. Other projects/routes/kinds, inaccessible and future samples do not leak. history_limit=1 still counts in-window exclusions outside selected eligible rolling sample."
+        },
+        {
+          "id": "C04-B",
+          "proved": "Sparse exact selection labelled accessible_cross_project counts matching failures in both accessible projects; incompatible/inaccessible routes excluded. Enabled-but-not-selected fallback retains exact-only count. Provider/model/effort must match one route member."
+        },
+        {
+          "id": "C04-C",
+          "proved": "Overview keeps all accessible filtered exclusions. Zero measured sample remains eligible, and selected rolling statistics/order plus manual/sparse cases passed in affected domain/application suite."
+        },
+        {
+          "id": "C04-D",
+          "proved": "Application comparable reference payload uses exact/fallback count while overview retains broad count. Real PostgreSQL frozen fallback test includes matching and incompatible failed rows and retains selected rolling statistics and frozen reference fields; existing immutable replay tests passed in affected suite.",
+          "limitation": "Frozen baseline schema does not persist excluded_count; consistency is established through the shared select_cohort call, selected history/statistics assertions and unchanged frozen contract, not a stored count assertion."
+        }
+      ]
+    },
+    "evidence": {
+      "policy": ".llm-output/pr108-round2/policy/coverage.json",
+      "cohort": ".llm-output/pr108-round2/cohort/coverage.json",
+      "previous_repairs": ".llm-output/pr108-repairs/acceptance.json",
+      "unchanged_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "jev": {
+      "search": "jev-search.json: partial (unscored_candidates, operation_budget_reached)",
+      "review": "jev-review.json: partial (hunk_limit, operation_budget_reached, oversized_hunk_omitted)",
+      "diff_sha256": "4d239df46df954521d536df635782ed3325bffcdb1c33fc9c808dd50643f6607",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "No final full repository suite rerun or additional manual full hosted CI; earlier failed receipts remain visible.",
+      "No runtime live-provider acceptance, high-volume benchmark or merge.",
+      "Zero-duration/non-cooperative live cancellation repair behavior was not newly exercised; existing local lifecycle cases passed.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain in the other epic children.",
+      "Aggregate cap remains per newly admitted API execution; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-two repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "33e8505f507e75740393ffe25fbfc44095ca7344",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38097283894",
+      "previous_head_codex": "completed with two new findings; first two threads already resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round3": {
+    "snapshot_at": "2026-10-11T00:59:00.559555+00:00",
+    "source_commit": "252fcb9efa9e68b6ed1bd99c92ccf9afbbf6635a",
+    "source_tree": "1fc1d60fe2297848031706e1b77e34acdbb09f4f",
+    "starting_head": "1261db60208e5def412f0381b1420dd33c6f3274",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "84322cd858a1d1151072d55ecea7275e02dfa3b015097345c931672046675aae",
+    "repair_delta_sha256": "2cf6a2914f1600a5ff194b804df8ef5fc600cb5f0b7d55accac2b3300386d67e",
+    "worker_scoped_candidates": {
+      "policy": {
+        "scope": "policy",
+        "all_file_hashes_match": true,
+        "manifest_sha256": "1ae936eeabef5819465bc12d06529a05200e6920d8cb6a17c085232adfc17d3d",
+        "files": {
+          "apps/orchestrator/src/forge/application/services/task_usage_policy.py": "66c5ef1201dfe06503670c877034a1e6a440d85934eb8461f89e6fae964e987d",
+          "apps/orchestrator/src/forge/worker/bound_delivery.py": "0966f94ac12c0c6d01ab7216a9729565c55df640399e74a77cdfc1d913d8b01c",
+          "apps/orchestrator/src/forge/worker/composition.py": "1134fd581eca97ade8ea6cfe7bde756a1866a6ffb12e428a12f959707165a754",
+          "apps/orchestrator/tests/application/test_bound_delivery.py": "dec2976568b44d9e2635d286cc306a258b0dd62bd3d102df2b6728ff9ca8bf1b",
+          "apps/orchestrator/tests/application/test_worker_composition.py": "b8b5d5f5ed69c25c28032ea8f1855fbc3e1bd6c333a0a4acf97b2b0fc2d395f7",
+          "apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py": "cfdaadd58f81f87cd3e1ee779f6120c2a25f7d7aea07f9fff1b16865854eaa61"
+        }
+      },
+      "reporting": {
+        "scope": "reporting",
+        "owned_diff_matches_worker": true,
+        "owned_diff_sha256": "6cbea4a2b613cbb6f1079c0ac27f5d295a1ee1da402123496632d41d5904999a",
+        "files": {
+          "apps/orchestrator/src/forge/application/services/task_usage_baselines.py": "05ba482e81e11713c543182590037a51abcc563db4c38e90a544c3a73af2fd3f",
+          "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "3fbc7bbfea874597b3546e94f16324a6eeec95539ae5b10e28eb3ac8579c6d7e",
+          "apps/orchestrator/tests/application/test_task_usage_baselines.py": "904f6cdac2a9afa257fa0bcf75c61e184adbdc3f101a8244472bfb1acaf40dc3",
+          "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "cf57361f9b6a484c1f272d29d987d05c019372d54642fca150d004eea2bacf9b",
+          "apps/orchestrator/tests/api/test_task_usage_reporting.py": "e7055c2b2f80d2b3d556c72bb1c8a3871f8ee16e08083c0f35e084c5f1a3ecc6"
+        }
+      }
+    },
+    "fixed_findings": [
+      {
+        "id": "PR108-05",
+        "thread": "PRRT_kwDOUDBiTc6rJCvC",
+        "comment": 4239739456
+      },
+      {
+        "id": "PR108-06",
+        "thread": "PRRT_kwDOUDBiTc6rJCvE",
+        "comment": 4239739458
+      },
+      {
+        "id": "PR108-07",
+        "thread": "PRRT_kwDOUDBiTc6rJCvF",
+        "comment": 4239739459
+      }
+    ],
+    "summary": "Production planning and delivery gateways now validate monitoring budgets against the frozen durable admission, preserving optional caps and revision identity. Legacy source inventories honor the inclusive historical cutoff, and production reports read project scope, samples and exclusions in one repeatable-read PostgreSQL transaction. The final gateway application/persistence suites passed 121 tests, and reporting application/persistence/API suites passed 30 tests. Full source mypy passed across 554 files; scoped Ruff and whitespace checks passed.",
+    "detail": "Saved red/green tests cover admitted null/finite/cleared caps, later owner edits, cap/revision tampering and authority rechecks before provider invocation. A real PostgreSQL policy-to-admission case reaches the production planner wrapper through an offline provider. Historical tests cover future agent/subscription inventories, backdated usage tied to a future execution and the inclusive boundary. A deterministic second-transaction commit between production sample and exclusion reads leaves the first report coherent; the next report sees the new source. Earlier credible evidence is retained for unchanged paths. No final whole-repository rerun, live-provider acceptance, high-volume benchmark or extra manual full hosted CI is claimed.",
+    "acceptance": "Primary inspected source, concrete regression assertions and saved red/green/static receipts; both worker-scoped candidates match. Root owns the shared planner integration. Local repairs are accepted; new published-head smoke and Codex review remain pending at this pre-push snapshot.",
+    "coverage": {
+      "policy": {
+        "candidate": {
+          "head": "1261db60208e5def412f0381b1420dd33c6f3274",
+          "manifest_sha256": "1ae936eeabef5819465bc12d06529a05200e6920d8cb6a17c085232adfc17d3d",
+          "manifest": "candidate-files.sha256",
+          "worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-batch/parallel-forge"
+        },
+        "checks": {
+          "red": "red-planning-null.log: exit 1, valid monitored null-cap planner request rejected at former model-only comparison",
+          "affected": "affected-tests-final.log: exit 0, 121 passed; five application/persistence modules including real PostgreSQL",
+          "ruff": "ruff-final.log: exit 0, six relevant files",
+          "mypy": "mypy.log: exit 0, three relevant production modules",
+          "format": "format-scoped.log: exit 0, owned formatted production/new test files",
+          "diff": "diff-check.log: exit 0",
+          "source_import": "source-import.log: active worktree forge import, exit 0"
+        },
+        "command_context": {
+          "cwd": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-batch/parallel-forge",
+          "pythonpath": "(Resolve-Path 'apps/orchestrator/src').Path",
+          "environment": "uv --frozen --extra dev; disposable PostgreSQL fixture on port 5435; no live provider",
+          "inputs": "Six-file candidate manifest in candidate-files.sha256, including root-owned worker/composition.py; HEAD and manifest SHA-256 above",
+          "red": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/application/test_worker_composition.py -q -k 'bound_planning_gateway_derives and monitoring_null'",
+          "affected": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/application/test_bound_delivery.py apps/orchestrator/tests/application/test_worker_composition.py apps/orchestrator/tests/application/test_task_usage_policy.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py apps/orchestrator/tests/persistence/test_task_usage_execution_policy.py -q --tb=short -o log_cli=false",
+          "ruff": "rtk err uv run --frozen --extra dev ruff check apps/orchestrator/src/forge/application/services/task_usage_policy.py apps/orchestrator/src/forge/worker/bound_delivery.py apps/orchestrator/src/forge/worker/composition.py apps/orchestrator/tests/application/test_bound_delivery.py apps/orchestrator/tests/application/test_worker_composition.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py",
+          "mypy": "rtk err uv run --frozen --extra dev mypy apps/orchestrator/src/forge/application/services/task_usage_policy.py apps/orchestrator/src/forge/worker/bound_delivery.py apps/orchestrator/src/forge/worker/composition.py",
+          "format": "rtk err uv run --frozen --extra dev ruff format --check apps/orchestrator/src/forge/application/services/task_usage_policy.py apps/orchestrator/src/forge/worker/bound_delivery.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py",
+          "diff": "git diff --check",
+          "source_import": "uv run --frozen --extra dev python -c \"import forge; print(forge.__file__)\""
+        },
+        "invariants": {
+          "C05-A": "Proved: planner, developer, reviewer monitored null/finite admitted requests reach offline provider in production wrappers; PostgreSQL policy\u2192admission\u2192planner wrapper covers null, finite, cleared cap.",
+          "C05-B": "Proved: changed cap/revision, non-token budget and authority mismatch reject before provider; existing legacy None admission cases pass. Zero cap rejected by existing domain constraints, not repeated here.",
+          "C05-C": "Proved: append-only owner None\u2192finite\u2192None revisions create new admission budgets while both old null and finite requests continue passing frozen validation. Tampered current requests reject.",
+          "C05-D": "Proved: planner and delivery re-fence reject changed cap, terminal admission and cancelled authority before provider; delivery also rejects changed frozen revision. Context, route and tool fences remain covered by existing affected gateway cases. No live provider invoked."
+        },
+        "limits": [
+          "Provider execution is an injected offline gateway; no live provider, hosted CI, or GitHub action ran.",
+          "Pre-existing legacy test formatting and unrelated composition.py formatting were excluded from wholesale reformat to avoid unrelated diff."
+        ]
+      },
+      "reporting": "# PR108-06/07 reporting repair evidence\n\nCandidate: HEAD 1261db60208e5def412f0381b1420dd33c6f3274; owned `candidate.diff` SHA-256 6cbea4a2b613cbb6f1079c0ac27f5d295a1ee1da402123496632d41d5904999a. `PYTHONPATH` was active worktree `apps/orchestrator/src`; `import.txt` records forge.__file__. Python 3.14, disposable PostgreSQL 5435 via repo fixtures. Sibling worker changes appear in git status but are outside this scoped hash.\n\n- C06-A: `test_legacy_source_inventory_honors_historical_cutoff_and_inclusive_boundary` tests two completed measured legacy runs. Future agent execution, backdated ModelUsage tied to that future execution, and future subscription attempt do not erase historical total=7, finalization, source_count=1 or add exclusions. At inclusive boundary, agent source/usage increases measured total to 28; subscription makes the second run unclassified. Red receipt `red-legacy.txt`; green in `affected.txt`.\n- C06-B: Existing persistence/application tests in `affected.txt` cover bound run/authoring, legacy, unknown/zero, failed attempts, scoped projects, selected route/cohort and colliding UUID namespaces. Historical cutoff combinations beyond the new two-source case are covered only by existing tests; no full-suite claim.\n- C07-A: `test_report_keeps_one_snapshot_when_final_source_commits_between_projections` pauses after production `_samples`, commits an in-window source and ModelUsage in a second transaction, then resumes. First service report retains precommit sample mean=7, empty exclusions and failed count=0; later report sees incomplete_usage=1. Red receipt `red-snapshot.txt`; green in `affected.txt`.\n- C07-B: `report_snapshot` uses one REPEATABLE READ session for project access, samples and exclusions. API and application suites in `affected.txt` check project filtering, response dimensions, selected cohort and empty cases. Fine-grained project ACL is not implemented by this repository; only all-project operator scope is proved.\n- C07-C: freeze path was unchanged; existing persistence suite checks frozen references and bounded grouped query behavior. Session context manager closes/rolls back on success, errors and cancellation by SQLAlchemy context semantics. No explicit injected cancellation/error test; this is a stated limit.\n\nFinal affected command `rtk proxy uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/application/test_task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py apps/orchestrator/tests/api/test_task_usage_reporting.py -q`: 30 passed, exit 0 in `affected.txt`. `mypy apps/orchestrator/src/forge`: 554 files, exit 0 in `mypy.txt`. Scoped `ruff check`: exit 0 in `ruff.txt`; `git diff --check`: exit 0. Earlier expanded-case failing test assertion was corrected after the boundary row acquired a matching usage fact; `affected.txt` is final receipt.\n"
+    },
+    "evidence": {
+      "policy": ".llm-output/pr108-round3/policy/coverage.json",
+      "reporting": ".llm-output/pr108-round3/reporting/coverage.md",
+      "previous_repairs": ".llm-output/pr108-round2/acceptance.json",
+      "unchanged_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "jev": {
+      "search": "jev-search.json and jev-search-planning.json: partial; operation budget/unscored candidate limits.",
+      "review": "jev-review.json: partial (hunk_limit, operation_budget_reached, oversized_hunk_omitted).",
+      "diff_sha256": "84322cd858a1d1151072d55ecea7275e02dfa3b015097345c931672046675aae",
+      "focus_disposition": "Four advisory compatibility/test signals concern adk_gateway.py and adk_runtime.py. These paths are unchanged from the starting published head; their prior inspected 121-agent-test repair evidence is reused. No absence or all-clear is inferred from Jev; the current gateway/report changes have direct regression evidence and require published-head Codex review.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "No final full repository suite rerun or additional manual full hosted CI; earlier failed receipts remain visible.",
+      "No runtime live-provider acceptance, high-volume benchmark or merge.",
+      "Existing authorization grants operators all-project scope; finer project ACL is not implemented or proved.",
+      "Snapshot error/cancellation cleanup was not independently injected; ordinary SQLAlchemy session lifecycle is retained.",
+      "The new historical test asserts totals, eligibility and source count; it does not independently assert digest stability.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain in the other epic children.",
+      "Aggregate cap remains per newly admitted API execution; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-three repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "1261db60208e5def412f0381b1420dd33c6f3274",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38098363764",
+      "previous_head_codex": "completed with three new findings; first four threads already resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round4": {
+    "snapshot_at": "2026-10-11T01:19:41.578257+00:00",
+    "source_commit": "0f122c3aa5f31cd562d4b7da888204bbd7e5ca28",
+    "source_tree": "7247f35c61726120a8b8cf7d1e960347471281f1",
+    "starting_head": "f697f83881b6767ee9549f23ba56f263180043b8",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "9cef112b92d694166702e6da9421ae632fbc376e74a27c855512df9258c57960",
+    "repair_delta_sha256": "041e1f052a96c519df372cc1815efeb0ebad7b5d3041cc5687fbcb81cae899d0",
+    "worker_scoped_candidates": {
+      "reporting": {
+        "scope": "reporting",
+        "owned_diff_matches_worker": true,
+        "owned_diff_sha256": "041e1f052a96c519df372cc1815efeb0ebad7b5d3041cc5687fbcb81cae899d0",
+        "files": {
+          "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "d9508f5bae7f98a807940af6a86abe3398aeb7578865f64ce4ae642a6426320f",
+          "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "d550e04e19546a7b227115f5b300650b20629d1401b02cf6b3475658a0d5e4b1"
+        }
+      },
+      "unchanged_gateway": {
+        "scope": "policy",
+        "all_file_hashes_match": true,
+        "manifest_sha256": "1ae936eeabef5819465bc12d06529a05200e6920d8cb6a17c085232adfc17d3d",
+        "files": {
+          "apps/orchestrator/src/forge/application/services/task_usage_policy.py": "66c5ef1201dfe06503670c877034a1e6a440d85934eb8461f89e6fae964e987d",
+          "apps/orchestrator/src/forge/worker/bound_delivery.py": "0966f94ac12c0c6d01ab7216a9729565c55df640399e74a77cdfc1d913d8b01c",
+          "apps/orchestrator/src/forge/worker/composition.py": "1134fd581eca97ade8ea6cfe7bde756a1866a6ffb12e428a12f959707165a754",
+          "apps/orchestrator/tests/application/test_bound_delivery.py": "dec2976568b44d9e2635d286cc306a258b0dd62bd3d102df2b6728ff9ca8bf1b",
+          "apps/orchestrator/tests/application/test_worker_composition.py": "b8b5d5f5ed69c25c28032ea8f1855fbc3e1bd6c333a0a4acf97b2b0fc2d395f7",
+          "apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py": "cfdaadd58f81f87cd3e1ee779f6120c2a25f7d7aea07f9fff1b16865854eaa61"
+        }
+      }
+    },
+    "fixed_findings": [
+      {
+        "id": "PR108-08",
+        "thread": "PRRT_kwDOUDBiTc6rJMHK",
+        "comment": 4239799576
+      }
+    ],
+    "summary": "Historical sample and exclusion eligibility now use the inclusive as_of cutoff for acceptance evidence, linked validation evidence and the exact producer task/attempt. The producer join follows its durable row identity, preserving root-task, run, candidate/tree and policy authority. The final reporting application/persistence/API suites passed 32 tests; full source mypy passed across 554 files, scoped Ruff and whitespace checks passed. The unchanged 121-test gateway candidate remains matched and its evidence is reused.",
+    "detail": "Saved PostgreSQL red/green regressions cover later acceptance leaving a prior-as_of sample/exclusion/service report unchanged, exact cutoff visibility, unknown tokens remaining unknown, future producer timestamps, distinct row/logical task IDs, exact accepted attempt versus a decoy and child-task rejection. Both source/test files match the final worker candidate. Prior inventory, coherent report snapshot, batching, namespace and frozen-reference cases passed in the affected suite. The distinct-ID test adjusts the logical ID after normal acceptance persistence because the current runtime writer initially creates equal IDs. No final whole-repository suite, extra full hosted CI or live-provider acceptance is claimed.",
+    "acceptance": "Primary inspected source/FK identities, concrete regression assertions and actual red/green/static receipts. The identity concern found during acceptance was substantiated, repaired by the existing owner and revalidated as one temporal/authority batch. Final scoped diff matches worker evidence; local repair accepted. New published-head smoke and Codex review remain pending at this pre-push snapshot.",
+    "coverage": "# PR108-08 historical acceptance closure\n\nCandidate HEAD f697f83881b6767ee9549f23ba56f263180043b8; owned `candidate.diff` SHA-256 3c0d83bb3e7b3cc73b5ea12f975c3e743bf078e893daa5bff8df15348b803c64. `import.txt` proves `forge.__file__` resolves inside active worktree. Python 3.14, uv frozen/dev, disposable PostgreSQL fixture port 5435. Only query and persistence baseline test changed; worktree has no other unstaged source changes.\n\nTemporal/authority reassessment: `_samples` and `_exclusions_in` were the only `_has_current_acceptance` callers. The predicate joins immutable acceptance and validation evidence with a root producer task; accepted attempt is FK-bound to acceptance. Acceptance, validation, task and attempt creation must each be <= `as_of`. Existing head/tree/policy, run/task and parent-task constraints remain. Other bound and legacy usage inventories and final observations already use `as_of` from prior repair. Mutable `Run.state`, `Run.updated_at`, candidate commit and task parent changes are not fully reconstructible as historical state; this repair does not claim that.\n\n- C08-A proved by real PostgreSQL `test_historical_acceptance_requires_evidence_and_producer_existing_by_cutoff`: before acceptance, VALIDATING run has unknown outcome, unmeasured tokens and in_progress exclusion. After durable acceptance is inserted, same prior-as_of direct sample/exclusion/service report, overview and comparable references remain identical. At exact `EvidenceSet.created_at` inclusive boundary and later, outcome is accepted but tokens remain unknown and unclassified_legacy is projected. Red receipt `red.txt` shows wrong prior-as_of accepted outcome; `green-focused.txt` passes.\n- C08-B proved for acceptance timestamp at exact boundary and for producer task/attempt timestamps moved beyond boundary in disposable PG fixture; each suppresses acceptance in sample, exclusion and report and resumes at inclusive later timestamp. Validation timestamp cutoff is enforced in predicate and normal validation-before-acceptance path passes. EvidenceSet is immutable by DB trigger, so an acceptance predating a future validation cannot be synthesized through supported updates; this abnormal ordering is unproved by test. Existing current acceptance, candidate-head and root-task constraint tests pass in affected suite.\n- C08-C affected suite includes frozen refs, bound/legacy inventory, namespace, batching and concurrent report snapshot cases. Gateway/agent/domain source unchanged; prior 121-test evidence reused, not rerun. No full-suite claim.\n\nCommands and receipts: `uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q -k historical_acceptance_requires_evidence_and_producer_existing_by_cutoff`: red exit1, green exit0. `rtk proxy uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/application/test_task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py apps/orchestrator/tests/api/test_task_usage_reporting.py -q`: 31 passed, exit0 in `affected.txt`. `rtk proxy uv run --frozen --extra dev mypy apps/orchestrator/src/forge`: 554 files clean, exit0 in `mypy.txt`. Scoped Ruff: clean, exit0 in `ruff.txt`. `git diff --check`: clean. Self-review aligned attempt join to existing FK identity to avoid narrowing authority beyond prior behavior.\n\n## Identity follow-up on final candidate\n\nCandidate remains HEAD f697f83881b6767ee9549f23ba56f263180043b8; final owned `identity-candidate.diff` SHA-256 041e1f052a96c519df372cc1815efeb0ebad7b5d3041cc5687fbcb81cae899d0. The runtime subscription repository creates SubscriptionTask with `id=contract.task_id` and `task_id=contract.task_id`, but no database constraint requires equality. EvidenceSet's immutable producer FK binds `(run_id,producer_task_id,producer_attempt_id)` to SubscriptionAttempt `(run_id,task_row_id,id)`, and attempt.task_row_id references SubscriptionTask.id. The acceptance query therefore now joins the producer task by `SubscriptionTask.id`, retaining exact attempt ID, run, root parent, and all current evidence/tree/policy checks. This does not change the writer's normal equal-ID records.\n\n`test_acceptance_uses_producer_row_identity_and_exact_root_attempt` uses real acceptance persistence, then demonstrates a schema-valid durable root task with distinct row/logical IDs. Old query wrongly returns unknown (`identity-red.txt`, exit1); corrected query returns accepted and unclassified usage. An additional same-task attempt cannot substitute for the exact accepted attempt when its creation timestamp is beyond as_of; making the accepted task a child removes acceptance. Existing normal current-acceptance and historical cutoff tests also pass (`identity-green.txt`, 3 passed).\n\nFinal affected baseline application/persistence/API command, same as above: 32 passed, exit0 (`identity-affected.txt`). Mypy on 554 source files exit0 (`identity-mypy.txt`); scoped Ruff exit0 (`identity-ruff.txt`); git diff --check exit0. Unchanged gateway tests were not rerun. The distinct-ID test changes logical task_id after the acceptance writer records immutable evidence, because the current writer always starts with equal IDs; it proves behavior for schema-valid durable state, not a normal writer path that creates distinct IDs.\n",
+    "evidence": {
+      "reporting": ".llm-output/pr108-round4/reporting/coverage.md",
+      "previous_repairs": ".llm-output/pr108-round3/acceptance.json",
+      "unchanged_gateway": ".llm-output/pr108-round3/policy/coverage.json",
+      "unchanged_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "jev": {
+      "search": "jev-search.json: partial (unscored_candidates, scope_not_found, operation_budget_reached). Exact producer schema/identity lookups are an explicit exemption.",
+      "review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        }
+      },
+      "diff_sha256": "9cef112b92d694166702e6da9421ae632fbc376e74a27c855512df9258c57960",
+      "focus_disposition": "Advisory adapter compatibility/test focus concerns unchanged adk_gateway.py/adk_runtime.py, with earlier inspected agent-test evidence retained. No all-clear or test success is inferred from Jev.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "No full historical reconstruction of mutable run state, candidate identity or task parent changes.",
+      "Future validation created after earlier acceptance is an abnormal ordering not newly exercised; both creation cutoffs are present and normal ordering passes.",
+      "The new historical acceptance projection uses unmeasured usage; measured-row late-acceptance cohort transitions were not separately asserted.",
+      "Distinct producer IDs were introduced after normal acceptance persistence; current writer-created task IDs remain equal.",
+      "No final full repository rerun, extra manual full hosted CI, high-volume benchmark, runtime live-provider acceptance or merge.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain other epic children; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-four repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "f697f83881b6767ee9549f23ba56f263180043b8",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38100286864",
+      "previous_head_codex": "completed with one new finding; first seven threads already resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round5": {
+    "snapshot_at": "2026-10-11T02:13:34.922191+00:00",
+    "source_commit": "9f93e528f8fe0fc698128ef1780bd6d7579dd32e",
+    "source_tree": "55c8beacf67ada67183e390016bee89fcae02303",
+    "starting_head": "75c104573c67b16d97562a250d4fa35fdfd681f1",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "17b9f6c5aff68d3d5b2569e2fdaa22f973d86aac19bc5eea01628fb3be5dfcb6",
+    "repair_delta_sha256": "83c1fd4ab38889cc70f335785856f8e23627bddfeb734e46dc1bc43568afbb55",
+    "worker_scoped_candidates": {
+      "reporting": {
+        "owned_diff_matches_worker": true,
+        "owned_diff_sha256": "83c1fd4ab38889cc70f335785856f8e23627bddfeb734e46dc1bc43568afbb55",
+        "worker_raw_diff_sha256": "291dd985c1a66460ddf2e4ec242efa775f531ca967660f876eb527b29090c61e",
+        "receipt_normalization": "Only CRLF-to-LF normalization of saved PowerShell patch; canonical git diff bytes matched.",
+        "worker_diff_path": ".llm-output/pr108-round5/reporting/scoped-diff.patch",
+        "starting_head": "75c104573c67b16d97562a250d4fa35fdfd681f1",
+        "owned_files": {
+          "apps/orchestrator/src/forge/application/services/task_usage_baselines.py": "05ba482e81e11713c543182590037a51abcc563db4c38e90a544c3a73af2fd3f",
+          "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "3fd5c36e41fb820195688998e9281114d4ec54275a6e93632b09e6649575e8e8",
+          "apps/orchestrator/src/forge/domain/task_usage_baselines.py": "bdc8805acc8616e55a6fe8ee33151a2267b7fc7b3653846f925dce9c29846735",
+          "apps/orchestrator/tests/application/test_task_usage_baselines.py": "904f6cdac2a9afa257fa0bcf75c61e184adbdc3f101a8244472bfb1acaf40dc3",
+          "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "bea0499253b9cd76cfafbb77491c178c8f25b29bc55554dd526f35c2b2cbb81c",
+          "apps/orchestrator/tests/domain/test_task_usage_baselines.py": "12d8c0746be6ea01f658091a8ec9ebb072ce9fdf4a41e864a45a5300d6e0ae05",
+          "apps/orchestrator/tests/api/test_task_usage_reporting.py": "e7055c2b2f80d2b3d556c72bb1c8a3871f8ee16e08083c0f35e084c5f1a3ecc6",
+          "apps/orchestrator/src/forge/persistence/queries/task_usage_totals.py": "e5028075cb9bb7575816ed86343257e5151251df87f9ececee49fed1f70aa1d9",
+          "apps/orchestrator/tests/persistence/test_task_usage_observations.py": "7d6a0a9e904efec6130af5969e847d1a4e7b3ee6db0aa0f92b950989ad8dd682"
+        }
+      },
+      "unchanged_gateway": {
+        "scope": "policy",
+        "all_file_hashes_match": true,
+        "manifest_sha256": "1ae936eeabef5819465bc12d06529a05200e6920d8cb6a17c085232adfc17d3d",
+        "files": {
+          "apps/orchestrator/src/forge/application/services/task_usage_policy.py": "66c5ef1201dfe06503670c877034a1e6a440d85934eb8461f89e6fae964e987d",
+          "apps/orchestrator/src/forge/worker/bound_delivery.py": "0966f94ac12c0c6d01ab7216a9729565c55df640399e74a77cdfc1d913d8b01c",
+          "apps/orchestrator/src/forge/worker/composition.py": "1134fd581eca97ade8ea6cfe7bde756a1866a6ffb12e428a12f959707165a754",
+          "apps/orchestrator/tests/application/test_bound_delivery.py": "dec2976568b44d9e2635d286cc306a258b0dd62bd3d102df2b6728ff9ca8bf1b",
+          "apps/orchestrator/tests/application/test_worker_composition.py": "b8b5d5f5ed69c25c28032ea8f1855fbc3e1bd6c333a0a4acf97b2b0fc2d395f7",
+          "apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py": "cfdaadd58f81f87cd3e1ee779f6120c2a25f7d7aea07f9fff1b16865854eaa61"
+        }
+      }
+    },
+    "fixed_findings": [
+      {
+        "id": "PR108-09",
+        "thread": "PRRT_kwDOUDBiTc6rJULU",
+        "comment": 4239850832
+      },
+      {
+        "id": "PR108-10",
+        "thread": "PRRT_kwDOUDBiTc6rJULW",
+        "comment": 4239850834
+      }
+    ],
+    "summary": "Historical run samples and exclusions use immutable creation, acceptance and terminal-event evidence so later merge and evaluation settlement retain earlier history. Unsupported derived or cross-source token sums remain unavailable with honest coverage, preserving measured source facts and malformed-input validation. The final reporting affected suites passed 55 tests; the observation suite passed 15 tests before its final test-only extension, and all six final overflow-focused cases passed. Scoped mypy, Ruff and whitespace checks passed; unchanged 121-test gateway evidence remains matched.",
+    "detail": "Actual PostgreSQL failure/pass regressions cover measured accepted history surviving a normal merge, inclusive acceptance/merge boundaries, replay of an earlier ready frozen baseline, and production evaluation completion/failure/cancellation before and at settlement despite later mutable updates. Inclusive cohort window edges and malformed outcome payloads remain honest. Signed64 MAX/MAX+1 within/across sources and input/output/cache/reasoning channels cover report/exclusion agreement and manual freeze. Domain/legacy cases cover phase/role overflow while preserving valid totals, route and failed-attempt facts. The final worker patch matches current source/tests after only CRLF-to-LF receipt normalization. No final whole-repository rerun, additional manual full hosted CI or live-provider acceptance is claimed.",
+    "acceptance": "Primary verified concrete final regression assertions, actual red/green/affected/static receipts, the active-worktree import and candidate source/test match. Scoped correctness finding R5-GATE-01 is repaired and verified against production settlement plus PostgreSQL evidence. Earlier review and tests are reused only where relevant inputs match; no extra whole-change review is claimed. Strict unused convenience interfaces were preserved; the observation writer validates history before immutable insertion.",
+    "coverage": "# PR108-09/10 candidate coverage\n\nStarting HEAD `75c104573c67b16d97562a250d4fa35fdfd681f1`; final scoped diff SHA-256 `291DD985C1A66460DDF2E4EC242EFA775F531CA967660F876EB527B29090C61E` (six owned source/test paths, `scoped-diff.patch`). The earlier pre-fixture checkpoint is preserved separately by the primary; this hash is the final lifecycle candidate. Active `forge.__file__` proof in `import.txt`. Real PostgreSQL disposable fixtures on port 5435. No provider or hosted runs.\n\n| Case | Evidence and result |\n| --- | --- |\n| C09-A measured accepted-to-merge and inclusive boundaries | `test_accepted_run_remains_in_historical_report_after_merge` exercises real acceptance fixture, normal merge repository transition and `run.merge_completed`. The fixture now binds its complete admitted source inventory with explicit known final measurements (reservations alone are never counted). Before acceptance is unknown/in-progress; at acceptance accepted; prior-to-merge sample and report have one measured sample with complete source inventory. After later merge, that earlier cutoff retains the same measured total, exclusion counts and report overview; at/after merge outcome is completed. A separate target freezes a ready reference from this accepted measured history before merge, and replay after merge is identical. Original red in `red.txt`, final green in `green-lifecycle-focused.txt` and `affected-fixture-final.txt`. |\n| C09-B durable creation/window, terminal events, shared snapshot | Query uses `Run.created_at`, authoritative acceptance timestamp and immutable terminal event sequence/timestamp, with SQL window prefilter and Python event reconstruction in both samples and exclusions. `test_terminal_event_does_not_retroactively_change_historical_exclusion` proves generic failed/cancelled before/inclusive cutoffs. Existing source-inventory, authority, query-count/batching, report snapshot, freeze and optional-policy cases included in 55 affected passes (`affected-fixture-final.txt`). Current acceptance authority still uses current run candidate/policy; full bitemporal reconstruction of mutable candidate/policy and eventless legacy rows is deliberately unproved. Eventless terminal rows use current state only when `updated_at <= as_of`; accepted eventless older snapshots remain accepted before newer terminal current update. |\n| C09-D production evaluation settlement | `test_evaluation_fixture_settlement_keeps_historical_run_and_window` calls `EvaluationService._settle_fixture_lifecycle` with teardown disabled and proves its actual event payload for completed, failed and cancelled. Before settlement the extant run remains in progress; at settlement, after an unrelated later `Run.updated_at`, and at the inclusive one-day window edge, samples/exclusions/report use the immutable terminal outcome/time. Beyond the edge they omit it. Corrupt list-valued outcome fails closed to unknown/in-progress. `red-fixture.txt` proves all three pre-fix history failures; `green-lifecycle-focused.txt` has 4 lifecycle passes; `affected-fixture-final.txt` has 55 reporting passes. |\n| C10-A bound exact MAX, MAX+1, multi-source, exclusions/report/freeze | Real PG `test_bound_derived_token_overflow_is_unknown_and_excluded_without_losing_components`: exact MAX measured; MAX+1 single-source and two-source derived sums, plus same-channel MAX+1, unmeasured/incomplete; individual representable source facts retained. Report omits unsupported sample. Configured manual freeze with overflowing history returns manual 75 without crash. Red in `red.txt`/`red-channel.txt`, final focused green `green-same-channel-report.txt`. Existing ready/manual freeze and warning-threshold tests in 52 affected passes. |\n| C10-B legacy and domain aggregate | Pure legacy-row test preserves route/failure, marks combined/phase sum unknown; domain test proves two individually valid MAX+1 phase-role amounts aggregate to `None` while measured sample counts remain accurate, and rejects an invalid phase-role integer. Both covered in 52 affected passes. |\n| C10-C same-channel production totals | Real PG `test_valid_source_channels_can_exceed_aggregate_signed64_without_losing_facts` covers input, output, cached and reasoning subset channels at exact MAX and MAX+1; both primary channels overflowing yields `unknown`, one yields `lower_bound`, and all per-source facts retain actual values. `red-channel.txt` has the pre-fix ValueError; `green-channel-final.txt` has 6 passes after the final test extension. Four malformed-storage-value cases still raise. The existing observation suite proves final-over-live and read batching (`observations-final.txt`, 15 passes before the final test-only both-channel extension). The reporting suite (`affected-expanded-final.txt`, 52 passes) covers same-channel report/exclusion/manual freeze. `_sum_known` is used for model rows per execution and subject aggregates; each now returns unavailable on unsupported sum, while `_measured` retains strict stored-value validation. The source observation projector rejects a per-epoch overflow during append before persistence; its strict convenience `known_total_tokens` property and the port convenience property are not production report callers. |\n| C09/10-C static/affected | Four reporting modules: `55 passed` (`affected-fixture-final.txt`). Observation module: `15 passed` (`observations-final.txt`) before final both-channel test-only extension; final focused `6 passed` (`green-channel-final.txt`); totals source is unchanged from those numeric receipts. Source mypy: 3 files clean (`mypy-fixture-final.txt`). Scoped Ruff clean (`ruff-fixture-final.txt`); `git diff --check` clean (`diff-check.txt`). |\n\nKnown limit: full bitemporal mutable candidate/policy reconstruction remains outside this bounded repair. The standalone SourceUsage and UsageTotals `known_total_tokens` convenience properties remain strict on unsupported combined sums; exact production caller search found no report/freeze uses of them.\n",
+    "evidence": {
+      "reporting": ".llm-output/pr108-round5/reporting/coverage.md",
+      "previous_repairs": ".llm-output/pr108-round4/acceptance.json",
+      "unchanged_gateway": ".llm-output/pr108-round3/policy/coverage.json",
+      "unchanged_batch": "docs/usage-monitoring-batch-validation.json",
+      "scoped_correctness": ".llm-output/pr108-round5/correctness-result.json"
+    },
+    "jev": {
+      "search": "jev-search.json: partial (unscored_candidates, operation_budget_reached). Exact RunEvent schema lookup identified execution.py beyond the initial scopes. jev-search-totals.json: complete for the substantiated same-channel aggregate expansion. Unused strict convenience properties were adjudicated by exact references and preserved.",
+      "review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        }
+      },
+      "diff_sha256": "17b9f6c5aff68d3d5b2569e2fdaa22f973d86aac19bc5eea01628fb3be5dfcb6",
+      "focus_disposition": "Jev remains partial due to hunk/operation limits. Its compatibility/test focus names unchanged gateway/runtime paths, whose matched 121-test evidence is reused. The complete supplemental totals search informed the one-channel repair and strict convenience-property adjudication. No all-clear or test success is inferred from scores.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "Full historical reconstruction of mutable candidate/policy/task lineage and eventless legacy histories remains outside this bounded repair.",
+      "The final observation test-only extension was checked in six focused cases; unchanged observation cases reuse the preceding 15-test affected result.",
+      "Strict convenience sum properties have no current production report/freeze callers and retain their existing overflow-rejection semantics.",
+      "No final full repository rerun, additional manual full hosted CI, high-volume benchmark, runtime live-provider acceptance or merge.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain other epic children; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-five repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "75c104573c67b16d97562a250d4fa35fdfd681f1",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38101480473",
+      "previous_head_codex": "completed with two new findings; first eight threads already resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round6": {
+    "snapshot_at": "2026-10-11T02:59:44.609936+00:00",
+    "source_commit": "7ab27c2f489efaebff9ae54c82984a14ac3fb640",
+    "source_tree": "273df040657da583788a4ed5249c73cb91996322",
+    "starting_head": "7c6b5953e526ac9b200895deff99693cd706eb14",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "df2b98aefd697e19d7c57621867187a36345bbbc31a51da5545edf855ad709d7",
+    "repair_delta_sha256": "03a8303c8a93937e637f091ffe1561d1eb57efb8023d64492e52911fa414d9ea",
+    "fixed_findings": [
+      {
+        "id": "PR108-11",
+        "thread": "PRRT_kwDOUDBiTc6rJl1I",
+        "comment": 4239964855
+      },
+      {
+        "id": "PR108-12",
+        "thread": "PRRT_kwDOUDBiTc6rJl1J",
+        "comment": 4239964856
+      }
+    ],
+    "summary": "New durable executions serialize on the same Project authority as authenticated policy revisions and reject stale resolved caps; existing execution replays keep frozen policy/cap identity. Authoring samples, exclusions and cohort windows use bound immutable settlement/audit history, so real proposal adoption retains prior measured history and frozen references. Historical row projections omit unused payloads while preserving proposal-null semantics.",
+    "detail": "Final production admission source passed 67 affected tests; after a test-only gateway assertion extension, eight final PostgreSQL serialization/gateway cases passed. Ninety-five gateway unit cases passed. Final production reporting source passed 58 affected domain/application/PostgreSQL/API tests; after a test-only SQL-capture selector refinement, the final measured-adoption test passed. Actual PostgreSQL blocking-pid tests cover both revision/admission lock orders and cancellation rollback. Actual offline proposal generation, authenticated adoption, final nine-token inventory, immutable ready freeze, inclusive settlement/window edges, cancelled history, retry history and malformed audit lineage are asserted. Scoped Ruff/mypy/format/whitespace and active-worktree imports passed.",
+    "acceptance": "Primary matched actual final source/test hashes and scoped patch bytes, inspected concrete regression assertions and red/green/affected/static receipts, and adjudicated the scoped Sol-high concurrency result. No material finding remained in that named gate. Earlier integrated review and unchanged tests are reused only for matching inputs; no final whole-repository pass is claimed.",
+    "accepted_file_hashes": {
+      "apps/orchestrator/src/forge/persistence/repositories/executions.py": "4b020fc033597357f490027529826d813a11466c1f0e40f2ba9d2be4cdc9a44b",
+      "apps/orchestrator/src/forge/application/services/task_usage_policy.py": "66c5ef1201dfe06503670c877034a1e6a440d85934eb8461f89e6fae964e987d",
+      "apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py": "7d10095cb7dfa5bc5c770f832ff5ebc7049956fb734adc7a49fd96ff5585dcd5",
+      "apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py": "5e8b3139c67cb9f1a54d87bb4528932ec919da819046a9837f3b476a21973bc8",
+      "apps/orchestrator/tests/persistence/test_task_usage_execution_policy.py": "3d16c9d419bc9bc5a3e5d70f34d447de91c456e0fba4b20e27280e303d7a6edd",
+      "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "914208b26484389f8ec1ced40a2e9d78a5f9ebcbb33f7ccec196da34e4a9ab67",
+      "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "a868076f50d676620882368d733bc0b16b1f91f8933b18be23edc9bacfcec413"
+    },
+    "coverage": {
+      "admission": "{\n  \"candidate\": {\n    \"head\": \"7c6b5953e526ac9b200895deff99693cd706eb14\",\n    \"worktree\": \"C:/Users/sdyer/.codex/worktrees/usage-monitoring-batch/parallel-forge\",\n    \"manifest_sha256\": \"dacaafbc9e64c3965df52b4ae2a15e841abb182569a04874a8ed74a248356dcc\",\n    \"manifest\": \"candidate-files.sha256\",\n    \"tracked_diff_sha256\": \"a23aad7c6ecd91f403532164bab591ed87bf23780227dfc5bbcbae6bf3e0a858\",\n    \"tracked_diff\": \"scoped-tracked.diff\",\n    \"note\": \"Tracked diff covers executions.py and frozen gateway test; new serialization test is untracked and bound by its file hash in the manifest. Other worker baseline paths are excluded.\"\n  },\n  \"environment\": {\n    \"pythonpath\": \"(Resolve-Path 'apps/orchestrator/src').Path\",\n    \"dependencies\": \"uv run --frozen --extra dev, Python 3.14\",\n    \"database\": \"Disposable migrated PostgreSQL fixture on 127.0.0.1:5435; each test owns its database\",\n    \"import_receipt\": \"source-import.log: exit 0, forge.__file__ under active worktree\"\n  },\n  \"commands\": {\n    \"red\": \"uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py -q --tb=short -o log_cli=false\",\n    \"focused_final\": \"uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py -q --tb=short -o log_cli=false\",\n    \"affected\": \"uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py apps/orchestrator/tests/persistence/test_task_usage_execution_policy.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py apps/orchestrator/tests/persistence/test_execution_instruction_digest.py apps/orchestrator/tests/persistence/test_reviewer_admission.py apps/orchestrator/tests/application/test_task_usage_policy.py apps/orchestrator/tests/application/test_planning_workflow.py -q --tb=short -o log_cli=false\",\n    \"gateway_unit\": \"uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/application/test_worker_composition.py apps/orchestrator/tests/application/test_bound_delivery.py -q --tb=short -o log_cli=false\",\n    \"ruff\": \"rtk err uv run --frozen --extra dev ruff check apps/orchestrator/src/forge/persistence/repositories/executions.py apps/orchestrator/src/forge/application/services/task_usage_policy.py apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py apps/orchestrator/tests/application/test_task_usage_policy.py\",\n    \"mypy\": \"rtk err uv run --frozen --extra dev mypy apps/orchestrator/src/forge/persistence/repositories/executions.py apps/orchestrator/src/forge/application/services/task_usage_policy.py\",\n    \"format\": \"rtk err uv run --frozen --extra dev ruff format --check apps/orchestrator/src/forge/persistence/repositories/executions.py apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py\",\n    \"whitespace\": \"git diff --check\"\n  },\n  \"results\": {\n    \"red-stale-admission.log\": \"exit 1; all four stale new-admission transitions were incorrectly accepted before the repository fix\",\n    \"affected-tests.log\": \"exit 0; 67 passed on final production source, before a test-only addition to frozen gateway assertions\",\n    \"pg-gateway-final.log\": \"exit 0; 8 passed on final source and final edited PG test files\",\n    \"frozen-gateway-unit.log\": \"exit 0; 95 passed on final source\",\n    \"ruff-final.log\": \"exit 0\",\n    \"mypy.log\": \"exit 0\",\n    \"format-final.log\": \"exit 0\",\n    \"diff-check.log\": \"exit 0\"\n  },\n  \"invariants\": {\n    \"C11-A\": \"Proved in PostgreSQL: stale no-policy, null, higher and finite-to-null resolved budgets conflict before any new step/execution; fresh current revisions admit. Production planning gateway test rejects stale new admission and prevents injected provider use, while old admitted request remains valid.\",\n    \"C11-B\": \"Proved actual pg_blocking_pids waits in both orders: admission first holds project authority until commit, then owner revision commits; owner revision first blocks later admission and stale cap conflicts after commit. A cancelled blocked admission rolls back with zero rows; next current admission succeeds.\",\n    \"C11-C\": \"Proved historical replay after cap edit returns is_new=false, with exactly one step/execution/admission event; tampered revision/cap/identity conflicts. Existing reviewer replay and planning recovery tests pass. Gateway unit cases verify terminal/cancelled authority fences before provider use. No duplicate usage debit is claimed because replay did not invoke or settle a provider.\",\n    \"C11-D\": \"Proved unconfigured no-cap admission and current-policy null cap remain valid; role/model and gateway checks pass. All production callers construct budgets before admit and either roll back on conflict or propagate through a rollback UoW, before gateway execution.\"\n  },\n  \"limits\": [\n    \"No live provider, hosted CI, GitHub mutation or application-level automatic retry was run.\",\n    \"The new repository behavior rejects a stale new admission; callers must obtain a fresh request through their normal command/recovery path.\"\n  ]\n}\n",
+      "reporting": "# PR108-12 reporting candidate\n\nHEAD: `7c6b5953e526ac9b200895deff99693cd706eb14`.\nFinal scoped patch: `scoped-window.patch`, SHA-256 `A9E7C9D75309976CCF2BB3100BF7F9F23B10BB9606E2B2BEB5C2D083C63960EF`. Original checkpoint preserved as `pre-window-reporting.patch` (previously `scoped.patch`).\nFinal owned source SHA-256: query `914208B26484389F8EC1CED40A2E9D78A5F9EBCBB33F7CCEC196DA34E4A9AB67`; persistence test `A868076F50D676620882368D733BC0B16B1F91F8933B18BE23EDC9BACFCEC413`.\n\n`PYTHONPATH` was set to resolved `apps/orchestrator/src` before each Python command. `import.txt` proves `forge.__file__` resolves inside this worktree. PostgreSQL disposable integration fixture used port 5435. Python checks used `uv run --frozen --extra dev`.\n\nFinal affected command: `python -m pytest apps/orchestrator/tests/domain/test_task_usage_baselines.py apps/orchestrator/tests/application/test_task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py apps/orchestrator/tests/api/test_task_usage_reporting.py -q` (`affected-window.txt`, 58 passed). After the final test-only SQL-capture selector refinement, the affected focused command `python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q -k measured_proposal_history` passed (`window-focused-final.txt`); production source was unchanged. Final static commands: `ruff check apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py` (`ruff-window-final.txt`, pass), `mypy apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py` (`mypy-window.txt`, pass), and `git diff --check` (`diff-check-window-final.txt`, pass).\n\n| Case | Evidence and result |\n| --- | --- |\n| C12-A: real proposal settlement, final measured source, adoption, historical sample/report/exclusions and frozen ready reference | `red.txt` shows the real adoption historical sample missing before query repair (1 failed). `green-authoring-final.txt` has passing focused real-PG test; 9 tokens, completed inventory and frozen replay asserted before/after adoption. `affected.txt` 58 reporting tests pass. |\n| C12-B: creation/proposal inclusive cutoff, measured proposal window edge after adoption, cancellation inclusive/window edge, failed attempt \u2192 retry \u2192 later proposal, malformed or wrong-epic audit | The real-PG adoption test asserts its measured source is included at settlement + 1 day and absent at + 1 microsecond, with subject-scoped exclusions, report sample counts and frozen replay. `window-mutant-red.txt` records 1 expected failure when a temporary source mutation shifted historical time back to mutable `updated_at`; mutation was removed. Controlled first failed-attempt row plus real repository audit, actual retry service, and worker-produced second proposal distinguish failure/retry/current history. `affected-window.txt`: 58 passed. |\n| C12-C: shared projection in samples and exclusions, run history and reporting regression | Both paths call `_historical_jobs` with an identical as-of/window derivation. SQL window prefilter and batched audit lookup preserve bounded statement counts. `affected-window.txt` covers domain/application/persistence/API reporting, 58 passed. Final focused/static results are above. |\n| C12-D: narrow historical row I/O | Scalar projections select only required job/audit/attempt fields and retain `proposal` to preserve JSON null handling. Captured real SQL in adoption test asserts job snapshot and attempt usage/reservation/terminal proof are absent. No latency claim. |\n\nLimits: eventless pre-audit legacy jobs cannot recover historical transitions after mutable updates; they use current row state only when `updated_at <= as_of`, otherwise queued at creation. An audit's `proposed` state requires the settled current attempt and extant proposal/digest; historical proposal content across a hypothetical later replacement is not stored, but production retry is only eligible from failed state. The first failed attempt in the retry test is a controlled row fixture plus production repository audit, not a failing-worker settlement. Existing run/evaluation and observation/gateway evidence from unchanged code was reused; this round did not rerun unrelated suites or live providers.\n"
+    },
+    "evidence": {
+      "policy_primary": ".llm-output\\pr108-round6\\policy-primary-validation.json",
+      "reporting_primary": ".llm-output\\pr108-round6\\reporting-primary-validation.json",
+      "scoped_correctness": ".llm-output\\pr108-round6\\correctness-result.json",
+      "previous_repairs": ".llm-output/pr108-round5/acceptance.json",
+      "earlier_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "jev": {
+      "search": {
+        "jev-search-admission-current.json": {
+          "status": "partial",
+          "coverage": {
+            "complete": false,
+            "reasons": [
+              "operation_budget_reached",
+              "unscored_candidates"
+            ]
+          }
+        },
+        "jev-search-authoring-current.json": {
+          "status": "partial",
+          "coverage": {
+            "complete": false,
+            "reasons": [
+              "unscored_candidates",
+              "operation_budget_reached"
+            ]
+          }
+        }
+      },
+      "review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        }
+      },
+      "diff_sha256": "df2b98aefd697e19d7c57621867187a36345bbbc31a51da5545edf855ad709d7",
+      "repair_delta": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "03a8303c8a93937e637f091ffe1561d1eb57efb8023d64492e52911fa414d9ea"
+      },
+      "focus_disposition": "Both final integrated and focused-delta review attempts are hash-bound but partial due hunk/operation/size limits. Full focus concerns unchanged ADK compatibility/coverage, carrying forward credible prior evidence. Delta focus concerns historical projection coverage, coordination and cancellation; actual real-PG adoption/window/cancellation/retry assertions and shared sample/exclusion projection address those named behaviors. Scores establish neither absence nor test success. The scoped admission gate uses immutable preparation copies and unchanged admission hashes; a later disjoint reporting test-only refinement does not invalidate that gate.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "Stale new-admission conflicts roll back; automatic application retry is not implemented or claimed.",
+      "Eventless legacy transitions and full historical mutable candidate/policy/task/proposal replacement lineage are not fully reconstructed.",
+      "The first failed authoring attempt is a controlled row fixture with actual repository audit, not a failing-worker settlement.",
+      "Final test-only assertion refinements use focused checks plus the preceding affected result on unchanged production source.",
+      "No final whole-repository rerun, additional manual full hosted CI, performance benchmark, runtime live-provider acceptance or merge.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain other epic children; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-six repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "7c6b5953e526ac9b200895deff99693cd706eb14",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38104476205",
+      "previous_head_codex": "completed with two new findings; first ten threads already answered and resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round7": {
+    "snapshot_at": "2026-10-11T03:31:16.692334+00:00",
+    "source_commit": "97fd34d0c90043c15419692157c1db611f279634",
+    "source_tree": "2b41a5255a653a9885f3d3a8e337be8e9586904a",
+    "starting_head": "0bb38b86066ff68221c553be53fb6b2fe0124adf",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "57f513153706ed2c859c574750f1bc9dd042cab8ed35e690171c97afa76d9533",
+    "repair_delta_sha256": "08949f89c1ac6755a37721ba625881e1bec6840c1bc670ded2aa7ba19aa8a40c",
+    "fixed_findings": [
+      {
+        "id": "PR108-13",
+        "thread": "PRRT_kwDOUDBiTc6rJ086",
+        "comment": 4240063253
+      }
+    ],
+    "summary": "Historical failed-attempt counts use valid inclusive execution completion timestamps for bound, unmeasured and legacy ModelUsage paths. One batched execution count replaces the legacy current-status calculation; duplicate usage rows cannot multiply failures.",
+    "detail": "The real PostgreSQL execution repository regression reproduced four failures (FAILED/CANCELLED by bound/unbound), and the controlled legacy matrix reproduced one failure before repair. Final production source passed 63 affected reporting tests. After a test-only measured-state assertion refinement, all five final focused PostgreSQL cases passed. Inclusive completion boundaries, earlier-cutoff replay after finalization, duplicate usage rows, success, future creation, missing/anomalous timestamps and a separate immutable ready reference are asserted. Scoped Ruff, mypy, whitespace and active-worktree source import passed.",
+    "acceptance": "Primary matched the final source/test hashes and exact scoped patch, inspected concrete assertions and actual red/green/affected/static receipts, confirmed exclusions do not consume the legacy failure metric, and matched all five unchanged admission-policy file hashes. Matching preceding policy tests and scoped lock-order review remain applicable; no whole-repository pass is claimed.",
+    "accepted_file_hashes": {
+      "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "af3bef9e6215fb7ee9e83d1079fb0330a26985ef8ca20652ff7bfd2a35e750dc",
+      "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "fcba5d22dc35d4e8ffae92d918dc52815089e315b32afef262c451c5446f9b85"
+    },
+    "coverage": "# PR108-13 reporting candidate\n\nHEAD `0bb38b86066ff68221c553be53fb6b2fe0124adf`, owned scoped diff `scoped.patch` SHA-256 `08949F89C1AC6755A37721BA625881E1BEC6840C1BC670DED2AA7BA19AA8A40C`. Source query SHA-256 `AF3BEF9E6215FB7EE9E83D1079FB0330A26985EF8CA20652FF7BFD2A35E750DC`; persistence test SHA-256 `FCBA5D22DC35D4E8FFAE92D918DC52815089E315B32AFEF262C451C5446F9B85`. Only these two tracked files changed. `import.txt` proves `forge.__file__` resolves in this active worktree. Python 3.14, uv frozen dev environment, PostgreSQL disposable fixture port 5435; `PYTHONPATH` set to resolved `apps/orchestrator/src` before Python checks.\n\n| Invariant | Concrete evidence |\n| --- | --- |\n| C13-A: terminal failure/cancellation is counted only at its valid inclusive `completed_at`, independent of execution creation; bound and unmeasured paths | `red-repository.txt`: 4 expected failures with actual `PostgresExecutionRepository.admit/finalize`, when the old query returned 1 before terminal time. `focused-final.txt`: all 4 permutations (FAILED/CANCELLED \u00d7 bound/unbound) pass before finalization, after later commit at original cutoff, one microsecond before terminal, inclusive terminal, and after terminal. Both `samples` and public `report.failed_attempt_count` asserted; final repository ModelUsage makes the sample measured after the cutoff. |\n| C13-B: legacy current-status bypass, duplicate usage rows, distinct failures, success, future creation, missing timestamp, terminal-before-creation anomaly | `red-legacy.txt`: expected failure, current-status legacy count 4 instead of 0 at old cutoff. `focused-final.txt`: legacy path passes 0\u21921\u21923 across cutoffs, including exact inclusive boundaries. Two ModelUsage rows for one failed execution count once; one successful execution never counts; missing/anomalous terminal timestamps fail closed. The future-created execution does not enter the old inventory. Public report count matches sample. |\n| C13-C: frozen ready reference and prior reporting behavior | The legacy test creates a separate controlled, authoritative ModelUsage-backed ready history source and verifies its frozen reference replays identically across all later failure cutoffs. `affected-final.txt`: domain/application/persistence/API reporting suite 63 passed. Three old test fixtures that previously represented terminal status without timestamp now supply coherent created/completed evidence. `ruff-final.txt`, `mypy-final.txt`, `diff-check.txt` all exit 0. |\n\nExact final affected command: `uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/domain/test_task_usage_baselines.py apps/orchestrator/tests/application/test_task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py apps/orchestrator/tests/api/test_task_usage_reporting.py -q` (63 passed). A later test-only refinement removed a premature observation and asserted actual measured state around repository finalization; production source was unchanged. Final focused command: `uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q -k 'repository_finalization_failure_count or legacy_failure_counts_use_unique'` (5 passed). Static commands: `uv run --frozen --extra dev ruff check apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py`, `uv run --frozen --extra dev mypy apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py`, and `git diff --check` (all pass).\n\nAuthority/limits: `AgentExecution.completed_at` is written with status by production finalization and is the inclusive terminal time. A currently terminal legacy row with no completion time or completion preceding creation is excluded from the failure count rather than assigned an invented date. Duplicate ModelUsage rows do not multiply execution counts because the grouped query reads `AgentExecution` once per execution. Authoring jobs and subscription attempts are not inputs to this run-specific counter; their distinct outcome/exclusion projections were unchanged and covered by the affected reporting suite. No broad bitemporal redesign, live provider, hosted CI, or unrelated admission suite was run.\n",
+    "evidence": {
+      "primary_validation": ".llm-output/pr108-round7/primary-validation.json",
+      "worker_coverage": ".llm-output/pr108-round7/reporting/coverage.md",
+      "red_repository": ".llm-output/pr108-round7/reporting/red-repository.txt",
+      "red_legacy": ".llm-output/pr108-round7/reporting/red-legacy.txt",
+      "affected": ".llm-output/pr108-round7/reporting/affected-final.txt",
+      "final_focused": ".llm-output/pr108-round7/reporting/focused-final.txt",
+      "unchanged_policy": ".llm-output/pr108-round6/policy-primary-validation.json",
+      "unchanged_scoped_gate": ".llm-output/pr108-round6/correctness-result.json",
+      "previous_repairs": ".llm-output/pr108-round6/acceptance.json",
+      "earlier_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "remaining_limits": [
+      "63 affected tests ran before the last test-only measured-state assertion refinement; the five final focused cases ran after it, with identical production source.",
+      "Repository finalization tests supply explicit future completed_at values; the legacy row matrix is controlled data, not a full run lifecycle claim.",
+      "Missing completion or completion before creation is excluded rather than assigned an invented date.",
+      "No complete repository suite, new live-provider acceptance or manually dispatched full hosted CI was run.",
+      "Prior historical mutable lineage and stale-admission automatic-retry limitations remain as recorded in round six.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain other epic children; context diagnostics remain advisory."
+    ],
+    "jev": {
+      "search": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "operation_budget_reached",
+            "unscored_candidates",
+            "max_candidates_reached"
+          ]
+        }
+      },
+      "review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        }
+      },
+      "diff_sha256": "57f513153706ed2c859c574750f1bc9dd042cab8ed35e690171c97afa76d9533",
+      "repair_delta": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "08949f89c1ac6755a37721ba625881e1bec6840c1bc670ded2aa7ba19aa8a40c"
+      },
+      "focus_disposition": "Integrated and focused-delta attempts match their exact saved diffs and are partial due hunk, operation and size limits. Integrated focus concerns unchanged ADK compatibility/coverage; prior matching evidence carries forward. Delta intent focus is removal of an unused status column in favor of the shared count authority; cancellation focus is the inclusive completed_at filter. The actual FAILED/CANCELLED repository permutations and legacy row matrix address those named behaviors. Jev scores prove neither absence nor test success.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "publication_snapshot": {
+      "phase": "before round-seven repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "0bb38b86066ff68221c553be53fb6b2fe0124adf",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38106962984",
+      "previous_head_codex": "completed with one new finding; first twelve threads answered and resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  }
+}

@@ -82,6 +82,97 @@ async def test_attempt_usage_persists_actual_consumption_and_replays_once(
             await work.subscription_budget.settle_attempt(persisted_run.id, task, attempt, None)
 
 
+@pytest.mark.integration
+async def test_observed_subscription_tokens_are_replaced_by_measured_settlement(
+    session_factory, persisted_run
+):
+    from forge.domain.task_usage_contract import (
+        CounterKind,
+        Observation,
+        RouteCohort,
+        RouteMember,
+        SourceBinding,
+        SubjectKey,
+        TokenCounts,
+        WorkUnitBinding,
+    )
+    from forge.persistence.queries.task_usage_totals import TaskUsageTotalsQuery
+    from forge.persistence.repositories.task_usage_observations import PostgresTaskUsageObservations
+
+    task, attempt = await _case(session_factory, persisted_run)
+    route = RouteCohort.from_members(
+        (RouteMember(role="developer", provider="p", model="test", ordinal=0),)
+    )
+    binding = WorkUnitBinding(
+        subject=SubjectKey(
+            project_id=persisted_run.project_id, kind="run", subject_id=persisted_run.id
+        ),
+        work_unit_id=uuid4(),
+        admitted_phase_id="implement",
+        configured_route=route,
+        effective_route=route,
+        source=SourceBinding(kind="subscription_attempt", source_id=attempt, parent_id=task),
+    )
+    writer = PostgresTaskUsageObservations(session_factory)
+    query = TaskUsageTotalsQuery(session_factory)
+    await writer.bind(binding)
+    live = Observation(
+        binding=binding,
+        event_id="live",
+        sequence=1,
+        counter_kind=CounterKind.CUMULATIVE,
+        tokens=TokenCounts(input_tokens=45, output_tokens=10),
+    )
+    await writer.observe_usage(live)
+    once = await query.totals(binding.subject)
+    await writer.observe_usage(live)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.subscription_budget.reserve_attempt(
+            persisted_run.id, task, attempt, _reservation(), idempotency_key="observed"
+        )
+        await work.commit()
+    before = await query.totals(binding.subject)
+    assert (before.input_tokens, before.output_tokens) == (45, 10)
+    assert before.snapshot_digest == once.snapshot_digest
+    assert before.final_source_count == 0
+    await writer.append_observation(
+        Observation(
+            binding=binding,
+            event_id="provider-final",
+            sequence=2,
+            counter_kind=CounterKind.CUMULATIVE,
+            tokens=TokenCounts(input_tokens=40, output_tokens=9),
+            final=True,
+            final_status="stopped",
+            reconciles_event_id="live",
+        )
+    )
+    provider_final = await query.totals(binding.subject)
+    assert (provider_final.input_tokens, provider_final.output_tokens) == (40, 9)
+    assert provider_final.final_source_count == 0
+    async with PostgresUnitOfWork(session_factory) as work:
+        assert (
+            await work.subscription_budget.usage(persisted_run.id, task)
+        ).consumed.input_tokens == 0
+        await work.subscription_budget.settle_attempt(
+            persisted_run.id,
+            task,
+            attempt,
+            AttemptTelemetry(input_tokens=30, output_tokens=8, estimated_api_cost_minor=0),
+        )
+        await work.commit()
+    after = await query.totals(binding.subject)
+    assert (after.input_tokens, after.output_tokens) == (30, 8)
+    assert after.final_source_count == 1
+    assert after.source_facts[0].evidence_kind == "subscription_consumption"
+    assert "final_below_live" in after.source_facts[0].disagreements
+    assert "final_evidence_mismatch" in after.source_facts[0].disagreements
+    async with PostgresUnitOfWork(session_factory) as work:
+        usage = await work.subscription_budget.usage(persisted_run.id, task)
+        assert usage.consumed.input_tokens == 30
+        assert usage.consumed.repairs == 0
+
+
 async def _next_attempt(work, run_id, task_id, number):
     attempt = uuid4()
     await work.subscription.create_attempt(

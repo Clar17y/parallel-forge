@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 from forge.application.adapters.named_check import _outcome, _output_preview
-from test_named_check_receipts import _make_command_result
+
+from .test_named_check_receipts import _make_command_result
 
 
 @pytest.mark.parametrize("version", [1, 2, 3])

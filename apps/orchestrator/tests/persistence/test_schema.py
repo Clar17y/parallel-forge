@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-CURRENT_REVISION = "20261010_0038"
+CURRENT_REVISION = "20261010_0039"
 V01_TABLES = {
     "recovery_barrier",
     "api_mutations",

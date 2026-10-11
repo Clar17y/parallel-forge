@@ -20,7 +20,8 @@ from forge.domain.policy import JevPolicy, ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.tool import ToolCallStatus, ToolName, ToolRequest
 from forge.tools.repository import RepositoryReader
-from test_planner_tools import PROJECT_ID, RUN_ID, TASK_ID, _context, _project, _UnitOfWork
+
+from .test_planner_tools import PROJECT_ID, RUN_ID, TASK_ID, _context, _project, _UnitOfWork
 
 
 def test_semantic_candidates_find_nonliteral_source_and_exclude_secrets(tmp_path: Path) -> None:

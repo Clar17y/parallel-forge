@@ -55,6 +55,7 @@ from forge.persistence.repositories.subscription_recovery import (
 from forge.persistence.repositories.subscription_task_controls import (
     PostgresSubscriptionTaskControlRepository,
 )
+from forge.persistence.repositories.task_usage_policy import PostgresTaskUsagePolicyRepository
 from forge.persistence.repositories.tasks import PostgresTaskRepository
 from forge.persistence.repositories.tool_calls import PostgresToolCallRepository
 
@@ -108,6 +109,7 @@ class PostgresUnitOfWork:
         self.subscription_plan_gate: PostgresSubscriptionPlanGateRepository
         self.subscription_recovery: PostgresSubscriptionRecoveryRepository
         self.task_controls: PostgresSubscriptionTaskControlRepository
+        self.task_usage_policy: PostgresTaskUsagePolicyRepository
 
     @property
     def session(self) -> AsyncSession:
@@ -125,6 +127,7 @@ class PostgresUnitOfWork:
         self.auth = PostgresAuthRepository(self._session)
         self.commands = PostgresCommandRepository(session=self._session)
         self.projects = PostgresProjectRepository(self._session)
+        self.task_usage_policy = PostgresTaskUsagePolicyRepository(self._session)
         self.epics = PostgresEpicBriefRepository(self._session)
         self.epic_items = PostgresEpicItemsRepository(self._session)
         self.epic_run_bridge = PostgresEpicRunBridgeRepository(self._session)

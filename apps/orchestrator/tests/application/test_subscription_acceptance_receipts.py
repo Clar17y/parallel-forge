@@ -21,7 +21,8 @@ from forge.domain.artifact import ArtifactDescriptor, canonical_storage_pointer
 from forge.domain.policy import RunnerMode, StepKind
 from forge.domain.subscription import SpecialistPurpose
 from forge.domain.tool import ToolName
-from test_subscription_handoff import Work, case
+
+from .test_subscription_handoff import Work, case
 
 
 def mixed_case(*, before=None, after=None, exit_code=0):

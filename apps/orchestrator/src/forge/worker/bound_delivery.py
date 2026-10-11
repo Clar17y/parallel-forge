@@ -17,9 +17,10 @@ from forge.application.ports.executions import ExecutionAdmission, ExecutionStat
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.task_usage_policy import budget_for_frozen_admission
 from forge.application.services.tools import CapabilityMatrix, ControlledToolService
 from forge.domain.actor import AgentRole
-from forge.domain.agent import AgentBudget, AgentRequest, AgentResult, DeveloperInput, ReviewerInput
+from forge.domain.agent import AgentRequest, AgentResult, DeveloperInput, ReviewerInput
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
@@ -108,7 +109,10 @@ class BoundDeliveryGateway:
             or request.provider != model.provider
             or request.model != model.model
             or request.reasoning_effort != model.reasoning_effort
-            or request.budget != AgentBudget.from_model_policy(model)
+            or (
+                admission is not None
+                and request.budget != budget_for_frozen_admission(model, admission)
+            )
             or request.allowed_tools != expected_tools
             or admission is None
             or admission.status is not ExecutionStatus.RUNNING

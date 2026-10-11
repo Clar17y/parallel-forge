@@ -8,7 +8,8 @@ import pytest
 from forge.application.services.subscription_handoff_application import (
     SubscriptionHandoffApplication,
 )
-from test_subscription_handoff import case
+
+from .test_subscription_handoff import case
 
 
 @pytest.mark.parametrize("failure", [None, "snapshot", "verify", "apply"])
@@ -79,7 +80,9 @@ async def test_handoff_pipeline_releases_observation_on_every_outcome(failure):
 async def test_repeated_cancellation_waits_for_owned_fence_release():
     entered, releasing, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
     _, _, handoff, kwargs = case()
-    observation = SimpleNamespace(proposal=SimpleNamespace(handoff=handoff, task=kwargs["task"], selected_candidate=None))
+    observation = SimpleNamespace(
+        proposal=SimpleNamespace(handoff=handoff, task=kwargs["task"], selected_candidate=None)
+    )
     released = []
 
     async def begin(*args):

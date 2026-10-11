@@ -12,7 +12,8 @@ from forge.application.adapters.controller_check import (
 )
 from forge.application.ports.worktrees import GitSnapshotFile
 from forge.domain.operation import OperationStatus
-from test_controller_check_adapter import _setup_real_adapter, _Unused
+
+from .test_controller_check_adapter import _setup_real_adapter, _Unused
 
 
 def recovery(adapter, **overrides):

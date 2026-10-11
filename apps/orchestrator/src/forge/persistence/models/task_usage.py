@@ -116,11 +116,6 @@ class TaskUsageObservation(Base):
             ("task_usage_work_units.id", "task_usage_work_units.project_id"),
             ondelete="RESTRICT",
         ),
-        ForeignKeyConstraint(
-            ("work_unit_id", "reconciles_event_id"),
-            ("task_usage_observations.work_unit_id", "task_usage_observations.event_id"),
-            ondelete="RESTRICT",
-        ),
         UniqueConstraint("work_unit_id", "event_id", name="uq_task_usage_observations_event"),
         UniqueConstraint("work_unit_id", "sequence", name="uq_task_usage_observations_sequence"),
         CheckConstraint(
@@ -151,6 +146,7 @@ class TaskUsageObservation(Base):
         CheckConstraint(
             "jsonb_typeof(unknown_dimensions) = 'array'", name="unknown_dimensions_array"
         ),
+        CheckConstraint("length(btrim(counter_epoch)) BETWEEN 1 AND 96", name="counter_epoch"),
         CheckConstraint(
             "(final AND final_status IS NOT NULL AND length(final_status) > 0) OR (NOT final AND final_status IS NULL AND reconciles_event_id IS NULL)",
             name="final_shape",
@@ -166,6 +162,7 @@ class TaskUsageObservation(Base):
     event_id: Mapped[str] = mapped_column(String(256), nullable=False)
     sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     counter_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    counter_epoch: Mapped[str] = mapped_column(String(96), nullable=False, server_default="source")
     scope: Mapped[str] = mapped_column(String(16), nullable=False, default="source")
     input_tokens: Mapped[int | None] = mapped_column(BigInteger)
     output_tokens: Mapped[int | None] = mapped_column(BigInteger)
@@ -199,6 +196,10 @@ class TaskUsagePolicyRevision(Base):
         ),
         CheckConstraint("hard_token_cap IS NULL OR hard_token_cap > 0", name="token_cap"),
         CheckConstraint("hard_context_cap IS NULL OR hard_context_cap > 0", name="context_cap"),
+        CheckConstraint(
+            "manual_estimate_tokens IS NULL OR manual_estimate_tokens > 0", name="manual_estimate"
+        ),
+        CheckConstraint("window_days IS NULL OR window_days > 0", name="window_days"),
     )
     project_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -207,8 +208,13 @@ class TaskUsagePolicyRevision(Base):
     checkpoint_multiplier: Mapped[float] = mapped_column(nullable=False)
     history_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
     minimum_comparables: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    window_days: Mapped[int | None] = mapped_column(BigInteger)
     hard_token_cap: Mapped[int | None] = mapped_column(BigInteger)
     hard_context_cap: Mapped[int | None] = mapped_column(BigInteger)
+    manual_estimate_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    allow_cross_project_fallback: Mapped[bool] = mapped_column(
+        nullable=False, server_default=text("true")
+    )
     actor_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -218,6 +224,10 @@ class TaskUsagePolicyRevision(Base):
 class TaskUsageBaseline(Base):
     __tablename__ = "task_usage_baselines"
     __table_args__ = (
+        CheckConstraint(
+            "coverage_count >= 0 AND outcome_count >= 0 AND source_count >= 0 AND coverage_count <= sample_count AND coverage_count <= outcome_count",
+            name="coverage_shape",
+        ),
         ForeignKeyConstraint(
             ("work_unit_id", "project_id"),
             ("task_usage_work_units.id", "task_usage_work_units.project_id"),
@@ -251,11 +261,11 @@ class TaskUsageBaseline(Base):
             ondelete="RESTRICT",
         ),
         CheckConstraint(
-            "sample_count >= 0 AND status IN ('ready','insufficient_history') AND history_digest ~ '^[0-9a-f]{64}$'",
+            "sample_count >= 0 AND status IN ('ready','insufficient_history','manual') AND history_digest ~ '^[0-9a-f]{64}$'",
             name="sample_shape",
         ),
         CheckConstraint(
-            "(status = 'ready' AND reference_tokens IS NOT NULL AND reference_tokens >= 0) OR (status = 'insufficient_history' AND reference_tokens IS NULL)",
+            "(status IN ('ready','manual') AND reference_tokens IS NOT NULL AND reference_tokens >= 0) OR (status = 'insufficient_history' AND reference_tokens IS NULL)",
             name="reference_shape",
         ),
         CheckConstraint(
@@ -267,7 +277,7 @@ class TaskUsageBaseline(Base):
             name="snapshot_shape",
         ),
         CheckConstraint(
-            "(warning_threshold_tokens IS NULL OR (warning_threshold_tokens >= 0 AND warning_threshold_tokens < 'Infinity'::float8)) AND (checkpoint_threshold_tokens IS NULL OR (checkpoint_threshold_tokens >= 0 AND checkpoint_threshold_tokens < 'Infinity'::float8)) AND (warning_threshold_tokens IS NULL OR checkpoint_threshold_tokens IS NULL OR checkpoint_threshold_tokens >= warning_threshold_tokens) AND ((status = 'insufficient_history' AND warning_threshold_tokens IS NULL AND checkpoint_threshold_tokens IS NULL) OR (status = 'ready' AND sample_count >= minimum_comparables AND window_started_at IS NOT NULL AND median_tokens IS NOT NULL AND p90_tokens IS NOT NULL AND mean_tokens IS NOT NULL AND warning_threshold_tokens IS NOT NULL AND checkpoint_threshold_tokens IS NOT NULL))",
+            "(warning_threshold_tokens IS NULL OR (warning_threshold_tokens >= 0 AND warning_threshold_tokens < 'Infinity'::float8)) AND (checkpoint_threshold_tokens IS NULL OR (checkpoint_threshold_tokens >= 0 AND checkpoint_threshold_tokens < 'Infinity'::float8)) AND (warning_threshold_tokens IS NULL OR checkpoint_threshold_tokens IS NULL OR checkpoint_threshold_tokens >= warning_threshold_tokens) AND ((status = 'insufficient_history' AND warning_threshold_tokens IS NULL AND checkpoint_threshold_tokens IS NULL) OR (status = 'ready' AND sample_count >= minimum_comparables AND window_started_at IS NOT NULL AND median_tokens IS NOT NULL AND p90_tokens IS NOT NULL AND mean_tokens IS NOT NULL AND warning_threshold_tokens IS NOT NULL AND checkpoint_threshold_tokens IS NOT NULL) OR (status = 'manual' AND sample_count = 0 AND coverage_count = 0 AND outcome_count = 0 AND window_started_at IS NULL AND window_ended_at IS NULL AND reference_tokens > 0 AND median_tokens IS NULL AND p90_tokens IS NULL AND mean_tokens IS NULL AND warning_threshold_tokens IS NOT NULL AND checkpoint_threshold_tokens IS NOT NULL))",
             name="threshold_shape",
         ),
     )
@@ -287,6 +297,11 @@ class TaskUsageBaseline(Base):
     frozen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     sample_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    coverage_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    outcome_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    source_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     reference_tokens: Mapped[float | None] = mapped_column(Float)
     median_tokens: Mapped[float | None] = mapped_column(Float)

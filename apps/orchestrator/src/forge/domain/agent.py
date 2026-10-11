@@ -547,8 +547,28 @@ class AgentBudget(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    max_input_tokens: int = Field(default=100_000, ge=1, strict=True)
-    max_output_tokens: int = Field(default=16_000, ge=1, strict=True)
+    max_input_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**63 - 1,
+        strict=True,
+        description="Optional input hard cap; omitted or null means no token ceiling, not expected usage.",
+    )
+    max_output_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**63 - 1,
+        strict=True,
+        description="Optional output hard cap; omitted or null means no token ceiling, not expected usage.",
+    )
+    max_total_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**63 - 1,
+        strict=True,
+        description="Optional per-execution aggregate hard cap; null means no aggregate ceiling, not expected usage.",
+    )
+    monitoring_policy_revision: int | None = Field(default=None, ge=1, le=2**63 - 1, strict=True)
     max_tool_calls: int = Field(default=100, ge=0, strict=True)
     max_duration_seconds: int = Field(default=1800, ge=1, strict=True)
     max_cost_minor: int = Field(default=1000, ge=0, strict=True)
@@ -564,6 +584,14 @@ class AgentBudget(BaseModel):
             max_duration_seconds=policy.max_duration_seconds,
             max_cost_minor=policy.max_cost_minor,
         )
+
+
+def combined_token_cap(input_cap: int | None, output_cap: int | None) -> int | None:
+    """A total is bounded only when both dimensions have explicit hard caps."""
+    if input_cap is None or output_cap is None:
+        return None
+    total = input_cap + output_cap
+    return total if total <= 2**63 - 1 else None
 
 
 class AgentRequest(BaseModel):

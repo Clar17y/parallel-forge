@@ -25,7 +25,8 @@ from forge.domain.tool import (
     ToolRequest,
 )
 from forge.tools.repository import RepositoryReader
-from test_planner_tools import (  # type: ignore[import-not-found]
+
+from .test_planner_tools import (  # type: ignore[import-not-found]
     RUN_ID,
     TASK_ID,
     _context,
@@ -101,7 +102,8 @@ def _service(
 
 def _run():  # type: ignore[no-untyped-def]
     from forge.domain.run import RunSnapshot, RunState
-    from test_planner_tools import PROJECT_ID, RUN_ID, TASK_ID
+
+    from .test_planner_tools import PROJECT_ID, RUN_ID, TASK_ID
 
     return RunSnapshot(
         id=RUN_ID,

@@ -36,8 +36,10 @@ from forge.persistence.models import (
     AgentExecutionEvidenceInput,
     EvidenceSet,
     ModelUsage,
+    Project,
     Run,
     Step,
+    TaskUsagePolicyRevision,
 )
 from forge.persistence.repositories.artifacts import ArtifactRepository
 from forge.persistence.repositories.events import PostgresEventRepository
@@ -135,10 +137,15 @@ class PostgresExecutionRepository:
         admitted_at: datetime | None = None,
         reviewer_input: ReviewerEvidenceBinding | None = None,
         instruction_digest: str | None = None,
+        monitoring_policy_revision: int | None = None,
+        hard_token_cap: int | None = None,
     ) -> ExecutionAdmission:
         """Admit one running step and execution in the caller's transaction."""
 
         validate_instruction_digest(instruction_digest)
+        for value in (monitoring_policy_revision, hard_token_cap):
+            if value is not None and (type(value) is not int or not 1 <= value <= 2**63 - 1):
+                raise ValueError("monitoring admission cap/revision is invalid")
         requested_admitted_at = admitted_at
         timestamp = _validate_admission_arguments(
             run_id,
@@ -161,10 +168,39 @@ class PostgresExecutionRepository:
             raise ExecutionConflict()
         try:
             run = await self._locked_run(run_id)
+            # Owner revisions lock this same project row.  Lock run -> project
+            # before step/execution so a new admission cannot use a policy
+            # superseded between request construction and durable insertion.
+            project_id = (
+                await self._session.execute(
+                    select(Project.id).where(Project.id == run.project_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if project_id is None:
+                raise ExecutionDataError()
             if reviewer_input is not None:
                 await self._validate_reviewer_input(run, reviewer_input)
             step = await self._locked_step_for_key(run_id, kind, attempt)
             if step is None:
+                current_policy = (
+                    await self._session.execute(
+                        select(TaskUsagePolicyRevision)
+                        .where(TaskUsagePolicyRevision.project_id == run.project_id)
+                        .order_by(TaskUsagePolicyRevision.revision.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if (
+                    current_policy is None
+                    and (monitoring_policy_revision is not None or hard_token_cap is not None)
+                ) or (
+                    current_policy is not None
+                    and (
+                        monitoring_policy_revision != current_policy.revision
+                        or hard_token_cap != current_policy.hard_token_cap
+                    )
+                ):
+                    raise ExecutionConflict()
                 # Lock both caller-supplied identities before inserting.  A
                 # reused identity from another lineage is a conflict, never a
                 # reason to infer or repair a missing row.
@@ -191,6 +227,8 @@ class PostgresExecutionRepository:
                     role=role.value,
                     instruction_version=instruction_version,
                     instruction_digest=instruction_digest,
+                    monitoring_policy_revision=monitoring_policy_revision,
+                    hard_token_cap=hard_token_cap,
                     provider=provider,
                     model=model,
                     status="PENDING" if pending_reviewer else ExecutionStatus.RUNNING.value,
@@ -221,6 +259,22 @@ class PostgresExecutionRepository:
                 raise ExecutionConflict()
             execution = linked[0]
             if execution.id != agent_execution_id:
+                raise ExecutionConflict()
+            if monitoring_policy_revision is not None:
+                historical_policy = (
+                    await self._session.execute(
+                        select(TaskUsagePolicyRevision).where(
+                            TaskUsagePolicyRevision.project_id == run.project_id,
+                            TaskUsagePolicyRevision.revision == monitoring_policy_revision,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if historical_policy is None or historical_policy.hard_token_cap != hard_token_cap:
+                    raise ExecutionConflict()
+            if (
+                execution.monitoring_policy_revision != monitoring_policy_revision
+                or execution.hard_token_cap != hard_token_cap
+            ):
                 raise ExecutionConflict()
             _validate_admission_identity(
                 step,
@@ -1064,6 +1118,8 @@ def _admission_from_rows(
         transition_to=step.transition_to,
         admitted_at=step.started_at,
         instruction_digest=execution.instruction_digest,
+        monitoring_policy_revision=execution.monitoring_policy_revision,
+        hard_token_cap=execution.hard_token_cap,
         is_new=is_new,
         status=status,
         finish_status=finish_status,

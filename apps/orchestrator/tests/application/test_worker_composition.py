@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -571,6 +572,7 @@ async def test_injected_queue_controls_observation_and_recovery(tmp_path, config
 class _FakeExecutionsRepo:
     def __init__(self, execution: AgentExecution | None) -> None:
         self.execution = execution
+        self.admitted_at = datetime.now(UTC)
 
     async def get_admission(self, run_id: UUID, execution_id: UUID) -> ExecutionAdmission | None:
         row = self.execution
@@ -589,8 +591,10 @@ class _FakeExecutionsRepo:
             input_artifact_id=None,
             transition_from="CREATED",
             transition_to="PLANNING",
-            admitted_at=datetime.now(UTC),
+            admitted_at=self.admitted_at,
             is_new=False,
+            monitoring_policy_revision=row.monitoring_policy_revision,
+            hard_token_cap=row.hard_token_cap,
         )
 
 
@@ -645,8 +649,13 @@ class _FakeUoW:
         self.events = _FakeEventsRepo()
         self.executions = _FakeExecutionsRepo(execution)
         self.active = False
+        self.enter_count = 0
+        self.on_second_enter: Callable[[], None] | None = None
 
     async def __aenter__(self) -> Self:
+        self.enter_count += 1
+        if self.enter_count == 2 and self.on_second_enter is not None:
+            self.on_second_enter()
         self.active = True
         return self
 
@@ -665,7 +674,10 @@ class _FakeUoW:
     ("binding_change", "policy_effort", "request_effort", "frozen_route"),
     [
         (change, None, None, False)
-        for change in ("none", "task", "state", "base", "policy", "budget")
+        for change in ("none", "task", "state", "base", "policy", "budget",
+                       "monitoring_null", "monitoring_finite", "monitoring_tamper",
+                       "monitoring_refence_cap", "monitoring_refence_terminal",
+                       "monitoring_refence_authority")
     ] + [
         ("none", effort, effort, False) for effort in ("low", "medium", "high")
     ] + [
@@ -727,6 +739,9 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
         provider="google",
         model="gemini-2.5-pro",
         status="RUNNING",
+        monitoring_policy_revision=1 if binding_change.startswith("monitoring_") else None,
+        hard_token_cap=400 if binding_change in {"monitoring_finite", "monitoring_tamper"}
+        or binding_change.startswith("monitoring_refence") else None,
     )
 
     uow = _FakeUoW(run, execution, policy_record)
@@ -819,7 +834,10 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
             ToolName.REPOSITORY_SEARCH_SEMANTIC,
             ToolName.REPOSITORY_READ_INSTRUCTIONS,
         ),
-        budget=AgentBudget.from_model_policy(policy.planner_model),
+        budget=AgentBudget.from_model_policy(policy.planner_model).model_copy(update={
+            "monitoring_policy_revision": execution.monitoring_policy_revision,
+            "max_total_tokens": execution.hard_token_cap,
+        }),
         reasoning_effort=request_effort,
     )
 
@@ -846,7 +864,17 @@ async def test_bound_planning_gateway_derives_and_validates_request_and_exact_to
         request = request.model_copy(
             update={"budget": request.budget.model_copy(update={"max_cost_minor": 999999})}
         )
-    if binding_change != "none":
+    elif binding_change == "monitoring_tamper":
+        request = request.model_copy(update={
+            "budget": request.budget.model_copy(update={"monitoring_policy_revision": 2})
+        })
+    elif binding_change == "monitoring_refence_cap":
+        uow.on_second_enter = lambda: setattr(execution, "hard_token_cap", 401)
+    elif binding_change == "monitoring_refence_terminal":
+        uow.on_second_enter = lambda: setattr(execution, "status", "CANCELLED")
+    elif binding_change == "monitoring_refence_authority":
+        uow.on_second_enter = lambda: setattr(uow.runs, "_run", replace(run, state=RunState.CANCELLED))
+    if binding_change not in {"none", "monitoring_null", "monitoring_finite"}:
         with pytest.raises(AgentGatewayError, match="^agent gateway execution failed$"):
             await bound_gateway.execute(request)
         assert not captured_bound_tools

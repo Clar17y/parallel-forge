@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +108,21 @@ def _invocation(
     )
 
 
+def test_raw_adk_optional_token_caps_preserve_other_limits() -> None:
+    request = replace(
+        _invocation(FunctionTool(lambda: {"status": "unused"})),
+        max_input_tokens=None,
+        max_output_tokens=None,
+        max_tool_calls=0,
+    )
+    assert _over_budget(AdkUsageSummary(input_tokens=1_000_000, cost_minor=0), request) is False
+    assert _over_budget(
+        AdkUsageSummary(input_tokens=1_000_000, tool_call_count=1, cost_minor=0), request
+    )
+    capped = replace(request, max_input_tokens=100)
+    assert _over_budget(AdkUsageSummary(input_tokens=101, cost_minor=0), capped)
+
+
 async def _run(
     monkeypatch: pytest.MonkeyPatch,
     responses: list[LlmResponse],
@@ -175,7 +191,8 @@ async def test_actual_runtime_bounded_cleanup_cancels_blocking_close(
     runtime = AdkRuntime(_Resolver(), "secret://forge/offline-budget")
     request = _invocation(
         FunctionTool(lambda: {"status": "unused"}),
-        max_duration_ms=10 if not caller_cancellation else 10_000,
+        # Allow SDK setup to finish before exercising the stream deadline.
+        max_duration_ms=500 if not caller_cancellation else 10_000,
     )
     task = asyncio.create_task(runtime.invoke(request))
     await asyncio.wait_for(stream.started.wait(), timeout=2)

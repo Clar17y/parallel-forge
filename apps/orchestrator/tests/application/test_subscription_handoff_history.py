@@ -14,7 +14,8 @@ from forge.domain.operation import canonical_digest
 from forge.domain.policy import RunnerMode, StepKind
 from forge.domain.subscription import CheckResultEvidence, ToolCallBinding
 from forge.domain.tool import ToolCallStatus, ToolName
-from test_subscription_handoff import case
+
+from .test_subscription_handoff import case
 
 
 def history_case(*, truncated=False, timed_out=False):

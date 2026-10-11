@@ -148,7 +148,7 @@ async def test_create_snapshots_current_policy_version_and_schema_defaults(
         record = await session.get(Run, new_run.id)
     assert record is not None
     assert record.policy_version == 2
-    assert record.token_budget == 0
+    assert record.token_budget is None
     assert record.cost_budget_minor == 0
     assert record.duration_budget_seconds == 0
     assert record.database_state == "DISABLED"

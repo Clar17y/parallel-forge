@@ -37,6 +37,7 @@ from forge.domain.event import RunEvent
 from forge.domain.plan import PlanOutput
 from forge.domain.policy import AgentModelPolicy, CommandSpec, ProjectPolicy, StepKind
 from forge.domain.run import RunSnapshot, RunState
+from forge.domain.task_usage_contract import MonitoringMode, MonitoringPolicy
 from forge.domain.tool import ToolName
 from forge.observability.usage import UsageRecord
 from forge.persistence.repositories.artifacts import ArtifactNotFound
@@ -121,6 +122,8 @@ class _FakeExecutionsRepo:
         self.admitted_attempts: list[int] = []
         self.admitted_roles: list[AgentRole] = []
         self.finalized: list[_FinalizedExecution] = []
+        self.admitted_cap: int | None = None
+        self.admitted_monitoring_revision: int | None = None
 
     async def admit(
         self,
@@ -139,10 +142,14 @@ class _FakeExecutionsRepo:
         transition_to: str | None = None,
         admitted_at: datetime | None = None,
         instruction_digest: str | None = None,
+        monitoring_policy_revision: int | None = None,
+        hard_token_cap: int | None = None,
     ) -> ExecutionAdmission:
         del transition_from, transition_to
         self.admitted_attempts.append(attempt)
         self.admitted_roles.append(role)
+        self.admitted_cap = hard_token_cap
+        self.admitted_monitoring_revision = monitoring_policy_revision
         return ExecutionAdmission(
             run_id=run_id,
             step_id=step_id,
@@ -152,6 +159,8 @@ class _FakeExecutionsRepo:
             role=role,
             instruction_version=instruction_version,
             instruction_digest=instruction_digest,
+            monitoring_policy_revision=monitoring_policy_revision,
+            hard_token_cap=hard_token_cap,
             provider=provider,
             model=model,
             input_artifact_id=input_artifact_id,
@@ -406,6 +415,15 @@ class _FakeEventsRepo:
         return [e for e in self.events if e.run_id == run_id and e.run_version == version]
 
 
+class _FakeMonitoringRepo:
+    def __init__(self) -> None:
+        self.current: MonitoringPolicy | None = None
+
+    async def get(self, project_id: UUID) -> MonitoringPolicy | None:
+        assert self.current is None or self.current.project_id == project_id
+        return self.current
+
+
 class _FakeUnitOfWork:
     def __init__(
         self,
@@ -423,6 +441,7 @@ class _FakeUnitOfWork:
         self.artifacts = _FakeArtifactsRepo()
         self.commands = _FakeCommandsRepo()
         self.events = _FakeEventsRepo()
+        self.task_usage_policy = _FakeMonitoringRepo()
         self.committed = False
         self.rolled_back = False
 
@@ -568,9 +587,31 @@ def _build_fixture(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hard_cap", [None, 50, 500])
+async def test_future_planning_admission_freezes_latest_aggregate_hard_cap(
+    tmp_path: Path, hard_cap: int | None
+) -> None:
+    service, gateway, work, command, policy = _build_fixture(tmp_path)
+    work.task_usage_policy.current = MonitoringPolicy(
+        project_id=policy.id,
+        revision=3,
+        mode=MonitoringMode.CHECKPOINT,
+        hard_token_cap=hard_cap,
+    )
+    await service.execute(command, work)
+    request = gateway.requests[0]
+    assert request.budget.max_total_tokens == hard_cap
+    assert request.budget.monitoring_policy_revision == 3
+    assert request.budget.max_input_tokens == policy.planner_model.max_input_tokens
+    assert work.executions.admitted_cap == hard_cap
+    assert work.executions.admitted_monitoring_revision == 3
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("effort", [None, "low", "medium", "high"])
 async def test_planning_binds_saved_reasoning_and_preserves_policy_document(
-    tmp_path: Path, effort: str | None,
+    tmp_path: Path,
+    effort: str | None,
 ) -> None:
     service, gateway, work, command, _ = _build_fixture(tmp_path)
     document = json.loads(json.dumps(work.projects.policy_record.document))
@@ -586,7 +627,9 @@ async def test_planning_binds_saved_reasoning_and_preserves_policy_document(
     saved_bytes = canonical_json_bytes(document)
     saved_digest = hashlib.sha256(saved_bytes).hexdigest()
     work.projects.policy_record = replace(
-        work.projects.policy_record, document=document, policy_digest=saved_digest,
+        work.projects.policy_record,
+        document=document,
+        policy_digest=saved_digest,
     )
 
     outcome = await service.execute(command, work)
@@ -599,7 +642,7 @@ async def test_planning_binds_saved_reasoning_and_preserves_policy_document(
         ("google", "gemini-3.8-flash") if effort is not None else ("test-provider", "planner-model")
     )
     assert request.budget.max_input_tokens == 75000
-    assert request.budget.max_output_tokens == 16000
+    assert request.budget.max_output_tokens is None
     assert canonical_json_bytes(work.projects.policy_record.document) == saved_bytes
     assert work.projects.policy_record.policy_digest == saved_digest
 
