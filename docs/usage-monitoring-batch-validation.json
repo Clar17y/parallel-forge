@@ -7,7 +7,7 @@
     97,
     100
   ],
-  "status": "Locally implemented, simplified and repaired; PR #108 published, round-five repair push pending at this snapshot.",
+  "status": "Locally implemented, simplified and repaired; PR #108 published, round-six repair push pending at this snapshot.",
   "feature_complete": false,
   "candidate": {
     "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
@@ -795,6 +795,118 @@
       "published_head_before_repair": "75c104573c67b16d97562a250d4fa35fdfd681f1",
       "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38101480473",
       "previous_head_codex": "completed with two new findings; first eight threads already resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round6": {
+    "snapshot_at": "2026-10-11T02:59:44.609936+00:00",
+    "source_commit": "7ab27c2f489efaebff9ae54c82984a14ac3fb640",
+    "source_tree": "273df040657da583788a4ed5249c73cb91996322",
+    "starting_head": "7c6b5953e526ac9b200895deff99693cd706eb14",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "df2b98aefd697e19d7c57621867187a36345bbbc31a51da5545edf855ad709d7",
+    "repair_delta_sha256": "03a8303c8a93937e637f091ffe1561d1eb57efb8023d64492e52911fa414d9ea",
+    "fixed_findings": [
+      {
+        "id": "PR108-11",
+        "thread": "PRRT_kwDOUDBiTc6rJl1I",
+        "comment": 4239964855
+      },
+      {
+        "id": "PR108-12",
+        "thread": "PRRT_kwDOUDBiTc6rJl1J",
+        "comment": 4239964856
+      }
+    ],
+    "summary": "New durable executions serialize on the same Project authority as authenticated policy revisions and reject stale resolved caps; existing execution replays keep frozen policy/cap identity. Authoring samples, exclusions and cohort windows use bound immutable settlement/audit history, so real proposal adoption retains prior measured history and frozen references. Historical row projections omit unused payloads while preserving proposal-null semantics.",
+    "detail": "Final production admission source passed 67 affected tests; after a test-only gateway assertion extension, eight final PostgreSQL serialization/gateway cases passed. Ninety-five gateway unit cases passed. Final production reporting source passed 58 affected domain/application/PostgreSQL/API tests; after a test-only SQL-capture selector refinement, the final measured-adoption test passed. Actual PostgreSQL blocking-pid tests cover both revision/admission lock orders and cancellation rollback. Actual offline proposal generation, authenticated adoption, final nine-token inventory, immutable ready freeze, inclusive settlement/window edges, cancelled history, retry history and malformed audit lineage are asserted. Scoped Ruff/mypy/format/whitespace and active-worktree imports passed.",
+    "acceptance": "Primary matched actual final source/test hashes and scoped patch bytes, inspected concrete regression assertions and red/green/affected/static receipts, and adjudicated the scoped Sol-high concurrency result. No material finding remained in that named gate. Earlier integrated review and unchanged tests are reused only for matching inputs; no final whole-repository pass is claimed.",
+    "accepted_file_hashes": {
+      "apps/orchestrator/src/forge/persistence/repositories/executions.py": "4b020fc033597357f490027529826d813a11466c1f0e40f2ba9d2be4cdc9a44b",
+      "apps/orchestrator/src/forge/application/services/task_usage_policy.py": "66c5ef1201dfe06503670c877034a1e6a440d85934eb8461f89e6fae964e987d",
+      "apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py": "7d10095cb7dfa5bc5c770f832ff5ebc7049956fb734adc7a49fd96ff5585dcd5",
+      "apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py": "5e8b3139c67cb9f1a54d87bb4528932ec919da819046a9837f3b476a21973bc8",
+      "apps/orchestrator/tests/persistence/test_task_usage_execution_policy.py": "3d16c9d419bc9bc5a3e5d70f34d447de91c456e0fba4b20e27280e303d7a6edd",
+      "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "914208b26484389f8ec1ced40a2e9d78a5f9ebcbb33f7ccec196da34e4a9ab67",
+      "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "a868076f50d676620882368d733bc0b16b1f91f8933b18be23edc9bacfcec413"
+    },
+    "coverage": {
+      "admission": "{\n  \"candidate\": {\n    \"head\": \"7c6b5953e526ac9b200895deff99693cd706eb14\",\n    \"worktree\": \"C:/Users/sdyer/.codex/worktrees/usage-monitoring-batch/parallel-forge\",\n    \"manifest_sha256\": \"dacaafbc9e64c3965df52b4ae2a15e841abb182569a04874a8ed74a248356dcc\",\n    \"manifest\": \"candidate-files.sha256\",\n    \"tracked_diff_sha256\": \"a23aad7c6ecd91f403532164bab591ed87bf23780227dfc5bbcbae6bf3e0a858\",\n    \"tracked_diff\": \"scoped-tracked.diff\",\n    \"note\": \"Tracked diff covers executions.py and frozen gateway test; new serialization test is untracked and bound by its file hash in the manifest. Other worker baseline paths are excluded.\"\n  },\n  \"environment\": {\n    \"pythonpath\": \"(Resolve-Path 'apps/orchestrator/src').Path\",\n    \"dependencies\": \"uv run --frozen --extra dev, Python 3.14\",\n    \"database\": \"Disposable migrated PostgreSQL fixture on 127.0.0.1:5435; each test owns its database\",\n    \"import_receipt\": \"source-import.log: exit 0, forge.__file__ under active worktree\"\n  },\n  \"commands\": {\n    \"red\": \"uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py -q --tb=short -o log_cli=false\",\n    \"focused_final\": \"uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py -q --tb=short -o log_cli=false\",\n    \"affected\": \"uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py apps/orchestrator/tests/persistence/test_task_usage_execution_policy.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py apps/orchestrator/tests/persistence/test_execution_instruction_digest.py apps/orchestrator/tests/persistence/test_reviewer_admission.py apps/orchestrator/tests/application/test_task_usage_policy.py apps/orchestrator/tests/application/test_planning_workflow.py -q --tb=short -o log_cli=false\",\n    \"gateway_unit\": \"uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/application/test_worker_composition.py apps/orchestrator/tests/application/test_bound_delivery.py -q --tb=short -o log_cli=false\",\n    \"ruff\": \"rtk err uv run --frozen --extra dev ruff check apps/orchestrator/src/forge/persistence/repositories/executions.py apps/orchestrator/src/forge/application/services/task_usage_policy.py apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py apps/orchestrator/tests/application/test_task_usage_policy.py\",\n    \"mypy\": \"rtk err uv run --frozen --extra dev mypy apps/orchestrator/src/forge/persistence/repositories/executions.py apps/orchestrator/src/forge/application/services/task_usage_policy.py\",\n    \"format\": \"rtk err uv run --frozen --extra dev ruff format --check apps/orchestrator/src/forge/persistence/repositories/executions.py apps/orchestrator/tests/persistence/test_monitoring_admission_serialization.py apps/orchestrator/tests/persistence/test_frozen_monitoring_gateway.py\",\n    \"whitespace\": \"git diff --check\"\n  },\n  \"results\": {\n    \"red-stale-admission.log\": \"exit 1; all four stale new-admission transitions were incorrectly accepted before the repository fix\",\n    \"affected-tests.log\": \"exit 0; 67 passed on final production source, before a test-only addition to frozen gateway assertions\",\n    \"pg-gateway-final.log\": \"exit 0; 8 passed on final source and final edited PG test files\",\n    \"frozen-gateway-unit.log\": \"exit 0; 95 passed on final source\",\n    \"ruff-final.log\": \"exit 0\",\n    \"mypy.log\": \"exit 0\",\n    \"format-final.log\": \"exit 0\",\n    \"diff-check.log\": \"exit 0\"\n  },\n  \"invariants\": {\n    \"C11-A\": \"Proved in PostgreSQL: stale no-policy, null, higher and finite-to-null resolved budgets conflict before any new step/execution; fresh current revisions admit. Production planning gateway test rejects stale new admission and prevents injected provider use, while old admitted request remains valid.\",\n    \"C11-B\": \"Proved actual pg_blocking_pids waits in both orders: admission first holds project authority until commit, then owner revision commits; owner revision first blocks later admission and stale cap conflicts after commit. A cancelled blocked admission rolls back with zero rows; next current admission succeeds.\",\n    \"C11-C\": \"Proved historical replay after cap edit returns is_new=false, with exactly one step/execution/admission event; tampered revision/cap/identity conflicts. Existing reviewer replay and planning recovery tests pass. Gateway unit cases verify terminal/cancelled authority fences before provider use. No duplicate usage debit is claimed because replay did not invoke or settle a provider.\",\n    \"C11-D\": \"Proved unconfigured no-cap admission and current-policy null cap remain valid; role/model and gateway checks pass. All production callers construct budgets before admit and either roll back on conflict or propagate through a rollback UoW, before gateway execution.\"\n  },\n  \"limits\": [\n    \"No live provider, hosted CI, GitHub mutation or application-level automatic retry was run.\",\n    \"The new repository behavior rejects a stale new admission; callers must obtain a fresh request through their normal command/recovery path.\"\n  ]\n}\n",
+      "reporting": "# PR108-12 reporting candidate\n\nHEAD: `7c6b5953e526ac9b200895deff99693cd706eb14`.\nFinal scoped patch: `scoped-window.patch`, SHA-256 `A9E7C9D75309976CCF2BB3100BF7F9F23B10BB9606E2B2BEB5C2D083C63960EF`. Original checkpoint preserved as `pre-window-reporting.patch` (previously `scoped.patch`).\nFinal owned source SHA-256: query `914208B26484389F8EC1CED40A2E9D78A5F9EBCBB33F7CCEC196DA34E4A9AB67`; persistence test `A868076F50D676620882368D733BC0B16B1F91F8933B18BE23EDC9BACFCEC413`.\n\n`PYTHONPATH` was set to resolved `apps/orchestrator/src` before each Python command. `import.txt` proves `forge.__file__` resolves inside this worktree. PostgreSQL disposable integration fixture used port 5435. Python checks used `uv run --frozen --extra dev`.\n\nFinal affected command: `python -m pytest apps/orchestrator/tests/domain/test_task_usage_baselines.py apps/orchestrator/tests/application/test_task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py apps/orchestrator/tests/api/test_task_usage_reporting.py -q` (`affected-window.txt`, 58 passed). After the final test-only SQL-capture selector refinement, the affected focused command `python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q -k measured_proposal_history` passed (`window-focused-final.txt`); production source was unchanged. Final static commands: `ruff check apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py` (`ruff-window-final.txt`, pass), `mypy apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py` (`mypy-window.txt`, pass), and `git diff --check` (`diff-check-window-final.txt`, pass).\n\n| Case | Evidence and result |\n| --- | --- |\n| C12-A: real proposal settlement, final measured source, adoption, historical sample/report/exclusions and frozen ready reference | `red.txt` shows the real adoption historical sample missing before query repair (1 failed). `green-authoring-final.txt` has passing focused real-PG test; 9 tokens, completed inventory and frozen replay asserted before/after adoption. `affected.txt` 58 reporting tests pass. |\n| C12-B: creation/proposal inclusive cutoff, measured proposal window edge after adoption, cancellation inclusive/window edge, failed attempt \u2192 retry \u2192 later proposal, malformed or wrong-epic audit | The real-PG adoption test asserts its measured source is included at settlement + 1 day and absent at + 1 microsecond, with subject-scoped exclusions, report sample counts and frozen replay. `window-mutant-red.txt` records 1 expected failure when a temporary source mutation shifted historical time back to mutable `updated_at`; mutation was removed. Controlled first failed-attempt row plus real repository audit, actual retry service, and worker-produced second proposal distinguish failure/retry/current history. `affected-window.txt`: 58 passed. |\n| C12-C: shared projection in samples and exclusions, run history and reporting regression | Both paths call `_historical_jobs` with an identical as-of/window derivation. SQL window prefilter and batched audit lookup preserve bounded statement counts. `affected-window.txt` covers domain/application/persistence/API reporting, 58 passed. Final focused/static results are above. |\n| C12-D: narrow historical row I/O | Scalar projections select only required job/audit/attempt fields and retain `proposal` to preserve JSON null handling. Captured real SQL in adoption test asserts job snapshot and attempt usage/reservation/terminal proof are absent. No latency claim. |\n\nLimits: eventless pre-audit legacy jobs cannot recover historical transitions after mutable updates; they use current row state only when `updated_at <= as_of`, otherwise queued at creation. An audit's `proposed` state requires the settled current attempt and extant proposal/digest; historical proposal content across a hypothetical later replacement is not stored, but production retry is only eligible from failed state. The first failed attempt in the retry test is a controlled row fixture plus production repository audit, not a failing-worker settlement. Existing run/evaluation and observation/gateway evidence from unchanged code was reused; this round did not rerun unrelated suites or live providers.\n"
+    },
+    "evidence": {
+      "policy_primary": ".llm-output\\pr108-round6\\policy-primary-validation.json",
+      "reporting_primary": ".llm-output\\pr108-round6\\reporting-primary-validation.json",
+      "scoped_correctness": ".llm-output\\pr108-round6\\correctness-result.json",
+      "previous_repairs": ".llm-output/pr108-round5/acceptance.json",
+      "earlier_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "jev": {
+      "search": {
+        "jev-search-admission-current.json": {
+          "status": "partial",
+          "coverage": {
+            "complete": false,
+            "reasons": [
+              "operation_budget_reached",
+              "unscored_candidates"
+            ]
+          }
+        },
+        "jev-search-authoring-current.json": {
+          "status": "partial",
+          "coverage": {
+            "complete": false,
+            "reasons": [
+              "unscored_candidates",
+              "operation_budget_reached"
+            ]
+          }
+        }
+      },
+      "review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        }
+      },
+      "diff_sha256": "df2b98aefd697e19d7c57621867187a36345bbbc31a51da5545edf855ad709d7",
+      "repair_delta": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "03a8303c8a93937e637f091ffe1561d1eb57efb8023d64492e52911fa414d9ea"
+      },
+      "focus_disposition": "Both final integrated and focused-delta review attempts are hash-bound but partial due hunk/operation/size limits. Full focus concerns unchanged ADK compatibility/coverage, carrying forward credible prior evidence. Delta focus concerns historical projection coverage, coordination and cancellation; actual real-PG adoption/window/cancellation/retry assertions and shared sample/exclusion projection address those named behaviors. Scores establish neither absence nor test success. The scoped admission gate uses immutable preparation copies and unchanged admission hashes; a later disjoint reporting test-only refinement does not invalidate that gate.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "Stale new-admission conflicts roll back; automatic application retry is not implemented or claimed.",
+      "Eventless legacy transitions and full historical mutable candidate/policy/task/proposal replacement lineage are not fully reconstructed.",
+      "The first failed authoring attempt is a controlled row fixture with actual repository audit, not a failing-worker settlement.",
+      "Final test-only assertion refinements use focused checks plus the preceding affected result on unchanged production source.",
+      "No final whole-repository rerun, additional manual full hosted CI, performance benchmark, runtime live-provider acceptance or merge.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain other epic children; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-six repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "7c6b5953e526ac9b200895deff99693cd706eb14",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38104476205",
+      "previous_head_codex": "completed with two new findings; first ten threads already answered and resolved",
       "new_head_smoke": "pending",
       "new_head_codex": "pending",
       "human_code_owner_review": "pending",
