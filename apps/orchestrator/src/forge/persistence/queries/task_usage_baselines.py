@@ -35,7 +35,11 @@ from forge.domain.task_usage_contract import (
     SubjectKey,
     WorkUnitBinding,
 )
-from forge.persistence.models.epic_brainstorm import BrainstormAttemptRow, BrainstormJobRow
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormAttemptRow,
+    BrainstormAuditRow,
+    BrainstormJobRow,
+)
 from forge.persistence.models.execution import (
     AgentExecution,
     EvidenceSet,
@@ -76,6 +80,116 @@ class _HistoricalRun:
     state: str
     completed_at: datetime
     accepted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _HistoricalJob:
+    id: UUID
+    project_id: UUID
+    state: str
+    proposal_digest: str | None
+    event_at: datetime
+
+
+async def _historical_jobs(
+    session: AsyncSession, *, projects: set[UUID], as_of: datetime,
+    lower: datetime | None, job_ids: set[UUID] | None = None,
+) -> list[_HistoricalJob]:
+    """Project authoring state from settled attempts and append-only audit times."""
+    rows: list[Row[tuple[Any, ...]]] = []
+    identities = projects if job_ids is None else job_ids
+    filters = [BrainstormJobRow.created_at <= as_of]
+    if lower is not None:
+        settled_in_window = exists(select(BrainstormAuditRow.id).join(
+            BrainstormAttemptRow,
+            BrainstormAuditRow.subject_id == BrainstormAttemptRow.id,
+        ).where(
+            BrainstormAttemptRow.job_id == BrainstormJobRow.id,
+            BrainstormAuditRow.action == "attempt_settled",
+            BrainstormAuditRow.created_at >= lower,
+            BrainstormAuditRow.created_at <= as_of,
+        ))
+        job_action_in_window = exists(select(BrainstormAuditRow.id).where(
+            BrainstormAuditRow.subject_id == BrainstormJobRow.id,
+            BrainstormAuditRow.action.in_(("job_retried", "job_cancelled")),
+            BrainstormAuditRow.created_at >= lower,
+            BrainstormAuditRow.created_at <= as_of,
+        ))
+        filters.append(or_(BrainstormJobRow.created_at >= lower,
+                           BrainstormJobRow.updated_at >= lower,
+                           settled_in_window, job_action_in_window))
+    for batch in _id_batches(identities):
+        predicate = (BrainstormJobRow.project_id if job_ids is None else BrainstormJobRow.id)
+        rows.extend((await session.execute(select(
+            BrainstormJobRow.id, BrainstormJobRow.epic_id, BrainstormJobRow.project_id,
+            BrainstormJobRow.state, BrainstormJobRow.proposal, BrainstormJobRow.proposal_digest,
+            BrainstormJobRow.current_attempt_id, BrainstormJobRow.created_at,
+            BrainstormJobRow.updated_at,
+        ).where(
+            predicate.in_(batch), *filters,
+        ))).all())
+    by_id = {row.id: row for row in rows if row.project_id in projects}
+    events: dict[UUID, list[tuple[datetime, UUID, str]]] = {}
+    for batch in _id_batches(set(by_id)):
+        for settled in (await session.execute(
+            select(
+                BrainstormAuditRow.id.label("audit_id"),
+                BrainstormAuditRow.epic_id.label("audit_epic_id"),
+                BrainstormAuditRow.detail, BrainstormAuditRow.created_at.label("audit_at"),
+                BrainstormAttemptRow.id.label("attempt_id"), BrainstormAttemptRow.job_id,
+                BrainstormAttemptRow.process_settled,
+                BrainstormAttemptRow.state.label("attempt_state"),
+            )
+            .join(BrainstormAttemptRow, BrainstormAuditRow.subject_id == BrainstormAttemptRow.id)
+            .where(BrainstormAttemptRow.job_id.in_(batch),
+                   BrainstormAuditRow.action == "attempt_settled",
+                   BrainstormAuditRow.created_at <= as_of)
+        )).all():
+            job = by_id[settled.job_id]
+            if (settled.audit_epic_id != job.epic_id or not settled.process_settled
+                    or settled.attempt_state != "settled"):
+                continue
+            detail = settled.detail if isinstance(settled.detail, dict) else {}
+            state = detail.get("state")
+            if state == "proposed" and (
+                job.current_attempt_id != settled.attempt_id or job.proposal_digest is None
+                or job.proposal is None
+            ):
+                state = "unknown"
+            if not isinstance(state, str) or state not in {"proposed", "failed", "cancelled", "quota_wait"}:
+                state = "unknown"
+            events.setdefault(job.id, []).append((settled.audit_at, settled.audit_id, state))
+        for audit in (await session.execute(select(
+            BrainstormAuditRow.id, BrainstormAuditRow.subject_id, BrainstormAuditRow.epic_id,
+            BrainstormAuditRow.action, BrainstormAuditRow.detail, BrainstormAuditRow.created_at,
+        ).where(
+            BrainstormAuditRow.subject_id.in_(batch),
+            BrainstormAuditRow.action.in_(("job_retried", "job_cancelled")),
+            BrainstormAuditRow.created_at <= as_of,
+        ))).all():
+            job = by_id[audit.subject_id]
+            if audit.epic_id != job.epic_id:
+                continue
+            detail = audit.detail if isinstance(audit.detail, dict) else {}
+            state = "queued" if audit.action == "job_retried" else detail.get("state")
+            if not isinstance(state, str) or state not in {"queued", "cancelled", "cancel_requested"}:
+                state = "unknown"
+            events.setdefault(job.id, []).append((audit.created_at, audit.id, state))
+    result: list[_HistoricalJob] = []
+    for job in by_id.values():
+        timeline = events.get(job.id, ())
+        if timeline:
+            at, _, state = max(timeline, key=lambda item: (item[0], str(item[1])))
+        elif job.updated_at <= as_of:
+            # Pre-audit legacy rows have no reconstructable transition history.
+            state, at = job.state, job.updated_at
+        else:
+            state, at = "queued", job.created_at
+        if lower is not None and at < lower:
+            continue
+        result.append(_HistoricalJob(job.id, job.project_id, state,
+                                     job.proposal_digest if state == "proposed" else None, at))
+    return result
 
 
 async def _historical_runs(
@@ -444,21 +558,8 @@ class TaskUsageBaselineQuery:
             except OverflowError:
                 # Every representable sample is in range; omit the SQL lower bound.
                 lower = None
-        job_filters = [
-            BrainstormJobRow.updated_at <= as_of,
-        ]
-        if lower is not None:
-            job_filters.append(BrainstormJobRow.updated_at >= lower)
         runs = await _historical_runs(session, projects=project_ids, as_of=as_of, lower=lower)
-        jobs: list[Row[tuple[Any, ...]]] = []
-        for project_batch in _id_batches(project_ids):
-            jobs.extend((await session.execute(
-                select(BrainstormJobRow.id, BrainstormJobRow.project_id,
-                       BrainstormJobRow.state, BrainstormJobRow.proposal_digest,
-                       BrainstormJobRow.updated_at).where(
-                    BrainstormJobRow.project_id.in_(project_batch), *job_filters
-                )
-            )).all())
+        jobs = await _historical_jobs(session, projects=project_ids, as_of=as_of, lower=lower)
         candidates = [
             (
                 project,
@@ -476,16 +577,16 @@ class TaskUsageBaselineQuery:
             )
         ] + [
             (
-                project,
+                job.project_id,
                 "authoring_job",
-                identity,
+                job.id,
                 "authoring",
-                    state,
-                    state == "proposed" and proposal_digest is not None,
-                    False,
-                    at,
+                job.state,
+                job.state == "proposed" and job.proposal_digest is not None,
+                False,
+                job.event_at,
             )
-            for identity, project, state, proposal_digest, at in jobs
+            for job in jobs
         ]
         if not candidates:
             return ()
@@ -614,24 +715,16 @@ class TaskUsageBaselineQuery:
                 lower = as_of - timedelta(days=window_days)
             except OverflowError:
                 lower = None
-        job_filters = [
-            BrainstormJobRow.updated_at <= as_of,
-        ]
         run_ids = {identity for project, kind, identity in subjects if kind == "run" and project in projects}
         job_ids = {
             identity
             for project, kind, identity in subjects
             if kind == "authoring_job" and project in projects
         }
-        if lower is not None:
-            job_filters.append(BrainstormJobRow.updated_at >= lower)
         runs = await _historical_runs(session, projects=projects, as_of=as_of,
                                       lower=lower, run_ids=run_ids)
-        jobs: list[BrainstormJobRow] = []
-        for batch in _id_batches(job_ids):
-            jobs.extend((await session.scalars(
-                select(BrainstormJobRow).where(BrainstormJobRow.id.in_(batch), *job_filters)
-            )).all())
+        jobs = await _historical_jobs(session, projects=projects, as_of=as_of,
+                                      lower=lower, job_ids=job_ids)
         runs = [run for run in runs if run.project_id in projects
                 and (run.project_id, "run", run.id) in subjects]
         jobs = [job for job in jobs if job.project_id in projects

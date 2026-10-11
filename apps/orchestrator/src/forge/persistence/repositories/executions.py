@@ -36,6 +36,7 @@ from forge.persistence.models import (
     AgentExecutionEvidenceInput,
     EvidenceSet,
     ModelUsage,
+    Project,
     Run,
     Step,
     TaskUsagePolicyRevision,
@@ -167,21 +168,39 @@ class PostgresExecutionRepository:
             raise ExecutionConflict()
         try:
             run = await self._locked_run(run_id)
-            if monitoring_policy_revision is not None:
-                policy = (
-                    await self._session.execute(
-                        select(TaskUsagePolicyRevision).where(
-                            TaskUsagePolicyRevision.project_id == run.project_id,
-                            TaskUsagePolicyRevision.revision == monitoring_policy_revision,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if policy is None or policy.hard_token_cap != hard_token_cap:
-                    raise ExecutionConflict()
+            # Owner revisions lock this same project row.  Lock run -> project
+            # before step/execution so a new admission cannot use a policy
+            # superseded between request construction and durable insertion.
+            project_id = (
+                await self._session.execute(
+                    select(Project.id).where(Project.id == run.project_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if project_id is None:
+                raise ExecutionDataError()
             if reviewer_input is not None:
                 await self._validate_reviewer_input(run, reviewer_input)
             step = await self._locked_step_for_key(run_id, kind, attempt)
             if step is None:
+                current_policy = (
+                    await self._session.execute(
+                        select(TaskUsagePolicyRevision)
+                        .where(TaskUsagePolicyRevision.project_id == run.project_id)
+                        .order_by(TaskUsagePolicyRevision.revision.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if (
+                    current_policy is None
+                    and (monitoring_policy_revision is not None or hard_token_cap is not None)
+                ) or (
+                    current_policy is not None
+                    and (
+                        monitoring_policy_revision != current_policy.revision
+                        or hard_token_cap != current_policy.hard_token_cap
+                    )
+                ):
+                    raise ExecutionConflict()
                 # Lock both caller-supplied identities before inserting.  A
                 # reused identity from another lineage is a conflict, never a
                 # reason to infer or repair a missing row.
@@ -241,6 +260,17 @@ class PostgresExecutionRepository:
             execution = linked[0]
             if execution.id != agent_execution_id:
                 raise ExecutionConflict()
+            if monitoring_policy_revision is not None:
+                historical_policy = (
+                    await self._session.execute(
+                        select(TaskUsagePolicyRevision).where(
+                            TaskUsagePolicyRevision.project_id == run.project_id,
+                            TaskUsagePolicyRevision.revision == monitoring_policy_revision,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if historical_policy is None or historical_policy.hard_token_cap != hard_token_cap:
+                    raise ExecutionConflict()
             if (
                 execution.monitoring_policy_revision != monitoring_policy_revision
                 or execution.hard_token_cap != hard_token_cap

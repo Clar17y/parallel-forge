@@ -20,14 +20,22 @@ from forge.domain.run import RunSnapshot, RunState
 from forge.domain.subscription import LogicalTaskContract, SpecialistPurpose
 from forge.domain.task_usage_baselines import BaselineSample, SamplingRules, select_cohort
 from forge.domain.task_usage_contract import (
+    CounterKind,
     MonitoringPolicy,
+    Observation,
     RouteCohort,
     RouteMember,
     SourceBinding,
     SubjectKey,
+    TokenCounts,
     WorkUnitBinding,
 )
-from forge.persistence.models.epic_brainstorm import BrainstormConversation, BrainstormJobRow
+from forge.persistence.models.epic_brainstorm import (
+    BrainstormAttemptRow,
+    BrainstormAuditRow,
+    BrainstormConversation,
+    BrainstormJobRow,
+)
 from forge.persistence.models.epic_brief import Epic
 from forge.persistence.models.execution import (
     AgentExecution,
@@ -47,6 +55,7 @@ from forge.persistence.models.task_usage import TaskUsagePolicyRevision, TaskUsa
 from forge.persistence.queries import task_usage_baselines as baseline_module
 from forge.persistence.queries.task_usage_baselines import TaskUsageBaselineQuery
 from forge.persistence.queries.task_usage_totals import TaskUsageTotalsQuery
+from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRepository
 from forge.persistence.repositories.task_usage_observations import (
     PostgresTaskUsageObservations,
     _members,
@@ -57,6 +66,7 @@ from forge.persistence.repositories.task_usage_policy import (
 )
 from forge.persistence.repositories.usage import UsageRepository
 from forge.persistence.unit_of_work import PostgresUnitOfWork
+from forge.worker.epic_brainstorm import EpicBrainstormWorker
 from sqlalchemy import event, func, select, update
 
 _AGENTS_TEST_DIR = str(Path(__file__).resolve().parents[1] / "agents")
@@ -72,6 +82,12 @@ from test_adk_gateway import (
     _pricing_catalog,
     build_developer_output,
 )
+
+_BRAINSTORM_TEST_DIR = str(Path(__file__).resolve().parents[1] / "epic_brainstorm")
+if _BRAINSTORM_TEST_DIR not in sys.path:
+    sys.path.insert(0, _BRAINSTORM_TEST_DIR)
+
+from test_brainstorm_worker import FakeGateway, prepared
 
 
 def _binding(run, execution_id, effort=None):
@@ -1097,6 +1113,274 @@ async def test_authoring_and_run_subjects_are_separate_history_rows(session_fact
         (foreign_project, "authoring_job", foreign_job),
     }
     assert all(row.total_tokens is None and not row.measured for row in rows)
+
+
+@pytest.mark.integration
+async def test_measured_proposal_history_and_frozen_reference_survive_real_adoption(session_factory):
+    service, epic_id, project_id, actor, receipt = await prepared(session_factory)
+    query = TaskUsageBaselineQuery(session_factory)
+    report_service = TaskUsageBaselineService(query)
+    async with session_factory() as session:
+        before_proposal = await session.scalar(select(func.clock_timestamp()))
+    assert before_proposal is not None
+    worker = EpicBrainstormWorker(
+        session_factory, owner="usage-history-worker",
+        gateway_factory=lambda _: FakeGateway(), reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.state == "proposed" and outcome.proposal_digest
+    async with session_factory() as session:
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        attempt = await session.get(BrainstormAttemptRow, job.current_attempt_id)
+        proposal_audit = await session.scalar(select(BrainstormAuditRow).where(
+            BrainstormAuditRow.action == "attempt_settled",
+            BrainstormAuditRow.subject_id == attempt.id,
+        ))
+    assert proposal_audit is not None and proposal_audit.detail["state"] == "proposed"
+    proposal_at = proposal_audit.created_at
+    route = RouteCohort.from_members((RouteMember(
+        role="developer", provider="fake", model="fixture", ordinal=0,
+    ),))
+    binding = WorkUnitBinding(
+        subject=SubjectKey(project_id=project_id, kind="authoring_job", subject_id=receipt.job_id),
+        work_unit_id=uuid4(), admitted_phase_id="authoring",
+        configured_route=route, effective_route=route,
+        source=SourceBinding(kind="authoring_attempt", source_id=attempt.id),
+    )
+    writer = PostgresTaskUsageObservations(session_factory)
+    await writer.bind(binding)
+    await writer.append_observation(Observation(
+        binding=binding, event_id="settled-usage", sequence=1,
+        counter_kind=CounterKind.CUMULATIVE,
+        tokens=TokenCounts(input_tokens=4, output_tokens=5),
+        final=True, final_status="succeeded",
+    ))
+    async with session_factory() as session:
+        before_adoption = await session.scalar(select(func.clock_timestamp()))
+    assert before_adoption is not None
+
+    async def projection(at):
+        sample, = [row for row in await query.samples(project_ids={project_id},
+            as_of=at, window_days=365) if row.subject_id == receipt.job_id]
+        exclusions = await query.exclusions(project_ids={project_id}, as_of=at,
+            window_days=365, subjects={(project_id, "authoring_job", receipt.job_id)})
+        report = await report_service.report(UsageReportFilters(
+            project_ids=frozenset({project_id}), as_of=at,
+            rules=SamplingRules(window_days=365, minimum_comparables=1),
+        ))
+        return sample, exclusions, report
+
+    prior = await projection(before_adoption)
+    assert prior[0].measured and prior[0].total_tokens == 9
+    assert prior[2]["overview"]["sample_count"] == 1
+    async with session_factory() as session, session.begin():
+        session.add(TaskUsagePolicyRevision(
+            project_id=project_id, revision=1, mode="report_only",
+            warning_multiplier=1.5, checkpoint_multiplier=2.0,
+            history_limit=50, minimum_comparables=1, manual_estimate_tokens=None,
+            allow_cross_project_fallback=True, actor_id=uuid4(),
+        ))
+    target_conversation, target_version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor,
+        key="usage-target-conversation", text="Next authoring task",
+    )
+    target_turn = (await service.turns(epic_id=epic_id, project_id=project_id,
+                                       conversation_id=target_conversation))[0]
+    target_receipt = await service.submit(
+        epic_id=epic_id, project_id=project_id, conversation_id=target_conversation,
+        prompt_turn_id=target_turn.turn_id, expected_epic_version=1,
+        expected_conversation_version=target_version, actor=actor, key="usage-target-submit",
+    )
+    async with session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("usage-freeze-target")
+        assert claimed is not None and claimed[0].id == target_receipt.job_id
+        target_attempt = claimed[1]
+    target_binding = WorkUnitBinding(
+        subject=SubjectKey(project_id=project_id, kind="authoring_job",
+                           subject_id=target_receipt.job_id),
+        work_unit_id=uuid4(), admitted_phase_id="authoring",
+        configured_route=route, effective_route=route,
+        source=SourceBinding(kind="authoring_attempt", source_id=target_attempt.id),
+    )
+    await writer.bind(target_binding)
+    frozen = await query.freeze_baseline(target_binding, frozen_at=datetime.now(UTC))
+    assert frozen is not None and frozen.status == "ready" and frozen.sample_count == 1
+    await service.adopt(
+        epic_id=epic_id, project_id=project_id, job_id=receipt.job_id,
+        proposal_digest=outcome.proposal_digest, expected_job_version=outcome.job_version,
+        expected_epic_version=1, actor=actor, key="usage-history-adopt",
+    )
+    historical = await projection(before_adoption)
+    assert historical[0] == prior[0]
+    assert historical[1] == prior[1]
+    assert historical[2]["overview"] == prior[2]["overview"]
+    assert await query.freeze_baseline(target_binding) == frozen
+    before = await query.samples(project_ids={project_id}, as_of=before_proposal,
+                                 window_days=365)
+    assert all(row.subject_id != receipt.job_id or row.outcome == "unknown" for row in before)
+    inclusive = await query.samples(project_ids={project_id}, as_of=proposal_at,
+                                    window_days=365)
+    assert any(row.subject_id == receipt.job_id and row.outcome == "completed"
+               for row in inclusive)
+    edge = proposal_at + timedelta(days=1)
+    beyond = edge + timedelta(microseconds=1)
+    for at, expected in ((edge, 1), (beyond, 0)):
+        samples = await query.samples(project_ids={project_id}, as_of=at, window_days=1)
+        measured = [row for row in samples if row.subject_id == receipt.job_id]
+        assert len(measured) == expected
+        if expected:
+            assert measured[0].measured and measured[0].total_tokens == 9
+        exclusions = await query.exclusions(
+            project_ids={project_id}, as_of=at, window_days=1,
+            subjects={(project_id, "authoring_job", receipt.job_id)},
+        )
+        assert exclusions == {}
+        report = await report_service.report(UsageReportFilters(
+            project_ids=frozenset({project_id}), as_of=at,
+            rules=SamplingRules(window_days=1, minimum_comparables=1),
+        ))
+        assert report["overview"]["sample_count"] == expected
+        assert await query.freeze_baseline(target_binding) == frozen
+
+    engine = session_factory.kw["bind"].sync_engine
+    statements: list[str] = []
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.lower())
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        async with session_factory() as session:
+            projected = await baseline_module._historical_jobs(
+                session, projects={project_id}, as_of=edge,
+                lower=proposal_at,
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert any(row.id == receipt.job_id and row.state == "proposed" for row in projected)
+    job_sql = next(sql for sql in statements
+                   if sql.lstrip().startswith("select epic_brainstorm_jobs.id"))
+    settled_sql = next(sql for sql in statements
+                       if sql.lstrip().startswith("select epic_brainstorm_audit.id as audit_id"))
+    assert "epic_brainstorm_jobs.snapshot" not in job_sql
+    assert "epic_brainstorm_attempts.usage" not in settled_sql
+    assert "epic_brainstorm_attempts.reservation" not in settled_sql
+    assert "epic_brainstorm_attempts.terminal_proof" not in settled_sql
+    async with session_factory() as session, session.begin():
+        await session.execute(update(BrainstormAuditRow).where(
+            BrainstormAuditRow.id == proposal_audit.id,
+        ).values(detail={"state": ["proposed"]}))
+    malformed = await projection(before_adoption)
+    assert malformed[0].outcome == "unknown"
+    assert malformed[1]["in_progress"] == 1
+    assert malformed[2]["overview"]["sample_count"] == 0
+    async with session_factory() as session, session.begin():
+        await session.execute(update(BrainstormAuditRow).where(
+            BrainstormAuditRow.id == proposal_audit.id,
+        ).values(detail={"state": "proposed"}, epic_id=uuid4()))
+    mismatched = await projection(before_adoption)
+    assert mismatched[0].outcome == "unknown"
+    assert mismatched[1]["in_progress"] == 1
+    assert mismatched[2]["overview"]["sample_count"] == 0
+
+
+@pytest.mark.integration
+async def test_authoring_cancel_audit_preserves_before_and_after_cutoffs(session_factory):
+    service, epic_id, project_id, actor, receipt = await prepared(session_factory)
+    query = TaskUsageBaselineQuery(session_factory)
+    subject = {(project_id, "authoring_job", receipt.job_id)}
+    async with session_factory() as session:
+        before_cancel = await session.scalar(select(func.clock_timestamp()))
+    assert before_cancel is not None
+    await service.cancel(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id,
+                         expected_job_version=receipt.job_version, actor=actor,
+                         key="usage-history-cancel")
+    async with session_factory() as session:
+        audit = await session.scalar(select(BrainstormAuditRow).where(
+            BrainstormAuditRow.action == "job_cancelled",
+            BrainstormAuditRow.subject_id == receipt.job_id,
+        ))
+    assert audit is not None and audit.detail["state"] == "cancelled"
+    async with session_factory() as session, session.begin():
+        await session.execute(update(BrainstormJobRow).where(
+            BrainstormJobRow.id == receipt.job_id,
+        ).values(updated_at=audit.created_at + timedelta(days=2)))
+
+    async def state(at):
+        samples = await query.samples(project_ids={project_id}, as_of=at, window_days=1)
+        exclusions = await query.exclusions(project_ids={project_id}, as_of=at,
+                                            window_days=1, subjects=subject)
+        return samples, exclusions
+
+    before = await state(before_cancel)
+    assert [sample.outcome for sample in before[0]] == ["unknown"]
+    assert before[1]["in_progress"] == 1
+    for at in (audit.created_at, audit.created_at + timedelta(hours=1),
+               audit.created_at + timedelta(days=1)):
+        samples, exclusions = await state(at)
+        assert [sample.outcome for sample in samples] == ["cancelled"]
+        assert exclusions["cancelled"] == 1
+    assert await state(audit.created_at + timedelta(days=1, microseconds=1)) == ((), {})
+
+
+@pytest.mark.integration
+async def test_authoring_failed_attempt_retry_and_later_proposal_keep_distinct_history(
+    session_factory,
+):
+    service, epic_id, project_id, actor, receipt = await prepared(session_factory)
+    query = TaskUsageBaselineQuery(session_factory)
+    subject = {(project_id, "authoring_job", receipt.job_id)}
+    async with session_factory() as session, session.begin():
+        repository = PostgresBrainstormRepository(session)
+        claimed = await repository.claim("usage-first-attempt")
+        assert claimed is not None and claimed[0].id == receipt.job_id
+        job, first = claimed
+        first.process_settled = first.usage_known = True
+        first.state, first.failure = "settled", "unavailable"
+        first.usage = {"duration_ms": 1, "tool_call_count": 0,
+                       "input_tokens": 0, "output_tokens": 0,
+                       "estimated_api_cost_minor": 0}
+        job.state, job.failure = "failed", "unavailable"
+        job.version += 1
+        await repository.audit(epic_id, None, "attempt_settled", first.id,
+                               {"state": "failed", "usage_known": True})
+    failed = await service.observe(epic_id=epic_id, project_id=project_id,
+                                   job_id=receipt.job_id)
+    assert failed.state == "failed"
+    async with session_factory() as session:
+        failed_audit = await session.scalar(select(BrainstormAuditRow).where(
+            BrainstormAuditRow.action == "attempt_settled",
+            BrainstormAuditRow.subject_id == first.id,
+        ))
+    assert failed_audit is not None
+    failed_at = failed_audit.created_at
+    await service.retry(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id,
+                        expected_job_version=failed.job_version, actor=actor,
+                        key="usage-history-retry", owner_override=True)
+    async with session_factory() as session:
+        retry_audit = await session.scalar(select(BrainstormAuditRow).where(
+            BrainstormAuditRow.action == "job_retried",
+            BrainstormAuditRow.subject_id == receipt.job_id,
+        ))
+    assert retry_audit is not None and retry_audit.created_at >= failed_at
+    worker = EpicBrainstormWorker(session_factory, owner="usage-second-attempt",
+        gateway_factory=lambda _: FakeGateway(), reader_factory=lambda _: object())
+    assert await worker.run_once() == receipt.job_id
+    proposed = await service.observe(epic_id=epic_id, project_id=project_id,
+                                     job_id=receipt.job_id)
+    assert proposed.state == "proposed"
+
+    async def outcome(at):
+        sample, = [row for row in await query.samples(project_ids={project_id},
+            as_of=at, window_days=365) if row.subject_id == receipt.job_id]
+        excluded = await query.exclusions(project_ids={project_id}, as_of=at,
+                                          window_days=365, subjects=subject)
+        return sample.outcome, excluded
+
+    failed_history = await outcome(failed_at)
+    assert failed_history[0] == "failed" and failed_history[1]["failed"] == 1
+    retry_history = await outcome(retry_audit.created_at)
+    assert retry_history[0] == "unknown" and retry_history[1]["in_progress"] == 1
+    assert (await outcome(datetime.now(UTC)))[0] == "completed"
 
 
 @pytest.mark.integration

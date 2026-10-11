@@ -21,7 +21,8 @@ from forge.domain.policy import ProjectPolicy
 from forge.domain.task_usage_contract import MonitoringPolicy
 from forge.domain.tool import ToolName
 from forge.observability.redaction import Redactor
-from forge.persistence.models import ProjectPolicyVersion, Run
+from forge.persistence.models import AgentExecution, ProjectPolicyVersion, Run
+from forge.persistence.repositories.executions import ExecutionConflict
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.worker.composition import BoundPlanningGateway
 
@@ -168,5 +169,28 @@ async def test_postgres_frozen_monitoring_admission_reaches_planning_provider(
                 await work.commit()
             await gateway.execute(request)
             assert provider_requests[-1] == request
+            stale_execution_id = uuid4()
+            with pytest.raises(ExecutionConflict):
+                async with PostgresUnitOfWork(session_factory) as work:
+                    await work.executions.admit(
+                        persisted_run.id,
+                        uuid4(),
+                        stale_execution_id,
+                        "plan",
+                        attempt + 1,
+                        AgentRole.PLANNER,
+                        "v1",
+                        policy.planner_model.provider,
+                        policy.planner_model.model,
+                        monitoring_policy_revision=budget.monitoring_policy_revision,
+                        hard_token_cap=budget.max_total_tokens,
+                    )
+                    await work.commit()
+            stale_request = request.model_copy(update={"execution_id": stale_execution_id})
+            with pytest.raises(AgentGatewayError):
+                await gateway.execute(stale_request)
+            assert provider_requests[-1] == request
+            async with session_factory() as session:
+                assert await session.get(AgentExecution, stale_execution_id) is None
 
     assert len(provider_requests) == 5
