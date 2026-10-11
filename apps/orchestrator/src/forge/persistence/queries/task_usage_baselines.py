@@ -347,7 +347,7 @@ class TaskUsageBaselineQuery:
         for project_batch in _id_batches(project_ids):
             runs.extend((await session.execute(
                 select(Run.id, Run.project_id, Run.state, Run.updated_at,
-                       _has_current_acceptance()).where(
+                       _has_current_acceptance(as_of)).where(
                     Run.project_id.in_(project_batch), *run_filters
                 )
             )).all())
@@ -555,7 +555,7 @@ class TaskUsageBaselineQuery:
         accepted_run_ids: set[UUID] = set()
         for batch in _id_batches({run.id for run in runs}):
             accepted_run_ids.update((await session.scalars(
-                select(Run.id).where(Run.id.in_(batch), _has_current_acceptance())
+                select(Run.id).where(Run.id.in_(batch), _has_current_acceptance(as_of))
             )).all())
         for run in runs:
             if run.state == "FAILED":
@@ -841,10 +841,11 @@ async def _source_inventory(
     return inventory
 
 
-def _has_current_acceptance() -> Exists:
+def _has_current_acceptance(as_of: datetime) -> Exists:
     acceptance = aliased(EvidenceSet)
     validation = aliased(EvidenceSet)
     accepted_task = aliased(SubscriptionTask)
+    accepted_attempt = aliased(SubscriptionAttempt)
     return exists(
         select(1)
         .select_from(acceptance)
@@ -852,11 +853,21 @@ def _has_current_acceptance() -> Exists:
         .join(
             accepted_task,
             (accepted_task.run_id == acceptance.run_id)
-            & (accepted_task.task_id == acceptance.producer_task_id),
+            & (accepted_task.id == acceptance.producer_task_id),
+        )
+        .join(
+            accepted_attempt,
+            (accepted_attempt.run_id == acceptance.run_id)
+            & (accepted_attempt.task_row_id == acceptance.producer_task_id)
+            & (accepted_attempt.id == acceptance.producer_attempt_id),
         )
         .where(
             acceptance.run_id == Run.id,
             acceptance.kind == "acceptance",
+            acceptance.created_at <= as_of,
+            validation.created_at <= as_of,
+            accepted_task.created_at <= as_of,
+            accepted_attempt.created_at <= as_of,
             accepted_task.parent_task_id.is_(None),
             acceptance.policy_version == Run.policy_version,
             acceptance.validation_parent_policy_version == validation.policy_version,

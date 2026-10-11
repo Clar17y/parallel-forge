@@ -26,7 +26,7 @@ from forge.domain.task_usage_contract import (
 )
 from forge.persistence.models.epic_brainstorm import BrainstormConversation, BrainstormJobRow
 from forge.persistence.models.epic_brief import Epic
-from forge.persistence.models.execution import AgentExecution, ModelUsage
+from forge.persistence.models.execution import AgentExecution, EvidenceSet, ModelUsage
 from forge.persistence.models.project import Project
 from forge.persistence.models.run import Run
 from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionTask
@@ -1255,6 +1255,141 @@ async def test_durable_current_acceptance_is_visible_before_merge(
     )
     sample, = [row for row in rows if row.subject_id == manifest.run_id]
     assert sample.outcome == "unknown"
+
+
+@pytest.mark.integration
+async def test_acceptance_uses_producer_row_identity_and_exact_root_attempt(
+    session_factory, tmp_path,
+):
+    from forge.application.ports.evidence import SubscriptionAcceptanceEvidenceDraft
+    from test_subscription_acceptance_evidence_persistence import acceptance_evidence_case
+
+    factory, manifest, artifact = await acceptance_evidence_case(session_factory, tmp_path)
+    async with factory() as work:
+        await work.evidence.record_set(SubscriptionAcceptanceEvidenceDraft(manifest), artifact)
+        run = await work.session.get(Run, manifest.run_id)
+        project_id = run.project_id
+        await work.commit()
+    async with session_factory() as session, session.begin():
+        task = await session.get(SubscriptionTask, manifest.producer_task_id)
+        assert task is not None and task.parent_task_id is None
+        assert task.id == task.task_id  # Normal writer identity is equal; schema permits distinct IDs.
+        task.task_id = uuid4()
+        decoy_id = uuid4()
+        session.add(SubscriptionAttempt(
+            id=decoy_id, run_id=manifest.run_id, task_row_id=task.id,
+            attempt_number=999, idempotency_key="same-task-decoy", route_payload={},
+        ))
+    assert task.id != task.task_id
+    as_of = datetime.now(UTC) + timedelta(seconds=1)
+    query = TaskUsageBaselineQuery(session_factory)
+
+    async def outcome():
+        rows = await query.samples(project_ids={project_id}, as_of=as_of, window_days=365)
+        sample, = (row for row in rows if row.subject_id == manifest.run_id)
+        exclusions = await query.exclusions(
+            project_ids={project_id}, as_of=as_of, window_days=365,
+            subjects={(project_id, "run", manifest.run_id)},
+        )
+        return sample.outcome, exclusions
+
+    accepted, excluded = await outcome()
+    assert accepted == "accepted" and excluded["unclassified_legacy"] == 1
+    async with session_factory() as session, session.begin():
+        await session.execute(update(SubscriptionAttempt).where(
+            SubscriptionAttempt.id == manifest.producer_attempt_id,
+        ).values(created_at=as_of + timedelta(days=1)))
+    blocked, excluded = await outcome()
+    assert blocked == "unknown" and excluded["in_progress"] == 1
+    async with session_factory() as session, session.begin():
+        await session.execute(update(SubscriptionAttempt).where(
+            SubscriptionAttempt.id == manifest.producer_attempt_id,
+        ).values(created_at=as_of))
+        parent_id = uuid4()
+        session.add(SubscriptionTask(id=parent_id, run_id=manifest.run_id,
+                                     task_id=uuid4(), idempotency_key="parent-task",
+                                     payload={}))
+        await session.flush()
+        await session.execute(update(SubscriptionTask).where(
+            SubscriptionTask.id == manifest.producer_task_id,
+        ).values(parent_task_id=parent_id))
+    child, excluded = await outcome()
+    assert child == "unknown" and excluded["in_progress"] == 1
+
+
+@pytest.mark.integration
+async def test_historical_acceptance_requires_evidence_and_producer_existing_by_cutoff(
+    session_factory, tmp_path,
+):
+    from forge.application.ports.evidence import SubscriptionAcceptanceEvidenceDraft
+    from test_subscription_acceptance_evidence_persistence import acceptance_evidence_case
+
+    factory, manifest, artifact = await acceptance_evidence_case(session_factory, tmp_path)
+    query = TaskUsageBaselineQuery(session_factory)
+    service = TaskUsageBaselineService(query)
+    async with factory() as work:
+        run = await work.session.get(Run, manifest.run_id)
+        assert run.state == "VALIDATING"
+        project_id = run.project_id
+
+    async with session_factory() as session:
+        before_at = await session.scalar(select(func.clock_timestamp()))
+    assert before_at is not None
+    subjects = {(project_id, "run", manifest.run_id)}
+
+    async def projection(at):
+        rows = await query.samples(project_ids={project_id}, as_of=at, window_days=365)
+        sample, = (row for row in rows if row.subject_id == manifest.run_id)
+        exclusions = await query.exclusions(project_ids={project_id}, as_of=at,
+                                            window_days=365, subjects=subjects)
+        report = await service.report(UsageReportFilters(
+            project_ids=frozenset({project_id}), as_of=at,
+            rules=SamplingRules(window_days=365),
+        ))
+        return sample, exclusions, report
+
+    before = await projection(before_at)
+    assert before[0].outcome == "unknown" and before[0].total_tokens is None
+    assert before[1]["in_progress"] == 1
+    assert before[2]["excluded_outcomes"]["in_progress"] == 1
+
+    async with factory() as work:
+        await work.evidence.record_set(SubscriptionAcceptanceEvidenceDraft(manifest), artifact)
+        await work.commit()
+    async with session_factory() as session:
+        accepted_at = await session.scalar(select(EvidenceSet.created_at).where(
+            EvidenceSet.id == manifest.evidence_set_id,
+        ))
+    assert accepted_at is not None and accepted_at > before_at
+    later_at = accepted_at + timedelta(days=1)
+
+    historical = await projection(before_at)
+    assert historical[0].outcome == before[0].outcome
+    assert historical[0].total_tokens is None and not historical[0].measured
+    assert historical[1] == before[1]
+    assert historical[2]["overview"] == before[2]["overview"]
+    assert historical[2]["comparable_references"] == before[2]["comparable_references"]
+    assert historical[2]["excluded_outcomes"] == before[2]["excluded_outcomes"]
+    inclusive = await projection(accepted_at)
+    assert inclusive[0].outcome == "accepted" and inclusive[0].total_tokens is None
+    assert inclusive[1]["unclassified_legacy"] == 1
+    assert inclusive[2]["excluded_outcomes"]["unclassified_legacy"] == 1
+    assert (await projection(later_at))[0].outcome == "accepted"
+
+    for model, row_id in (
+        (SubscriptionTask, manifest.producer_task_id),
+        (SubscriptionAttempt, manifest.producer_attempt_id),
+    ):
+        async with session_factory() as session, session.begin():
+            await session.execute(update(model).where(model.id == row_id)
+                                  .values(created_at=later_at))
+        blocked = await projection(accepted_at)
+        assert blocked[0].outcome == "unknown" and blocked[1]["in_progress"] == 1
+        assert blocked[2]["excluded_outcomes"]["in_progress"] == 1
+        assert (await projection(later_at))[0].outcome == "accepted"
+        async with session_factory() as session, session.begin():
+            await session.execute(update(model).where(model.id == row_id)
+                                  .values(created_at=before_at))
 
 
 @pytest.mark.integration
