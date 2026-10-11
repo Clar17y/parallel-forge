@@ -612,6 +612,7 @@ class TaskUsageBaselineQuery:
              for project, kind, identity, _, state, successful, accepted, completed_at in candidates
              if kind == "run" and (project, kind, identity) not in units_by_subject},
             as_of=as_of,
+            failed_counts=failed_counts,
         )
         # The owning query's final projection is authoritative. Returned facts
         # are per subject and already replace live/provisional values per source.
@@ -775,6 +776,7 @@ class TaskUsageBaselineQuery:
              for project, kind, identity in candidate_keys
              if kind == "run" and (project, kind, identity) not in known},
             as_of=as_of,
+            failed_counts={},
         )
         totals = await self._totals.totals_for_units_in(
             session,
@@ -844,7 +846,7 @@ class _TaskUsageReportSnapshot:
 async def _legacy_model_usage_samples(
     session: AsyncSession,
     candidates: dict[UUID, tuple[UUID, datetime, str, bool, bool]],
-    *, as_of: datetime,
+    *, as_of: datetime, failed_counts: dict[UUID, int],
 ) -> dict[UUID, BaselineSample]:
     """Classify unbound runs with bounded reads and the old exact coverage rule."""
     executions: dict[UUID, set[UUID]] = {}
@@ -878,7 +880,6 @@ async def _legacy_model_usage_samples(
                     ModelUsage.cached_input_tokens,
                     ModelUsage.output_tokens,
                     AgentExecution.role,
-                    AgentExecution.status,
                     Step.kind,
                 )
                 .join(AgentExecution, AgentExecution.id == ModelUsage.agent_execution_id)
@@ -901,6 +902,7 @@ async def _legacy_model_usage_samples(
         result[subject_id] = _legacy_sample_from_rows(
             rows, project_id=project_id, subject_id=subject_id,
             completed_at=completed_at, state=state, successful=successful, accepted=accepted,
+            failed_attempt_count=failed_counts.get(subject_id, 0),
         )
     return result
 
@@ -908,6 +910,7 @@ async def _legacy_model_usage_samples(
 def _legacy_sample_from_rows(
     rows: Sequence[Row[tuple[Any, ...]]], *, project_id: UUID, subject_id: UUID,
     completed_at: datetime, state: str, successful: bool, accepted: bool,
+    failed_attempt_count: int,
 ) -> BaselineSample:
     total = sum(row.input_tokens + row.cached_input_tokens + row.output_tokens for row in rows)
     if total > 2**63 - 1:
@@ -927,9 +930,6 @@ def _legacy_sample_from_rows(
         )
     )
     phase_role: dict[tuple[str, str], int | None] = {}
-    failed_attempt_count = len(
-        {row.agent_execution_id for row in rows if row.status in {"FAILED", "CANCELLED"}}
-    )
     for row in rows:
         key = (row.kind or "unknown", row.role)
         current = phase_role.get(key, 0)
@@ -968,6 +968,9 @@ async def _failed_run_attempt_counts(
                     AgentExecution.run_id.in_(batch),
                     AgentExecution.status.in_(("FAILED", "CANCELLED")),
                     AgentExecution.created_at <= as_of,
+                    AgentExecution.completed_at.is_not(None),
+                    AgentExecution.completed_at >= AgentExecution.created_at,
+                    AgentExecution.completed_at <= as_of,
                 ).group_by(AgentExecution.run_id)
             )
         ).all():

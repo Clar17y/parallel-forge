@@ -30,6 +30,7 @@ from forge.domain.task_usage_contract import (
     TokenCounts,
     WorkUnitBinding,
 )
+from forge.observability.usage import UsageRecord
 from forge.persistence.models.epic_brainstorm import (
     BrainstormAttemptRow,
     BrainstormAuditRow,
@@ -88,6 +89,155 @@ if _BRAINSTORM_TEST_DIR not in sys.path:
     sys.path.insert(0, _BRAINSTORM_TEST_DIR)
 
 from test_brainstorm_worker import FakeGateway, prepared
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("finish", [AgentFinishStatus.FAILED, AgentFinishStatus.CANCELLED])
+@pytest.mark.parametrize("bound", [False, True])
+async def test_repository_finalization_failure_count_obeys_historical_cutoff(
+    session_factory, persisted_run, finish, bound,
+):
+    step_id, execution_id = uuid4(), uuid4()
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.executions.admit(
+            persisted_run.id, step_id, execution_id, "implementation", 1,
+            AgentRole.DEVELOPER, "v1", "provider-a", "model-a",
+        )
+        await work.commit()
+    if bound:
+        binding = _binding(persisted_run, execution_id)
+        await PostgresTaskUsageObservations(session_factory).bind(binding)
+    async with session_factory() as session:
+        before = await session.scalar(select(func.clock_timestamp()))
+    assert before is not None
+    query = TaskUsageBaselineQuery(session_factory)
+    report_service = TaskUsageBaselineService(query)
+
+    async def counts(at):
+        sample, = [row for row in await query.samples(
+            project_ids={persisted_run.project_id}, as_of=at, window_days=365,
+        ) if row.subject_id == persisted_run.id]
+        report = await report_service.report(UsageReportFilters(
+            project_ids=frozenset({persisted_run.project_id}), as_of=at,
+            rules=SamplingRules(window_days=365),
+        ))
+        return sample.failed_attempt_count, report["failed_attempt_count"], sample.measured
+
+    assert await counts(before) == (0, 0, False)
+    completed_at = before + timedelta(hours=1)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.executions.finalize(
+            persisted_run.id, step_id, execution_id, finish,
+            UsageRecord(provider="provider-a", model="model-a", prompt_version="v1",
+                        input_tokens=2, output_tokens=3, pricing_version="v1",
+                        currency="USD", unknown_price_reason="unpriced"),
+            completed_at=completed_at,
+        )
+        await work.commit()
+    assert await counts(before) == (0, 0, False)
+    assert await counts(completed_at - timedelta(microseconds=1)) == (0, 0, True)
+    assert await counts(completed_at) == (1, 1, True)
+    assert await counts(completed_at + timedelta(microseconds=1)) == (1, 1, True)
+
+
+@pytest.mark.integration
+async def test_legacy_failure_counts_use_unique_terminal_executions_at_cutoff(
+    session_factory, persisted_run,
+):
+    anchor = datetime.now(UTC)
+    earlier = anchor - timedelta(seconds=1)
+    specifications = (
+        ("FAILED", anchor + timedelta(hours=1), earlier, 2),
+        ("CANCELLED", anchor + timedelta(hours=2), earlier, 1),
+        ("SUCCEEDED", anchor, earlier, 1),
+        ("FAILED", None, earlier, 1),
+        ("FAILED", anchor - timedelta(seconds=2), earlier, 1),
+        ("FAILED", anchor + timedelta(hours=1, minutes=30),
+         anchor + timedelta(hours=1), 1),
+    )
+    async with session_factory() as session, session.begin():
+        for status, completed_at, created_at, usage_count in specifications:
+            identity = uuid4()
+            session.add(AgentExecution(
+                id=identity, run_id=persisted_run.id, role="developer",
+                instruction_version="v1", provider="provider-a", model="model-a",
+                status=status, created_at=created_at, completed_at=completed_at,
+            ))
+            for _ in range(usage_count):
+                session.add(ModelUsage(
+                    id=uuid4(), run_id=persisted_run.id, agent_execution_id=identity,
+                    provider="provider-a", model="model-a", prompt_version="v1",
+                    input_tokens=1, output_tokens=0, cached_input_tokens=0,
+                    duration_ms=1, tool_call_count=0, pricing_version="v1",
+                    currency="USD", estimated_cost_minor=0,
+                    created_at=created_at,
+                ))
+        await session.execute(update(Run).where(Run.id == persisted_run.id).values(
+            state="COMPLETED", updated_at=earlier,
+        ))
+    query = TaskUsageBaselineQuery(session_factory)
+    report_service = TaskUsageBaselineService(query)
+    async with session_factory() as session, session.begin():
+        session.add(TaskUsagePolicyRevision(
+            project_id=persisted_run.project_id, revision=1, mode="report_only",
+            warning_multiplier=1.5, checkpoint_multiplier=2.0,
+            history_limit=50, minimum_comparables=1, manual_estimate_tokens=None,
+            allow_cross_project_fallback=True, actor_id=uuid4(),
+        ))
+    prior = RunSnapshot(id=uuid4(), project_id=persisted_run.project_id,
+                        task_id=persisted_run.task_id,
+                        policy_version=persisted_run.policy_version)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(prior)
+        await work.commit()
+    prior_execution = uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=prior_execution, run_id=prior.id,
+                                   role="developer", instruction_version="v1",
+                                   provider="provider-a", model="model-a", status="SUCCEEDED"))
+        session.add(ModelUsage(id=uuid4(), run_id=prior.id,
+                               agent_execution_id=prior_execution,
+                               provider="provider-a", model="model-a", prompt_version="v1",
+                               input_tokens=3, output_tokens=4, cached_input_tokens=0,
+                               duration_ms=1, tool_call_count=0, pricing_version="v1",
+                               currency="USD", estimated_cost_minor=0))
+        await session.execute(update(Run).where(Run.id == prior.id).values(state="COMPLETED"))
+    prior_binding = _binding(prior, prior_execution)
+    writer = PostgresTaskUsageObservations(session_factory)
+    await writer.bind(prior_binding)
+    target = RunSnapshot(id=uuid4(), project_id=persisted_run.project_id,
+                         task_id=persisted_run.task_id,
+                         policy_version=persisted_run.policy_version)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(target)
+        await work.commit()
+    target_execution = uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=target_execution, run_id=target.id,
+                                   role="developer", instruction_version="v1",
+                                   provider="provider-a", model="model-a", status="RUNNING"))
+    target_binding = _binding(target, target_execution)
+    await writer.bind(target_binding)
+    frozen = await query.freeze_baseline(target_binding, frozen_at=datetime.now(UTC))
+    assert frozen is not None and frozen.status == "ready"
+    assert frozen.sample_count == 1 and frozen.mean_tokens == 7
+    for at, expected in (
+        (anchor, 0),
+        (anchor + timedelta(hours=1) - timedelta(microseconds=1), 0),
+        (anchor + timedelta(hours=1), 1),
+        (anchor + timedelta(hours=2), 3),
+    ):
+        sample, = [row for row in await query.samples(
+            project_ids={persisted_run.project_id}, as_of=at, window_days=365,
+        ) if row.subject_id == persisted_run.id]
+        assert sample.measured and sample.finalized and sample.failed_attempt_count == expected
+        assert sample.source_count == (6 if at < anchor + timedelta(hours=1) else 7)
+        report = await report_service.report(UsageReportFilters(
+            project_ids=frozenset({persisted_run.project_id}), as_of=at,
+            rules=SamplingRules(window_days=365, minimum_comparables=1),
+        ))
+        assert report["failed_attempt_count"] == expected
+        assert await query.freeze_baseline(target_binding) == frozen
 
 
 def _binding(run, execution_id, effort=None):
@@ -245,6 +395,7 @@ async def test_many_candidates_batch_sample_and_exclusion_evidence_queries(
             await work.commit()
         runs.append(run)
     execution_ids = {}
+    settled_at = datetime.now(UTC)
     async with session_factory() as session, session.begin():
         legacy_id = uuid4()
         session.add(AgentExecution(id=legacy_id, run_id=persisted_run.id, role="developer",
@@ -262,7 +413,9 @@ async def test_many_candidates_batch_sample_and_exclusion_evidence_queries(
             execution_ids[run.id] = execution_id
             session.add(AgentExecution(id=execution_id, run_id=run.id, role="developer",
                                        instruction_version="v1", provider="provider-a",
-                                       model="model-a", status="FAILED" if index == 0 else "SUCCEEDED"))
+                                       model="model-a", status="FAILED" if index == 0 else "SUCCEEDED",
+                                       created_at=settled_at - timedelta(seconds=1),
+                                       completed_at=settled_at))
             session.add(ModelUsage(id=uuid4(), run_id=run.id,
                                    agent_execution_id=execution_id, provider="provider-a",
                                    model="model-a", prompt_version="v1", input_tokens=10 + index,
@@ -862,6 +1015,7 @@ async def test_colliding_run_and_authoring_ids_keep_failed_and_legacy_facts_sepa
 ):
     shared_id = persisted_run.id
     epic_id, conversation_id = uuid4(), uuid4()
+    settled_at = datetime.now(UTC)
     async with session_factory() as session, session.begin():
         session.add(Epic(id=epic_id, project_id=persisted_run.project_id,
                          title="collision", draft={}))
@@ -880,7 +1034,8 @@ async def test_colliding_run_and_authoring_ids_keep_failed_and_legacy_facts_sepa
             session.add(AgentExecution(
                 id=execution_id, run_id=shared_id, role="developer",
                 instruction_version="v1", provider="provider-a", model="model-a",
-                status=status,
+                status=status, created_at=settled_at - timedelta(seconds=1),
+                completed_at=settled_at,
             ))
             session.add(ModelUsage(
                 id=uuid4(), run_id=shared_id, agent_execution_id=execution_id,
@@ -2044,7 +2199,7 @@ def test_legacy_derived_and_phase_sums_overflow_without_losing_route_or_failure(
     ]
     sample = baseline_module._legacy_sample_from_rows(
         rows, project_id=uuid4(), subject_id=uuid4(), completed_at=datetime.now(UTC),
-        state="COMPLETED", successful=True, accepted=False,
+        state="COMPLETED", successful=True, accepted=False, failed_attempt_count=1,
     )
     assert sample.total_tokens is None and not sample.measured
     assert sample.phase_role_breakdown == (("implementation", "developer", None),)
@@ -2057,6 +2212,7 @@ async def test_legacy_model_usage_uses_defensible_actual_routes_and_keeps_failed
     session_factory, persisted_run
 ):
     execution_ids = (uuid4(), uuid4())
+    settled_at = datetime.now(UTC)
     async with session_factory() as session, session.begin():
         for index, (execution_id, status) in enumerate(
             zip(execution_ids, ("FAILED", "SUCCEEDED"), strict=True)
@@ -2070,6 +2226,8 @@ async def test_legacy_model_usage_uses_defensible_actual_routes_and_keeps_failed
                     provider="provider-a",
                     model=f"model-{index}",
                     status=status,
+                    created_at=settled_at - timedelta(seconds=1),
+                    completed_at=settled_at,
                 )
             )
             session.add(
