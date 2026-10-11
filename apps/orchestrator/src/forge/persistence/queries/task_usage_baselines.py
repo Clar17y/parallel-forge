@@ -7,6 +7,7 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
@@ -17,7 +18,7 @@ from sqlalchemy.engine import Row
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
-from sqlalchemy.sql.selectable import Exists
+from sqlalchemy.sql.selectable import ScalarSelect
 
 from forge.domain.subscription import LogicalTaskContract, decode_subscription_record
 from forge.domain.task_usage_baselines import (
@@ -27,6 +28,7 @@ from forge.domain.task_usage_baselines import (
     summarize_selection,
 )
 from forge.domain.task_usage_contract import (
+    MAX_SIGNED_BIGINT,
     BaselineReference,
     RouteCohort,
     RouteMember,
@@ -34,7 +36,13 @@ from forge.domain.task_usage_contract import (
     WorkUnitBinding,
 )
 from forge.persistence.models.epic_brainstorm import BrainstormAttemptRow, BrainstormJobRow
-from forge.persistence.models.execution import AgentExecution, EvidenceSet, ModelUsage, Step
+from forge.persistence.models.execution import (
+    AgentExecution,
+    EvidenceSet,
+    ModelUsage,
+    RunEvent,
+    Step,
+)
 from forge.persistence.models.project import Project
 from forge.persistence.models.run import Run
 from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionTask
@@ -48,6 +56,107 @@ from forge.persistence.repositories.task_usage_observations import decode_bindin
 from forge.persistence.repositories.task_usage_policy import policy_from_row
 
 _BATCH_SIZE = 1000
+_TERMINAL_EVENT_TYPES = (
+    "run.merge_completed", "run.failed", "run.cancelled",
+    "evaluation.fixture_lifecycle_settled",
+)
+
+
+def _supported_total(input_tokens: int | None, output_tokens: int | None) -> int | None:
+    if input_tokens is None or output_tokens is None:
+        return None
+    total = input_tokens + output_tokens
+    return total if total <= MAX_SIGNED_BIGINT else None
+
+
+@dataclass(frozen=True, slots=True)
+class _HistoricalRun:
+    id: UUID
+    project_id: UUID
+    state: str
+    completed_at: datetime
+    accepted: bool
+
+
+async def _historical_runs(
+    session: AsyncSession, *, projects: set[UUID], as_of: datetime,
+    lower: datetime | None, run_ids: set[UUID] | None = None,
+) -> list[_HistoricalRun]:
+    """Use creation and terminal events; retain bounded legacy current-state fallback."""
+    accepted_at = _current_acceptance_time(as_of)
+    filters = [Run.created_at <= as_of]
+    if lower is not None:
+        terminal_in_window = exists(select(RunEvent.id).where(
+            RunEvent.run_id == Run.id,
+            RunEvent.event_type.in_(_TERMINAL_EVENT_TYPES),
+            RunEvent.occurred_at >= lower,
+            RunEvent.occurred_at <= as_of,
+        ))
+        filters.append(or_(Run.created_at >= lower, Run.updated_at >= lower,
+                           accepted_at >= lower, terminal_in_window))
+    rows: list[Row[tuple[Any, ...]]] = []
+    if run_ids is None:
+        for batch in _id_batches(projects):
+            rows.extend((await session.execute(select(
+                Run.id, Run.project_id, Run.state, Run.created_at, Run.updated_at,
+                accepted_at,
+            ).where(Run.project_id.in_(batch), *filters))).all())
+    else:
+        for batch in _id_batches(run_ids):
+            rows.extend((await session.execute(select(
+                Run.id, Run.project_id, Run.state, Run.created_at, Run.updated_at,
+                accepted_at,
+            ).where(Run.id.in_(batch), *filters))).all())
+    events: dict[UUID, list[tuple[int, str, datetime]]] = {}
+    for batch in _id_batches({row.id for row in rows}):
+        for run_id, sequence, kind, at, payload in (await session.execute(
+            select(RunEvent.run_id, RunEvent.sequence, RunEvent.event_type,
+                   RunEvent.occurred_at, RunEvent.payload).where(
+                RunEvent.run_id.in_(batch),
+                RunEvent.event_type.in_(_TERMINAL_EVENT_TYPES),
+            )
+        )).all():
+            if kind == "evaluation.fixture_lifecycle_settled":
+                outcome = payload.get("outcome") if isinstance(payload, dict) else None
+                state = (
+                    outcome.upper()
+                    if isinstance(outcome, str) and outcome in {"completed", "failed", "cancelled"}
+                    else "UNKNOWN"
+                )
+            else:
+                state = {"run.merge_completed": "COMPLETED", "run.failed": "FAILED",
+                         "run.cancelled": "CANCELLED"}[kind]
+            events.setdefault(run_id, []).append((sequence, state, at))
+    result: list[_HistoricalRun] = []
+    for identity, project, current_state, created_at, updated_at, accepted_at in rows:
+        if project not in projects:
+            continue
+        terminal = max(
+            (event for event in events.get(identity, ()) if event[2] <= as_of),
+            key=lambda event: event[0], default=None,
+        )
+        if terminal is not None:
+            state = terminal[1]
+            at = terminal[2]
+        elif events.get(identity):
+            state = "VALIDATING"
+            at = accepted_at or created_at
+        elif current_state in {"COMPLETED", "FAILED", "CANCELLED"}:
+            if updated_at > as_of:
+                if accepted_at is None:
+                    continue
+                state = "VALIDATING"
+                at = accepted_at
+            else:
+                state = current_state
+                at = updated_at
+        else:
+            state = current_state
+            at = accepted_at or created_at
+        if lower is not None and at < lower:
+            continue
+        result.append(_HistoricalRun(identity, project, state, at, accepted_at is not None))
+    return result
 
 
 def _candidate_batches(
@@ -335,22 +444,14 @@ class TaskUsageBaselineQuery:
             except OverflowError:
                 # Every representable sample is in range; omit the SQL lower bound.
                 lower = None
-        run_filters = [Run.updated_at <= as_of]
         job_filters = [
             BrainstormJobRow.updated_at <= as_of,
         ]
         if lower is not None:
-            run_filters.append(Run.updated_at >= lower)
             job_filters.append(BrainstormJobRow.updated_at >= lower)
-        runs: list[Row[tuple[Any, ...]]] = []
+        runs = await _historical_runs(session, projects=project_ids, as_of=as_of, lower=lower)
         jobs: list[Row[tuple[Any, ...]]] = []
         for project_batch in _id_batches(project_ids):
-            runs.extend((await session.execute(
-                select(Run.id, Run.project_id, Run.state, Run.updated_at,
-                       _has_current_acceptance(as_of)).where(
-                    Run.project_id.in_(project_batch), *run_filters
-                )
-            )).all())
             jobs.extend((await session.execute(
                 select(BrainstormJobRow.id, BrainstormJobRow.project_id,
                        BrainstormJobRow.state, BrainstormJobRow.proposal_digest,
@@ -369,7 +470,10 @@ class TaskUsageBaselineQuery:
                 accepted,
                 at,
             )
-            for identity, project, state, at, accepted in runs
+            for identity, project, state, at, accepted in (
+                (run.id, run.project_id, run.state, run.completed_at, run.accepted)
+                for run in runs
+            )
         ] + [
             (
                 project,
@@ -449,20 +553,14 @@ class TaskUsageBaselineQuery:
             bound_sources = {(unit.source_kind, unit.source_id) for unit in units}
             inventory_complete = bound_sources == inventory.get(key, set())
             source_final = bool(subject_totals.source_count) and subject_totals.final_source_count == subject_totals.source_count
+            supported_total = _supported_total(subject_totals.input_tokens, subject_totals.output_tokens)
             fully_measured = (
                 source_final
                 and inventory_complete
                 and subject_totals.completeness == "complete"
-                and subject_totals.input_tokens is not None
-                and subject_totals.output_tokens is not None
+                and supported_total is not None
             )
-            total_tokens = (
-                subject_totals.input_tokens + subject_totals.output_tokens
-                if subject_totals.input_tokens is not None
-                and subject_totals.output_tokens is not None
-                and fully_measured
-                else None
-            )
+            total_tokens = supported_total if fully_measured else None
             configured = _route_composition(facts, "configured_route") if inventory_complete else None
             effective = _route_composition(facts, "effective_route") if inventory_complete else None
             samples.append(
@@ -516,7 +614,6 @@ class TaskUsageBaselineQuery:
                 lower = as_of - timedelta(days=window_days)
             except OverflowError:
                 lower = None
-        run_filters = [Run.updated_at <= as_of]
         job_filters = [
             BrainstormJobRow.updated_at <= as_of,
         ]
@@ -527,14 +624,10 @@ class TaskUsageBaselineQuery:
             if kind == "authoring_job" and project in projects
         }
         if lower is not None:
-            run_filters.append(Run.updated_at >= lower)
             job_filters.append(BrainstormJobRow.updated_at >= lower)
-        runs: list[Run] = []
+        runs = await _historical_runs(session, projects=projects, as_of=as_of,
+                                      lower=lower, run_ids=run_ids)
         jobs: list[BrainstormJobRow] = []
-        for batch in _id_batches(run_ids):
-            runs.extend((await session.scalars(
-                select(Run).where(Run.id.in_(batch), *run_filters)
-            )).all())
         for batch in _id_batches(job_ids):
             jobs.extend((await session.scalars(
                 select(BrainstormJobRow).where(BrainstormJobRow.id.in_(batch), *job_filters)
@@ -551,12 +644,7 @@ class TaskUsageBaselineQuery:
             "truncated": 0,
             "unclassified_legacy": 0,
         }
-        run_ids = {identity for project, kind, identity in subjects if kind == "run" and project in projects}
-        accepted_run_ids: set[UUID] = set()
-        for batch in _id_batches({run.id for run in runs}):
-            accepted_run_ids.update((await session.scalars(
-                select(Run.id).where(Run.id.in_(batch), _has_current_acceptance(as_of))
-            )).all())
+        accepted_run_ids = {run.id for run in runs if run.accepted}
         for run in runs:
             if run.state == "FAILED":
                 count["failed"] += 1
@@ -587,7 +675,7 @@ class TaskUsageBaselineQuery:
         inventory = await _source_inventory(session, candidate_keys, as_of=as_of)
         legacy = await _legacy_model_usage_samples(
             session,
-            {identity: (project, run_by_id[identity].updated_at,
+            {identity: (project, run_by_id[identity].completed_at,
                         run_by_id[identity].state,
                         run_by_id[identity].state == "COMPLETED",
                         identity in accepted_run_ids)
@@ -614,6 +702,7 @@ class TaskUsageBaselineQuery:
             bound_sources = {(unit.source_kind, unit.source_id) for unit in bound_rows}
             if (
                 subject_totals.completeness != "complete"
+                or _supported_total(subject_totals.input_tokens, subject_totals.output_tokens) is None
                 or bound_sources != inventory.get((project, kind, subject), set())
             ):
                 count["incomplete_usage"] += 1
@@ -744,15 +833,16 @@ def _legacy_sample_from_rows(
             for index, (role, provider, model, _) in enumerate(members)
         )
     )
-    phase_role: dict[tuple[str, str], int] = {}
+    phase_role: dict[tuple[str, str], int | None] = {}
     failed_attempt_count = len(
         {row.agent_execution_id for row in rows if row.status in {"FAILED", "CANCELLED"}}
     )
     for row in rows:
         key = (row.kind or "unknown", row.role)
-        phase_role[key] = (
-            phase_role.get(key, 0) + row.input_tokens + row.cached_input_tokens + row.output_tokens
-        )
+        current = phase_role.get(key, 0)
+        if current is not None:
+            amount = current + row.input_tokens + row.cached_input_tokens + row.output_tokens
+            phase_role[key] = amount if amount <= MAX_SIGNED_BIGINT else None
     return BaselineSample(
         project_id=project_id,
         subject_kind="run",
@@ -841,13 +931,13 @@ async def _source_inventory(
     return inventory
 
 
-def _has_current_acceptance(as_of: datetime) -> Exists:
+def _current_acceptance_time(as_of: datetime) -> ScalarSelect[datetime]:
     acceptance = aliased(EvidenceSet)
     validation = aliased(EvidenceSet)
     accepted_task = aliased(SubscriptionTask)
     accepted_attempt = aliased(SubscriptionAttempt)
-    return exists(
-        select(1)
+    return (
+        select(acceptance.created_at)
         .select_from(acceptance)
         .join(validation, acceptance.validation_evidence_set_id == validation.id)
         .join(
@@ -881,6 +971,9 @@ def _has_current_acceptance(as_of: datetime) -> Exists:
             validation.kind == "validation",
             validation.policy_version == Run.policy_version,
         )
+        .order_by(acceptance.created_at, acceptance.id)
+        .limit(1)
+        .scalar_subquery()
     )
 
 
@@ -890,10 +983,10 @@ def _outcome(
     normalized = state.lower()
     if normalized in {"failed", "cancelled", "truncated"}:
         return normalized  # type: ignore[return-value]
-    if accepted:
-        return "accepted"
     if successful:
         return "completed"
+    if accepted:
+        return "accepted"
     return "unknown"
 
 
@@ -1004,11 +1097,7 @@ def _phase_role_facts(
 ) -> tuple[tuple[str, str, int | None], ...]:
     output: list[tuple[str, str, int | None]] = []
     for fact in facts:
-        amount = (
-            fact.input_tokens + fact.output_tokens
-            if fact.input_tokens is not None and fact.output_tokens is not None
-            else None
-        )
+        amount = _supported_total(fact.input_tokens, fact.output_tokens)
         binding = fact.binding
         phase = binding.admitted_phase_id
         output.append((phase, roles.get((binding.source.kind, binding.source.source_id), "unknown"), amount))

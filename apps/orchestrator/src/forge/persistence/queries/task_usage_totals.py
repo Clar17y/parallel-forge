@@ -42,9 +42,7 @@ def _sum_known(values: list[int | None]) -> int | None:
     if not known:
         return None
     total = sum(known)
-    if total > MAX_SIGNED_BIGINT:
-        raise ValueError("work-unit usage exceeds signed-64-bit range")
-    return total
+    return total if total <= MAX_SIGNED_BIGINT else None
 
 
 def _measured(value: object) -> int | None:
@@ -277,7 +275,8 @@ def _project_totals(
         "unknown"
         if inputs is None and outputs is None
         else "complete"
-        if usages and all(usage.completeness == "complete" for usage in usages)
+        if inputs is not None and outputs is not None
+        and usages and all(usage.completeness == "complete" for usage in usages)
         else "lower_bound"
     )
     digest = hashlib.sha256(

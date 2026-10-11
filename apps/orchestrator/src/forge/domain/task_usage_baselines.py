@@ -60,6 +60,11 @@ class BaselineSample:
             or not 0 <= self.failed_attempt_count <= MAX_SIGNED_BIGINT
         ):
             raise ValueError("failed attempt count must be nonnegative")
+        if any(
+            amount is not None and (type(amount) is not int or not 0 <= amount <= MAX_SIGNED_BIGINT)
+            for _, _, amount in self.phase_role_breakdown
+        ):
+            raise ValueError("phase role amount must be a nonnegative signed-64-bit integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,7 +397,11 @@ def _breakdown(samples: list[BaselineSample] | tuple[BaselineSample, ...]) -> tu
             if amount is None:
                 unknown.add(key)
             else:
-                totals[key] = totals.get(key, 0) + amount
+                total = totals.get(key, 0) + amount
+                if total > MAX_SIGNED_BIGINT:
+                    unknown.add(key)
+                else:
+                    totals[key] = total
     keys = set(totals) | unknown
     return tuple(
         (phase, role, None if (phase, role) in unknown else totals[(phase, role)])

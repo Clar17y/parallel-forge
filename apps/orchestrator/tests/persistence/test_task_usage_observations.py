@@ -270,6 +270,53 @@ async def test_parallel_sources_and_duplicate_writers_aggregate_once(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("second, expected", [(0, 2**63 - 1), (1, None)])
+@pytest.mark.parametrize("channel", ["input", "output", "both"])
+async def test_valid_source_channels_can_exceed_aggregate_signed64_without_losing_facts(
+    session_factory, persisted_run, second, expected, channel,
+) -> None:
+    bindings = [await _binding(session_factory, persisted_run) for _ in range(2)]
+    writer = PostgresTaskUsageObservations(session_factory)
+    for index, (binding, amount) in enumerate(zip(bindings, (2**63 - 1, second), strict=True)):
+        await writer.bind(binding)
+        await writer.append_observation(Observation(
+            binding=binding, event_id=f"large-{index}", sequence=1,
+            counter_kind=CounterKind.CUMULATIVE,
+            tokens=TokenCounts(input_tokens=amount if channel != "output" else 0,
+                               output_tokens=amount if channel != "input" else 0,
+                               cached_input_tokens=amount if channel != "output" else 0,
+                               reasoning_output_tokens=amount if channel != "input" else 0),
+            final=True, final_status="settled",
+        ))
+    totals = await TaskUsageTotalsQuery(session_factory).totals(bindings[0].subject)
+    if channel == "input":
+        assert (totals.input_tokens, totals.cached_input_tokens) == (expected, expected)
+        assert (totals.output_tokens, totals.reasoning_output_tokens) == (0, 0)
+    elif channel == "output":
+        assert (totals.input_tokens, totals.cached_input_tokens) == (0, 0)
+        assert (totals.output_tokens, totals.reasoning_output_tokens) == (expected, expected)
+    else:
+        assert (totals.input_tokens, totals.output_tokens) == (expected, expected)
+        assert (totals.cached_input_tokens, totals.reasoning_output_tokens) == (
+            expected, expected,
+        )
+    assert totals.completeness == (
+        "complete" if expected is not None else "unknown" if channel == "both" else "lower_bound"
+    )
+    source_channel = "output" if channel == "output" else "input"
+    assert sorted(getattr(fact, f"{source_channel}_tokens") for fact in totals.source_facts) == [
+        second, 2**63 - 1,
+    ]
+    assert all(fact.completeness == "complete" for fact in totals.source_facts)
+
+
+@pytest.mark.parametrize("stored", [-1, 2**63, 1.5, True])
+def test_unsupported_aggregate_does_not_relax_malformed_stored_value_rejection(stored):
+    with pytest.raises(ValueError, match="stored measured usage is malformed"):
+        totals_module._measured(stored)
+
+
+@pytest.mark.asyncio
 async def test_totals_batch_source_reads_with_stable_order_and_digest(
     session_factory, persisted_run, monkeypatch
 ) -> None:

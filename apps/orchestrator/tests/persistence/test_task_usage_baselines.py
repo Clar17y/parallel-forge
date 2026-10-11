@@ -8,12 +8,15 @@ from uuid import uuid4
 
 import pytest
 from forge.agents.adk_gateway import GoogleAdkGateway
+from forge.application.services.evaluations import EvaluationService
 from forge.application.services.task_usage_baselines import (
     TaskUsageBaselineService,
     UsageReportFilters,
 )
 from forge.domain.actor import AgentRole
-from forge.domain.run import RunSnapshot
+from forge.domain.agent import AgentFinishStatus
+from forge.domain.approval import ApprovalGate
+from forge.domain.run import RunSnapshot, RunState
 from forge.domain.subscription import LogicalTaskContract, SpecialistPurpose
 from forge.domain.task_usage_baselines import BaselineSample, SamplingRules, select_cohort
 from forge.domain.task_usage_contract import (
@@ -26,10 +29,20 @@ from forge.domain.task_usage_contract import (
 )
 from forge.persistence.models.epic_brainstorm import BrainstormConversation, BrainstormJobRow
 from forge.persistence.models.epic_brief import Epic
-from forge.persistence.models.execution import AgentExecution, EvidenceSet, ModelUsage
+from forge.persistence.models.execution import (
+    AgentExecution,
+    EvidenceSet,
+    ModelUsage,
+    RunEvent,
+    Step,
+)
 from forge.persistence.models.project import Project
 from forge.persistence.models.run import Run
 from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionTask
+from forge.persistence.models.subscription_usage import (
+    SubscriptionAttemptConsumption,
+    SubscriptionAttemptReservation,
+)
 from forge.persistence.models.task_usage import TaskUsagePolicyRevision, TaskUsageWorkUnit
 from forge.persistence.queries import task_usage_baselines as baseline_module
 from forge.persistence.queries.task_usage_baselines import TaskUsageBaselineQuery
@@ -194,7 +207,8 @@ async def test_history_sql_bounds_candidates_before_loading_work_units(
     finally:
         event.remove(engine, "before_cursor_execute", capture)
     run_select = next(sql for sql in with_candidates if " from runs " in sql.replace("\n", " "))
-    assert run_select.count("runs.updated_at") >= 3  # selected, upper and lower bounds
+    assert "runs.created_at <=" in run_select  # durable existence cutoff
+    assert "runs.updated_at" in run_select  # bounded eventless legacy fallback
     unit_select = next(sql for sql in with_candidates if " from task_usage_work_units " in sql.replace("\n", " "))
     assert "task_usage_work_units.subject_kind" in unit_select
     assert "task_usage_work_units.subject_id" in unit_select
@@ -1390,6 +1404,368 @@ async def test_historical_acceptance_requires_evidence_and_producer_existing_by_
         async with session_factory() as session, session.begin():
             await session.execute(update(model).where(model.id == row_id)
                                   .values(created_at=before_at))
+
+
+@pytest.mark.integration
+async def test_accepted_run_remains_in_historical_report_after_merge(
+    session_factory, tmp_path,
+):
+    from forge.application.ports.evidence import SubscriptionAcceptanceEvidenceDraft
+    from test_subscription_acceptance_evidence_persistence import acceptance_evidence_case
+
+    factory, manifest, artifact = await acceptance_evidence_case(session_factory, tmp_path)
+    async with factory() as work:
+        await work.evidence.record_set(SubscriptionAcceptanceEvidenceDraft(manifest), artifact)
+        run = await work.session.get(Run, manifest.run_id)
+        project_id = run.project_id
+        run_task_id = run.task_id
+        policy_version = run.policy_version
+        await work.commit()
+    execution_id = uuid4()
+    attempt_bindings = []
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=execution_id, run_id=manifest.run_id,
+                                   role="developer", instruction_version="v1",
+                                   provider="provider-a", model="model-a", status="SUCCEEDED"))
+        session.add(ModelUsage(id=uuid4(), run_id=manifest.run_id,
+                               agent_execution_id=execution_id, provider="provider-a",
+                               model="model-a", prompt_version="v1", input_tokens=7,
+                               output_tokens=2, cached_input_tokens=1, duration_ms=1,
+                               tool_call_count=0, pricing_version="v1", currency="USD",
+                               estimated_cost_minor=0))
+        attempts = (await session.scalars(select(SubscriptionAttempt).where(
+            SubscriptionAttempt.run_id == manifest.run_id,
+        ))).all()
+        assert attempts
+        for attempt in attempts:
+            attempt_bindings.append((attempt.task_row_id, attempt.id))
+            reservation = await session.get(SubscriptionAttemptReservation, attempt.id)
+            if reservation is None:
+                session.add(SubscriptionAttemptReservation(
+                    attempt_id=attempt.id, run_id=manifest.run_id,
+                    task_id=attempt.task_row_id,
+                    idempotency_key=f"usage-{attempt.id}", budget_payload={},
+                ))
+                await session.flush()
+            consumption = await session.get(SubscriptionAttemptConsumption, attempt.id)
+            if consumption is None:
+                session.add(SubscriptionAttemptConsumption(
+                    attempt_id=attempt.id, telemetry_payload=None,
+                    observed={"input_tokens": 3, "output_tokens": 1,
+                              "cached_input_tokens": 0}, charged={}, unknown_fields=[],
+                    exceeded_fields=[], policy_violations=[], uncertain=False,
+                ))
+    await PostgresTaskUsageObservations(session_factory).bind(
+        _binding(RunSnapshot(id=manifest.run_id, project_id=project_id,
+                             task_id=uuid4()), execution_id)
+    )
+    for task_id, attempt_id in attempt_bindings:
+        await PostgresTaskUsageObservations(session_factory).bind(replace(
+            _binding(RunSnapshot(id=manifest.run_id, project_id=project_id,
+                                 task_id=run_task_id), attempt_id),
+            source=SourceBinding(kind="subscription_attempt", source_id=attempt_id,
+                                 parent_id=task_id),
+        ))
+    query = TaskUsageBaselineQuery(session_factory)
+    service = TaskUsageBaselineService(query)
+    async with session_factory() as session:
+        before_merge = await session.scalar(select(func.clock_timestamp()))
+        accepted_at = await session.scalar(select(EvidenceSet.created_at).where(
+            EvidenceSet.id == manifest.evidence_set_id,
+        ))
+    assert before_merge is not None and accepted_at is not None
+    subjects = {(project_id, "run", manifest.run_id)}
+
+    async def projection(at):
+        sample, = [row for row in await query.samples(project_ids={project_id},
+                                                       as_of=at, window_days=365)
+                   if row.subject_id == manifest.run_id]
+        exclusions = await query.exclusions(project_ids={project_id}, as_of=at,
+                                            window_days=365, subjects=subjects)
+        report = await service.report(UsageReportFilters(
+            project_ids=frozenset({project_id}), as_of=at,
+            rules=SamplingRules(window_days=365, minimum_comparables=1),
+        ))
+        return sample, exclusions, report
+
+    prior = await projection(before_merge)
+    assert prior[0].outcome == "accepted" and prior[0].measured
+    assert prior[0].total_tokens is not None and prior[0].total_tokens >= 10
+    assert prior[0].source_count == len(attempt_bindings) + 1
+    assert prior[2]["overview"]["sample_count"] == 1
+    target = RunSnapshot(id=uuid4(), project_id=project_id, task_id=run_task_id,
+                         policy_version=policy_version)
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(target)
+        await work.commit()
+    target_binding = _binding(target, uuid4())
+    async with session_factory() as session, session.begin():
+        session.add(AgentExecution(id=target_binding.source.source_id, run_id=target.id,
+            role="developer", instruction_version="v1", provider="provider-a",
+            model="model-a", status="RUNNING"))
+        policy = await session.scalar(select(TaskUsagePolicyRevision).where(
+            TaskUsagePolicyRevision.project_id == project_id,
+        ))
+        if policy is None:
+            session.add(TaskUsagePolicyRevision(
+                project_id=project_id, revision=1, mode="report_only",
+                warning_multiplier=1.5, checkpoint_multiplier=2.0,
+                history_limit=50, minimum_comparables=1, manual_estimate_tokens=None,
+                allow_cross_project_fallback=True, actor_id=uuid4(),
+            ))
+    await PostgresTaskUsageObservations(session_factory).bind(target_binding)
+    frozen = await query.freeze_baseline(target_binding, frozen_at=datetime.now(UTC))
+    assert frozen is not None and frozen.status == "ready" and frozen.sample_count == 1
+    async with factory() as work:
+        current = await work.runs.get(manifest.run_id)
+        current = await work.runs.transition(current.id, current.version,
+                                             RunState.MONITORING_PR, "run.monitoring_pr", {})
+        current = await work.runs.await_approval(current.id, current.version,
+                                                ApprovalGate.MERGE, "a" * 64,
+                                                "run.awaiting_merge_approval", {})
+        current = await work.runs.transition(current.id, current.version,
+                                             RunState.MERGING, "run.merging", {})
+        await work.runs.transition(current.id, current.version, RunState.COMPLETED,
+                                   "run.merge_completed", {"source_command_id": str(uuid4())})
+        await work.commit()
+    async with session_factory() as session:
+        merge_at = await session.scalar(select(RunEvent.occurred_at).where(
+            RunEvent.run_id == manifest.run_id,
+            RunEvent.event_type == "run.merge_completed",
+        ))
+    assert merge_at is not None and merge_at > before_merge
+    before_acceptance = await projection(accepted_at - timedelta(microseconds=1))
+    assert before_acceptance[0].outcome == "unknown"
+    assert before_acceptance[1]["in_progress"] == 1
+    assert (await projection(accepted_at))[0].outcome == "accepted"
+    historical = await projection(before_merge)
+    assert historical[0].outcome == "accepted" and historical[0].measured
+    assert historical[0].total_tokens == prior[0].total_tokens
+    assert historical[1] == prior[1]
+    assert historical[2]["overview"] == prior[2]["overview"]
+    assert (await projection(merge_at))[0].outcome == "completed"
+    assert (await projection(merge_at + timedelta(seconds=1)))[0].outcome == "completed"
+    assert await query.freeze_baseline(target_binding, frozen_at=merge_at) == frozen
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("terminal,event_type,count_key", [
+    (RunState.FAILED, "run.failed", "failed"),
+    (RunState.CANCELLED, "run.cancelled", "cancelled"),
+])
+async def test_terminal_event_does_not_retroactively_change_historical_exclusion(
+    session_factory, persisted_run, terminal, event_type, count_key,
+):
+    query = TaskUsageBaselineQuery(session_factory)
+    subject = (persisted_run.project_id, "run", persisted_run.id)
+    async with session_factory() as session:
+        before_terminal = await session.scalar(select(func.clock_timestamp()))
+    assert before_terminal is not None
+    async with PostgresUnitOfWork(session_factory) as work:
+        current = await work.runs.get(persisted_run.id)
+        if terminal is RunState.FAILED:
+            current = await work.runs.transition(current.id, current.version,
+                                                 RunState.PLANNING, "run.planning", {})
+        await work.runs.transition(current.id, current.version, terminal, event_type, {})
+        await work.commit()
+    async with session_factory() as session:
+        terminal_at = await session.scalar(select(RunEvent.occurred_at).where(
+            RunEvent.run_id == persisted_run.id, RunEvent.event_type == event_type,
+        ))
+    assert terminal_at is not None and terminal_at > before_terminal
+    historical = await query.exclusions(project_ids={persisted_run.project_id},
+        as_of=before_terminal, window_days=1, subjects={subject})
+    inclusive = await query.exclusions(project_ids={persisted_run.project_id},
+        as_of=terminal_at, window_days=1, subjects={subject})
+    assert historical["in_progress"] == 1 and historical.get(count_key, 0) == 0
+    assert inclusive.get("in_progress", 0) == 0 and inclusive[count_key] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("finish_status, terminal", [
+    (AgentFinishStatus.SUCCEEDED, "completed"),
+    (AgentFinishStatus.FAILED, "failed"),
+    (AgentFinishStatus.CANCELLED, "cancelled"),
+])
+async def test_evaluation_fixture_settlement_keeps_historical_run_and_window(
+    session_factory, persisted_run, finish_status, terminal,
+):
+    step_id, execution_id = uuid4(), uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(Step(id=step_id, run_id=persisted_run.id, kind="evaluate",
+                         attempt=1, status="RUNNING"))
+        await session.flush()
+        session.add(AgentExecution(id=execution_id, run_id=persisted_run.id,
+            step_id=step_id, role="developer", instruction_version="v1",
+            provider="provider-a", model="model-a", status="RUNNING"))
+    query = TaskUsageBaselineQuery(session_factory)
+    service = TaskUsageBaselineService(query)
+    project_id = persisted_run.project_id
+    subject = (project_id, "run", persisted_run.id)
+    async with session_factory() as session:
+        before_settlement = await session.scalar(select(func.clock_timestamp()))
+    assert before_settlement is not None
+    # This production method only reads policy during teardown, disabled for this fixture.
+    assert await EvaluationService(session_factory)._settle_fixture_lifecycle(
+        run_id=persisted_run.id, execution_id=execution_id,
+        policy=SimpleNamespace(), finish_status=finish_status, requires_teardown=False,
+    )
+    async with session_factory() as session:
+        event_row = await session.scalar(select(RunEvent).where(
+            RunEvent.run_id == persisted_run.id,
+            RunEvent.event_type == "evaluation.fixture_lifecycle_settled",
+        ))
+    assert event_row is not None and event_row.payload == {"outcome": terminal}
+    settled_at = event_row.occurred_at
+    assert settled_at > before_settlement
+    async with session_factory() as session, session.begin():
+        await session.execute(update(Run).where(Run.id == persisted_run.id)
+                              .values(updated_at=settled_at + timedelta(days=2)))
+
+    async def projection(at):
+        samples = await query.samples(project_ids={project_id}, as_of=at, window_days=1)
+        exclusions = await query.exclusions(project_ids={project_id}, as_of=at,
+                                            window_days=1, subjects={subject})
+        report = await service.report(UsageReportFilters(
+            project_ids=frozenset({project_id}), as_of=at,
+            rules=SamplingRules(window_days=1, minimum_comparables=1),
+        ))
+        return samples, exclusions, report
+
+    before = await projection(before_settlement)
+    assert before[1]["in_progress"] == 1
+    inclusive = await projection(settled_at)
+    later = await projection(settled_at + timedelta(hours=1))
+    window_edge = await projection(settled_at + timedelta(days=1))
+    beyond_window = await projection(settled_at + timedelta(days=1, microseconds=1))
+    for row in (inclusive, later, window_edge):
+        assert row[1].get(terminal, 0) == (0 if terminal == "completed" else 1)
+        assert row[1].get("in_progress", 0) == 0
+        assert row[0] and row[2]["excluded_outcomes"] == row[1]
+    assert beyond_window[0] == () and beyond_window[1] == {}
+    assert [sample.outcome for sample in inclusive[0]] == [terminal]
+    assert [sample.outcome for sample in later[0]] == [terminal]
+    if terminal == "completed":
+        async with session_factory() as session, session.begin():
+            await session.execute(update(RunEvent).where(RunEvent.id == event_row.id)
+                                  .values(payload={"outcome": ["completed"]}))
+        malformed = await projection(settled_at + timedelta(hours=1))
+        assert [sample.outcome for sample in malformed[0]] == ["unknown"]
+        assert malformed[1]["in_progress"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("output_tokens, expected, split, same_channel", [
+    (0, 2**63 - 1, False, False), (1, None, False, False),
+    (1, None, True, False), (0, None, True, True),
+])
+async def test_bound_derived_token_overflow_is_unknown_and_excluded_without_losing_components(
+    session_factory, persisted_run, output_tokens, expected, split, same_channel,
+):
+    maximum = 2**63 - 1
+    sources = (
+        ((maximum, 0), (1, 0)) if same_channel else
+        ((maximum - 1, 0), (1, 1)) if split else
+        ((maximum, output_tokens),)
+    )
+    bindings = []
+    async with session_factory() as session, session.begin():
+        for index, (input_tokens, source_output) in enumerate(sources):
+            task_id, attempt_id = uuid4(), uuid4()
+            bindings.append((task_id, attempt_id))
+            session.add(SubscriptionTask(id=task_id, run_id=persisted_run.id,
+                task_id=task_id, idempotency_key=f"large-task-{index}", payload={}))
+            await session.flush()
+            session.add(SubscriptionAttempt(id=attempt_id, run_id=persisted_run.id,
+                task_row_id=task_id, attempt_number=1,
+                idempotency_key=f"large-attempt-{index}", route_payload={}))
+            await session.flush()
+            session.add(SubscriptionAttemptReservation(attempt_id=attempt_id,
+                run_id=persisted_run.id, task_id=task_id,
+                idempotency_key=f"large-reservation-{index}", budget_payload={}))
+            await session.flush()
+            session.add(SubscriptionAttemptConsumption(attempt_id=attempt_id,
+                telemetry_payload=None,
+                observed={"input_tokens": input_tokens, "output_tokens": source_output,
+                          "cached_input_tokens": 0}, charged={}, unknown_fields=[],
+                exceeded_fields=[], policy_violations=[], uncertain=False))
+        await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
+    for task_id, attempt_id in bindings:
+        await PostgresTaskUsageObservations(session_factory).bind(replace(
+            _binding(persisted_run, attempt_id),
+            source=SourceBinding(kind="subscription_attempt", source_id=attempt_id,
+                                 parent_id=task_id),
+        ))
+    query = TaskUsageBaselineQuery(session_factory)
+    at = datetime.now(UTC) + timedelta(seconds=1)
+    sample, = await query.samples(project_ids={persisted_run.project_id},
+                                  as_of=at, window_days=365)
+    assert sample.total_tokens == expected and sample.measured == (expected is not None)
+    if same_channel:
+        assert sorted(amount for _, _, amount in sample.phase_role_breakdown) == [1, maximum]
+    elif split:
+        assert sorted(amount for _, _, amount in sample.phase_role_breakdown) == [2, maximum - 1]
+    else:
+        assert sample.phase_role_breakdown == (("implementation", "unknown", expected),)
+    exclusions = await query.exclusions(project_ids={persisted_run.project_id}, as_of=at,
+                                   window_days=365,
+                                   subjects={(persisted_run.project_id, "run", persisted_run.id)})
+    assert exclusions.get("incomplete_usage", 0) == (0 if expected is not None else 1)
+    totals = await TaskUsageTotalsQuery(session_factory).totals(
+        SubjectKey(project_id=persisted_run.project_id, kind="run",
+                   subject_id=persisted_run.id), as_of=at,
+    )
+    assert (totals.input_tokens, totals.output_tokens) == (
+        None if same_channel else maximum, output_tokens,
+    )
+    assert totals.completeness == ("lower_bound" if same_channel else "complete")
+    report = await TaskUsageBaselineService(query).report(UsageReportFilters(
+        project_ids=frozenset({persisted_run.project_id}), as_of=at,
+        rules=SamplingRules(window_days=365, minimum_comparables=1),
+    ))
+    assert report["overview"]["sample_count"] == (1 if expected is not None else 0)
+    if expected is None and (not split or same_channel):
+        target = RunSnapshot(id=uuid4(), project_id=persisted_run.project_id,
+                             task_id=persisted_run.task_id,
+                             policy_version=persisted_run.policy_version)
+        async with PostgresUnitOfWork(session_factory) as work:
+            await work.runs.create(target)
+            await work.commit()
+        target_binding = _binding(target, uuid4())
+        async with session_factory() as session, session.begin():
+            session.add(AgentExecution(id=target_binding.source.source_id,
+                run_id=target.id, role="developer", instruction_version="v1",
+                provider="provider-a", model="model-a", status="RUNNING"))
+            session.add(TaskUsagePolicyRevision(
+                project_id=target.project_id, revision=1, mode="report_only",
+                warning_multiplier=1.5, checkpoint_multiplier=2.0,
+                history_limit=50, minimum_comparables=1, manual_estimate_tokens=75,
+                allow_cross_project_fallback=True, actor_id=uuid4(),
+            ))
+        await PostgresTaskUsageObservations(session_factory).bind(target_binding)
+        frozen = await query.freeze_baseline(target_binding, frozen_at=at)
+        assert frozen is not None and frozen.status == "manual"
+        assert frozen.reference_tokens == 75 and frozen.sample_count == 0
+
+
+def test_legacy_derived_and_phase_sums_overflow_without_losing_route_or_failure():
+    maximum = 2**63 - 1
+    rows = [
+        SimpleNamespace(input_tokens=maximum, cached_input_tokens=0, output_tokens=0,
+                        role="developer", provider="provider-a", model="model-a",
+                        agent_execution_id=uuid4(), status="FAILED", kind="implementation"),
+        SimpleNamespace(input_tokens=0, cached_input_tokens=0, output_tokens=1,
+                        role="developer", provider="provider-a", model="model-a",
+                        agent_execution_id=uuid4(), status="SUCCEEDED", kind="implementation"),
+    ]
+    sample = baseline_module._legacy_sample_from_rows(
+        rows, project_id=uuid4(), subject_id=uuid4(), completed_at=datetime.now(UTC),
+        state="COMPLETED", successful=True, accepted=False,
+    )
+    assert sample.total_tokens is None and not sample.measured
+    assert sample.phase_role_breakdown == (("implementation", "developer", None),)
+    assert sample.route_members == (("developer", "provider-a", "model-a", None),)
+    assert sample.failed_attempt_count == 1
 
 
 @pytest.mark.integration

@@ -57,6 +57,22 @@ def test_statistics_use_only_finalized_accepted_measured_top_level_samples():
     assert summary.window_ended_at == samples[4].completed_at
 
 
+def test_phase_role_aggregate_overflow_remains_unknown_while_totals_stay_measured():
+    project = uuid4()
+    maximum = 2**63 - 1
+    rows = [sample(maximum, 0, project_id=project,
+                   phase_role_breakdown=(("implementation", "developer", maximum),)),
+            sample(1, 1, project_id=project,
+                   phase_role_breakdown=(("implementation", "developer", 1),))]
+    summary = summarize_samples(rows, rules=SamplingRules(history_limit=2, minimum_comparables=1),
+                                as_of=datetime(2026, 2, 1, tzinfo=UTC), project_ids={project})
+    assert summary.sample_count == 2 and summary.coverage_count == 2
+    assert summary.phase_role_breakdown == (("implementation", "developer", None),)
+    assert summary.reference_tokens is not None
+    with pytest.raises(ValueError, match="phase.*signed-64"):
+        sample(1, 0, phase_role_breakdown=(("implementation", "developer", maximum + 1),))
+
+
 def test_exact_route_precedes_labelled_cross_project_fallback_and_access_filter():
     current_project, visible, hidden = uuid4(), uuid4(), uuid4()
     current = sample(1, 3, project_id=current_project)
