@@ -188,12 +188,12 @@ describe('monitoring-policy API and integer validation', () => {
         note: 'Tuned multipliers for team sprint',
       };
 
-      const result = await reviseMonitoringPolicy(projectId, request, { idempotencyKey: 'idemp-xyz-123' });
+      const result = await reviseMonitoringPolicy(projectId, request, { idempotencyKey: 'retry' });
 
       expect(mutate).toHaveBeenCalledWith(
         `/projects/${projectId}/monitoring-policy`,
         request,
-        { idempotencyKey: 'idemp-xyz-123', method: 'POST' }
+        { idempotencyKey: 'retry', method: 'POST' }
       );
       expect(result).toEqual(savedPolicy);
     });
