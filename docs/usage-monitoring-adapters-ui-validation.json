@@ -7,25 +7,26 @@
     99,
     103
   ],
-  "status": "third_codex_repair_local_candidate_awaiting_current_head_hosted_review",
+  "status": "fourth_codex_repair_local_candidate_awaiting_current_head_hosted_review",
   "feature_complete": false,
   "source": {
     "base": "e2c93d0a35102fd16162ee492da4044b3070a59f",
     "branch": "codex/usage-monitoring-adapters-ui",
     "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge",
     "initial_integrated_diff_sha256": "359bfca502d1d5dd67dd0d47a029a840e3f7f94d5ac698b350b09c145a1e8f84",
-    "final_source_commit": "78dd3f4d07fd1f5403b1d77ee6bccf6d14fd7da2",
-    "final_source_tree": "152cd9958e333b51ff47b227a8de0f27b5a32854",
-    "final_source_diff_sha256": "fada25744586e4ae360aa05cd54cdd973434648331e848d15b12791a58f2c021",
+    "final_source_commit": "215500a09332230a3dbf42a193c78df19402806f",
+    "final_source_tree": "10bb8e911fc0bedf250c7b189ac3bfde54469dd3",
+    "final_source_diff_sha256": "3724b0c7c73dced2d98320d5992287e6539706cfa45378ea5bb513aebed5bcf9",
     "changed_files": 38,
-    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-round3/candidate-final.json",
+    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-round4/candidate.json",
     "base_origin_main_fetched": true,
     "previous_local_source_commit": "c43dd2a8ef822812b0480618954a86bdde7288a1",
     "previous_local_source_tree": "8b33ceeb38318c6f73d1c7956281623560a4d9ff",
     "previous_local_source_diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
     "pre_codex_repair_source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
     "pre_round2_source_commit": "c3735120ba0e2e2d5e3943cbbb02a6b0220c82d5",
-    "pre_round3_source_commit": "81354e63646b888479b83a7e08ada22aaa05a6a1"
+    "pre_round3_source_commit": "81354e63646b888479b83a7e08ada22aaa05a6a1",
+    "pre_round4_source_commit": "78dd3f4d07fd1f5403b1d77ee6bccf6d14fd7da2"
   },
   "previous_delivery": {
     "foundation_pr": 107,
@@ -684,7 +685,7 @@
     104,
     106
   ],
-  "recorded_at_utc": "2026-10-11T18:33:17.057320+00:00",
+  "recorded_at_utc": "2026-10-11T18:52:16.991830+00:00",
   "review_findings": [
     {
       "id": "UM-REV-001",
@@ -964,7 +965,7 @@
       "prior_evidence": "Earlier source/runtime and UI inputs unchanged; affected API-helper fixture suite rerun.",
       "recorded_at_utc": "2026-10-11T17:10:45.911179+00:00"
     },
-    "current_acceptance": "Prior automatic smoke passed on 7453f55. Eight findings locally addressed; current candidate awaiting automatic smoke and Codex review. No merge authorization.",
+    "current_acceptance": "Prior automatic smoke passed on f1c23f6. Ten findings locally addressed; current candidate awaiting automatic smoke and Codex review. No merge authorization.",
     "fixture_repair_jev": {
       "status": "partial",
       "coverage": {
@@ -1464,6 +1465,171 @@
         "No manual full hosted CI or final whole backend suite run. #101/#102 checkpoints, #104 reporting/continuation and #106 production assembly remain subsequent."
       ],
       "recorded_at_utc": "2026-10-11T18:33:17.057320+00:00"
+    },
+    "codex_repair_round4": {
+      "source_commit": "215500a09332230a3dbf42a193c78df19402806f",
+      "source_tree": "10bb8e911fc0bedf250c7b189ac3bfde54469dd3",
+      "source_diff_sha256": "3724b0c7c73dced2d98320d5992287e6539706cfa45378ea5bb513aebed5bcf9",
+      "owned_sha256": {
+        "apps/orchestrator/src/forge/agents/antigravity_runtime.py": "dee8665f97cc88fa2496966101987f060024fabca3bf77d03773966871118a67",
+        "apps/orchestrator/src/forge/agents/epic_brainstorm_protocol.py": "8a6aa150570b2904d421d83210787402696c17eb0de41011bf0d666b1f529200",
+        "apps/orchestrator/tests/agents/test_google_usage_observations.py": "da845ce533ad31237270764852c7381dd01e40758e42532a4a9c1db4492185b3",
+        "apps/orchestrator/tests/agents/test_google_observed_settlement.py": "85d7c8935b4633c10950b5af1e82c1a45cbc90e42aba0147cff8be676a3edf79",
+        "apps/orchestrator/tests/epic_brainstorm/test_gateway.py": "e6c6e42b654b315492d01d3cf95936d07c73424b02207019ddc6d34be056cb32"
+      },
+      "retained_sha256": {
+        "apps/orchestrator/src/forge/agents/subscription_usage_observations.py": "739c9982866ef42be10d5e6d4a4c51ddcebd86b24723d39b26b9a032edc4a3c7",
+        "apps/orchestrator/src/forge/agents/claude_gateway.py": "69c6d09ad15a0919c98e282d0ee4a79191fe8fc498eb7a4a088e162071bf6f73",
+        "apps/orchestrator/tests/agents/test_codex_usage_observations.py": "f2d390721219e8a8d50ba8ae52c0798324e09a3196a7dd0858adc18b3718bd6b",
+        "apps/orchestrator/tests/agents/test_claude_usage_observations.py": "c2940bf8ded52ffcf146f363dde2bdae603f34a7a5824695f555207163545206",
+        "apps/orchestrator/tests/task_usage_contract/test_adapter_batch_integration.py": "28c609855445829df2e1ac59f52c1cf75b1ae1c673556eb9363ab4a59152314d",
+        "apps/web/src/components/projects/monitoring-policy-editor.tsx": "37072a45ee7eea5bca663b68991d0baea2dc43d7eaa4acf14fe31c3a4b662283",
+        "apps/web/src/components/projects/monitoring-policy-editor.test.tsx": "3b7d86bbf9432538f15d7c0627dba38a1ba8dbbc652387ed79fed428ff21c46f",
+        "apps/web/src/components/projects/monitoring-policy-summary.tsx": "713594a86d2e56162a094bc2c98f2557a4762e30a372a1d1561a4d25665c32ba",
+        "apps/web/src/components/projects/monitoring-policy-summary.test.tsx": "6849b384667e79a51a0a9ffe9f3a68adbd4f096e244a220fc0557d58a997496e",
+        "apps/web/src/app/projects/[projectId]/page.test.tsx": "1bdc8c98dcff4b48ade0227b81cb9f8547a3356a447c003a6f924a78b4695073",
+        "apps/orchestrator/src/forge/agents/codex_gateway.py": "73d9972ba95ad433fb3bdb1c44fc5005d1938bbecd262b0073ade678b39c4471",
+        "apps/orchestrator/src/forge/agents/epic_brainstorm_gateway.py": "e1a261e8dc7c5902b71d18f0d494b15dded93e7cf5d05f12dd8d0bcc34048b2a"
+      },
+      "primary_adjudication": {
+        "accepted": true,
+        "unresolved_material_findings": [],
+        "integrated_diff_sha256": "3724b0c7c73dced2d98320d5992287e6539706cfa45378ea5bb513aebed5bcf9",
+        "review": "Primary inspected the two-source repair delta and pure/public scripted protocol regressions against both Codex claims and the compact contract. All five owned hashes and twelve retained source/test/UI hashes match actual receipts.",
+        "proportionality": "No additional independent gate: the small context-direction fix and official authoring reuse of the previously gated Claude normalizer are covered by seven focused cases and the 326-case affected run. Existing integrated/simplify reviews and scoped round3 correctness evidence are retained for unchanged inputs. Current-head hosted Codex review remains required.",
+        "limitations": "Jev is partial. Scripted official Claude handshake/callback/proposal/settlement is proved with a fake supervisor, not OS subprocess or live provider conformance."
+      },
+      "findings": [
+        {
+          "id": "PR109-09",
+          "comment_id": 4242729479,
+          "thread_id": "PRRT_kwDOUDBiTc6rQVWG",
+          "fix": "When context occupancy exceeds a valid capacity, only occupancy becomes unknown. Valid capacity and measured compaction survive in direct, nested and usage-alias layouts and observed finals."
+        },
+        {
+          "id": "PR109-10",
+          "comment_id": 4242729480,
+          "thread_id": "PRRT_kwDOUDBiTc6rQVWH",
+          "fix": "The actual official Claude authoring parser uses the corrected Claude-specific normalizer. Uncached2/read20/creation3 yields input25/cache23/output6; public telemetry mutates only after validation. The minimal lifecycle uses the frozen source binding and preserves callback and settlement."
+        }
+      ],
+      "checks": [
+        {
+          "result": "Two expected pure normalization failures and an actual official parser failure before repair; public initial fixture diagnosis retained without counting it as a second independent product red",
+          "receipts": [
+            "pr109-round4/worker/red-pure.txt",
+            "pr109-round4/worker/red-official.txt",
+            "pr109-round4/worker/red-public.txt"
+          ]
+        },
+        {
+          "result": "7 focused normalization, public context and official parser cases passed",
+          "receipt": "pr109-round4/worker/focused-candidate.txt"
+        },
+        {
+          "result": "326 passed across ten affected adapter/gateway/budget/Google/authoring test files, 5 dependency warnings",
+          "receipt": "pr109-round4/worker/affected-candidate.txt"
+        },
+        {
+          "result": "Scoped Ruff passed for five changed paths; source-only mypy passed for two changed sources",
+          "receipts": [
+            "pr109-round4/worker/ruff-candidate.txt",
+            "pr109-round4/worker/mypy-candidate.txt"
+          ]
+        },
+        {
+          "result": "Python3.14.5 active-worktree source import, exact owned/read-only input hashes and git diff --check passed",
+          "receipt": "pr109-round4/worker/candidate.txt"
+        },
+        {
+          "result": "2 real PostgreSQL normal/collision/replay cases and final-event namespace gate retained for unchanged publisher/Codex/root-test inputs",
+          "receipts": [
+            "pr109-round3/worker/postgres-final.txt",
+            "pr109-round3/correctness/final-verdict.md",
+            "pr109-round4/candidate.json"
+          ]
+        },
+        {
+          "result": "Corrected sparse/mixed-cache Claude subscription gate retained; affected public cases rerun in the 326-case run",
+          "receipts": [
+            "pr109-round3/correctness/final-verdict.md",
+            "pr109-round3/worker-cache-repair/coverage.md",
+            "pr109-round4/worker/affected-candidate.txt"
+          ]
+        },
+        {
+          "result": "Unchanged 48 web owner/editor/summary/API tests, 56 profile/epic cases and web TypeScript/lint/build retained for matching inputs",
+          "receipts": [
+            "pr109-ui-repair/candidate.json",
+            "pr109-ui-repair/affected-final.log",
+            "pr109-ui-repair/typecheck-final-2.log",
+            "pr109-ui-repair/lint-final-2.log",
+            "pr109-ui-repair/build-final.txt",
+            "simplify/acceptance.json"
+          ]
+        }
+      ],
+      "validation_summary": "326 affected adapter/gateway/budget/authoring tests passed, including seven focused repairs; 2 real PostgreSQL cases are retained for unchanged inputs. Scoped Ruff/source mypy and Python3.14 managed-source imports passed. Matching unchanged evidence retains 48 owner/editor/summary/API tests, 56 profile/epic cap cases and web TypeScript/lint/build.",
+      "coverage": [
+        {
+          "invariant": "Malformed optional occupancy must not discard valid capacity or compaction or invalidate provider execution",
+          "cases": "Direct/nested/usage-alias payloads; zero/bool/negative/overflow; impossible200/capacity100 -> unknown occupancy/capacity100; public subscription and authoring final observations after settlement.",
+          "evidence": [
+            "pr109-round4/worker/coverage.md",
+            "pr109-round4/worker/focused-candidate.txt",
+            "pr109-round4/worker/affected-candidate.txt"
+          ]
+        },
+        {
+          "invariant": "Official Claude authoring counts uncached/read/creation input exactly once using the same validated semantics as Claude subscription",
+          "cases": "Missing/read/creation/both cache, zero, sparse/replay, malformed optional reasoning, invalid/regressing required counters, signed64 normalized overflow with unchanged public state, actual parser handshake/callback/proposal/output and final-only observation.",
+          "evidence": [
+            "pr109-round4/worker/coverage.md",
+            "pr109-round4/worker/red-official.txt",
+            "pr109-round4/worker/affected-candidate.txt"
+          ]
+        },
+        {
+          "invariant": "Minimal official authoring lifecycle preserves durable source identity, callback and settlement before exactly one final",
+          "cases": "Actual claude_exchange with scripted MCP initialize/list/read callback, settings/model handshake and terminal proposal; lifecycle lacks attempt_id; stop hook and confirmed close precede final delivery.",
+          "evidence": [
+            "pr109-round4/worker/coverage.md",
+            "pr109-round4/worker/affected-candidate.txt"
+          ]
+        },
+        {
+          "invariant": "Previous durable final identity, cache atomicity, UI conflict recovery and policy semantics remain intact",
+          "cases": "Twelve retained input hashes, two real PostgreSQL replay/collision cases and prior scoped correctness gate; adapter affected suite rerun, UI checks retained.",
+          "evidence": [
+            "pr109-round4/candidate.json",
+            "pr109-round3/acceptance.json",
+            "pr109-round4/worker/affected-candidate.txt"
+          ]
+        }
+      ],
+      "jev": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "3724b0c7c73dced2d98320d5992287e6539706cfa45378ea5bb513aebed5bcf9",
+        "receipt": "pr109-round4/jev-review.json"
+      },
+      "limitations": [
+        "Official Claude authoring success is proved through the real parser and scripted protocol with a fake supervisor/session; real OS subprocess and live native-client/provider conformance are unrun for that case.",
+        "Authoring Claude usage remains final-only; no invented live coverage or context counters.",
+        "Repeated live event IDs retain prior replay behavior; uniqueness of every duplicate live emission is not separately claimed.",
+        "Missing cache normalizes as zero when uncached input is known under existing adapter behavior; cached dimension stays unknown until measured.",
+        "Authenticated browser/API journey, memory profiling, indefinitely cancellation-suppressing sinks and exact deadline crossing for every subscription wrapper remain unproved.",
+        "Prior optional test-inclusive mypy failure receipt is historical, not rerun or claimed passing on this candidate; normal source gates pass.",
+        "No manual full hosted CI or final whole backend suite run. #101/#102 checkpoints, #104 reporting/continuation and #106 production assembly remain subsequent."
+      ],
+      "recorded_at_utc": "2026-10-11T18:52:16.991830+00:00"
     }
   }
 }
