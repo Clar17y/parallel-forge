@@ -7,7 +7,7 @@
     97,
     100
   ],
-  "status": "locally implemented, simplified and repaired; PR #108 published, repair push pending at this snapshot",
+  "status": "Locally implemented, simplified and repaired; PR #108 published, round-two repair push pending at this snapshot.",
   "feature_complete": false,
   "candidate": {
     "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
@@ -282,7 +282,7 @@
       "immediate merge"
     ]
   },
-  "issue_state": "#96/#97/#100 remain open pending publication/merge; #95/#105 remain closed; foundation PR107 is merged",
+  "issue_state": "#96/#97/#100 remain open pending merge; #95/#105 remain closed; foundation PR #107 is merged.",
   "codex_repairs": {
     "source_commit": "9898e353396d7a3e8fba604ab8bb1f9cc21956e8",
     "source_tree": "1c10c7bba7aeaa44a5a5c85dc4a4b833c931385f",
@@ -372,6 +372,112 @@
       "new_head_smoke": "pending",
       "new_head_codex_review": "pending",
       "owner_authorized": "push, PR publication, automatic checks, Codex repairs/replies/resolution",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round2": {
+    "snapshot_at": "2026-10-11T00:24:41.151705+00:00",
+    "source_commit": "90015d104e98e3a98335851f4af28cb265a390f5",
+    "source_tree": "f83a5db0ce0421d5cb8a312791be00aa14ced6c4",
+    "starting_head": "33e8505f507e75740393ffe25fbfc44095ca7344",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "4d239df46df954521d536df635782ed3325bffcdb1c33fc9c808dd50643f6607",
+    "repair_delta_sha256": "2165578fd93a93118ff8e2ba3f15030673b899a764944898ed7a865cdc9a0578",
+    "worker_scoped_candidates": {
+      "cohort_sha256": "e14f2f8be671f426bc2e5d8e34cb6dd4db0d6bf2ca22aad6e0be841fbbad1373",
+      "cohort_hash_matches_worker": true,
+      "policy_sha256": "d6f0e239368870a892492f3d2c4bdf556295dda635264940070a25f62883ba86",
+      "policy_raw_blob_sha1": "50116462fd324df8861f7c92e0e3a9a3f89e297b",
+      "policy_worker_blob_sha1": "50116462fd324df8861f7c92e0e3a9a3f89e297b",
+      "policy_blob_matches_worker": true
+    },
+    "fixed_findings": [
+      {
+        "id": "PR108-03",
+        "thread": "PRRT_kwDOUDBiTc6rI5Dk",
+        "comment": 4239675984
+      },
+      {
+        "id": "PR108-04",
+        "thread": "PRRT_kwDOUDBiTc6rI5Dm",
+        "comment": 4239675986
+      }
+    ],
+    "summary": "The latest Codex repairs prevent output repair after exact exhaustion of an explicit input/output/aggregate token cap, preserving first-attempt measurements and identity. They also count comparable exclusions only inside the exact project/route cohort or selected accessible matching-route fallback. The final gateway candidate passed 121 affected agent tests; baseline domain/application/PostgreSQL suites passed 37 tests, followed by 11 domain tests after a test-only lint correction. Full source mypy (554 files), scoped Ruff and whitespace checks passed. Earlier matching evidence is retained for unchanged paths.",
+    "detail": "Valid output at the exact cap still succeeds; omitted caps remain unbounded, and zero-tool/free-cost work remains usable. Tests cover initial zero-token admission, exact versus chosen fallback exclusions, inaccessible/incompatible history, measured zero, report projections and frozen rolling statistics. Frozen baselines do not persist excluded_count, so no stored-count assertion is claimed. The original gateway red result was observed but not retained as raw output; its disclosure and final green receipts are saved. No final whole-repository rerun, high-volume latency benchmark or live-provider acceptance is claimed. Integrated Jev preparation is partial due to processing limits.",
+    "acceptance": "Primary inspected source and concrete assertions, matched both worker-scoped candidate hashes and read retained green/affected/static receipts; cohort red receipt retained and gateway red limitation disclosed. Local repairs are accepted. New published-head smoke and Codex review are pending at this pre-push snapshot.",
+    "coverage": {
+      "policy": [
+        {
+          "invariant": "C03-A: exact finite token exhaustion stops repair without losing measured first attempt",
+          "cases": "input-only, output-only, aggregate-only, mixed input/aggregate; invalid completed output",
+          "evidence": "New parameterized test expected red: 4 failed because runtime.invocations was 2 instead of 1. Green: 4 passed; assertions verify BUDGET_EXCEEDED, one provider call, one usage_attempt, exact input/output counts and original provider request identity."
+        },
+        {
+          "invariant": "C03-B: usable token room and omitted caps remain usable",
+          "cases": "positive remaining input/output/total, all None, valid first output exactly at finite cap",
+          "evidence": "New positive-room/all-None parameterized test passed 4 cases and checks passed repair limits. Existing gateway first-attempt equality test and cached aggregate exact-boundary test passed in affected 121-test batch."
+        },
+        {
+          "invariant": "C03-C: initial required token cap zero cannot start a provider request",
+          "cases": "input, output and aggregate zero introduced through model_copy bypass of schema validation",
+          "evidence": "New parameterized preflight test passed 3 cases; no invocation, no fabricated usage or attempt."
+        },
+        {
+          "invariant": "C03-D: zeros in other resources and existing lifecycle paths retain meaning",
+          "cases": "zero tools/no-tool valid output, zero-cost free output and free repair; cancellation, non-completed first status, overage, cached normalization, multi-attempt accounting",
+          "evidence": "Two new zero-resource tests passed. Existing affected gateway/runtime/call-ordering/attempt/cache/tool-bridge suites passed 121 total. No provider or hosted run was invoked.",
+          "unproved": "Exotic provider behavior with zero-duration repair and non-cooperative live cancellation was not exercised; existing local cancellation tests passed."
+        }
+      ],
+      "cohort": [
+        {
+          "id": "C04-A",
+          "proved": "Exact no-fallback count only includes accessible same-project, same-kind, same configured/effective route failures. Other projects/routes/kinds, inaccessible and future samples do not leak. history_limit=1 still counts in-window exclusions outside selected eligible rolling sample."
+        },
+        {
+          "id": "C04-B",
+          "proved": "Sparse exact selection labelled accessible_cross_project counts matching failures in both accessible projects; incompatible/inaccessible routes excluded. Enabled-but-not-selected fallback retains exact-only count. Provider/model/effort must match one route member."
+        },
+        {
+          "id": "C04-C",
+          "proved": "Overview keeps all accessible filtered exclusions. Zero measured sample remains eligible, and selected rolling statistics/order plus manual/sparse cases passed in affected domain/application suite."
+        },
+        {
+          "id": "C04-D",
+          "proved": "Application comparable reference payload uses exact/fallback count while overview retains broad count. Real PostgreSQL frozen fallback test includes matching and incompatible failed rows and retains selected rolling statistics and frozen reference fields; existing immutable replay tests passed in affected suite.",
+          "limitation": "Frozen baseline schema does not persist excluded_count; consistency is established through the shared select_cohort call, selected history/statistics assertions and unchanged frozen contract, not a stored count assertion."
+        }
+      ]
+    },
+    "evidence": {
+      "policy": ".llm-output/pr108-round2/policy/coverage.json",
+      "cohort": ".llm-output/pr108-round2/cohort/coverage.json",
+      "previous_repairs": ".llm-output/pr108-repairs/acceptance.json",
+      "unchanged_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "jev": {
+      "search": "jev-search.json: partial (unscored_candidates, operation_budget_reached)",
+      "review": "jev-review.json: partial (hunk_limit, operation_budget_reached, oversized_hunk_omitted)",
+      "diff_sha256": "4d239df46df954521d536df635782ed3325bffcdb1c33fc9c808dd50643f6607",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "remaining_limits": [
+      "No final full repository suite rerun or additional manual full hosted CI; earlier failed receipts remain visible.",
+      "No runtime live-provider acceptance, high-volume benchmark or merge.",
+      "Zero-duration/non-cooperative live cancellation repair behavior was not newly exercised; existing local lifecycle cases passed.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain in the other epic children.",
+      "Aggregate cap remains per newly admitted API execution; context diagnostics remain advisory."
+    ],
+    "publication_snapshot": {
+      "phase": "before round-two repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "33e8505f507e75740393ffe25fbfc44095ca7344",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38097283894",
+      "previous_head_codex": "completed with two new findings; first two threads already resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
       "human_code_owner_review": "pending",
       "merged": false
     }
