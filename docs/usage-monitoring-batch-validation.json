@@ -7,7 +7,7 @@
     97,
     100
   ],
-  "status": "Locally implemented, simplified and repaired; PR #108 published, round-six repair push pending at this snapshot.",
+  "status": "Locally implemented, simplified and repaired; PR #108 published, round-seven repair push pending at this snapshot.",
   "feature_complete": false,
   "candidate": {
     "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",
@@ -907,6 +907,99 @@
       "published_head_before_repair": "7c6b5953e526ac9b200895deff99693cd706eb14",
       "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38104476205",
       "previous_head_codex": "completed with two new findings; first ten threads already answered and resolved",
+      "new_head_smoke": "pending",
+      "new_head_codex": "pending",
+      "human_code_owner_review": "pending",
+      "merged": false
+    }
+  },
+  "codex_repairs_round7": {
+    "snapshot_at": "2026-10-11T03:31:16.692334+00:00",
+    "source_commit": "97fd34d0c90043c15419692157c1db611f279634",
+    "source_tree": "2b41a5255a653a9885f3d3a8e337be8e9586904a",
+    "starting_head": "0bb38b86066ff68221c553be53fb6b2fe0124adf",
+    "base_commit": "77c1c9307e80ce7fa0950de00afb836bf8249460",
+    "integrated_code_diff_sha256": "57f513153706ed2c859c574750f1bc9dd042cab8ed35e690171c97afa76d9533",
+    "repair_delta_sha256": "08949f89c1ac6755a37721ba625881e1bec6840c1bc670ded2aa7ba19aa8a40c",
+    "fixed_findings": [
+      {
+        "id": "PR108-13",
+        "thread": "PRRT_kwDOUDBiTc6rJ086",
+        "comment": 4240063253
+      }
+    ],
+    "summary": "Historical failed-attempt counts use valid inclusive execution completion timestamps for bound, unmeasured and legacy ModelUsage paths. One batched execution count replaces the legacy current-status calculation; duplicate usage rows cannot multiply failures.",
+    "detail": "The real PostgreSQL execution repository regression reproduced four failures (FAILED/CANCELLED by bound/unbound), and the controlled legacy matrix reproduced one failure before repair. Final production source passed 63 affected reporting tests. After a test-only measured-state assertion refinement, all five final focused PostgreSQL cases passed. Inclusive completion boundaries, earlier-cutoff replay after finalization, duplicate usage rows, success, future creation, missing/anomalous timestamps and a separate immutable ready reference are asserted. Scoped Ruff, mypy, whitespace and active-worktree source import passed.",
+    "acceptance": "Primary matched the final source/test hashes and exact scoped patch, inspected concrete assertions and actual red/green/affected/static receipts, confirmed exclusions do not consume the legacy failure metric, and matched all five unchanged admission-policy file hashes. Matching preceding policy tests and scoped lock-order review remain applicable; no whole-repository pass is claimed.",
+    "accepted_file_hashes": {
+      "apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py": "af3bef9e6215fb7ee9e83d1079fb0330a26985ef8ca20652ff7bfd2a35e750dc",
+      "apps/orchestrator/tests/persistence/test_task_usage_baselines.py": "fcba5d22dc35d4e8ffae92d918dc52815089e315b32afef262c451c5446f9b85"
+    },
+    "coverage": "# PR108-13 reporting candidate\n\nHEAD `0bb38b86066ff68221c553be53fb6b2fe0124adf`, owned scoped diff `scoped.patch` SHA-256 `08949F89C1AC6755A37721BA625881E1BEC6840C1BC670DED2AA7BA19AA8A40C`. Source query SHA-256 `AF3BEF9E6215FB7EE9E83D1079FB0330A26985EF8CA20652FF7BFD2A35E750DC`; persistence test SHA-256 `FCBA5D22DC35D4E8FFAE92D918DC52815089E315B32AFEF262C451C5446F9B85`. Only these two tracked files changed. `import.txt` proves `forge.__file__` resolves in this active worktree. Python 3.14, uv frozen dev environment, PostgreSQL disposable fixture port 5435; `PYTHONPATH` set to resolved `apps/orchestrator/src` before Python checks.\n\n| Invariant | Concrete evidence |\n| --- | --- |\n| C13-A: terminal failure/cancellation is counted only at its valid inclusive `completed_at`, independent of execution creation; bound and unmeasured paths | `red-repository.txt`: 4 expected failures with actual `PostgresExecutionRepository.admit/finalize`, when the old query returned 1 before terminal time. `focused-final.txt`: all 4 permutations (FAILED/CANCELLED \u00d7 bound/unbound) pass before finalization, after later commit at original cutoff, one microsecond before terminal, inclusive terminal, and after terminal. Both `samples` and public `report.failed_attempt_count` asserted; final repository ModelUsage makes the sample measured after the cutoff. |\n| C13-B: legacy current-status bypass, duplicate usage rows, distinct failures, success, future creation, missing timestamp, terminal-before-creation anomaly | `red-legacy.txt`: expected failure, current-status legacy count 4 instead of 0 at old cutoff. `focused-final.txt`: legacy path passes 0\u21921\u21923 across cutoffs, including exact inclusive boundaries. Two ModelUsage rows for one failed execution count once; one successful execution never counts; missing/anomalous terminal timestamps fail closed. The future-created execution does not enter the old inventory. Public report count matches sample. |\n| C13-C: frozen ready reference and prior reporting behavior | The legacy test creates a separate controlled, authoritative ModelUsage-backed ready history source and verifies its frozen reference replays identically across all later failure cutoffs. `affected-final.txt`: domain/application/persistence/API reporting suite 63 passed. Three old test fixtures that previously represented terminal status without timestamp now supply coherent created/completed evidence. `ruff-final.txt`, `mypy-final.txt`, `diff-check.txt` all exit 0. |\n\nExact final affected command: `uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/domain/test_task_usage_baselines.py apps/orchestrator/tests/application/test_task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py apps/orchestrator/tests/api/test_task_usage_reporting.py -q` (63 passed). A later test-only refinement removed a premature observation and asserted actual measured state around repository finalization; production source was unchanged. Final focused command: `uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py -q -k 'repository_finalization_failure_count or legacy_failure_counts_use_unique'` (5 passed). Static commands: `uv run --frozen --extra dev ruff check apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py apps/orchestrator/tests/persistence/test_task_usage_baselines.py`, `uv run --frozen --extra dev mypy apps/orchestrator/src/forge/persistence/queries/task_usage_baselines.py`, and `git diff --check` (all pass).\n\nAuthority/limits: `AgentExecution.completed_at` is written with status by production finalization and is the inclusive terminal time. A currently terminal legacy row with no completion time or completion preceding creation is excluded from the failure count rather than assigned an invented date. Duplicate ModelUsage rows do not multiply execution counts because the grouped query reads `AgentExecution` once per execution. Authoring jobs and subscription attempts are not inputs to this run-specific counter; their distinct outcome/exclusion projections were unchanged and covered by the affected reporting suite. No broad bitemporal redesign, live provider, hosted CI, or unrelated admission suite was run.\n",
+    "evidence": {
+      "primary_validation": ".llm-output/pr108-round7/primary-validation.json",
+      "worker_coverage": ".llm-output/pr108-round7/reporting/coverage.md",
+      "red_repository": ".llm-output/pr108-round7/reporting/red-repository.txt",
+      "red_legacy": ".llm-output/pr108-round7/reporting/red-legacy.txt",
+      "affected": ".llm-output/pr108-round7/reporting/affected-final.txt",
+      "final_focused": ".llm-output/pr108-round7/reporting/focused-final.txt",
+      "unchanged_policy": ".llm-output/pr108-round6/policy-primary-validation.json",
+      "unchanged_scoped_gate": ".llm-output/pr108-round6/correctness-result.json",
+      "previous_repairs": ".llm-output/pr108-round6/acceptance.json",
+      "earlier_batch": "docs/usage-monitoring-batch-validation.json"
+    },
+    "remaining_limits": [
+      "63 affected tests ran before the last test-only measured-state assertion refinement; the five final focused cases ran after it, with identical production source.",
+      "Repository finalization tests supply explicit future completed_at values; the legacy row matrix is controlled data, not a full run lifecycle claim.",
+      "Missing completion or completion before creation is excluded rather than assigned an invented date.",
+      "No complete repository suite, new live-provider acceptance or manually dispatched full hosted CI was run.",
+      "Prior historical mutable lineage and stale-admission automatic-retry limitations remain as recorded in round six.",
+      "Adapter telemetry, checkpoints/continuation, UI and final assembly remain other epic children; context diagnostics remain advisory."
+    ],
+    "jev": {
+      "search": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "operation_budget_reached",
+            "unscored_candidates",
+            "max_candidates_reached"
+          ]
+        }
+      },
+      "review": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        }
+      },
+      "diff_sha256": "57f513153706ed2c859c574750f1bc9dd042cab8ed35e690171c97afa76d9533",
+      "repair_delta": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "08949f89c1ac6755a37721ba625881e1bec6840c1bc670ded2aa7ba19aa8a40c"
+      },
+      "focus_disposition": "Integrated and focused-delta attempts match their exact saved diffs and are partial due hunk, operation and size limits. Integrated focus concerns unchanged ADK compatibility/coverage; prior matching evidence carries forward. Delta intent focus is removal of an unused status column in favor of the shared count authority; cancellation focus is the inclusive completed_at filter. The actual FAILED/CANCELLED repository permutations and legacy row matrix address those named behaviors. Jev scores prove neither absence nor test success.",
+      "non_code_exemption": "The validation JSON records evidence only and is excluded from the code diff."
+    },
+    "publication_snapshot": {
+      "phase": "before round-seven repair push",
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "published_head_before_repair": "0bb38b86066ff68221c553be53fb6b2fe0124adf",
+      "previous_head_smoke": "https://github.com/Clar17y/parallel-forge/actions/runs/38106962984",
+      "previous_head_codex": "completed with one new finding; first twelve threads answered and resolved",
       "new_head_smoke": "pending",
       "new_head_codex": "pending",
       "human_code_owner_review": "pending",
