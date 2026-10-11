@@ -924,5 +924,56 @@
     },
     "unchanged_evidence": "Earlier Google subscription and authoring, API/presentation, page draft and policy/replay evidence retained only for matching scoped inputs. Codex/Claude extraction and changed cap/epic components use fresh affected checks. No final whole backend suite claim.",
     "recorded_at_utc": "2026-10-11T17:04:46.645257+00:00"
+  },
+  "publication": {
+    "pr": 109,
+    "url": "https://github.com/Clar17y/parallel-forge/pull/109",
+    "initial_head": "1f9b80510cc5c080294f128c2e4abde3c730794e",
+    "initial_smoke": "Failed secret scan before runtime tests; two dummy idempotency-key matches. Failed receipt retained.",
+    "fixture_repair": {
+      "source_commit": "7dc6d8b7302684bea603df620ff5169e4ff57ae6",
+      "changed_path": "apps/web/src/lib/api/monitoring-policy.test.ts",
+      "sha256": "4af6a81555e7bc3e54869d7535775eb6ed5b1762da955ec579fd490a960c8beb",
+      "cause": "Two false-positive generic-api-key matches against a dummy idempotency-key literal in one unit test. No credentials were involved.",
+      "repair": "Use a simple dummy retry key consistently in request and expected assertion; no scanner weakening or production change.",
+      "checks": [
+        {
+          "argv": [
+            "rtk",
+            "proxy",
+            "npm",
+            "run",
+            "test:web",
+            "--",
+            "--run",
+            "src/lib/api/monitoring-policy.test.ts"
+          ],
+          "result": "21 passed",
+          "receipt": "simplify/secret-scan/fixture-check.txt"
+        },
+        {
+          "scanner": "Gitleaks 8.30.1, verified Windows artifact SHA256 d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e",
+          "result": "Committed candidate archive scan exit 0, no leaks",
+          "receipt": "simplify/secret-scan/repaired-redacted-scan.txt"
+        }
+      ],
+      "scope": "Localized test-data correction; exact CI path/rule lookup exempt from broad Jev search. No new production behavior or TDD behavior change.",
+      "prior_evidence": "Earlier source/runtime and UI inputs unchanged; affected API-helper fixture suite rerun.",
+      "recorded_at_utc": "2026-10-11T17:10:45.911179+00:00"
+    },
+    "current_acceptance": "Awaiting automatic checks and current-head Codex review; not merge authorization.",
+    "fixture_repair_jev": {
+      "status": "partial",
+      "coverage": {
+        "complete": false,
+        "reasons": [
+          "hunk_limit",
+          "operation_budget_reached",
+          "oversized_hunk_omitted"
+        ]
+      },
+      "diff_sha256": "b4cf49cff20dbb6f8bc848cc781677a7afc0bf294bb9feccf45dacd4d4b813f0",
+      "receipt": "simplify/secret-scan/jev-review.json"
+    }
   }
 }
