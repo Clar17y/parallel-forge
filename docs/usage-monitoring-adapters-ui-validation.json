@@ -7,22 +7,23 @@
     99,
     103
   ],
-  "status": "simplified_local_candidate_ready_for_authorized_pr_publication",
+  "status": "codex_findings_repaired_local_candidate_awaiting_current_head_hosted_review",
   "feature_complete": false,
   "source": {
     "base": "e2c93d0a35102fd16162ee492da4044b3070a59f",
     "branch": "codex/usage-monitoring-adapters-ui",
     "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge",
     "initial_integrated_diff_sha256": "359bfca502d1d5dd67dd0d47a029a840e3f7f94d5ac698b350b09c145a1e8f84",
-    "final_source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
-    "final_source_tree": "27082f8a035eedc5e9c7df93b403a16eb04858d0",
-    "final_source_diff_sha256": "ce49eaefd270cfc712220c0cc76cfc773a5244fed05a097c5e7e3503dadfb9de",
-    "changed_files": 36,
-    "candidate_manifest": ".llm-output/usage-adapters-ui/simplify/candidate.json",
+    "final_source_commit": "c3735120ba0e2e2d5e3943cbbb02a6b0220c82d5",
+    "final_source_tree": "4d63a64a12e96764f06ee04574c7c49c4b534f31",
+    "final_source_diff_sha256": "b1ee1cd7a8a84656b7f91af2c732cc7fd64c59339936ae577df452978547b073",
+    "changed_files": 38,
+    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-repair-integration/candidate.json",
     "base_origin_main_fetched": true,
     "previous_local_source_commit": "c43dd2a8ef822812b0480618954a86bdde7288a1",
     "previous_local_source_tree": "8b33ceeb38318c6f73d1c7956281623560a4d9ff",
-    "previous_local_source_diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e"
+    "previous_local_source_diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
+    "pre_codex_repair_source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df"
   },
   "previous_delivery": {
     "foundation_pr": 107,
@@ -681,7 +682,7 @@
     104,
     106
   ],
-  "recorded_at_utc": "2026-10-11T17:04:46.646781+00:00",
+  "recorded_at_utc": "2026-10-11T17:32:00.907683+00:00",
   "review_findings": [
     {
       "id": "UM-REV-001",
@@ -961,7 +962,7 @@
       "prior_evidence": "Earlier source/runtime and UI inputs unchanged; affected API-helper fixture suite rerun.",
       "recorded_at_utc": "2026-10-11T17:10:45.911179+00:00"
     },
-    "current_acceptance": "Awaiting automatic checks and current-head Codex review; not merge authorization.",
+    "current_acceptance": "Prior smoke passed on 627db73; repaired candidate awaiting automatic smoke and current-head Codex review. No merge authorization.",
     "fixture_repair_jev": {
       "status": "partial",
       "coverage": {
@@ -974,6 +975,219 @@
       },
       "diff_sha256": "b4cf49cff20dbb6f8bc848cc781677a7afc0bf294bb9feccf45dacd4d4b813f0",
       "receipt": "simplify/secret-scan/jev-review.json"
+    },
+    "codex_repair_round1": {
+      "source_commit": "c3735120ba0e2e2d5e3943cbbb02a6b0220c82d5",
+      "source_tree": "4d63a64a12e96764f06ee04574c7c49c4b534f31",
+      "source_diff_sha256": "b1ee1cd7a8a84656b7f91af2c732cc7fd64c59339936ae577df452978547b073",
+      "candidate": {
+        "base_head": "627db73d89b43d4d0a9f3ae4aad6ac1dfc4a1f29",
+        "owned_changed_inputs": {
+          "apps/orchestrator/src/forge/agents/claude_gateway.py": "2b26a9b8b855c560cc0279b505ee02ab0cdb6af5bc2e8bb7fb3413a1f5b585b5",
+          "apps/orchestrator/src/forge/agents/codex_gateway.py": "d7be7d87818be5d5ed9afb0c5c2e45bd18a6fc2994184a01d60c9b46ad486ccd",
+          "apps/orchestrator/src/forge/agents/subscription_usage_observations.py": "4e4fd0348b01034435c588fd979f232d831a6f13e2b0a695f4e24c9febba8251",
+          "apps/orchestrator/tests/agents/test_claude_usage_observations.py": "2af512ff2b06339ad652a07f37c502e32dd1bfc7ed198e4855d2e642834f073e",
+          "apps/orchestrator/tests/agents/test_codex_usage_observations.py": "4f504cfcdf28e0ac393add8c92a667d2061530e7f70ef64899e5bf703c75835d",
+          "apps/web/src/app/projects/[projectId]/page.test.tsx": "1bdc8c98dcff4b48ade0227b81cb9f8547a3356a447c003a6f924a78b4695073",
+          "apps/web/src/components/projects/monitoring-policy-editor.test.tsx": "3b7d86bbf9432538f15d7c0627dba38a1ba8dbbc652387ed79fed428ff21c46f",
+          "apps/web/src/components/projects/monitoring-policy-editor.tsx": "37072a45ee7eea5bca663b68991d0baea2dc43d7eaa4acf14fe31c3a4b662283",
+          "apps/web/src/components/projects/monitoring-policy-summary.tsx": "713594a86d2e56162a094bc2c98f2557a4762e30a372a1d1561a4d25665c32ba",
+          "apps/web/src/components/projects/monitoring-policy-summary.test.tsx": "6849b384667e79a51a0a9ffe9f3a68adbd4f096e244a220fc0557d58a997496e"
+        },
+        "checks": [
+          {
+            "name": "import",
+            "argv": [
+              "uv",
+              "run",
+              "--frozen",
+              "--extra",
+              "dev",
+              "python",
+              "-c",
+              "import sys, forge; from forge.agents.codex_gateway import _UsagePublisher as c; from forge.agents.claude_gateway import _UsagePublisher as a; from forge.agents.subscription_usage_observations import _UsagePublisher as s; assert c is a is s; print(sys.version); print(forge.__file__); print(\"Shared export identity preserved\")"
+            ],
+            "exit_code": 0,
+            "log": ".llm-output\\usage-adapters-ui\\pr109-repair-integration\\import.txt",
+            "started": "2026-10-11T17:30:20.782415+00:00",
+            "finished": "2026-10-11T17:30:21.377448+00:00"
+          },
+          {
+            "name": "ruff",
+            "argv": [
+              "rtk",
+              "proxy",
+              "uv",
+              "run",
+              "--frozen",
+              "--extra",
+              "dev",
+              "ruff",
+              "check",
+              "apps/orchestrator/src/forge/agents/subscription_usage_observations.py",
+              "apps/orchestrator/src/forge/agents/codex_gateway.py",
+              "apps/orchestrator/src/forge/agents/claude_gateway.py",
+              "apps/orchestrator/tests/agents/test_codex_usage_observations.py",
+              "apps/orchestrator/tests/agents/test_claude_usage_observations.py"
+            ],
+            "exit_code": 0,
+            "log": ".llm-output\\usage-adapters-ui\\pr109-repair-integration\\ruff.txt",
+            "started": "2026-10-11T17:30:21.377486+00:00",
+            "finished": "2026-10-11T17:30:21.529344+00:00"
+          },
+          {
+            "name": "source-mypy",
+            "argv": [
+              "rtk",
+              "proxy",
+              "uv",
+              "run",
+              "--frozen",
+              "--extra",
+              "dev",
+              "mypy",
+              "apps/orchestrator/src/forge/agents/subscription_usage_observations.py",
+              "apps/orchestrator/src/forge/agents/codex_gateway.py",
+              "apps/orchestrator/src/forge/agents/claude_gateway.py"
+            ],
+            "exit_code": 0,
+            "log": ".llm-output\\usage-adapters-ui\\pr109-repair-integration\\source-mypy.txt",
+            "started": "2026-10-11T17:30:21.529381+00:00",
+            "finished": "2026-10-11T17:30:22.095922+00:00"
+          },
+          {
+            "name": "metadata-cases",
+            "argv": [
+              "uv",
+              "run",
+              "--frozen",
+              "--extra",
+              "dev",
+              "python",
+              "-m",
+              "pytest",
+              "apps/orchestrator/tests/agents/test_codex_usage_observations.py",
+              "apps/orchestrator/tests/agents/test_claude_usage_observations.py",
+              "-q",
+              "-k",
+              "optional_context_dimensions or public_observation_id_edges or observed_untrusted_context or live_final_id_collision"
+            ],
+            "exit_code": 0,
+            "log": ".llm-output\\usage-adapters-ui\\pr109-repair-integration\\metadata-cases.txt",
+            "started": "2026-10-11T17:30:22.095957+00:00",
+            "finished": "2026-10-11T17:30:26.426037+00:00"
+          },
+          {
+            "name": "optional-test-mypy",
+            "argv": [
+              "rtk",
+              "proxy",
+              "uv",
+              "run",
+              "--frozen",
+              "--extra",
+              "dev",
+              "mypy",
+              "apps/orchestrator/src/forge/agents/subscription_usage_observations.py",
+              "apps/orchestrator/src/forge/agents/codex_gateway.py",
+              "apps/orchestrator/src/forge/agents/claude_gateway.py",
+              "apps/orchestrator/tests/agents/test_codex_usage_observations.py",
+              "apps/orchestrator/tests/agents/test_claude_usage_observations.py"
+            ],
+            "exit_code": 1,
+            "log": ".llm-output\\usage-adapters-ui\\pr109-repair-integration\\optional-test-mypy.txt",
+            "started": "2026-10-11T17:30:26.426074+00:00",
+            "finished": "2026-10-11T17:30:27.339783+00:00"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "id": "PR109-01",
+          "thread": "PRRT_kwDOUDBiTc6rPqWS",
+          "fix": "Rebase untouched fields from authoritative policy while retaining owner edits, raw invalid drafts, explicit null caps and optional note. Advance baseline on recovery and successful save.",
+          "coverage": "Note-only concurrent cap and policy changes; edited/cleared cap; null initial/new policy; repeated conflicts and later post-save conflict; failed/pending/retry/double-submit and real useApi outer refresh."
+        },
+        {
+          "id": "PR109-02",
+          "thread": "PRRT_kwDOUDBiTc6rPqWV",
+          "fix": "Label saved policy and actual report sampling separately; readiness uses report.filters without an invented policy fallback.",
+          "coverage": "Policy minimum both below and above report minimum; ready/insufficient/missing/unknown and measured zero."
+        },
+        {
+          "id": "PR109-03",
+          "thread": "PRRT_kwDOUDBiTc6rPqWY",
+          "fix": "Sanitize optional context dimensions independently using validated signed-64 range; impossible occupancy becomes unknown while valid capacity/compaction remain.",
+          "coverage": "Boolean, negative, zero, maximum, overflow, sparse dimensions, occupancy exceeding capacity, both public supervised gateways and actual process settlement."
+        },
+        {
+          "id": "PR109-04",
+          "thread": "PRRT_kwDOUDBiTc6rPqWa",
+          "fix": "Preserve safe IDs, hash overlong/control/reserved provider IDs, use Forge IDs for missing/malformed metadata, bound epochs and separate colliding live/final IDs. Final reconciles normalized last enqueued live ID.",
+          "coverage": "Missing/blank/bool/list/256/257-character IDs, long shared prefixes, long epoch, live/final equality, both public supervised gateways, durable final/replay regression."
+        }
+      ],
+      "checks": [
+        {
+          "result": "151 passed",
+          "receipt": "pr109-adapter-repair/affected-final.txt",
+          "reuse": "All three runtime source hashes match worker candidate.txt; only new-test annotations and private helper import plumbing followed this run. All 29 new cases rerun on final candidate."
+        },
+        {
+          "result": "1 passed, PostgreSQL fixture",
+          "receipt": "pr109-adapter-repair/postgres-final.txt"
+        },
+        {
+          "result": "29 passed, 23 deselected",
+          "receipt": "pr109-repair-integration/metadata-cases.txt"
+        },
+        {
+          "result": "48 passed in 4 files",
+          "receipt": "pr109-ui-repair/affected-final.log",
+          "reuse": "All five owned hashes exactly match UI candidate.json."
+        },
+        {
+          "result": "Web TypeScript/lint passed",
+          "receipts": [
+            "pr109-ui-repair/typecheck-final-2.log",
+            "pr109-ui-repair/lint-final-2.log"
+          ]
+        },
+        {
+          "result": "Production web build exit 0",
+          "receipt": "pr109-ui-repair/build-final.txt"
+        },
+        {
+          "result": "Active-worktree source import, shared helper identity, scoped Ruff and source mypy passed",
+          "receipt": "pr109-repair-integration/checks.json"
+        },
+        {
+          "result": "Optional test-inclusive mypy failed: 164 diagnostics in pre-repair owned and imported test typing; not a source gate or whole-suite pass.",
+          "receipt": "pr109-repair-integration/optional-test-mypy.txt"
+        }
+      ],
+      "primary_adjudication": "All four claims substantiated; related policy concurrency and untrusted observation findings consolidated per owner with adjacent transitions. Raw commands, source import and scoped hashes inspected. Worker runtime hashes match; test helper imports now refer to the extracted defining module. The same class identity and all 29 new cases were reconfirmed. No new production API or domain validation relaxation.",
+      "prior_evidence": "Matching Google, authoring and peer inputs in pr109-unchanged-evidence.json remain unchanged; original broader receipt is not a final whole backend suite pass.",
+      "jev": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "b1ee1cd7a8a84656b7f91af2c732cc7fd64c59339936ae577df452978547b073",
+        "receipt": "pr109-repair-integration/jev-review.json"
+      },
+      "limitations": [
+        "Scripted peers and mocked owner API transitions; no live provider or authenticated browser certification.",
+        "Combined initial metadata red tests do not prove context and identity defects independently; final discriminating cases and separate live/final collision reds are retained.",
+        "No full hosted or final whole backend suite run. Jev coverage remains partial.",
+        "#101/#102 checkpoints, #104 reporting/continuation UI and #106 production assembly remain subsequent."
+      ],
+      "recorded_at_utc": "2026-10-11T17:32:00.907683+00:00"
     }
   }
 }
