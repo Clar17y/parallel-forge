@@ -7,23 +7,24 @@
     99,
     103
   ],
-  "status": "codex_findings_repaired_local_candidate_awaiting_current_head_hosted_review",
+  "status": "second_codex_repair_local_candidate_awaiting_current_head_hosted_review",
   "feature_complete": false,
   "source": {
     "base": "e2c93d0a35102fd16162ee492da4044b3070a59f",
     "branch": "codex/usage-monitoring-adapters-ui",
     "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-monitoring-adapters-ui/parallel-forge",
     "initial_integrated_diff_sha256": "359bfca502d1d5dd67dd0d47a029a840e3f7f94d5ac698b350b09c145a1e8f84",
-    "final_source_commit": "c3735120ba0e2e2d5e3943cbbb02a6b0220c82d5",
-    "final_source_tree": "4d63a64a12e96764f06ee04574c7c49c4b534f31",
-    "final_source_diff_sha256": "b1ee1cd7a8a84656b7f91af2c732cc7fd64c59339936ae577df452978547b073",
+    "final_source_commit": "81354e63646b888479b83a7e08ada22aaa05a6a1",
+    "final_source_tree": "8901ae3c4d1735d328b842539d2dcc47e993ba32",
+    "final_source_diff_sha256": "96b33d8ffd1a7fe24513127e95faa2150ef76598526417b76c825b6df5b0863c",
     "changed_files": 38,
-    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-repair-integration/candidate.json",
+    "candidate_manifest": ".llm-output/usage-adapters-ui/pr109-round2/candidate-final.txt",
     "base_origin_main_fetched": true,
     "previous_local_source_commit": "c43dd2a8ef822812b0480618954a86bdde7288a1",
     "previous_local_source_tree": "8b33ceeb38318c6f73d1c7956281623560a4d9ff",
     "previous_local_source_diff_sha256": "53ec4f4dd2c87e5af8495a42abf08928bf879ad7ab7c6de19d8dfccb5121c07e",
-    "pre_codex_repair_source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df"
+    "pre_codex_repair_source_commit": "d27e6f366fc87ed6b1f948796be9daef8b7078df",
+    "pre_round2_source_commit": "c3735120ba0e2e2d5e3943cbbb02a6b0220c82d5"
   },
   "previous_delivery": {
     "foundation_pr": 107,
@@ -682,7 +683,7 @@
     104,
     106
   ],
-  "recorded_at_utc": "2026-10-11T17:32:00.907683+00:00",
+  "recorded_at_utc": "2026-10-11T17:56:38.613323+00:00",
   "review_findings": [
     {
       "id": "UM-REV-001",
@@ -962,7 +963,7 @@
       "prior_evidence": "Earlier source/runtime and UI inputs unchanged; affected API-helper fixture suite rerun.",
       "recorded_at_utc": "2026-10-11T17:10:45.911179+00:00"
     },
-    "current_acceptance": "Prior smoke passed on 627db73; repaired candidate awaiting automatic smoke and current-head Codex review. No merge authorization.",
+    "current_acceptance": "Prior automatic smoke passed on 2309c39; all six findings locally repaired. New candidate awaiting automatic smoke and current-head Codex verdict. No merge authorization.",
     "fixture_repair_jev": {
       "status": "partial",
       "coverage": {
@@ -1188,6 +1189,119 @@
         "#101/#102 checkpoints, #104 reporting/continuation UI and #106 production assembly remain subsequent."
       ],
       "recorded_at_utc": "2026-10-11T17:32:00.907683+00:00"
+    },
+    "codex_repair_round2": {
+      "source_commit": "81354e63646b888479b83a7e08ada22aaa05a6a1",
+      "source_tree": "8901ae3c4d1735d328b842539d2dcc47e993ba32",
+      "source_diff_sha256": "96b33d8ffd1a7fe24513127e95faa2150ef76598526417b76c825b6df5b0863c",
+      "owned_sha256": {
+        "apps/orchestrator/src/forge/agents/codex_gateway.py": "73d9972ba95ad433fb3bdb1c44fc5005d1938bbecd262b0073ade678b39c4471",
+        "apps/orchestrator/src/forge/agents/claude_gateway.py": "22130d64172f8a65cb365b3fe8d496497a38fe9aff0bbb62e159fed1d0a2278b",
+        "apps/orchestrator/src/forge/agents/subscription_usage_observations.py": "a5f18451d2a585b8ab8ab02425897b638364eb48a68ef2ece950ce0909353c1e",
+        "apps/orchestrator/src/forge/agents/epic_brainstorm_gateway.py": "e1a261e8dc7c5902b71d18f0d494b15dded93e7cf5d05f12dd8d0bcc34048b2a",
+        "apps/orchestrator/tests/agents/test_codex_usage_observations.py": "aec2fb410f470ebb1f5bb267ad0986b363e1477a4b4ff65b9a2b65a343ee5efa",
+        "apps/orchestrator/tests/agents/test_claude_usage_observations.py": "dafb1165348def6a7083f68421d13638ad59478f82aa3bfc53a850b0c56ce575",
+        "apps/orchestrator/tests/agents/test_google_usage_observations.py": "015407b221d82076b88816d846b17da5e2d59abe09feb86f84589a74f8f39268"
+      },
+      "primary_adjudication": "Inspected prospective required-counter validation before Claude state replacement, shared optional signed64/subset normalization, cumulative/replay/terminal handling, binding-derived authoring attempt and existing explicit UUID mismatch guard. Raw red/affected/PG/style/type outputs and seven exact candidate hashes match. UI input hashes unchanged.",
+      "findings": [
+        {
+          "id": "PR109-05",
+          "comment_id": 4242534523,
+          "thread_id": "PRRT_kwDOUDBiTc6rP3Xo",
+          "fix": "Shared optional reasoning normalization drops bool/negative/signed64 overflow/output-subset violations to unknown, preserves zero/valid values and handles cumulative, message replay/aggregation and terminal updates. Required counters and cached subsets remain strict; Claude prospective totals validate before state replacement."
+        },
+        {
+          "id": "PR109-06",
+          "comment_id": 4242534528,
+          "thread_id": "PRRT_kwDOUDBiTc6rP3Xt",
+          "fix": "Observed authoring derives attempt from durable binding source when lifecycle has no undeclared attempt_id. Explicit UUID conflicts still reject before launch; official launch and final observation use same validated source UUID."
+        }
+      ],
+      "checks": [
+        {
+          "result": "3 expected failures before implementation",
+          "receipt": "pr109-round2/red.txt"
+        },
+        {
+          "result": "256 passed in 9 affected files, 5 dependency deprecation warnings",
+          "receipt": "pr109-round2/affected-final.txt"
+        },
+        {
+          "result": "1 passed, real PostgreSQL replay regression",
+          "receipt": "pr109-round2/postgres-current.txt"
+        },
+        {
+          "result": "Scoped Ruff passed in 7 changed source/test files",
+          "receipt": "pr109-round2/ruff-current.txt"
+        },
+        {
+          "result": "Source-only mypy passed in 4 source files",
+          "receipt": "pr109-round2/mypy-current.txt"
+        },
+        {
+          "result": "Python 3.14.5 active-worktree source import and git diff --check passed",
+          "receipt": "pr109-round2/candidate-final.txt"
+        },
+        {
+          "result": "48 web tests, web TypeScript/lint/build retained for exact unchanged inputs",
+          "receipts": [
+            "pr109-ui-repair/candidate.json",
+            "pr109-ui-repair/affected-final.log",
+            "pr109-ui-repair/typecheck-final-2.log",
+            "pr109-ui-repair/lint-final-2.log",
+            "pr109-ui-repair/build-final.txt"
+          ]
+        }
+      ],
+      "coverage": [
+        {
+          "invariant": "Malformed optional reasoning does not alter provider outcome",
+          "cases": "Public supervised Codex/Claude bool regressions with normal output and confirmed stop; pure cumulative/message/terminal bool/negative/zero/MAX/overflow/output+1, replay/reorder and sparse optional-only terminal updates.",
+          "evidence": [
+            "pr109-round2/red.txt",
+            "pr109-round2/affected-final.txt",
+            "pr109-round2/coverage.md"
+          ]
+        },
+        {
+          "invariant": "Authoring attempt and launch source remain durable without undocumented lifecycle fields",
+          "cases": "Minimal lifecycle, explicit same/conflicting UUID, wrong job/project/role/effort/model rejected before launch; final source; actual official home identity captured by rejecting scripted supervisor.",
+          "evidence": [
+            "pr109-round2/google-final.txt",
+            "pr109-round2/affected-final.txt"
+          ],
+          "limit": "Successful official exchange with minimal lifecycle unproved; official supervisor capture ends in scripted launch rejection."
+        },
+        {
+          "invariant": "Existing metadata, core failures, cancellation and settlement remain intact",
+          "cases": "Round1 context/identity cases, gateway/strict/cap/callback cases, Google supervised settlement and authoring composition, duplicate PostgreSQL live/final replay.",
+          "evidence": [
+            "pr109-round2/affected-final.txt",
+            "pr109-round2/postgres-current.txt"
+          ]
+        }
+      ],
+      "jev": {
+        "status": "partial",
+        "coverage": {
+          "complete": false,
+          "reasons": [
+            "hunk_limit",
+            "operation_budget_reached",
+            "oversized_hunk_omitted"
+          ]
+        },
+        "diff_sha256": "96b33d8ffd1a7fe24513127e95faa2150ef76598526417b76c825b6df5b0863c",
+        "receipt": "pr109-round2/jev-review.json"
+      },
+      "limitations": [
+        "Successful official authoring exchange with minimal lifecycle is unproved; fake supervisor captures bound launch identity and rejects launch. No live providers or whole suite pass. Optional test-inclusive mypy was not rerun; earlier owned/imported test typing errors remain a separate disclosed limit.",
+        "Prior optional test-inclusive mypy failure receipt is historical and not rerun or claimed passing on this candidate.",
+        "No authenticated browser journey, manual full hosted CI, or final whole backend suite run.",
+        "#101/#102 checkpoints, #104 reporting/continuation UI and #106 production assembly remain subsequent."
+      ],
+      "recorded_at_utc": "2026-10-11T17:56:38.613323+00:00"
     }
   }
 }
