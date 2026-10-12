@@ -346,6 +346,10 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                 "profile_versions": stored_profile_versions,
                 "owner_commands": [[str(row[0]), row[1], str(row[2]), str(row[3])]
                                    for row in owner_commands],
+                "authoring_next_threshold_exact": next(
+                    (str(row[5]) if row[5] is not None else None)
+                    for row in checkpoint if row[0] == "authoring_job"
+                ),
             }
     finally:
         await engine.dispose()
@@ -390,6 +394,50 @@ async def _seed_high_monitoring_revision(database_url: str, scenario: dict[str, 
                 "RETURNING revision"
             ), {"project": scenario["project_id"]})).one()
             return str(row[0])
+    finally:
+        await engine.dispose()
+
+
+async def _seed_authoring_headroom(
+    database_url: str, scenario: dict[str, str], previous_total: int, target_total: int
+) -> dict[str, str]:
+    """Append a disposable final observation; keep the frozen reference untouched."""
+    if not 0 <= previous_total <= 9223372036854775807 or target_total not in (
+        9223372036854775807, 9223372036854775787
+    ):
+        raise ValueError("invalid headroom fixture target")
+    engine = create_engine(database_url)
+    try:
+        async with engine.begin() as db:
+            observation = (await db.execute(text(
+                "SELECT o.id, o.work_unit_id, o.input_tokens, o.sequence FROM task_usage_observations o "
+                "JOIN task_usage_work_units u ON u.id = o.work_unit_id "
+                "WHERE u.subject_kind = 'authoring_job' AND u.subject_id = :job "
+                "ORDER BY o.sequence DESC LIMIT 1 FOR UPDATE OF o"
+            ), {"job": scenario["job_id"]})).one()
+            replacement = observation[2] + target_total - previous_total
+            if not 0 <= replacement <= 9223372036854775807:
+                raise ValueError("headroom fixture observation outside signed64")
+            await db.execute(text(
+                "INSERT INTO task_usage_observations "
+                "(id, project_id, work_unit_id, event_id, sequence, counter_kind, counter_epoch, "
+                "scope, input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, "
+                "context_occupied_tokens, context_capacity_tokens, compaction_count, unknown_dimensions, "
+                "final, final_status, reconciles_event_id, observed_at, schema_version) "
+                "SELECT :new_id, project_id, work_unit_id, :event_id, :sequence, counter_kind, "
+                "counter_epoch, scope, :tokens, output_tokens, cached_input_tokens, "
+                "reasoning_output_tokens, context_occupied_tokens, context_capacity_tokens, "
+                "compaction_count, unknown_dimensions, true, 'fixture_final', NULL, "
+                "now(), schema_version FROM task_usage_observations WHERE id = :prior_id"
+            ), {"new_id": uuid4(), "event_id": f"headroom-{uuid4()}",
+                "sequence": observation[3] + 1, "tokens": replacement,
+                "prior_id": observation[0]})
+            frozen = (await db.execute(text(
+                "SELECT snapshot_digest, reference_tokens FROM task_usage_baselines "
+                "WHERE subject_kind = 'authoring_job' AND subject_id = :job ORDER BY created_at DESC LIMIT 1"
+            ), {"job": scenario["job_id"]})).one()
+            return {"work_unit_id": str(observation[1]), "input_tokens": str(replacement),
+                    "frozen_digest": frozen[0], "frozen_reference": str(frozen[1])}
     finally:
         await engine.dispose()
 
@@ -463,14 +511,21 @@ def main() -> None:
 
                     class Redirect(BaseHTTPRequestHandler):
                         def do_POST(self) -> None:
-                            if self.path not in ("/seed-high-owner-versions", "/seed-high-monitoring-revision"):
+                            if self.path not in ("/seed-high-owner-versions", "/seed-high-monitoring-revision", "/seed-authoring-headroom"):
                                 self.send_error(404)
                                 return
-                            value = json.dumps(asyncio.run(
-                                _seed_high_owner_versions(database_url, scenario)
-                                if self.path == "/seed-high-owner-versions" else
-                                _seed_high_monitoring_revision(database_url, scenario)
-                            ))
+                            if self.path == "/seed-authoring-headroom":
+                                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                                result = _seed_authoring_headroom(
+                                    database_url, scenario, int(payload["previous_total"]), int(payload["target_total"])
+                                )
+                            else:
+                                result = (
+                                    _seed_high_owner_versions(database_url, scenario)
+                                    if self.path == "/seed-high-owner-versions" else
+                                    _seed_high_monitoring_revision(database_url, scenario)
+                                )
+                            value = json.dumps(asyncio.run(result))
                             body = value.encode("utf-8")
                             self.send_response(200)
                             self.send_header("Content-Type", "application/json")

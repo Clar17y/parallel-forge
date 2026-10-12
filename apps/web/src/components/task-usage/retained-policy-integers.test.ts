@@ -1,5 +1,39 @@
 import { describe, expect, test } from 'vitest';
-import { retainedPolicyIntegersAreSafe } from './retained-policy-integers';
+import { knownReportTotal, nextCheckpointThreshold, retainedPolicyIntegersAreSafe } from './retained-policy-integers';
+import { parseExactJson } from '@/lib/api/exact-integer';
+
+describe('next checkpoint headroom', () => {
+  test.each([
+    ['9223372036854775807', null, null],
+    ['9223372036854775806', null, '9223372036854775807'],
+    ['9223372036854775807', 0, null],
+    ['9223372036854775787', 20, '9223372036854775807'],
+    ['9223372036854775788', 20, null],
+    ['9223372036854775805', 1.1, '9223372036854775807'],
+    ['9223372036854775806', 1.1, null],
+    ['9007199254740992', '2e0', '9007199254740994'],
+  ] as const)('measured %s plus frozen reference %s gives %s', (measured, reference, expected) => {
+    expect(nextCheckpointThreshold(BigInt(measured), reference)?.toString() ?? null).toBe(expected);
+  });
+
+  test('keeps MAX known, distinguishes unknown/invalid/overflow reports, and refuses invalid reference', () => {
+    expect(knownReportTotal({ completeness: 'complete', input_tokens: '9223372036854775807', output_tokens: 0 })).toBe(9223372036854775807n);
+    expect(knownReportTotal({ completeness: 'lower_bound', input_tokens: '9007199254740992', output_tokens: null })).toBe(9007199254740992n);
+    expect(knownReportTotal({ completeness: 'lower_bound', input_tokens: null, output_tokens: null })).toBeNull();
+    expect(knownReportTotal({ completeness: 'complete', input_tokens: 'invalid', output_tokens: 5 })).toBeNull();
+    expect(knownReportTotal({ completeness: 'complete', input_tokens: '9223372036854775807', output_tokens: 1 })).toBeNull();
+    expect(nextCheckpointThreshold(null, 1)).toBeNull();
+    expect(nextCheckpointThreshold(0n, 'not-a-number')).toBeNull();
+    expect(nextCheckpointThreshold(0n, Number.POSITIVE_INFINITY)).toBeNull();
+  });
+
+  test('uses floating frozen-reference semantics after exponent-form API parsing', () => {
+    const parsed = parseExactJson('{"reference_tokens":9.007199254740992e15}') as { reference_tokens: string };
+    expect(parsed.reference_tokens).toBe('9007199254740992');
+    expect(nextCheckpointThreshold(0n, parsed.reference_tokens)).toBe(9007199254740992n);
+    expect(nextCheckpointThreshold(9223372036854775806n, 1.1)).toBeNull();
+  });
+});
 
 describe('retainedPolicyIntegersAreSafe', () => {
   test('accepts null and undefined fields', () => {

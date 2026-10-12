@@ -12,6 +12,7 @@ if (!controlOrigin || !outputPath || !scenarioPath || !/^http:\/\/127\.0\.0\.1:\
   throw new Error('usage: node task_usage_monitoring_browser.mjs http://127.0.0.1:PORT RECEIPT.json SCENARIO.json');
 }
 const scenario = JSON.parse(await readFile(scenarioPath, 'utf8'));
+const headroomOnly = process.env.FORGE_BROWSER_HEADROOM_ONLY === '1';
 
 const browser = await chromium.launch({ headless: true });
 try {
@@ -377,10 +378,90 @@ try {
     receipt.surfaces.push({ kind, pathname: new URL(page.url()).pathname, rendered: true });
     await page.screenshot({ path: join(dirname(outputPath), `browser-${kind}.png`), fullPage: true });
   }
+  if (headroomOnly) {
+    const checkpointUrl = `${webOrigin}/api/epics/${scenario.epic_id}/brainstorm-jobs/${scenario.job_id}/usage-checkpoint?project_id=${scenario.project_id}`;
+    const reportSnapshot = async () => {
+      const response = await page.request.get(checkpointUrl);
+      if (!response.ok()) throw new Error(`headroom report returned ${response.status()}`);
+      const raw = await response.text();
+      const reportRaw = raw.slice(raw.indexOf('"report"'));
+      const input = /"input_tokens"\s*:\s*(\d+)(?=[,}])/.exec(reportRaw)?.[1];
+      const output = /"output_tokens"\s*:\s*(\d+)(?=[,}])/.exec(reportRaw)?.[1];
+      if (!input || !output) throw new Error('headroom report lacks exact numeric dimensions');
+      return { raw, total: BigInt(input) + BigInt(output), baseline: JSON.parse(raw).report.baseline };
+    };
+    const initial = await reportSnapshot();
+    if (initial.baseline?.reference_tokens !== 20 || !initial.baseline.snapshot_digest) {
+      throw new Error('headroom scenario lacks its frozen manual reference');
+    }
+    const seed = async (previous, target) => {
+      const response = await page.request.post(`${controlOrigin}/seed-authoring-headroom`, {
+        data: { previous_total: previous.toString(), target_total: target.toString() },
+      });
+      if (!response.ok()) throw new Error(`headroom seed returned ${response.status()}`);
+      return response.json();
+    };
+    const maximum = 9223372036854775807n;
+    const overflowSeed = await seed(initial.total, maximum);
+    const overflow = await reportSnapshot();
+    if (overflow.total !== maximum || overflow.baseline.snapshot_digest !== initial.baseline.snapshot_digest
+        || overflow.baseline.reference_tokens !== initial.baseline.reference_tokens) {
+      throw new Error('overflow scenario changed frozen reference or measured total');
+    }
+    await page.goto(webOrigin + scenario.authoring_path, { waitUntil: 'domcontentloaded' });
+    const next = page.getByRole('region', { name: 'Authoring usage checkpoint' })
+      .getByRole('button', { name: 'Continue to next checkpoint' });
+    await next.waitFor({ timeout: 20000 });
+    if (!await next.isDisabled() || !await page.getByRole('button', { name: 'Continue without usage pauses' }).isEnabled()) {
+      throw new Error('browser offered an impossible next threshold or blocked the bypass');
+    }
+    await page.getByText(/next checkpoint threshold would exceed signed 64-bit storage/i).waitFor({ timeout: 10000 });
+    let refusedPosts = 0;
+    const countRefused = request => {
+      if (request.method() === 'POST' && /\/usage-checkpoint\/commands(?:\?|$)/.test(request.url())) refusedPosts++;
+    };
+    page.on('request', countRefused);
+    await next.evaluate(button => button.click());
+    await page.waitForTimeout(150);
+    page.off('request', countRefused);
+    if (refusedPosts !== 0) throw new Error('impossible next action reached API');
+    await page.screenshot({ path: join(dirname(outputPath), 'browser-headroom-refused.png'), fullPage: true });
+    const fitting = maximum - 20n;
+    const fitSeed = await seed(overflow.total, fitting);
+    const fit = await reportSnapshot();
+    if (fit.total !== fitting || fit.baseline.snapshot_digest !== initial.baseline.snapshot_digest) {
+      throw new Error('fitting scenario changed frozen reference or measured total');
+    }
+    await page.goto(webOrigin + scenario.authoring_path, { waitUntil: 'domcontentloaded' });
+    const fittingNext = page.getByRole('region', { name: 'Authoring usage checkpoint' })
+      .getByRole('button', { name: 'Continue to next checkpoint' });
+    if (!await fittingNext.isEnabled()) throw new Error('browser blocked a fitting next threshold');
+    const commandReply = page.waitForResponse(response => response.request().method() === 'POST'
+      && /\/usage-checkpoint\/commands(?:\?|$)/.test(response.url()));
+    await fittingNext.click();
+    const command = await commandReply;
+    const outbound = command.request().postData() ?? '';
+    const inbound = await command.text();
+    if (!command.ok() || !/"continue_mode"\s*:\s*"next_checkpoint"/.test(outbound)
+        || !/"next_checkpoint_threshold_tokens"\s*:\s*9223372036854775807(?=[,}])/.test(inbound)) {
+      throw new Error(`fitting next action failed: ${command.status()}: ${inbound.slice(0, 400)}`);
+    }
+    const sql = await (await page.request.get(`${controlOrigin}/snapshot`)).json();
+    if (sql.authoring_next_threshold_exact !== maximum.toString()) throw new Error('PostgreSQL next threshold differs from browser/API');
+    receipt.headroom = { seededWorkUnit: overflowSeed.work_unit_id,
+      fittingWorkUnit: fitSeed.work_unit_id, frozenDigest: initial.baseline.snapshot_digest,
+      frozenReference: initial.baseline.reference_tokens, overflowTotal: maximum.toString(),
+      fittingTotal: fitting.toString(), refusedPosts, outbound, inbound,
+      storedThreshold: sql.authoring_next_threshold_exact };
+    await writeFile(join(dirname(outputPath), 'browser-headroom-api.json'),
+      JSON.stringify({ overflowReport: overflow.raw, fittingReport: fit.raw, outbound, inbound }, null, 2), 'utf8');
+    await page.screenshot({ path: join(dirname(outputPath), 'browser-headroom-accepted.png'), fullPage: true });
+  }
+  const highOwnerActions = [];
+  if (!headroomOnly) {
   const seededResponse = await page.request.post(`${controlOrigin}/seed-high-owner-versions`);
   if (!seededResponse.ok()) throw new Error(`high owner-version fixture seed failed: ${seededResponse.status()}`);
   const seededOwners = await seededResponse.json();
-  const highOwnerActions = [];
   for (const [kind, path, button, initialVersion, expected, resultVersion, action] of [
     ['run', scenario.run_path, 'Continue without usage pauses', '9007199254740993', '9007199254740994', '9007199254740995', 'continue'],
     ['authoring_job', scenario.authoring_path, 'Stop authoring job', '9223372036854775805', '9223372036854775806', '9223372036854775807', 'stop'],
@@ -433,6 +514,7 @@ try {
   receipt.highOwnerVersions = { seededCounters: seededOwners,
     actions: highOwnerActions.map(({ kind, expected, resultVersion, action }) => ({ kind, expected, resultVersion, action })),
     sqlExact: true };
+  }
   const highPolicySeed = await page.request.post(`${controlOrigin}/seed-high-monitoring-revision`);
   if (!highPolicySeed.ok() || await highPolicySeed.json() !== '9223372036854775806') {
     throw new Error('high monitoring revision fixture seed failed');
@@ -466,7 +548,7 @@ try {
     numericWire: true, overflowRefusedLocally: true };
   await page.screenshot({ path: join(dirname(outputPath), 'browser-high-monitoring-revision.png'), fullPage: true });
   const evidenceDir = dirname(outputPath);
-  await writeFile(join(evidenceDir, 'browser-high-owner-api.json'), JSON.stringify(highOwnerActions, null, 2), 'utf8');
+  if (!headroomOnly) await writeFile(join(evidenceDir, 'browser-high-owner-api.json'), JSON.stringify(highOwnerActions, null, 2), 'utf8');
   await writeFile(join(evidenceDir, 'browser-high-policy-api.json'),
     JSON.stringify({ outbound: highPolicyRequest, response: highPolicyReadback }, null, 2), 'utf8');
   await writeFile(join(evidenceDir, 'browser-epic-outbound.json'),

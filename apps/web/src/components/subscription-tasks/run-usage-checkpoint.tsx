@@ -6,7 +6,7 @@ import { ApiError, mutate } from '@/lib/api/client';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import type { MonitoringPolicyResponse } from '@/lib/api/monitoring-policy';
-import { retainedPolicyIntegersAreSafe, knownReportTotal } from '@/components/task-usage/retained-policy-integers';
+import { retainedPolicyIntegersAreSafe, knownReportTotal, nextCheckpointThreshold } from '@/components/task-usage/retained-policy-integers';
 import { matchesOwnerReceipt, nextVersion, versionValue } from '@/components/task-usage/owner-version';
 import { MAX_SIGNED_64 } from '@/lib/api/exact-integer';
 
@@ -65,10 +65,11 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
   const settled = checkpoint?.state === 'paused' && checkpoint.process_settled;
   const versionCanAdvance = checkpoint != null && versionValue(checkpoint.version, MAX_SIGNED_64 - 1n) !== null;
   const total = knownTotal(report);
+  const nextThreshold = report?.baseline ? nextCheckpointThreshold(total, report.baseline.reference_tokens) : null;
   // The owner is recording a monitoring choice. Provider quota is checked again
   // by scheduler admission and must not prevent recording that choice.
   const canContinue = settled && versionCanAdvance && runAllowsExecution && !runIsTerminal && !manualPause;
-  const canNext = canContinue && total !== null && report?.baseline != null;
+  const canNext = canContinue && nextThreshold !== null;
   const canBypass = canContinue;
   const currentPolicy = policy.value ?? null;
   const policyRevisionCanAdvance = currentPolicy !== null && nextVersion(currentPolicy.revision) !== null;
@@ -183,7 +184,7 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
           }} className="rounded border border-slate-400 px-3 py-2">Change monitoring settings</button>
           <button type="button" disabled={pending || !!binding || !canStop} onClick={() => command('stop')} className="rounded border border-slate-400 px-3 py-2">Stop run</button>
         </div>
-        {report?.baseline == null || total === null ? <p>Continue to next checkpoint is unavailable because no safe measured total and frozen reference are available. Bypass remains an owner choice after settlement.</p> : total !== null && report?.completeness === 'lower_bound' ? <p>Next checkpoint uses the known measured lower bound; unknown token dimensions remain Unknown.</p> : null}
+        {report?.baseline == null || total === null ? <p>Continue to next checkpoint is unavailable because no safe measured total and frozen reference are available. Bypass remains an owner choice after settlement.</p> : nextThreshold === null ? <p>Next checkpoint threshold would exceed signed 64-bit storage; continue without usage pauses remains available after settlement.</p> : report?.completeness === 'lower_bound' ? <p>Next checkpoint uses the known measured lower bound; unknown token dimensions remain Unknown.</p> : null}
         {showPolicy ? <fieldset className="space-y-2 rounded border border-slate-300 p-3" disabled={pending || !!binding}>
           <legend className="font-semibold">New monitoring revision</legend>
           {currentPolicy?.hard_token_cap != null || currentPolicy?.hard_context_cap != null ? <p>Existing explicit hard caps are retained unchanged by this monitoring revision.</p> : <p>No explicit hard cap is configured; this revision changes monitoring only.</p>}

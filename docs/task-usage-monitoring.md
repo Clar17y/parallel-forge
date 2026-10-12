@@ -26,6 +26,8 @@ The final local acceptance uses separate API, worker, web, and PostgreSQL proces
 
 Checkpoint owner commands and monitoring-policy revisions also preserve signed-64-bit versions. Exact receipt comparisons accept valid older replay receipts and reject stale or mismatched responses. A fresh browser journey seeds high retained counters in disposable PostgreSQL, then performs actual run policy/continue and authoring policy/stop actions through the authenticated API; all four request/result pairs match durable receipts, including a result at `9223372036854775807`. The project editor saves a policy revision from maximum minus one to maximum and refuses another increment without sending a request. Incrementing beyond signed-64-bit storage is reported explicitly. High-version network-uncertain retry, stale refresh and next-checkpoint mode have focused component evidence; they are not claimed as additional browser journeys.
 
+Next-checkpoint eligibility also checks whether the exact measured total plus `max(1, ceil(frozen reference))` fits the supported range. A known total stays visible when another threshold cannot fit; the owner can use bypass under the existing execution constraints. A separate browser journey uses append-only seeded usage in disposable PostgreSQL: a total at maximum sends no owner POST, while maximum minus 20 with frozen reference 20 continues through the API and stores an exact threshold at maximum without changing the reference digest. These large amounts are fixture data. This journey retains the separate C3 high owner-version receipt and does not claim to rerun that sequence after resuming its checkpoint.
+
 The process matrix covers these combinations:
 
 | Reference | Streaming | Final-only |

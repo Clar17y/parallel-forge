@@ -74,3 +74,14 @@ export function knownReportTotal(report: UsageReportDimensions | null | undefine
   if (total > MAX_SIGNED_64) return null;
   return total;
 }
+
+/** Match the API's max(1, ceil(frozen reference)) without rounding measured integers. */
+export function nextCheckpointThreshold(total: bigint | null, referenceTokens: number | string | null | undefined): bigint | null {
+  if (total === null || total < 0n || total > MAX_SIGNED_64) return null;
+  if (typeof referenceTokens === 'string' && !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(referenceTokens)) return null;
+  const reference = referenceTokens == null ? 0 : Number(referenceTokens);
+  if (!Number.isFinite(reference) || reference < 0) return null;
+  const step = reference === 0 ? 1n : BigInt(Math.ceil(reference));
+  const threshold = total + (step > 1n ? step : 1n);
+  return threshold <= MAX_SIGNED_64 ? threshold : null;
+}

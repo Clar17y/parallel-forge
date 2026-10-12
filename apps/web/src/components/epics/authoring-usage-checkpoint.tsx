@@ -5,7 +5,7 @@ import { ApiError, mutate } from '@/lib/api/client';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import type { MonitoringPolicyResponse } from '@/lib/api/monitoring-policy';
-import { retainedPolicyIntegersAreSafe, knownReportTotal } from '@/components/task-usage/retained-policy-integers';
+import { retainedPolicyIntegersAreSafe, knownReportTotal, nextCheckpointThreshold } from '@/components/task-usage/retained-policy-integers';
 import { matchesOwnerReceipt, nextVersion, versionValue } from '@/components/task-usage/owner-version';
 import { MAX_SIGNED_64 } from '@/lib/api/exact-integer';
 
@@ -63,7 +63,7 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
   const settled = checkpoint?.state === 'paused' && checkpoint.process_settled;
   const versionCanAdvance = checkpoint != null && versionValue(checkpoint.version, MAX_SIGNED_64 - 1n) !== null;
   const total = knownReportTotal(report);
-  const totalIsSafe = total !== null;
+  const nextThreshold = report?.baseline ? nextCheckpointThreshold(total, report.baseline.reference_tokens) : null;
 
   async function submit(body: CommandRequest) {
     if (running.current || !checkpoint || !lifecycle.current) return;
@@ -125,7 +125,7 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
       {report?.completeness === 'lower_bound' ? <p>Next checkpoint uses the known measured lower bound; unknown token dimensions remain Unknown.</p> : null}
       {settled && !versionCanAdvance ? <p role="alert">Checkpoint version cannot be incremented within signed 64-bit storage. Owner actions are unavailable.</p> : null}
       {settled ? <div className="flex flex-wrap gap-2">
-        <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance || !totalIsSafe || report?.baseline == null}
+        <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance || nextThreshold === null}
           onClick={() => command('continue', 'next_checkpoint')}>Continue to next checkpoint</button>
         <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance} onClick={() => command('continue', 'without_usage_pauses')}>Continue without usage pauses</button>
         <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance} onClick={() => {
@@ -133,6 +133,7 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
         }}>Change monitoring settings</button>
         <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance} onClick={() => command('stop')}>Stop authoring job</button>
       </div> : null}
+      {settled && report?.baseline && total !== null && nextThreshold === null ? <p>Next checkpoint threshold would exceed signed 64-bit storage; continue without usage pauses remains available after settlement.</p> : null}
       {settled && showPolicy && policy ? <fieldset className="space-y-2 rounded border border-[var(--border)] p-3" disabled={pending || !!retry || locked}>
         <legend className="font-semibold">New monitoring revision</legend>
         {policy.hard_token_cap != null || policy.hard_context_cap != null ? <p>Existing explicit hard caps are retained unchanged.</p> : <p>No explicit hard cap is configured; this changes monitoring only.</p>}

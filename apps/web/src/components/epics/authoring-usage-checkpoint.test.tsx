@@ -127,6 +127,38 @@ test('sends high authoring next-checkpoint mode and accepts exact result version
   hasExactToken(posts[0], 'expected_version', expected);
 });
 
+test('keeps exact MAX authoring usage visible but refuses a next threshold above signed64', async () => {
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(exactOwnerJson({ ...response,
+    report: { ...report, input_tokens: '9223372036854775807', output_tokens: 0,
+      baseline: { ...report.baseline, reference_tokens: null } } }), { status: 200 }));
+  render(<AuthoringUsageCheckpoint epicId="epic-1" projectId="project-1" jobId="job-1" kind="brainstorm" locked={false} />);
+  const region = await screen.findByRole('region', { name: 'Authoring usage checkpoint' });
+  expect(region).toHaveTextContent('9,223,372,036,854,775,807');
+  expect(within(region).getByRole('button', { name: 'Continue to next checkpoint' })).toBeDisabled();
+  expect(within(region).getByRole('button', { name: 'Continue without usage pauses' })).toBeEnabled();
+  expect(region).toHaveTextContent(/next checkpoint.*signed 64-bit/i);
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+});
+
+test.each([
+  ['9223372036854775806', 0, null, 'complete', true],
+  ['9223372036854775787', 0, 20, 'complete', true],
+  ['9223372036854775788', 0, 20, 'complete', false],
+  ['9223372036854775805', 0, 1.1, 'complete', true],
+  ['9223372036854775806', 0, 1.1, 'complete', false],
+  ['9223372036854775806', null, null, 'lower_bound', true],
+] as const)('authoring next headroom combines %s input, %s output, frozen %s, %s: eligible %s',
+  async (input, output, reference, completeness, eligible) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(exactOwnerJson({ ...response,
+      report: { ...report, input_tokens: input, output_tokens: output, completeness,
+        baseline: { ...report.baseline, reference_tokens: reference } } }), { status: 200 }));
+    render(<AuthoringUsageCheckpoint epicId="epic-1" projectId="project-1" jobId="job-1" kind="brainstorm" locked={false} />);
+    const region = await screen.findByRole('region', { name: 'Authoring usage checkpoint' });
+    const next = within(region).getByRole('button', { name: 'Continue to next checkpoint' });
+    if (eligible) expect(next).toBeEnabled(); else expect(next).toBeDisabled();
+    expect(within(region).getByRole('button', { name: 'Continue without usage pauses' })).toBeEnabled();
+  });
+
 test('continues authoring from an exact high checkpoint version', async () => {
   const high = '9007199254740993';
   const next = '9007199254740994';
